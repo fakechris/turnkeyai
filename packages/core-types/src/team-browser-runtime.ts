@@ -29,7 +29,7 @@ export interface BrowserBridge extends BrowserSessionRuntime {
   openTarget(
     browserSessionId: string,
     url: string,
-    owner?: { ownerType?: BrowserSessionOwnerType; ownerId?: string }
+    owner?: { ownerType?: BrowserSessionOwnerType; ownerId?: string; timeoutMs?: number }
   ): Promise<BrowserTarget>;
   activateTarget(
     browserSessionId: string,

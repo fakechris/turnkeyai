@@ -14,6 +14,7 @@ import type {
   WorkerKind,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
+import { MAX_BROWSER_OPEN_TIMEOUT_MS } from "@turnkeyai/core-types/team";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import type { LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
@@ -23,6 +24,7 @@ import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
 import { SESSION_TOOL_NAMES } from "./tool-capability-registry";
 import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor } from "./tool-use";
+import { summarizeWorkerSessionEvidence } from "./worker-session-transcript";
 
 const DEFAULT_BROWSER_SUB_AGENT_MAX_ROUNDS = 15;
 const DEFAULT_EXPLORE_SUB_AGENT_MAX_ROUNDS = 8;
@@ -163,7 +165,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       };
     } catch (error) {
       if (input.signal?.aborted) {
-        return abortedResult(this.kind);
+        return executor.interruptedResult();
       }
       const fallback =
         this.kind === "browser" && this.browserBridge && executor.executedToolCount() === 0 && isPlannerBootstrapFailure(error)
@@ -230,6 +232,27 @@ class SubAgentToolExecutor implements RoleToolExecutor {
 
   workerRunKey(): string {
     return this.innerSessionState?.workerRunKey ?? this.parentInput.sessionState?.workerRunKey ?? this.fallbackWorkerRunKey;
+  }
+
+  interruptedResult(): WorkerExecutionResult {
+    const state = this.innerSessionState ?? this.parentInput.sessionState ?? null;
+    const evidence = summarizeWorkerSessionEvidence(state);
+    if (!evidence) {
+      return abortedResult(this.kind);
+    }
+    const payload = state?.lastResult?.payload;
+    return {
+      workerType: this.kind,
+      status: "partial",
+      summary: `Sub-agent interrupted before completion. Partial evidence: ${truncatePartialEvidenceSummary(evidence)}`,
+      payload: {
+        ...(isRecord(payload) ? payload : {}),
+        mode: "llm_sub_agent",
+        workerType: this.kind,
+        interrupted: true,
+        content: evidence,
+      },
+    };
   }
 
   definitions(): LLMToolDefinition[] {
@@ -429,6 +452,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
           const coldMessage = coldError instanceof Error ? coldError.message : String(coldError);
           const bucket = classifyBrowserPrivateToolFailureBucket(coldMessage);
           const content = `${bucket}: ${coldMessage}`;
+          const failureBuckets = reportableBrowserFailureBuckets(bucket);
           return {
             toolCallId: input.call.id,
             toolName: input.call.name,
@@ -438,7 +462,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
               status: "failed",
               error: coldMessage,
               priorError: message,
-              failureBuckets: [{ bucket, count: 1 }],
+              ...(failureBuckets.length ? { failureBuckets } : {}),
             },
             progress: [
               {
@@ -447,7 +471,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
                 summary: content,
                 detail: {
                   priorError: message,
-                  failureBuckets: [{ bucket, count: 1 }],
+                  ...(failureBuckets.length ? { failureBuckets } : {}),
                   actionKinds: actionPlan.actions.map((action) => action.kind),
                 },
               },
@@ -457,6 +481,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       } else {
         const bucket = classifyBrowserPrivateToolFailureBucket(message);
         const content = `${bucket}: ${message}`;
+        const failureBuckets = reportableBrowserFailureBuckets(bucket);
         return {
           toolCallId: input.call.id,
           toolName: input.call.name,
@@ -465,7 +490,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
           raw: {
             status: "failed",
             error: message,
-            failureBuckets: [{ bucket, count: 1 }],
+            ...(failureBuckets.length ? { failureBuckets } : {}),
           },
           progress: [
             {
@@ -473,7 +498,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
               toolName: input.call.name,
               summary: content,
               detail: {
-                failureBuckets: [{ bucket, count: 1 }],
+                ...(failureBuckets.length ? { failureBuckets } : {}),
                 actionKinds: actionPlan.actions.map((action) => action.kind),
               },
             },
@@ -564,6 +589,13 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
         properties: {
           url: { type: "string", description: "Absolute http(s) URL to open." },
           note: { type: "string", description: "Optional short note for the resulting snapshot." },
+          timeout_ms: {
+            type: "number",
+            minimum: 1,
+            maximum: MAX_BROWSER_OPEN_TIMEOUT_MS,
+            description:
+              "Optional page-open timeout in milliseconds. Use an extended value for explicitly slow local/loopback diagnostics; defaults to the runtime browser open timeout.",
+          },
           screenshot: { type: "boolean", description: "Capture a screenshot after the page opens. Defaults to true; set false only when the parent explicitly does not need visual evidence." },
         },
         required: ["url"],
@@ -655,8 +687,9 @@ function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
       if (!url || !isHttpUrl(url)) {
         return { error: "browser_open requires an absolute http(s) url." };
       }
+      const timeoutMs = resolveBrowserOpenTimeoutMs(raw.timeout_ms, input.packet.taskPrompt, url);
       const actions: BrowserTaskAction[] = [
-        { kind: "open", url },
+        { kind: "open", url, ...(timeoutMs ? { timeoutMs } : {}) },
         { kind: "snapshot", note: requiredString(raw.note) ?? "after-open" },
       ];
       if (raw.screenshot !== false) {
@@ -958,6 +991,7 @@ async function runReadOnlyBrowserPlannerFallback(input: {
 
   let result: BrowserTaskResult;
   try {
+    const timeoutMs = resolveSlowLoopbackOpenTimeoutMs(input.input.packet.taskPrompt, url);
     result = await input.browserBridge.spawnSession({
       taskId: `${input.input.activation.handoff.taskId}:browser-planner-fallback`,
       threadId: input.input.activation.thread.threadId,
@@ -966,7 +1000,7 @@ async function runReadOnlyBrowserPlannerFallback(input: {
         "Capture read-only page evidence from the delegated URL without interacting with account state.",
       ].join(" "),
       actions: [
-        { kind: "open", url },
+        { kind: "open", url, ...(timeoutMs ? { timeoutMs } : {}) },
         { kind: "snapshot", note: "planner-timeout-fallback" },
         { kind: "screenshot", label: "planner-timeout-fallback" },
       ],
@@ -1120,6 +1154,14 @@ function truncateBrowserTextExcerpt(text: string): string {
     return normalized;
   }
   return `${normalized.slice(0, 497)}...`;
+}
+
+function truncatePartialEvidenceSummary(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 1200) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 1197)}...`;
 }
 
 function buildInnerSessionState(input: {
@@ -1302,13 +1344,30 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
       }
     | null = null;
   const failureBucketCounts = new Map<string, number>();
-  for (const round of rounds) {
+  const countedFailureBucketKeys = new Set<string>();
+  for (const [roundIndex, round] of rounds.entries()) {
+    for (const progress of round.progress ?? []) {
+      if (!progress.toolName.startsWith("browser_") || !isRecord(progress.detail)) {
+        continue;
+      }
+      for (const bucket of readBrowserFailureBucketRecords(progress.detail)) {
+        addBrowserFailureBucketCount(failureBucketCounts, countedFailureBucketKeys, bucket, {
+          roundIndex,
+          toolCallId: progress.toolCallId,
+        });
+      }
+    }
     for (const result of round.results) {
       if (!result.toolName.startsWith("browser_") || !result.content) {
         continue;
       }
       for (const bucket of collectBrowserFailureBucketsFromText(result.content)) {
-        failureBucketCounts.set(bucket, (failureBucketCounts.get(bucket) ?? 0) + 1);
+        addBrowserFailureBucketCount(
+          failureBucketCounts,
+          countedFailureBucketKeys,
+          { bucket, count: 1 },
+          { roundIndex, toolCallId: result.toolCallId }
+        );
       }
       const parsed = parseBrowserPrivateToolPayload(result.content);
       if (!parsed || parsed.resumeMode === "hot") {
@@ -1338,6 +1397,20 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
       .filter((line): line is string => Boolean(line))
       .join(" "),
   };
+}
+
+function addBrowserFailureBucketCount(
+  counts: Map<string, number>,
+  countedKeys: Set<string>,
+  bucket: { bucket: string; count: number },
+  source: { roundIndex: number; toolCallId?: string | null }
+): void {
+  const key = `${source.toolCallId ?? `round-${source.roundIndex}`}:${bucket.bucket}`;
+  if (countedKeys.has(key)) {
+    return;
+  }
+  countedKeys.add(key);
+  counts.set(bucket.bucket, (counts.get(bucket.bucket) ?? 0) + bucket.count);
 }
 
 function parseBrowserPrivateToolPayload(content: string):
@@ -1433,6 +1506,9 @@ function collectBrowserFailureBucketsFromText(text: string): string[] {
 function classifyBrowserPrivateToolFailureBucket(message: string): string {
   const direct = collectBrowserFailureBucketsFromText(message)[0];
   if (direct) return direct;
+  if (/\b(?:unknown|stale|invalid)\s+snapshot\s+ref\b|\bref(?:erence)?\b.{0,80}\b(?:not found|stale|invalid|unknown)\b/i.test(message)) {
+    return "stale_ref";
+  }
   if (/\b(?:cdp|devtools|websocket|ws:\/\/|browser endpoint|connectovercdp)\b/i.test(message)) {
     return "browser_cdp_unavailable";
   }
@@ -1449,6 +1525,12 @@ function classifyBrowserPrivateToolFailureBucket(message: string): string {
     return "detached_target";
   }
   return "transport_failure";
+}
+
+function reportableBrowserFailureBuckets(bucket: string): Array<{ bucket: string; count: number }> {
+  return BROWSER_FAILURE_BUCKETS.includes(bucket as (typeof BROWSER_FAILURE_BUCKETS)[number])
+    ? [{ bucket, count: 1 }]
+    : [];
 }
 
 function formatBrowserFailureBuckets(buckets: Array<{ bucket: string; count: number }>): string {
@@ -1501,6 +1583,7 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
       ...common,
       "You control browser work through private browser tools: browser_open, browser_snapshot, browser_act, browser_scroll, browser_console, and browser_screenshot.",
       "Use browser_open for absolute URLs, browser_snapshot before choosing element refs, browser_act for one targeted click/type/key/hover, browser_scroll for long pages, browser_console for bounded page probes, and browser_screenshot for visible evidence artifacts.",
+      `For explicitly slow local or loopback diagnostics, set browser_open.timeout_ms up to ${MAX_BROWSER_OPEN_TIMEOUT_MS} and stop with a bounded evidence summary if the page still does not load.`,
       "Do not submit forms, purchase, publish, delete, approve, or change account state from the browser sub-agent private tools unless the delegated task explicitly says parent runtime approval is granted or the permission cache is already applied for that scoped action. Without that explicit approval context, report that the parent must request approval first.",
       "Retry the same browser operation at most three times, changing strategy only when the observed failure justifies it.",
       "Prefer element refIds from snapshots over selectors or visible text when interacting with a page.",
@@ -1607,6 +1690,45 @@ function isHttpUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
     return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function resolveBrowserOpenTimeoutMs(rawTimeoutMs: unknown, taskPrompt: string, url: string): number | null {
+  const slowLoopbackTimeoutMs = resolveSlowLoopbackOpenTimeoutMs(taskPrompt, url);
+  if (typeof rawTimeoutMs === "number" && Number.isFinite(rawTimeoutMs)) {
+    const requested = Math.min(Math.max(Math.floor(rawTimeoutMs), 1), MAX_BROWSER_OPEN_TIMEOUT_MS);
+    return slowLoopbackTimeoutMs ? Math.max(requested, slowLoopbackTimeoutMs) : requested;
+  }
+  return slowLoopbackTimeoutMs;
+}
+
+function resolveSlowLoopbackOpenTimeoutMs(taskPrompt: string, url: string): number | null {
+  if (!isLoopbackUrl(url)) {
+    return null;
+  }
+  if (isSupplementalLocalTimeoutProbeText(taskPrompt)) {
+    return null;
+  }
+  if (!isSlowDiagnosticText(taskPrompt) && !isSlowDiagnosticText(url)) {
+    return null;
+  }
+  return MAX_BROWSER_OPEN_TIMEOUT_MS;
+}
+
+function isSupplementalLocalTimeoutProbeText(value: string): boolean {
+  return /\bsupplemental local timeout probe\b/i.test(value);
+}
+
+function isSlowDiagnosticText(value: string): boolean {
+  return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(value);
+}
+
+function isLoopbackUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw);
+    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
   } catch {
     return false;
   }

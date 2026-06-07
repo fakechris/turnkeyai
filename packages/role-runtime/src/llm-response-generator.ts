@@ -5,11 +5,21 @@ import type {
   RuntimeProgressRecorder,
   TeamMessageStore,
 } from "@turnkeyai/core-types/team";
-import type { GenerateTextInput, GenerateTextResult, LLMContentBlock, LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
+import { MAX_BROWSER_OPEN_TIMEOUT_MS } from "@turnkeyai/core-types/team";
+import type {
+  GenerateTextInput,
+  GenerateTextResult,
+  LLMContentBlock,
+  LLMMessage,
+  LLMToolCall,
+} from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 
-import type { GeneratedRoleReply, RoleResponseGenerator } from "./deterministic-response-generator";
+import type {
+  GeneratedRoleReply,
+  RoleResponseGenerator,
+} from "./deterministic-response-generator";
 import {
   buildNativeToolMessages,
   type NativeToolProgressTrace,
@@ -17,7 +27,10 @@ import {
   type NativeToolRoundTrace,
 } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
-import { reducePromptPacketForRequestEnvelope, type RequestEnvelopeReductionLevel } from "./request-envelope-reducer";
+import {
+  reducePromptPacketForRequestEnvelope,
+  type RequestEnvelopeReductionLevel,
+} from "./request-envelope-reducer";
 import { getRoleModelSelection } from "./role-model-selection";
 import {
   appendAssistantToolCallMessage,
@@ -56,6 +69,32 @@ interface ToolLoopCloseoutMetadata {
   finalContentCount?: number;
 }
 
+interface ModelCallBoundaryTrace {
+  index: number;
+  phase: "tool_round" | "final_synthesis" | "final_synthesis_repair";
+  round?: number;
+  durationMs: number;
+  modelId: string;
+  providerId: string;
+  protocol: GenerateTextResult["protocol"];
+  adapterName: string;
+  modelChainId?: string;
+  attemptedModelIds?: string[];
+  stopReason?: string;
+  messageCount: number;
+  toolSchemaCount: number;
+  toolChoice?: string;
+  toolCallsReturned: number;
+  contentBlockCount: number;
+  textBytes: number;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+  };
+  requestEnvelope?: GenerateTextResult["requestEnvelope"];
+  reductionLevel?: RequestEnvelopeReductionLevel;
+}
+
 interface SessionContinuationDirective {
   sessionKey: string;
   messageHint: string;
@@ -74,13 +113,19 @@ interface SubAgentToolTimeoutSignal {
 }
 
 const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
+const SUPPLEMENTAL_LOCAL_TIMEOUT_PROBE_TIMEOUT_SECONDS = 90;
+const SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS = 10_000;
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
   private readonly toolLoop: RoleToolLoopOptions | undefined;
-  private readonly nativeToolMessageStore: Pick<TeamMessageStore, "append"> | undefined;
-  private readonly preCompactionMemoryFlusher: PreCompactionMemoryFlusher | undefined;
+  private readonly nativeToolMessageStore:
+    | Pick<TeamMessageStore, "append">
+    | undefined;
+  private readonly preCompactionMemoryFlusher:
+    | PreCompactionMemoryFlusher
+    | undefined;
   private readonly clock: Clock;
 
   constructor(options: {
@@ -99,12 +144,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     this.clock = options.clock ?? { now: () => Date.now() };
   }
 
-  async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal }): Promise<GeneratedRoleReply> {
-    const role = input.activation.thread.roles.find((item) => item.roleId === input.activation.runState.roleId);
+  async generate(input: {
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+    signal?: AbortSignal;
+  }): Promise<GeneratedRoleReply> {
+    const role = input.activation.thread.roles.find(
+      (item) => item.roleId === input.activation.runState.roleId,
+    );
     const selection = role ? getRoleModelSelection(role) : {};
-    const activeToolLoop = input.packet.toolUseMode === "disabled" ? undefined : this.toolLoop;
+    const activeToolLoop =
+      input.packet.toolUseMode === "disabled" ? undefined : this.toolLoop;
     if (!selection.modelId && !selection.modelChainId) {
-      throw new Error(`no model configured for role ${input.activation.runState.roleId}`);
+      throw new Error(
+        `no model configured for role ${input.activation.runState.roleId}`,
+      );
     }
     throwIfAborted(input.signal);
 
@@ -123,15 +177,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       | undefined;
     const memoryFlushes: PreCompactionMemoryFlushResult[] = [];
 
-    await this.recordAssemblyBoundarySafely(input.activation, input.packet, selection);
-    const baseSessionContinuationDirective =
-      activeToolLoop ? findSessionContinuationDirective(input.packet.taskPrompt) : null;
+    await this.recordAssemblyBoundarySafely(
+      input.activation,
+      input.packet,
+      selection,
+    );
+    const baseSessionContinuationDirective = activeToolLoop
+      ? findSessionContinuationDirective(input.packet.taskPrompt)
+      : null;
 
     const initialGatewayInput = buildGatewayInput({
       activation: input.activation,
       packet: input.packet,
       ...(selection.modelId ? { modelId: selection.modelId } : {}),
-      ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+      ...(selection.modelChainId
+        ? { modelChainId: selection.modelChainId }
+        : {}),
       ...(input.signal ? { signal: input.signal } : {}),
       ...(activeToolLoop
         ? {
@@ -139,39 +200,53 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolChoice: "auto" as const,
           }
         : {}),
-      ...(baseSessionContinuationDirective ? { sessionContinuationDirective: baseSessionContinuationDirective } : {}),
+      ...(baseSessionContinuationDirective
+        ? { sessionContinuationDirective: baseSessionContinuationDirective }
+        : {}),
     });
 
     const toolTrace: NativeToolRoundTrace[] = [];
+    const modelCallTrace: ModelCallBoundaryTrace[] = [];
     let messages: LLMMessage[] = initialGatewayInput.messages;
     let nextToolChoice: GenerateTextInput["toolChoice"] | undefined;
     const toolLoopStartedAtMs = this.clock.now();
     let toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
     for (let round = 0; ; round++) {
       throwIfAborted(input.signal);
-      const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
-      const gatewayMessages = prepareToolHistoryForGateway(
-        withFinalToolRoundWarning(messages, {
-          active: Boolean(activeToolLoop),
-          round,
-          maxRounds,
-        })
+      const maxRounds =
+        activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+      const warningMessages = withFinalToolRoundWarning(messages, {
+        active: Boolean(activeToolLoop),
+        round,
+        maxRounds,
+      });
+      const gatewayMessages = prepareToolHistoryForGateway(warningMessages);
+      await this.recordToolResultPruningBoundarySafely(
+        input.activation,
+        selection,
+        summarizeToolResultPruning(warningMessages, gatewayMessages),
       );
-      let generated: Awaited<ReturnType<LLMRoleResponseGenerator["generateWithEnvelopeRetry"]>>;
+      let generated: Awaited<
+        ReturnType<LLMRoleResponseGenerator["generateWithEnvelopeRetry"]>
+      >;
       try {
+        const gatewayInput = {
+          ...initialGatewayInput,
+          messages: gatewayMessages,
+          ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
+          envelope: {
+            ...(initialGatewayInput.envelope ?? {}),
+            ...deriveToolResultEnvelope(gatewayMessages),
+          },
+        };
         generated = await this.generateWithEnvelopeRetry({
           activation: input.activation,
           packet: input.packet,
           selection,
-          gatewayInput: {
-            ...initialGatewayInput,
-            messages: gatewayMessages,
-            ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
-            envelope: {
-              ...(initialGatewayInput.envelope ?? {}),
-              ...deriveToolResultEnvelope(gatewayMessages),
-            },
-          },
+          gatewayInput,
+          modelCallTrace,
+          tracePhase: "tool_round",
+          traceRound: round,
         });
       } catch (error) {
         if (isAbortError(error)) {
@@ -213,40 +288,81 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         memoryFlushes.push(generated.memoryFlush);
       }
 
-      const sessionContinuationContext = buildContinuationDirectiveContext(input.packet.taskPrompt, messages);
-      const contextualSessionContinuationDirective = activeToolLoop
-        ? findSessionContinuationDirective(sessionContinuationContext)
-        : null;
-      const sessionContinuationDirective =
-        contextualSessionContinuationDirective ?? baseSessionContinuationDirective;
-      const sessionContinuationLookupDirective =
-        !sessionContinuationDirective && activeToolLoop && !isAppliedApprovalBrowserContinuation(input.packet.taskPrompt)
-          ? findSessionContinuationLookupDirective(input.packet.taskPrompt, sessionContinuationContext)
+      const supplementalLocalTimeoutProbePending =
+        hasLatestSupplementalLocalTimeoutProbePrompt(messages);
+      const sessionContinuationContext = buildContinuationDirectiveContext(
+        input.packet.taskPrompt,
+        messages,
+      );
+      const contextualSessionContinuationDirective =
+        activeToolLoop && !supplementalLocalTimeoutProbePending
+          ? findSessionContinuationDirective(sessionContinuationContext)
           : null;
+      const sessionContinuationDirective = supplementalLocalTimeoutProbePending
+        ? null
+        : (contextualSessionContinuationDirective ??
+          baseSessionContinuationDirective);
+      const sessionContinuationLookupDirective =
+        !supplementalLocalTimeoutProbePending &&
+        !sessionContinuationDirective &&
+        activeToolLoop &&
+        !isAppliedApprovalBrowserContinuation(input.packet.taskPrompt)
+          ? findSessionContinuationLookupDirective(
+              input.packet.taskPrompt,
+              sessionContinuationContext,
+            )
+          : null;
+      const modelToolCalls = enforceSupplementalLocalTimeoutProbeToolCall(
+        normalizeSessionToolAliasCalls(result.toolCalls ?? []),
+        messages,
+      );
       let toolCalls = normalizeApprovalGatedBrowserSpawnCalls(
-        normalizePrivateUrlResearchSpawnCalls(
-          normalizeSessionToolCalls(
-            applySessionContinuationLookupDirective(
-              applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective),
-              sessionContinuationLookupDirective
+        normalizeBoundedTimeoutDuplicateSourceSpawns(
+          normalizeBoundedTimeoutSourceSpawnAgents(
+            normalizePrivateUrlResearchSpawnCalls(
+              normalizeSessionToolCalls(
+                applySessionContinuationLookupDirective(
+                  applySessionContinuationDirective(
+                    modelToolCalls,
+                    sessionContinuationDirective,
+                  ),
+                  sessionContinuationLookupDirective,
+                ),
+                sessionContinuationContext,
+              ),
+              {
+                browserAvailable:
+                  input.packet.capabilityInspection?.availableWorkers?.includes(
+                    "browser",
+                  ) ?? false,
+                taskPrompt: input.packet.taskPrompt,
+              },
             ),
-            sessionContinuationContext
+            {
+              exploreAvailable:
+                input.packet.capabilityInspection?.availableWorkers?.includes(
+                  "explore",
+                ) ?? false,
+              taskPrompt: input.packet.taskPrompt,
+            },
           ),
           {
-            browserAvailable: input.packet.capabilityInspection?.availableWorkers?.includes("browser") ?? false,
             taskPrompt: input.packet.taskPrompt,
-          }
+          },
         ),
         {
           taskPrompt: input.packet.taskPrompt,
           sessionContext: sessionContinuationContext,
-        }
+        },
       );
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
         sessionContinuationDirective &&
-        !hasExecutedSessionsSend(toolTrace, sessionContinuationDirective.sessionKey) &&
+        !hasExecutedSessionsSend(
+          toolTrace,
+          sessionContinuationDirective.sessionKey,
+        ) &&
         hasToolDefinition(initialGatewayInput.tools, "sessions_send")
       ) {
         toolCalls = [
@@ -268,7 +384,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           messages,
         })
       ) {
-        const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+        const maxRounds =
+          activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
         toolLoopCloseout = {
           reason: "operator_cancelled",
           maxRounds,
@@ -284,6 +401,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           baseGatewayInput: initialGatewayInput,
           messages,
           maxRounds,
+          modelCallTrace,
           reasonLines: [
             "A previous sub-agent session was cancelled by the operator.",
             "The latest user message did not ask to continue, resume, or retry that cancelled session.",
@@ -299,6 +417,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
         if (generated.memoryFlush) {
           memoryFlushes.push(generated.memoryFlush);
+        }
+        const completedEvidenceText = collectCompletedSessionEvidenceText(toolTrace);
+        if (
+          completedEvidenceText &&
+          shouldRepairMissingBrowserEvidenceDimensions({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+            evidenceText: completedEvidenceText,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+                taskPrompt: input.packet.taskPrompt,
+                resultText: result.text,
+                evidenceText: completedEvidenceText,
+              }),
+            },
+          ];
+          nextToolChoice = "none";
+          continue;
         }
         break;
       }
@@ -321,7 +467,36 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           },
           {
             role: "user",
-            content: buildMissingBrowserEvidenceRepairPrompt(input.packet.taskPrompt),
+            content: buildMissingBrowserEvidenceRepairPrompt(
+              input.packet.taskPrompt,
+            ),
+          },
+        ];
+        nextToolChoice = { type: "tool", name: "sessions_spawn" };
+        continue;
+      }
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        shouldRepairMissingProductSignalBrowserEvidence({
+          taskPrompt: input.packet.taskPrompt,
+          resultText: result.text,
+          messages,
+          toolTrace,
+          tools: initialGatewayInput.tools,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildMissingProductSignalBrowserEvidenceRepairPrompt(
+              input.packet.taskPrompt,
+            ),
           },
         ];
         nextToolChoice = { type: "tool", name: "sessions_spawn" };
@@ -349,6 +524,30 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           },
         ];
         nextToolChoice = { type: "tool", name: "permission_query" };
+        continue;
+      }
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        shouldRepairPendingApprovalWaitTimeoutCheck({
+          taskPrompt: input.packet.taskPrompt,
+          resultText: result.text,
+          messages,
+          toolTrace,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
+          },
+        ];
+        nextToolChoice = { type: "tool", name: "permission_result" };
         continue;
       }
       if (
@@ -402,6 +601,30 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
+        shouldRepairApprovalWaitTimeoutCloseout({
+          taskPrompt: input.packet.taskPrompt,
+          resultText: result.text,
+          messages,
+          toolTrace,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildApprovalWaitTimeoutCloseoutRepairPrompt(),
+          },
+        ];
+        nextToolChoice = "none";
+        continue;
+      }
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
         shouldRepairIncompleteApprovedBrowserAction({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
@@ -423,8 +646,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         nextToolChoice = { type: "tool", name: "sessions_spawn" };
         continue;
       }
-      if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
-        const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+      if (
+        activeToolLoop &&
+        toolCalls.length > 0 &&
+        shouldSuppressToolsForAwaitingContextSetup({
+          taskPrompt: input.packet.taskPrompt,
+          messages,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildAwaitingContextSetupNoToolRepairPrompt(
+              input.packet.taskPrompt,
+            ),
+          },
+        ];
+        nextToolChoice = "none";
+        continue;
+      }
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        containsAnyToolCallForm(result)
+      ) {
+        const maxRounds =
+          activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
         toolLoopCloseout = {
           reason: "pseudo_tool_call",
           maxRounds,
@@ -446,6 +698,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
           ],
           maxRounds,
+          modelCallTrace,
           reasonLines: [
             "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
             "Tools are not available through text markup. Do not call more tools.",
@@ -461,6 +714,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         if (generated.memoryFlush) {
           memoryFlushes.push(generated.memoryFlush);
         }
+        const completedEvidenceText = collectCompletedSessionEvidenceText(toolTrace);
+        if (
+          completedEvidenceText &&
+          shouldRepairMissingBrowserEvidenceDimensions({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+            evidenceText: completedEvidenceText,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+                taskPrompt: input.packet.taskPrompt,
+                resultText: result.text,
+                evidenceText: completedEvidenceText,
+              }),
+            },
+          ];
+          nextToolChoice = "none";
+          continue;
+        }
         break;
       }
       if (!activeToolLoop || toolCalls.length === 0) {
@@ -474,13 +755,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             })
           ) {
             result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
-          } else if (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
+          } else if (
+            shouldAppendTimeoutContinuationVisibility({
+              taskPrompt: input.packet.taskPrompt,
+              messages,
+              toolTrace,
+            })
+          ) {
             result = maybeAppendTimeoutContinuationVisibility(result);
           }
         }
         break;
       }
-      const maxWallClockMs = activeToolLoop.maxWallClockMs;
+      const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+        ...(activeToolLoop.maxWallClockMs !== undefined ? { maxWallClockMs: activeToolLoop.maxWallClockMs } : {}),
+        toolCalls,
+      });
       if (
         toolTrace.length > 0 &&
         typeof maxWallClockMs === "number" &&
@@ -505,6 +795,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           baseGatewayInput: initialGatewayInput,
           messages,
           maxRounds,
+          modelCallTrace,
           reasonLines: [
             `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
             "Do not call more tools. Produce the best final answer from the evidence already gathered.",
@@ -519,6 +810,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
         if (generated.memoryFlush) {
           memoryFlushes.push(generated.memoryFlush);
+        }
+        const completedEvidenceText = collectCompletedSessionEvidenceText(toolTrace);
+        if (
+          completedEvidenceText &&
+          shouldRepairMissingBrowserEvidenceDimensions({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+            evidenceText: completedEvidenceText,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+                taskPrompt: input.packet.taskPrompt,
+                resultText: result.text,
+                evidenceText: completedEvidenceText,
+              }),
+            },
+          ];
+          nextToolChoice = "none";
+          continue;
         }
         break;
       }
@@ -539,6 +858,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           baseGatewayInput: initialGatewayInput,
           messages,
           maxRounds,
+          modelCallTrace,
           reasonLines: [
             `Tool-use round limit reached (${maxRounds}).`,
             "Do not call more tools. Produce the best final answer from the evidence already gathered.",
@@ -575,6 +895,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           baseGatewayInput: initialGatewayInput,
           messages,
           maxRounds,
+          modelCallTrace,
           reasonLines: [
             `Repeated failing tool call detected: ${repeatedFailure.toolName} failed ${repeatedFailure.failureCount} times with the same arguments.`,
             "Do not call the same tool again with those arguments, and do not spawn a fallback session for the same target.",
@@ -611,7 +932,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolLoopStartedAtMs,
         ...(input.signal ? { signal: input.signal } : {}),
         onProgress: async (call, progress) => {
-          roundTrace.progress?.push(toNativeToolProgressTrace(call, progress, this.clock.now()));
+          roundTrace.progress?.push(
+            toNativeToolProgressTrace(call, progress, this.clock.now()),
+          );
           await this.persistNativeToolTraceSafely(input.activation, toolTrace);
         },
         onResult: async (toolResult) => {
@@ -626,14 +949,43 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       messages = appendAssistantToolCallMessage(messages, {
         text: result.text,
         toolCalls,
-        ...(result.contentBlocks ? { contentBlocks: result.contentBlocks } : {}),
+        ...(result.contentBlocks
+          ? { contentBlocks: result.contentBlocks }
+          : {}),
       });
       messages = appendToolResultMessages(messages, toolResults);
+      await this.recordProviderToolProtocolRoundSafely({
+        activation: input.activation,
+        round: round + 1,
+        toolCalls,
+        toolResults,
+        messages,
+      });
 
       const completedSession = findCompletedSessionEvidence(toolResults);
       const timeoutSignal = findSubAgentToolTimeout(toolResults);
       if (
-        completedSession &&
+        timeoutSignal &&
+        shouldContinueTimedOutApprovedBrowserSession({
+          taskPrompt: input.packet.taskPrompt,
+          messages,
+          toolTrace,
+          timeoutSignal,
+          tools: initialGatewayInput.tools,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "user",
+            content:
+              buildApprovedBrowserTimeoutContinuationPrompt(timeoutSignal),
+          },
+        ];
+        nextToolChoice = { type: "tool", name: "sessions_send" };
+        continue;
+      }
+      if (
         timeoutSignal &&
         shouldContinueTimedOutSiblingSession({
           taskPrompt: input.packet.taskPrompt,
@@ -654,19 +1006,44 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         continue;
       }
       if (completedSession) {
-        const incompleteApprovedBrowserSession = findIncompleteApprovedBrowserSession({
-          results: toolResults,
-          taskPrompt: input.packet.taskPrompt,
-          messages,
-          toolTrace,
-          tools: initialGatewayInput.tools,
-        });
+        const supplementalLocalTimeoutProbe =
+          shouldRunSupplementalLocalTimeoutProbe({
+            taskPrompt: input.packet.taskPrompt,
+            messages,
+            toolTrace,
+            evidenceText: completedSession.finalContents.join("\n\n"),
+            tools: initialGatewayInput.tools,
+            browserAvailable: allowsSupplementalBrowserProbe(input.packet),
+          });
+        if (supplementalLocalTimeoutProbe) {
+          messages = [
+            ...messages,
+            {
+              role: "user",
+              content: buildSupplementalLocalTimeoutProbePrompt(
+                supplementalLocalTimeoutProbe,
+              ),
+            },
+          ];
+          nextToolChoice = { type: "tool", name: "sessions_spawn" };
+          continue;
+        }
+        const incompleteApprovedBrowserSession =
+          findIncompleteApprovedBrowserSession({
+            results: toolResults,
+            taskPrompt: input.packet.taskPrompt,
+            messages,
+            toolTrace,
+            tools: initialGatewayInput.tools,
+          });
         if (incompleteApprovedBrowserSession) {
           messages = [
             ...messages,
             {
               role: "user",
-              content: buildIncompleteApprovedBrowserSessionContinuationPrompt(incompleteApprovedBrowserSession),
+              content: buildIncompleteApprovedBrowserSessionContinuationPrompt(
+                incompleteApprovedBrowserSession,
+              ),
             },
           ];
           nextToolChoice = { type: "tool", name: "sessions_send" };
@@ -685,8 +1062,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             {
               role: "user",
               content: buildIndependentEvidenceStreamContinuationPrompt({
-                requiredStreams: inferIndependentEvidenceStreamCount(input.packet.taskPrompt),
-                completedSessions: countCompletedSessionEvidenceResults(toolTrace),
+                requiredStreams: inferIndependentEvidenceStreamCount(
+                  input.packet.taskPrompt,
+                ),
+                completedSessions:
+                  countCompletedSessionEvidenceResults(toolTrace),
               }),
             },
           ];
@@ -708,15 +1088,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               content: buildMissingApprovalGateRepairPrompt(),
             },
           ];
+          nextToolChoice = { type: "tool", name: "permission_query" };
           continue;
         }
-        const preserveRecoveredTimeoutCloseout = shouldPreserveRecoveredTimeoutCloseout({
-          taskPrompt: input.packet.taskPrompt,
-          messages,
-          toolTrace,
-          evidenceText: completedSession.finalContents.join("\n\n"),
-        });
-        toolLoopCloseout = {
+        const preserveRecoveredTimeoutCloseout =
+          shouldPreserveRecoveredTimeoutCloseout({
+            taskPrompt: input.packet.taskPrompt,
+            messages,
+            toolTrace,
+            evidenceText: completedSession.finalContents.join("\n\n"),
+          });
+        const completedSessionCloseout: ToolLoopCloseoutMetadata = {
           reason: "completed_sub_agent_final",
           maxRounds,
           toolName: completedSession.toolName,
@@ -725,6 +1107,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           roundCount: toolTrace.length,
           evidenceAvailable: true,
         };
+        toolLoopCloseout ??= completedSessionCloseout;
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
@@ -733,6 +1116,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           baseGatewayInput: initialGatewayInput,
           messages,
           maxRounds,
+          modelCallTrace,
           reasonLines: [
             `${completedSession.toolName} returned completed delegated session evidence.`,
             "Do not call sessions_history or sessions_list just to restate this completed result.",
@@ -754,12 +1138,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   "The source also includes browser continuity metadata.",
                   "If the user asked to continue, recover, reopen, reconnect, or handle an unavailable browser session, include one concise user-visible continuity sentence in the final answer.",
                   ...completedSession.browserRecoverySummaries.map(
-                    (summary, index) => `Browser continuity ${index + 1}: ${summary}`
+                    (summary, index) =>
+                      `Browser continuity ${index + 1}: ${summary}`,
                   ),
                 ]
               : []),
             ...completedSession.finalContents.map(
-              (content, index) => `Source ${index + 1} evidence:\n${sliceUtf8(content, 8 * 1024)}`
+              (content, index) =>
+                `Source ${index + 1} evidence:\n${sliceUtf8(content, 8 * 1024)}`,
             ),
           ],
         });
@@ -768,6 +1154,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           result: generated.result,
           taskPrompt: input.packet.taskPrompt,
           browserRecoverySummaries: completedSession.browserRecoverySummaries,
+        });
+        result = maybeAppendBrowserFailureBucketVisibility({
+          result,
+          taskPrompt: input.packet.taskPrompt,
+          evidenceText: [
+            collectToolResultContentText(toolResults),
+            ...completedSession.browserRecoverySummaries,
+            ...completedSession.finalContents,
+          ].join("\n\n"),
         });
         const shouldAppendRecoveredTimeoutCloseout =
           preserveRecoveredTimeoutCloseout ||
@@ -779,7 +1174,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           });
         if (shouldAppendRecoveredTimeoutCloseout) {
           result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
-        } else if (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
+        } else if (
+          shouldAppendTimeoutContinuationVisibility({
+            taskPrompt: input.packet.taskPrompt,
+            messages,
+            toolTrace,
+          })
+        ) {
           result = maybeAppendTimeoutContinuationVisibility(result);
         }
         result = maybeRedactForbiddenLocalUrls({
@@ -792,6 +1193,57 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
         if (generated.memoryFlush) {
           memoryFlushes.push(generated.memoryFlush);
+        }
+        if (
+          shouldRepairMissingBrowserEvidence({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+            toolTrace,
+            tools: initialGatewayInput.tools,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildMissingBrowserEvidenceRepairPrompt(
+                input.packet.taskPrompt,
+              ),
+            },
+          ];
+          nextToolChoice = { type: "tool", name: "sessions_spawn" };
+          continue;
+        }
+        if (
+          shouldRepairMissingProductSignalBrowserEvidence({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+            toolTrace,
+            tools: initialGatewayInput.tools,
+            evidenceText: completedSession.finalContents.join("\n\n"),
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildMissingProductSignalBrowserEvidenceRepairPrompt(
+                input.packet.taskPrompt,
+              ),
+            },
+          ];
+          nextToolChoice = { type: "tool", name: "sessions_spawn" };
+          continue;
         }
         if (
           shouldRepairMissingRequestedNextAction({
@@ -816,6 +1268,33 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
         if (
           completedSession.finalContents.length > 0 &&
+          shouldRepairMissingBrowserEvidenceDimensions({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+            evidenceText: completedSession.finalContents.join("\n\n"),
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+                taskPrompt: input.packet.taskPrompt,
+                resultText: result.text,
+                evidenceText: completedSession.finalContents.join("\n\n"),
+              }),
+            },
+          ];
+          nextToolChoice = "none";
+          continue;
+        }
+        if (
+          completedSession.finalContents.length > 0 &&
           shouldRepairFalseEvidenceBlockedSynthesis({
             resultText: result.text,
             messages,
@@ -830,7 +1309,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
             {
               role: "user",
-              content: buildFalseEvidenceBlockedSynthesisRepairPrompt(completedSession.finalContents),
+              content: buildFalseEvidenceBlockedSynthesisRepairPrompt(
+                completedSession.finalContents,
+              ),
             },
           ];
           nextToolChoice = "none";
@@ -861,11 +1342,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       if (timeoutSignal) {
+        const supplementalLocalTimeoutProbe =
+          timeoutSignal.agentId !== "browser"
+            ? shouldRunSupplementalLocalTimeoutProbe({
+                taskPrompt: input.packet.taskPrompt,
+                messages,
+                toolTrace,
+                evidenceText: collectToolResultContentText(toolResults),
+                tools: initialGatewayInput.tools,
+                browserAvailable: allowsSupplementalBrowserProbe(input.packet),
+              })
+            : null;
+        if (supplementalLocalTimeoutProbe) {
+          messages = [
+            ...messages,
+            {
+              role: "user",
+              content: buildSupplementalLocalTimeoutProbePrompt(
+                supplementalLocalTimeoutProbe,
+              ),
+            },
+          ];
+          nextToolChoice = { type: "tool", name: "sessions_spawn" };
+          continue;
+        }
         toolLoopCloseout = {
           reason: "sub_agent_timeout",
           maxRounds,
           toolName: timeoutSignal.toolName,
-          ...(timeoutSignal.timeoutSeconds == null ? {} : { timeoutSeconds: timeoutSignal.timeoutSeconds }),
+          ...(timeoutSignal.timeoutSeconds == null
+            ? {}
+            : { timeoutSeconds: timeoutSignal.timeoutSeconds }),
           evidenceAvailable: timeoutSignal.evidenceAvailable,
           toolCallCount: countToolCalls(toolTrace),
           roundCount: toolTrace.length,
@@ -878,6 +1385,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           baseGatewayInput: initialGatewayInput,
           messages,
           maxRounds,
+          modelCallTrace,
           reasonLines: [
             `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
             "Do not call more tools or spawn fallback sessions for this timeout.",
@@ -902,7 +1410,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     }
 
     if (reductionSnapshot) {
-      await this.recordReductionBoundarySafely(input.activation, input.packet, selection, reductionSnapshot);
+      await this.recordReductionBoundarySafely(
+        input.activation,
+        input.packet,
+        selection,
+        reductionSnapshot,
+      );
     }
 
     return {
@@ -913,19 +1426,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         providerId: result.providerId,
         modelId: result.modelId,
         ...(result.modelChainId ? { modelChainId: result.modelChainId } : {}),
-        ...(result.attemptedModelIds?.length ? { attemptedModelIds: result.attemptedModelIds } : {}),
+        ...(result.attemptedModelIds?.length
+          ? { attemptedModelIds: result.attemptedModelIds }
+          : {}),
         protocol: result.protocol,
         stopReason: result.stopReason,
         ...(reduction ? { requestEnvelopeReduction: reduction } : {}),
-        ...(result.requestEnvelope ? { requestEnvelope: result.requestEnvelope } : {}),
-        ...(memoryFlushes.length ? { preCompactionMemoryFlushes: memoryFlushes } : {}),
+        ...(result.requestEnvelope
+          ? { requestEnvelope: result.requestEnvelope }
+          : {}),
+        ...(memoryFlushes.length
+          ? { preCompactionMemoryFlushes: memoryFlushes }
+          : {}),
         ...(toolTrace.length
           ? {
               toolUse: {
                 rounds: toolTrace,
-                toolCallCount: toolTrace.reduce((sum, round) => sum + round.calls.length, 0),
+                toolCallCount: toolTrace.reduce(
+                  (sum, round) => sum + round.calls.length,
+                  0,
+                ),
               },
             }
+          : {}),
+        ...(modelCallTrace.length
+          ? { modelUse: summarizeModelUseTrace(modelCallTrace) }
           : {}),
         ...(toolLoopCloseout ? { toolLoopCloseout } : {}),
       },
@@ -940,6 +1465,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       modelChainId?: string;
     };
     gatewayInput: GenerateTextInput;
+    modelCallTrace?: ModelCallBoundaryTrace[];
+    tracePhase?: ModelCallBoundaryTrace["phase"];
+    traceRound?: number;
   }): Promise<{
     result: GenerateTextResult;
     reduction?: {
@@ -952,10 +1480,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     } & ReductionEnvelopeSnapshot;
     memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
-    const attempts: RequestEnvelopeReductionLevel[] = ["compact", "minimal", "reference-only"];
+    const attempts: RequestEnvelopeReductionLevel[] = [
+      "compact",
+      "minimal",
+      "reference-only",
+    ];
     try {
+      const startedAt = this.clock.now();
+      const result = await this.gateway.generate(input.gatewayInput);
+      appendModelCallBoundary(input.modelCallTrace, {
+        phase: input.tracePhase ?? "tool_round",
+        ...(input.traceRound !== undefined ? { round: input.traceRound } : {}),
+        startedAt,
+        completedAt: this.clock.now(),
+        gatewayInput: input.gatewayInput,
+        result,
+      });
       return {
-        result: await this.gateway.generate(input.gatewayInput),
+        result,
       };
     } catch (error) {
       if (!(error instanceof RequestEnvelopeOverflowError)) {
@@ -970,23 +1512,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         overflowError,
       });
       for (const level of attempts) {
-        const reduced = reducePromptPacketForRequestEnvelope(input.packet, { level });
+        const reduced = reducePromptPacketForRequestEnvelope(input.packet, {
+          level,
+        });
         try {
           const reducedGatewayInput = buildGatewayInput({
             activation: input.activation,
             packet: input.packet,
-            ...(input.selection.modelId ? { modelId: input.selection.modelId } : {}),
-            ...(input.selection.modelChainId ? { modelChainId: input.selection.modelChainId } : {}),
+            ...(input.selection.modelId
+              ? { modelId: input.selection.modelId }
+              : {}),
+            ...(input.selection.modelChainId
+              ? { modelChainId: input.selection.modelChainId }
+              : {}),
             overrideSystemPrompt: reduced.reducedSystemPrompt,
             overrideTaskPrompt: reduced.reducedTaskPrompt,
             artifactIds: reduced.artifactIds,
             envelopeHint: reduced.envelopeHint,
             tools: input.gatewayInput.tools,
             toolChoice: input.gatewayInput.toolChoice,
-            ...(input.gatewayInput.signal ? { signal: input.gatewayInput.signal } : {}),
+            ...(input.gatewayInput.signal
+              ? { signal: input.gatewayInput.signal }
+              : {}),
           });
-          const reducedMessages = replaceInitialPromptMessages(input.gatewayInput.messages, reducedGatewayInput.messages);
-          const result = await this.gateway.generate({
+          const reducedMessages = replaceInitialPromptMessages(
+            input.gatewayInput.messages,
+            reducedGatewayInput.messages,
+          );
+          const retryGatewayInput = {
             ...input.gatewayInput,
             messages: reducedMessages,
             envelope: {
@@ -995,7 +1548,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               artifactIds: reduced.artifactIds,
               ...deriveToolResultEnvelope(reducedMessages),
             },
-          });
+          };
+          const startedAt = this.clock.now();
+          const result = await this.gateway.generate(retryGatewayInput);
           const reduction = {
             level,
             omittedSections: reduced.omittedSections,
@@ -1004,9 +1559,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             level,
             omittedSections: reduced.omittedSections,
             artifactIds: reduced.artifactIds,
-            ...(reduced.envelopeHint ? { envelopeHint: reduced.envelopeHint } : {}),
+            ...(reduced.envelopeHint
+              ? { envelopeHint: reduced.envelopeHint }
+              : {}),
           };
-          return { result, reduction, reductionSnapshot, ...(memoryFlush ? { memoryFlush } : {}) };
+          appendModelCallBoundary(input.modelCallTrace, {
+            phase: input.tracePhase ?? "tool_round",
+            ...(input.traceRound !== undefined
+              ? { round: input.traceRound }
+              : {}),
+            startedAt,
+            completedAt: this.clock.now(),
+            gatewayInput: retryGatewayInput,
+            result,
+            reductionLevel: level,
+          });
+          return {
+            result,
+            reduction,
+            reductionSnapshot,
+            ...(memoryFlush ? { memoryFlush } : {}),
+          };
         } catch (retryError) {
           if (!(retryError instanceof RequestEnvelopeOverflowError)) {
             throw retryError;
@@ -1035,8 +1608,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       return await this.preCompactionMemoryFlusher.flush({
         activation: input.activation,
         packet: input.packet,
-        ...(input.selection.modelId ? { modelId: input.selection.modelId } : {}),
-        ...(input.selection.modelChainId ? { modelChainId: input.selection.modelChainId } : {}),
+        ...(input.selection.modelId
+          ? { modelId: input.selection.modelId }
+          : {}),
+        ...(input.selection.modelChainId
+          ? { modelChainId: input.selection.modelChainId }
+          : {}),
         reason: "request_envelope_overflow",
         diagnostics: input.overflowError.details.diagnostics,
       });
@@ -1061,6 +1638,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     baseGatewayInput: GenerateTextInput;
     messages: LLMMessage[];
     maxRounds: number;
+    modelCallTrace?: ModelCallBoundaryTrace[];
     reasonLines?: string[];
   }): Promise<{
     result: GenerateTextResult;
@@ -1075,7 +1653,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
     try {
-      const finalMessages = prepareToolHistoryForGateway([
+      const finalSourceMessages: LLMMessage[] = [
         ...input.messages,
         {
           role: "user",
@@ -1088,7 +1666,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ]),
           ].join("\n"),
         },
-      ]);
+      ];
+      const finalMessages = prepareToolHistoryForGateway(finalSourceMessages);
+      await this.recordToolResultPruningBoundarySafely(
+        input.activation,
+        input.selection,
+        summarizeToolResultPruning(finalSourceMessages, finalMessages),
+      );
       const generated = await this.generateWithEnvelopeRetry({
         activation: input.activation,
         packet: input.packet,
@@ -1103,11 +1687,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ...deriveToolResultEnvelope(finalMessages),
           },
         },
+        ...(input.modelCallTrace
+          ? { modelCallTrace: input.modelCallTrace }
+          : {}),
+        tracePhase: "final_synthesis",
       });
       if (!containsAnyToolCallForm(generated.result)) {
         return generated;
       }
-      const repairedMessages = prepareToolHistoryForGateway([
+      const repairSourceMessages: LLMMessage[] = [
         ...finalMessages,
         {
           role: "assistant",
@@ -1121,7 +1709,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             "Produce only the final user-facing answer from the evidence already present in the conversation.",
           ].join("\n"),
         },
-      ]);
+      ];
+      const repairedMessages =
+        prepareToolHistoryForGateway(repairSourceMessages);
+      await this.recordToolResultPruningBoundarySafely(
+        input.activation,
+        input.selection,
+        summarizeToolResultPruning(repairSourceMessages, repairedMessages),
+      );
       const repaired = await this.generateWithEnvelopeRetry({
         activation: input.activation,
         packet: input.packet,
@@ -1136,35 +1731,43 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ...deriveToolResultEnvelope(repairedMessages),
           },
         },
+        ...(input.modelCallTrace
+          ? { modelCallTrace: input.modelCallTrace }
+          : {}),
+        tracePhase: "final_synthesis_repair",
       });
       const repairedResult = containsAnyToolCallForm(repaired.result)
         ? maybeRedactForbiddenLocalUrls({
-            result:
-              buildLocalEvidenceCloseout({
-                messages: input.messages,
-                packet: input.packet,
-                selection: input.selection,
-                error: new Error("final synthesis emitted a tool call after repair"),
-              }) ?? {
-                ...repaired.result,
-                text: [
-                  "I can't safely complete the final answer from the current tool results.",
-                  "The model attempted to emit another tool call after tools were disabled for final synthesis.",
-                  "Please retry or continue the mission so the runtime can collect a clean final answer.",
-                ].join(" "),
-              },
+            result: buildLocalEvidenceCloseout({
+              messages: input.messages,
+              packet: input.packet,
+              selection: input.selection,
+              error: new Error(
+                "final synthesis emitted a tool call after repair",
+              ),
+            }) ?? {
+              ...repaired.result,
+              text: [
+                "I can't safely complete the final answer from the current tool results.",
+                "The model attempted to emit another tool call after tools were disabled for final synthesis.",
+                "Please retry or continue the mission so the runtime can collect a clean final answer.",
+              ].join(" "),
+            },
             packet: input.packet,
           })
         : repaired.result;
       return {
         result: repairedResult,
-        ...(repaired.reduction ?? generated.reduction
+        ...((repaired.reduction ?? generated.reduction)
           ? { reduction: (repaired.reduction ?? generated.reduction)! }
           : {}),
-        ...(repaired.reductionSnapshot ?? generated.reductionSnapshot
-          ? { reductionSnapshot: (repaired.reductionSnapshot ?? generated.reductionSnapshot)! }
+        ...((repaired.reductionSnapshot ?? generated.reductionSnapshot)
+          ? {
+              reductionSnapshot: (repaired.reductionSnapshot ??
+                generated.reductionSnapshot)!,
+            }
           : {}),
-        ...(repaired.memoryFlush ?? generated.memoryFlush
+        ...((repaired.memoryFlush ?? generated.memoryFlush)
           ? { memoryFlush: (repaired.memoryFlush ?? generated.memoryFlush)! }
           : {}),
       };
@@ -1193,10 +1796,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     toolCalls: LLMToolCall[];
     toolLoopStartedAtMs: number;
     signal?: AbortSignal;
-    onProgress?: (call: LLMToolCall, progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]) => Promise<void>;
+    onProgress?: (
+      call: LLMToolCall,
+      progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
+    ) => Promise<void>;
     onResult?: (result: RoleToolExecutionResult) => Promise<void>;
   }): Promise<RoleToolExecutionResult[]> {
-    const activeToolLoop = input.packet.toolUseMode === "disabled" ? undefined : this.toolLoop;
+    const activeToolLoop =
+      input.packet.toolUseMode === "disabled" ? undefined : this.toolLoop;
     if (!activeToolLoop) return [];
     const maxParallelToolCalls =
       typeof activeToolLoop.maxParallelToolCalls === "number" &&
@@ -1213,67 +1820,109 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const results: RoleToolExecutionResult[] = [];
     const executableCalls = input.toolCalls.slice(0, maxToolCallsPerRound);
     const rejectedCalls = input.toolCalls.slice(maxToolCallsPerRound);
-    const effectiveMaxParallelToolCalls = shouldSerializeToolBatch(executableCalls) ? 1 : maxParallelToolCalls;
-    for (let index = 0; index < executableCalls.length; index += effectiveMaxParallelToolCalls) {
+    const effectiveMaxParallelToolCalls = shouldSerializeToolBatch(
+      executableCalls,
+    )
+      ? 1
+      : maxParallelToolCalls;
+    for (
+      let index = 0;
+      index < executableCalls.length;
+      index += effectiveMaxParallelToolCalls
+    ) {
       throwIfAborted(input.signal);
-      const chunk = executableCalls.slice(index, index + effectiveMaxParallelToolCalls);
+      const chunk = executableCalls.slice(
+        index,
+        index + effectiveMaxParallelToolCalls,
+      );
+      const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+        ...(activeToolLoop.maxWallClockMs !== undefined ? { maxWallClockMs: activeToolLoop.maxWallClockMs } : {}),
+        toolCalls: chunk,
+      });
       const toolExecutionSignal = createToolExecutionSignal({
         elapsedMs: this.clock.now() - input.toolLoopStartedAtMs,
         ...(input.signal ? { parentSignal: input.signal } : {}),
-        ...(activeToolLoop.maxWallClockMs ? { maxWallClockMs: activeToolLoop.maxWallClockMs } : {}),
+        ...(maxWallClockMs ? { maxWallClockMs } : {}),
       });
       try {
         const chunkResults = await Promise.all(
           chunk.map(async (call) => {
             throwIfAborted(input.signal);
-            await this.emitToolProgressSafely(input.activation, call, {
-              phase: "started",
-              toolName: call.name,
-              summary: `Tool call started: ${call.name}`,
-            }, input.onProgress);
-            try {
-            throwIfAborted(input.signal);
-            const result = await activeToolLoop.executor.execute({
+            await this.emitToolProgressSafely(
+              input.activation,
               call,
-              activation: input.activation,
-              packet: input.packet,
-              ...(toolExecutionSignal.signal ? { signal: toolExecutionSignal.signal } : {}),
-            });
-            throwIfAborted(input.signal);
-            for (const progress of result.progress ?? []) {
-              await this.emitToolProgressSafely(input.activation, call, progress, input.onProgress);
+              {
+                phase: "started",
+                toolName: call.name,
+                summary: `Tool call started: ${call.name}`,
+              },
+              input.onProgress,
+            );
+            try {
+              throwIfAborted(input.signal);
+              const result = await activeToolLoop.executor.execute({
+                call,
+                activation: input.activation,
+                packet: input.packet,
+                ...(toolExecutionSignal.signal
+                  ? { signal: toolExecutionSignal.signal }
+                  : {}),
+              });
+              throwIfAborted(input.signal);
+              for (const progress of result.progress ?? []) {
+                await this.emitToolProgressSafely(
+                  input.activation,
+                  call,
+                  progress,
+                  input.onProgress,
+                );
+              }
+              await this.emitToolProgressSafely(
+                input.activation,
+                call,
+                {
+                  phase: result.cancelled
+                    ? "cancelled"
+                    : result.isError
+                      ? "failed"
+                      : "completed",
+                  toolName: call.name,
+                  summary: result.cancelled
+                    ? `Tool call cancelled: ${call.name}`
+                    : result.isError
+                      ? `Tool call failed: ${call.name}`
+                      : `Tool call completed: ${call.name}`,
+                },
+                input.onProgress,
+              );
+              await input.onResult?.(result);
+              return result;
+            } catch (error) {
+              if (isAbortError(error)) {
+                throw error;
+              }
+              const content =
+                error instanceof Error ? error.message : String(error);
+              await this.emitToolProgressSafely(
+                input.activation,
+                call,
+                {
+                  phase: "failed",
+                  toolName: call.name,
+                  summary: `Tool call failed: ${call.name}: ${content}`,
+                },
+                input.onProgress,
+              );
+              const result = {
+                toolCallId: call.id,
+                toolName: call.name,
+                content,
+                isError: true,
+              };
+              await input.onResult?.(result);
+              return result;
             }
-            await this.emitToolProgressSafely(input.activation, call, {
-              phase: result.cancelled ? "cancelled" : result.isError ? "failed" : "completed",
-              toolName: call.name,
-              summary: result.cancelled
-                ? `Tool call cancelled: ${call.name}`
-                : result.isError
-                  ? `Tool call failed: ${call.name}`
-                  : `Tool call completed: ${call.name}`,
-            }, input.onProgress);
-            await input.onResult?.(result);
-            return result;
-          } catch (error) {
-            if (isAbortError(error)) {
-              throw error;
-            }
-            const content = error instanceof Error ? error.message : String(error);
-            await this.emitToolProgressSafely(input.activation, call, {
-              phase: "failed",
-              toolName: call.name,
-              summary: `Tool call failed: ${call.name}: ${content}`,
-            }, input.onProgress);
-            const result = {
-              toolCallId: call.id,
-              toolName: call.name,
-              content,
-              isError: true,
-            };
-            await input.onResult?.(result);
-            return result;
-          }
-          })
+          }),
         );
         results.push(...chunkResults);
       } finally {
@@ -1303,7 +1952,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         ],
       };
       for (const progress of result.progress ?? []) {
-        await this.emitToolProgressSafely(input.activation, call, progress, input.onProgress);
+        await this.emitToolProgressSafely(
+          input.activation,
+          call,
+          progress,
+          input.onProgress,
+        );
       }
       await input.onResult?.(result);
       results.push(result);
@@ -1315,7 +1969,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     activation: RoleActivationInput,
     call: LLMToolCall,
     progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
-    onProgress: ((call: LLMToolCall, progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]) => Promise<void>) | undefined
+    onProgress:
+      | ((
+          call: LLMToolCall,
+          progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
+        ) => Promise<void>)
+      | undefined,
   ): Promise<void> {
     await this.recordToolProgressSafely(activation, call, progress);
     try {
@@ -1333,14 +1992,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
   private async persistNativeToolTraceSafely(
     activation: RoleActivationInput,
-    toolTrace: NativeToolRoundTrace[]
+    toolTrace: NativeToolRoundTrace[],
   ): Promise<void> {
     if (!this.nativeToolMessageStore) return;
     try {
       const messages = buildNativeToolMessages(
         activation,
         { toolUse: { rounds: toolTrace } },
-        this.clock.now()
+        this.clock.now(),
       );
       for (const message of messages) {
         await this.nativeToolMessageStore.append(message);
@@ -1358,11 +2017,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private async recordToolProgressSafely(
     activation: RoleActivationInput,
     call: LLMToolCall,
-    progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]
+    progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
   ): Promise<void> {
     try {
       await recordRoleToolProgress({
-        recorder: this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+        recorder:
+          this.toolLoop?.runtimeProgressRecorder ??
+          this.runtimeProgressRecorder,
         activation,
         call,
         progress,
@@ -1378,13 +2039,106 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     }
   }
 
+  private async recordProviderToolProtocolRoundSafely(input: {
+    activation: RoleActivationInput;
+    round: number;
+    toolCalls: LLMToolCall[];
+    toolResults: RoleToolExecutionResult[];
+    messages: LLMMessage[];
+  }): Promise<void> {
+    try {
+      await this.recordProviderToolProtocolRound(input);
+    } catch (error) {
+      console.error("provider tool protocol progress recording failed", {
+        threadId: input.activation.thread.threadId,
+        flowId: input.activation.flow.flowId,
+        taskId: input.activation.handoff.taskId,
+        round: input.round,
+        error,
+      });
+    }
+  }
+
+  private async recordProviderToolProtocolRound(input: {
+    activation: RoleActivationInput;
+    round: number;
+    toolCalls: LLMToolCall[];
+    toolResults: RoleToolExecutionResult[];
+    messages: LLMMessage[];
+  }): Promise<void> {
+    const recorder =
+      this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder;
+    if (!recorder) {
+      return;
+    }
+    const assistantMessageIndex = findLatestAssistantToolUseMessageIndex(
+      input.messages,
+    );
+    const toolMessageIndexes = findFollowingToolMessageIndexes(
+      input.messages,
+      assistantMessageIndex,
+    );
+    const toolCallIds = input.toolCalls.map((call) => call.id);
+    const toolResultIds = input.toolResults.map((result) => result.toolCallId);
+    const now = this.clock.now();
+    await recorder.record({
+      progressId: `progress:provider-tool-protocol:${input.activation.handoff.taskId}:${input.round}:${now}`,
+      threadId: input.activation.thread.threadId,
+      chainId: `flow:${input.activation.flow.flowId}`,
+      spanId: `role:${input.activation.runState.runKey}`,
+      ...(input.activation.runState.lastDequeuedTaskId
+        ? {
+            parentSpanId: `dispatch:${input.activation.runState.lastDequeuedTaskId}`,
+          }
+        : {}),
+      subjectKind: "role_run",
+      subjectId: input.activation.runState.runKey,
+      phase: "completed",
+      progressKind: "boundary",
+      heartbeatSource: "activity_echo",
+      continuityState: "resolved",
+      summary: `Provider tool protocol round ${input.round} appended assistant tool call(s) and matching tool result message(s).`,
+      recordedAt: now,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      roleId: input.activation.runState.roleId,
+      metadata: {
+        boundaryKind: "provider_tool_protocol_round",
+        round: input.round,
+        providerToolCallsReturned: input.toolCalls.length,
+        assistantToolUseBlockCount: countToolUseBlocks(
+          input.messages[assistantMessageIndex],
+        ),
+        roleToolResultMessageCount: toolMessageIndexes.length,
+        toolResultBlockCount: countToolResultBlocks(
+          input.messages,
+          toolMessageIndexes,
+        ),
+        assistantBeforeToolResults:
+          assistantMessageIndex >= 0 &&
+          toolMessageIndexes.every((index) => index > assistantMessageIndex),
+        allToolResultsMatchAssistantToolCalls:
+          toolResultIds.length > 0 &&
+          toolResultIds.every((id) => toolCallIds.includes(id)),
+        nextProviderRequestWillIncludeToolResults:
+          toolMessageIndexes.length > 0,
+        toolCallIds,
+        toolResultIds,
+        matchingToolCallIds: toolResultIds.filter((id) =>
+          toolCallIds.includes(id),
+        ),
+        toolNames: input.toolCalls.map((call) => call.name),
+      },
+    });
+  }
+
   private async recordAssemblyBoundary(
     activation: RoleActivationInput,
     packet: RolePromptPacket,
     selection: {
       modelId?: string;
       modelChainId?: string;
-    }
+    },
   ): Promise<void> {
     if (!this.runtimeProgressRecorder) {
       return;
@@ -1415,16 +2169,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       metadata: {
         boundaryKind: "prompt_compaction",
         ...(selection.modelId ? { modelId: selection.modelId } : {}),
-        ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+        ...(selection.modelChainId
+          ? { modelChainId: selection.modelChainId }
+          : {}),
         ...(packet.promptAssembly?.assemblyFingerprint
           ? { assemblyFingerprint: packet.promptAssembly.assemblyFingerprint }
           : {}),
-        ...(packet.promptAssembly?.sectionOrder ? { sectionOrder: packet.promptAssembly.sectionOrder } : {}),
-        ...(packet.promptAssembly?.tokenEstimate ? { tokenEstimate: packet.promptAssembly.tokenEstimate } : {}),
+        ...(packet.promptAssembly?.sectionOrder
+          ? { sectionOrder: packet.promptAssembly.sectionOrder }
+          : {}),
+        ...(packet.promptAssembly?.tokenEstimate
+          ? { tokenEstimate: packet.promptAssembly.tokenEstimate }
+          : {}),
         ...(packet.promptAssembly?.contextDiagnostics
           ? { contextDiagnostics: packet.promptAssembly.contextDiagnostics }
           : {}),
-        ...(packet.promptAssembly?.envelopeHint ? { envelopeHint: packet.promptAssembly.envelopeHint } : {}),
+        ...(packet.promptAssembly?.envelopeHint
+          ? { envelopeHint: packet.promptAssembly.envelopeHint }
+          : {}),
         compactedSegments,
         usedArtifacts: packet.promptAssembly?.usedArtifacts ?? [],
       },
@@ -1437,7 +2199,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     selection: {
       modelId?: string;
       modelChainId?: string;
-    }
+    },
   ): Promise<void> {
     try {
       await this.recordAssemblyBoundary(activation, packet, selection);
@@ -1461,7 +2223,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     reduction: {
       level: RequestEnvelopeReductionLevel;
       omittedSections: string[];
-    } & ReductionEnvelopeSnapshot
+    } & ReductionEnvelopeSnapshot,
   ): Promise<void> {
     if (!this.runtimeProgressRecorder) {
       return;
@@ -1488,16 +2250,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       metadata: {
         boundaryKind: "request_envelope_reduction",
         ...(selection.modelId ? { modelId: selection.modelId } : {}),
-        ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+        ...(selection.modelChainId
+          ? { modelChainId: selection.modelChainId }
+          : {}),
         ...(packet.promptAssembly?.assemblyFingerprint
           ? { assemblyFingerprint: packet.promptAssembly.assemblyFingerprint }
           : {}),
-        ...(packet.promptAssembly?.sectionOrder ? { sectionOrder: packet.promptAssembly.sectionOrder } : {}),
-        ...(packet.promptAssembly?.tokenEstimate ? { tokenEstimate: packet.promptAssembly.tokenEstimate } : {}),
+        ...(packet.promptAssembly?.sectionOrder
+          ? { sectionOrder: packet.promptAssembly.sectionOrder }
+          : {}),
+        ...(packet.promptAssembly?.tokenEstimate
+          ? { tokenEstimate: packet.promptAssembly.tokenEstimate }
+          : {}),
         ...(packet.promptAssembly?.contextDiagnostics
           ? { contextDiagnostics: packet.promptAssembly.contextDiagnostics }
           : {}),
-        ...(reduction.envelopeHint ? { envelopeHint: reduction.envelopeHint } : {}),
+        ...(reduction.envelopeHint
+          ? { envelopeHint: reduction.envelopeHint }
+          : {}),
         reductionLevel: reduction.level,
         omittedSections: reduction.omittedSections,
         compactedSegments: packet.promptAssembly?.compactedSegments ?? [],
@@ -1516,16 +2286,95 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     reduction: {
       level: RequestEnvelopeReductionLevel;
       omittedSections: string[];
-    } & ReductionEnvelopeSnapshot
+    } & ReductionEnvelopeSnapshot,
   ): Promise<void> {
     try {
-      await this.recordReductionBoundary(activation, packet, selection, reduction);
+      await this.recordReductionBoundary(
+        activation,
+        packet,
+        selection,
+        reduction,
+      );
     } catch (error) {
       console.error("runtime reduction boundary recording failed", {
         threadId: activation.thread.threadId,
         flowId: activation.flow.flowId,
         taskId: activation.handoff.taskId,
         reductionLevel: reduction.level,
+        error,
+      });
+    }
+  }
+
+  private async recordToolResultPruningBoundary(
+    activation: RoleActivationInput,
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    },
+    snapshot: ToolResultPruningSnapshot | undefined,
+  ): Promise<void> {
+    if (!this.runtimeProgressRecorder || !snapshot) {
+      return;
+    }
+    await this.runtimeProgressRecorder.record({
+      progressId: `progress:tool-result-pruning:${activation.handoff.taskId}:${Date.now()}`,
+      threadId: activation.thread.threadId,
+      chainId: `flow:${activation.flow.flowId}`,
+      spanId: `role:${activation.runState.runKey}`,
+      ...(activation.runState.lastDequeuedTaskId
+        ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
+        : {}),
+      subjectKind: "role_run",
+      subjectId: activation.runState.runKey,
+      phase: "degraded",
+      progressKind: "boundary",
+      heartbeatSource: "control_path",
+      continuityState: "alive",
+      summary: `Tool result history pruned for prompt input (${snapshot.prunedToolResults} result(s)).`,
+      recordedAt: Date.now(),
+      flowId: activation.flow.flowId,
+      taskId: activation.handoff.taskId,
+      roleId: activation.runState.roleId,
+      metadata: {
+        boundaryKind: "tool_result_pruning",
+        ...(selection.modelId ? { modelId: selection.modelId } : {}),
+        ...(selection.modelChainId
+          ? { modelChainId: selection.modelChainId }
+          : {}),
+        prunedToolResults: snapshot.prunedToolResults,
+        pruningReasons: snapshot.reasons,
+        compactedHistory: snapshot.compactedHistory,
+        toolResultCountBefore: snapshot.toolResultCountBefore,
+        toolResultCountAfter: snapshot.toolResultCountAfter,
+        toolResultBytesBefore: snapshot.toolResultBytesBefore,
+        toolResultBytesAfter: snapshot.toolResultBytesAfter,
+        messageCountBefore: snapshot.messageCountBefore,
+        messageCountAfter: snapshot.messageCountAfter,
+        pruningLimits: snapshot.limits,
+      },
+    });
+  }
+
+  private async recordToolResultPruningBoundarySafely(
+    activation: RoleActivationInput,
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    },
+    snapshot: ToolResultPruningSnapshot | undefined,
+  ): Promise<void> {
+    try {
+      await this.recordToolResultPruningBoundary(
+        activation,
+        selection,
+        snapshot,
+      );
+    } catch (error) {
+      console.error("runtime tool-result pruning boundary recording failed", {
+        threadId: activation.thread.threadId,
+        flowId: activation.flow.flowId,
+        taskId: activation.handoff.taskId,
         error,
       });
     }
@@ -1544,13 +2393,16 @@ const ORDER_DEPENDENT_TOOL_NAMES = new Set([
 ]);
 
 function shouldSerializeToolBatch(toolCalls: LLMToolCall[]): boolean {
-  return toolCalls.length > 1 && toolCalls.some((call) => ORDER_DEPENDENT_TOOL_NAMES.has(call.name));
+  return (
+    toolCalls.length > 1 &&
+    toolCalls.some((call) => ORDER_DEPENDENT_TOOL_NAMES.has(call.name))
+  );
 }
 
 function findRepeatedFailedToolCall(
   pendingCalls: LLMToolCall[],
   toolTrace: NativeToolRoundTrace[],
-  maxFailures = 2
+  maxFailures = 2,
 ): { toolName: string; failureCount: number } | null {
   if (pendingCalls.length === 0 || toolTrace.length === 0) {
     return null;
@@ -1570,7 +2422,10 @@ function findRepeatedFailedToolCall(
         continue;
       }
       const signature = toolCallSignature(call);
-      const current = failedCounts.get(signature) ?? { toolName: call.name, count: 0 };
+      const current = failedCounts.get(signature) ?? {
+        toolName: call.name,
+        count: 0,
+      };
       failedCounts.set(signature, { ...current, count: current.count + 1 });
     }
   }
@@ -1599,13 +2454,99 @@ function normalizeToolInputForSignature(value: unknown): unknown {
   }
   const normalized: Record<string, unknown> = {};
   for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    normalized[key] = normalizeToolInputForSignature((value as Record<string, unknown>)[key]);
+    normalized[key] = normalizeToolInputForSignature(
+      (value as Record<string, unknown>)[key],
+    );
   }
   return normalized;
 }
 
 function stableJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function appendModelCallBoundary(
+  trace: ModelCallBoundaryTrace[] | undefined,
+  input: {
+    phase: ModelCallBoundaryTrace["phase"];
+    round?: number;
+    startedAt: number;
+    completedAt: number;
+    gatewayInput: GenerateTextInput;
+    result: GenerateTextResult;
+    reductionLevel?: RequestEnvelopeReductionLevel;
+  },
+): void {
+  if (!trace) return;
+  const boundary: ModelCallBoundaryTrace = {
+    index: trace.length + 1,
+    phase: input.phase,
+    ...(input.round !== undefined ? { round: input.round } : {}),
+    durationMs: Math.max(0, input.completedAt - input.startedAt),
+    modelId: input.result.modelId,
+    providerId: input.result.providerId,
+    protocol: input.result.protocol,
+    adapterName: input.result.adapterName,
+    ...(input.result.modelChainId
+      ? { modelChainId: input.result.modelChainId }
+      : {}),
+    ...(input.result.attemptedModelIds?.length
+      ? { attemptedModelIds: input.result.attemptedModelIds }
+      : {}),
+    ...(input.result.stopReason ? { stopReason: input.result.stopReason } : {}),
+    messageCount: input.gatewayInput.messages.length,
+    toolSchemaCount: input.gatewayInput.tools?.length ?? 0,
+    ...(input.gatewayInput.toolChoice
+      ? { toolChoice: formatToolChoiceForTrace(input.gatewayInput.toolChoice) }
+      : {}),
+    toolCallsReturned: input.result.toolCalls?.length ?? 0,
+    contentBlockCount: input.result.contentBlocks?.length ?? 0,
+    textBytes: Buffer.byteLength(input.result.text, "utf8"),
+    ...(input.result.usage ? { usage: input.result.usage } : {}),
+    ...(input.result.requestEnvelope
+      ? { requestEnvelope: input.result.requestEnvelope }
+      : {}),
+    ...(input.reductionLevel ? { reductionLevel: input.reductionLevel } : {}),
+  };
+  trace.push(boundary);
+}
+
+function summarizeModelUseTrace(
+  trace: ModelCallBoundaryTrace[],
+): Record<string, unknown> {
+  const totalInputTokens = sumModelUseTokens(trace, "inputTokens");
+  const totalOutputTokens = sumModelUseTokens(trace, "outputTokens");
+  return {
+    calls: trace,
+    callCount: trace.length,
+    source: "turnkeyai-role-runtime",
+    ...(totalInputTokens !== null ? { totalInputTokens } : {}),
+    ...(totalOutputTokens !== null ? { totalOutputTokens } : {}),
+  };
+}
+
+function sumModelUseTokens(
+  trace: ModelCallBoundaryTrace[],
+  key: "inputTokens" | "outputTokens",
+): number | null {
+  let total = 0;
+  let seen = false;
+  for (const boundary of trace) {
+    const value = boundary.usage?.[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      total += value;
+      seen = true;
+    }
+  }
+  return seen ? total : null;
+}
+
+function formatToolChoiceForTrace(
+  toolChoice: GenerateTextInput["toolChoice"],
+): string {
+  if (!toolChoice || typeof toolChoice === "string")
+    return toolChoice ?? "auto";
+  return `tool:${toolChoice.name}`;
 }
 
 interface ReductionEnvelopeSnapshot {
@@ -1622,6 +2563,27 @@ interface ReductionEnvelopeSnapshot {
   };
 }
 
+interface ToolResultPruningLimits {
+  historyMaxMessages: number;
+  recentFullCount: number;
+  totalMaxBytes: number;
+  softMaxBytes: number;
+  hardMaxBytes: number;
+}
+
+interface ToolResultPruningSnapshot {
+  prunedToolResults: number;
+  reasons: string[];
+  compactedHistory: boolean;
+  toolResultCountBefore: number;
+  toolResultCountAfter: number;
+  toolResultBytesBefore: number;
+  toolResultBytesAfter: number;
+  messageCountBefore: number;
+  messageCountAfter: number;
+  limits: ToolResultPruningLimits;
+}
+
 // PR K3.6: byte cap for the per-result content slice we persist on
 // each assistant message. Generous enough to capture a full HTML
 // snapshot of a typical page, small enough that a chain of
@@ -1634,6 +2596,52 @@ const TOOL_RESULT_RECENT_FULL_COUNT = 2;
 const TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES = 32 * 1024;
 const TOOL_RESULT_SOFT_PRUNE_MAX_BYTES = 16 * 1024;
 const TOOL_RESULT_HARD_PRUNE_MAX_BYTES = 64 * 1024;
+
+function readToolResultPruningLimits(
+  env: NodeJS.ProcessEnv = process.env,
+): ToolResultPruningLimits {
+  const recentFullCount = readPositiveIntegerEnv(
+    env,
+    "TURNKEYAI_TOOL_RESULT_RECENT_FULL_COUNT",
+    TOOL_RESULT_RECENT_FULL_COUNT,
+  );
+  return {
+    historyMaxMessages: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_HISTORY_MAX_MESSAGES",
+      ROLE_TOOL_HISTORY_MAX_MESSAGES,
+    ),
+    recentFullCount,
+    totalMaxBytes: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES",
+      TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES,
+    ),
+    softMaxBytes: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_RESULT_SOFT_PRUNE_MAX_BYTES",
+      TOOL_RESULT_SOFT_PRUNE_MAX_BYTES,
+    ),
+    hardMaxBytes: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_RESULT_HARD_PRUNE_MAX_BYTES",
+      TOOL_RESULT_HARD_PRUNE_MAX_BYTES,
+    ),
+  };
+}
+
+function readPositiveIntegerEnv(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: number,
+): number {
+  const raw = env[key];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function sliceUtf8(value: string, maxBytes: number): string {
   // gemini + coderabbit K3.6: keep the persisted slice strictly
@@ -1651,7 +2659,9 @@ function sliceUtf8(value: string, maxBytes: number): string {
   return buffer.subarray(0, end).toString("utf8");
 }
 
-function toNativeToolResultTrace(toolResult: RoleToolExecutionResult): NativeToolResultTrace {
+function toNativeToolResultTrace(
+  toolResult: RoleToolExecutionResult,
+): NativeToolResultTrace {
   const bytes = Buffer.byteLength(toolResult.content, "utf8");
   const traceContent = compactToolResultTraceContent(toolResult.content);
   const traceBytes = Buffer.byteLength(traceContent.content, "utf8");
@@ -1661,7 +2671,9 @@ function toNativeToolResultTrace(toolResult: RoleToolExecutionResult): NativeToo
     toolName: toolResult.toolName,
     isError: toolResult.isError === true,
     contentBytes: bytes,
-    content: truncated ? sliceUtf8(traceContent.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES) : traceContent.content,
+    content: truncated
+      ? sliceUtf8(traceContent.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES)
+      : traceContent.content,
     ...(truncated || traceContent.compacted ? { contentTruncated: true } : {}),
     ...(toolResult.cancelled ? { cancelled: true } : {}),
     ...(toolResult.skipped ? { skipped: true } : {}),
@@ -1670,11 +2682,14 @@ function toNativeToolResultTrace(toolResult: RoleToolExecutionResult): NativeToo
 
 function canonicalizeSessionToolTraceCalls(
   roundTrace: NativeToolRoundTrace,
-  toolResults: RoleToolExecutionResult[]
+  toolResults: RoleToolExecutionResult[],
 ): boolean {
   let changed = false;
   for (const result of toolResults) {
-    if (result.toolName !== "sessions_send" && result.toolName !== "sessions_history") {
+    if (
+      result.toolName !== "sessions_send" &&
+      result.toolName !== "sessions_history"
+    ) {
       continue;
     }
     const parsed = parseSessionToolResult(result.content);
@@ -1694,7 +2709,10 @@ function canonicalizeSessionToolTraceCalls(
   return changed;
 }
 
-function compactToolResultTraceContent(content: string): { content: string; compacted: boolean } {
+function compactToolResultTraceContent(content: string): {
+  content: string;
+  compacted: boolean;
+} {
   const parsed = parseSessionToolResult(content);
   if (!parsed) {
     return { content, compacted: false };
@@ -1706,17 +2724,29 @@ function compactToolResultTraceContent(content: string): { content: string; comp
     ...(parsed.label ? { label: parsed.label } : {}),
     session_key: parsed.session_key,
     task_id: parsed.task_id,
-    ...(parsed.parent_session_key ? { parent_session_key: parsed.parent_session_key } : {}),
+    ...(parsed.parent_session_key
+      ? { parent_session_key: parsed.parent_session_key }
+      : {}),
     ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}),
     ...(parsed.resumable ? { resumable: parsed.resumable } : {}),
-    ...(parsed.timeout_seconds == null ? {} : { timeout_seconds: parsed.timeout_seconds }),
-    ...(parsed.evidence_available == null ? {} : { evidence_available: parsed.evidence_available }),
+    ...(parsed.timeout_seconds == null
+      ? {}
+      : { timeout_seconds: parsed.timeout_seconds }),
+    ...(parsed.evidence_available == null
+      ? {}
+      : { evidence_available: parsed.evidence_available }),
     tool_chain: parsed.tool_chain,
     ...compactSessionPayloadArtifactRefs(parsed.payload),
     ...compactSessionPayloadEvidenceExcerpt(parsed.payload),
-    ...(typeof parsed.evidence_summary === "string" ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1024) } : {}),
-    final_content: typeof parsed.final_content === "string" ? sliceUtf8(parsed.final_content, 3 * 1024) : null,
-    result: typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1024) : "",
+    ...(typeof parsed.evidence_summary === "string"
+      ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1024) }
+      : {}),
+    final_content:
+      typeof parsed.final_content === "string"
+        ? sliceUtf8(parsed.final_content, 3 * 1024)
+        : null,
+    result:
+      typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1024) : "",
   };
   const compactContent = fitCompactToolResultTraceContent(compacted);
   return {
@@ -1725,10 +2755,13 @@ function compactToolResultTraceContent(content: string): { content: string; comp
   };
 }
 
-function fitCompactToolResultTraceContent(input: Record<string, unknown>): string {
+function fitCompactToolResultTraceContent(
+  input: Record<string, unknown>,
+): string {
   const compacted = { ...input };
   const serialize = () => JSON.stringify(compacted, null, 2);
-  const fits = (value: string) => Buffer.byteLength(value, "utf8") <= ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
+  const fits = (value: string) =>
+    Buffer.byteLength(value, "utf8") <= ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
   const trySerialize = () => {
     const value = serialize();
     return fits(value) ? value : null;
@@ -1746,7 +2779,10 @@ function fitCompactToolResultTraceContent(input: Record<string, unknown>): strin
   const deleteField = (field: string) => {
     delete compacted[field];
   };
-  const prunePayload = (field: "screenshotPaths" | "artifactIds", limit: number) => {
+  const prunePayload = (
+    field: "screenshotPaths" | "artifactIds",
+    limit: number,
+  ) => {
     const payload = compacted.payload;
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       return;
@@ -1804,12 +2840,16 @@ function fitCompactToolResultTraceContent(input: Record<string, unknown>): strin
   });
 }
 
-function compactSessionPayloadEvidenceExcerpt(payload: unknown): { evidence_excerpt: string } | Record<string, never> {
+function compactSessionPayloadEvidenceExcerpt(
+  payload: unknown,
+): { evidence_excerpt: string } | Record<string, never> {
   const evidence = readPayloadEvidenceExcerpt(payload);
   return evidence ? { evidence_excerpt: sliceUtf8(evidence, 2 * 1024) } : {};
 }
 
-function compactSessionPayloadArtifactRefs(payload: unknown):
+function compactSessionPayloadArtifactRefs(
+  payload: unknown,
+):
   | { payload: { artifactIds?: string[]; screenshotPaths?: string[] } }
   | Record<string, never> {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -1834,9 +2874,12 @@ function readPayloadEvidenceExcerpt(payload: unknown): string | null {
     return null;
   }
   const record = payload as Record<string, unknown>;
-  const page = record.page && typeof record.page === "object" && !Array.isArray(record.page)
-    ? (record.page as Record<string, unknown>)
-    : null;
+  const page =
+    record.page &&
+    typeof record.page === "object" &&
+    !Array.isArray(record.page)
+      ? (record.page as Record<string, unknown>)
+      : null;
   const parts = [
     readStringField(record.content),
     readStringField(page?.title),
@@ -1852,13 +2895,18 @@ function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+  return value
+    .filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0,
+    )
+    .map((item) => item.trim());
 }
 
 function toNativeToolProgressTrace(
   call: LLMToolCall,
   progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
-  ts: number
+  ts: number,
 ): NativeToolProgressTrace {
   return {
     toolCallId: call.id,
@@ -1870,9 +2918,14 @@ function toNativeToolProgressTrace(
   };
 }
 
-function findSubAgentToolTimeout(results: RoleToolExecutionResult[]): SubAgentToolTimeoutSignal | null {
+function findSubAgentToolTimeout(
+  results: RoleToolExecutionResult[],
+): SubAgentToolTimeoutSignal | null {
   for (const result of results) {
-    if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+    if (
+      result.toolName !== "sessions_spawn" &&
+      result.toolName !== "sessions_send"
+    ) {
       continue;
     }
     const parsed = parseSessionToolResult(result.content);
@@ -1880,12 +2933,15 @@ function findSubAgentToolTimeout(results: RoleToolExecutionResult[]): SubAgentTo
       continue;
     }
     const timeoutSeconds = parsed.timeout_seconds;
-    const evidenceAvailable = parsed.evidence_available === true || typeof parsed.evidence_summary === "string";
+    const evidenceAvailable =
+      parsed.evidence_available === true ||
+      typeof parsed.evidence_summary === "string";
     return {
       toolName: result.toolName,
       sessionKey: parsed.session_key,
       agentId: parsed.agent_id,
-      timeoutSeconds: typeof timeoutSeconds === "number" ? timeoutSeconds : null,
+      timeoutSeconds:
+        typeof timeoutSeconds === "number" ? timeoutSeconds : null,
       evidenceAvailable,
     };
   }
@@ -1901,7 +2957,10 @@ function findCompletedSessionEvidence(results: RoleToolExecutionResult[]): {
   const browserRecoverySummaries: string[] = [];
   let toolName: string | null = null;
   for (const result of results) {
-    if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+    if (
+      result.toolName !== "sessions_spawn" &&
+      result.toolName !== "sessions_send"
+    ) {
       continue;
     }
     const parsed = parseSessionToolResult(result.content);
@@ -1916,19 +2975,25 @@ function findCompletedSessionEvidence(results: RoleToolExecutionResult[]): {
     toolName = toolName ?? result.toolName;
     finalContents.push(finalContent);
     if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-      const browserRecoverySummary = readBrowserRecoverySummary(payload as Record<string, unknown>);
+      const browserRecoverySummary = readBrowserRecoverySummary(
+        payload as Record<string, unknown>,
+      );
       if (browserRecoverySummary) {
         browserRecoverySummaries.push(browserRecoverySummary);
       }
     }
     const inlineBrowserRecoverySummary = readInlineBrowserRecoverySummary(
-      [parsed.evidence_summary, parsed.result].filter((item): item is string => typeof item === "string")
+      [parsed.evidence_summary, parsed.result].filter(
+        (item): item is string => typeof item === "string",
+      ),
     );
     if (inlineBrowserRecoverySummary) {
       browserRecoverySummaries.push(inlineBrowserRecoverySummary);
     }
   }
-  return toolName && finalContents.length > 0 ? { toolName, finalContents, browserRecoverySummaries } : null;
+  return toolName && finalContents.length > 0
+    ? { toolName, finalContents, browserRecoverySummaries }
+    : null;
 }
 
 function findIncompleteApprovedBrowserSession(input: {
@@ -1947,15 +3012,25 @@ function findIncompleteApprovedBrowserSession(input: {
   if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
     return null;
   }
-  if (latestPermissionToolName(input.toolTrace) !== "permission_applied" && !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
+  if (
+    latestPermissionToolName(input.toolTrace) !== "permission_applied" &&
+    !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
+  ) {
     return null;
   }
   for (const result of input.results) {
-    if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+    if (
+      result.toolName !== "sessions_spawn" &&
+      result.toolName !== "sessions_send"
+    ) {
       continue;
     }
     const parsed = parseSessionToolResult(result.content);
-    if (!parsed || parsed.status !== "completed" || parsed.agent_id !== "browser") {
+    if (
+      !parsed ||
+      parsed.status !== "completed" ||
+      parsed.agent_id !== "browser"
+    ) {
       continue;
     }
     if (typeof parsed.session_key !== "string") {
@@ -1993,13 +3068,69 @@ function shouldContinueTimedOutSiblingSession(input: {
   if (!input.timeoutSignal.sessionKey) {
     return false;
   }
-  if (hasExecutedSessionsSend(input.toolTrace, input.timeoutSignal.sessionKey)) {
+  if (
+    hasExecutedSessionsSend(input.toolTrace, input.timeoutSignal.sessionKey)
+  ) {
     return false;
   }
   if (hasCoverageTimeoutContinuationPrompt(input.messages)) {
     return false;
   }
   return isCoverageCriticalDelegationTask(input.taskPrompt);
+}
+
+function shouldContinueTimedOutApprovedBrowserSession(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  timeoutSignal: SubAgentToolTimeoutSignal;
+  tools?: GenerateTextInput["tools"];
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_send")) {
+    return false;
+  }
+  if (input.timeoutSignal.agentId !== "browser") {
+    return false;
+  }
+  if (!input.timeoutSignal.sessionKey) {
+    return false;
+  }
+  if (
+    hasExecutedSessionsSend(input.toolTrace, input.timeoutSignal.sessionKey)
+  ) {
+    return false;
+  }
+  if (hasApprovedBrowserTimeoutContinuationPrompt(input.messages)) {
+    return false;
+  }
+  if (!isAppliedApprovalBrowserContinuation(input.taskPrompt)) {
+    return false;
+  }
+  return true;
+}
+
+function hasApprovedBrowserTimeoutContinuationPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some((message) =>
+    readMessageContentText(message.content).includes(
+      "Runtime correction: approved browser action timed out before verification.",
+    ),
+  );
+}
+
+function buildApprovedBrowserTimeoutContinuationPrompt(
+  timeoutSignal: SubAgentToolTimeoutSignal,
+): string {
+  return [
+    "Runtime correction: approved browser action timed out before verification.",
+    `The approved browser session is resumable with session_key ${timeoutSignal.sessionKey}.`,
+    "Do not finalize a browser.form.submit approval flow from the timeout alone.",
+    "Call sessions_send exactly once for that session_key.",
+    "Ask the browser sub-agent to continue from its current page state, perform the already-approved browser.form.submit if it has not been performed, and verify the post-submit page state.",
+    "The browser sub-agent should use browser_snapshot, browser_act with submit=true on the submit control when needed, then browser_snapshot/browser_screenshot for the result.",
+    "If the continued session still cannot verify the approved action, return the concrete blocker and any pre-submit/post-submit evidence instead of a generic timeout summary.",
+  ].join("\n");
 }
 
 function shouldContinueIndependentEvidenceStreams(input: {
@@ -2018,35 +3149,53 @@ function shouldContinueIndependentEvidenceStreams(input: {
   if (requiredStreams < 3) {
     return false;
   }
-  return countCompletedSessionEvidenceResults(input.toolTrace) < requiredStreams;
+  return (
+    countCompletedSessionEvidenceResults(input.toolTrace) < requiredStreams
+  );
 }
 
 function inferIndependentEvidenceStreamCount(taskPrompt: string): number {
   if (/\b(?:three|3) independent evidence streams\b/i.test(taskPrompt)) {
     return 3;
   }
-  if (/\bgather evidence from (?:three|3) independent child sessions\b/i.test(taskPrompt)) {
+  if (
+    /\bgather evidence from (?:three|3) independent child sessions\b/i.test(
+      taskPrompt,
+    )
+  ) {
     return 3;
   }
   const sourceLineCount = taskPrompt
     .split(/\r?\n/)
-    .filter((line) => /^\s*(?:[-*]\s*)?(?:Research source|Capability source|Live signal dashboard|[A-Z][\w -]{2,30}: use (?:an? )?(?:explore|browser) session)\b/i.test(line))
-    .length;
+    .filter((line) =>
+      /^\s*(?:[-*]\s*)?(?:Research source|Capability source|Live signal dashboard|[A-Z][\w -]{2,30}: use (?:an? )?(?:explore|browser) session)\b/i.test(
+        line,
+      ),
+    ).length;
   return sourceLineCount >= 3 ? sourceLineCount : 0;
 }
 
-function countCompletedSessionEvidenceResults(toolTrace: NativeToolRoundTrace[]): number {
+function countCompletedSessionEvidenceResults(
+  toolTrace: NativeToolRoundTrace[],
+): number {
   const completedSessionKeys = new Set<string>();
   for (const round of toolTrace) {
     for (const result of round.results) {
-      if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+      if (
+        result.toolName !== "sessions_spawn" &&
+        result.toolName !== "sessions_send"
+      ) {
         continue;
       }
       if (!result.content) {
         continue;
       }
       const parsed = parseSessionToolResult(result.content);
-      if (!parsed || parsed.status !== "completed" || !readCompletedSessionEvidence(parsed)) {
+      if (
+        !parsed ||
+        parsed.status !== "completed" ||
+        !readCompletedSessionEvidence(parsed)
+      ) {
         continue;
       }
       completedSessionKeys.add(parsed.session_key);
@@ -2055,15 +3204,22 @@ function countCompletedSessionEvidenceResults(toolTrace: NativeToolRoundTrace[])
   return completedSessionKeys.size;
 }
 
-function hasIndependentEvidenceStreamContinuationPrompt(messages: LLMMessage[]): boolean {
+function hasIndependentEvidenceStreamContinuationPrompt(
+  messages: LLMMessage[],
+): boolean {
   const latestMessage = messages.at(-1);
   if (!latestMessage) {
     return false;
   }
-  return readMessageContentText(latestMessage.content).includes("Runtime correction: this task declares multiple independent evidence streams.");
+  return readMessageContentText(latestMessage.content).includes(
+    "Runtime correction: this task declares multiple independent evidence streams.",
+  );
 }
 
-function buildIndependentEvidenceStreamContinuationPrompt(input: { requiredStreams: number; completedSessions: number }): string {
+function buildIndependentEvidenceStreamContinuationPrompt(input: {
+  requiredStreams: number;
+  completedSessions: number;
+}): string {
   return [
     "Runtime correction: this task declares multiple independent evidence streams.",
     `Only ${input.completedSessions} of ${input.requiredStreams} required delegated evidence stream(s) have completed.`,
@@ -2077,14 +3233,17 @@ function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {
   const text = taskPrompt.toLowerCase();
   const sourceCount = [
     (taskPrompt.match(/https?:\/\/\S+/g) ?? []).length,
-    (text.match(/\b(?:source|evidence stream|child session|marker)\b/g) ?? []).length,
+    (text.match(/\b(?:source|evidence stream|child session|marker)\b/g) ?? [])
+      .length,
   ].filter((count) => count >= 3).length;
   if (sourceCount === 0) {
     return false;
   }
   return (
     /\bdo not finalize until\b/i.test(taskPrompt) ||
-    /\ball (?:three|3|\d+) (?:child session tool results|sources|source checks|evidence streams|markers)\b/i.test(taskPrompt) ||
+    /\ball (?:three|3|\d+) (?:child session tool results|sources|source checks|evidence streams|markers)\b/i.test(
+      taskPrompt,
+    ) ||
     /\b(?:three|3|\d+) independent evidence streams\b/i.test(taskPrompt) ||
     /\bsource coverage\b/i.test(taskPrompt)
   );
@@ -2092,11 +3251,15 @@ function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {
 
 function hasCoverageTimeoutContinuationPrompt(messages: LLMMessage[]): boolean {
   return messages.some((message) =>
-    readMessageContentText(message.content).includes("Runtime correction: a required delegated evidence stream timed out.")
+    readMessageContentText(message.content).includes(
+      "Runtime correction: a required delegated evidence stream timed out.",
+    ),
   );
 }
 
-function buildCoverageTimeoutContinuationPrompt(timeoutSignal: SubAgentToolTimeoutSignal): string {
+function buildCoverageTimeoutContinuationPrompt(
+  timeoutSignal: SubAgentToolTimeoutSignal,
+): string {
   return [
     "Runtime correction: a required delegated evidence stream timed out.",
     `The timed-out ${timeoutSignal.agentId} session is resumable with session_key ${timeoutSignal.sessionKey}.`,
@@ -2107,12 +3270,199 @@ function buildCoverageTimeoutContinuationPrompt(timeoutSignal: SubAgentToolTimeo
   ].join("\n");
 }
 
-function readCompletedSessionEvidence(parsed: NonNullable<ReturnType<typeof parseSessionToolResult>>): string | null {
+function shouldRunSupplementalLocalTimeoutProbe(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  evidenceText: string;
+  tools?: GenerateTextInput["tools"];
+  browserAvailable: boolean;
+}): { url: string; evidence: string } | null {
+  if (
+    !input.browserAvailable ||
+    !hasToolDefinition(input.tools, "sessions_spawn")
+  ) {
+    return null;
+  }
+  if (hasSupplementalLocalTimeoutProbePrompt(input.messages)) {
+    return null;
+  }
+  const context = buildContinuationDirectiveContext(
+    input.taskPrompt,
+    input.messages,
+  );
+  const sourceContext = `${input.taskPrompt}\n${context}\n${input.evidenceText}`;
+  const hasTimeoutEvidence =
+    hasSessionTimeoutEvidence(input) ||
+    mentionsTimeout(`${context}\n${input.evidenceText}`);
+  if (
+    !hasTimeoutEvidence ||
+    !toolTraceHasCall(input.toolTrace, "sessions_send")
+  ) {
+    return null;
+  }
+  if (hasCompletedBrowserSessionEvidence(input.toolTrace)) {
+    return null;
+  }
+  if (!looksBoundedTimeoutSourceCheck(sourceContext)) {
+    return null;
+  }
+  if (!isContentPoorTimeoutEvidence(`${context}\n${input.evidenceText}`)) {
+    return null;
+  }
+  const url = extractHttpUrls(sourceContext).find((candidate) => {
+    try {
+      return isLoopbackHostname(new URL(candidate).hostname);
+    } catch {
+      return false;
+    }
+  });
+  return url ? { url, evidence: sliceUtf8(input.evidenceText, 1800) } : null;
+}
+
+function hasSupplementalLocalTimeoutProbePrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some((message) =>
+    readMessageContentText(message.content).includes(
+      "Runtime correction: resumed timeout evidence is still content-poor.",
+    ),
+  );
+}
+
+function hasLatestSupplementalLocalTimeoutProbePrompt(
+  messages: LLMMessage[],
+): boolean {
+  const latest = messages.at(-1);
+  return (
+    latest?.role === "user" &&
+    readMessageContentText(latest.content).includes(
+      "Runtime correction: resumed timeout evidence is still content-poor.",
+    )
+  );
+}
+
+function allowsSupplementalBrowserProbe(packet: RolePromptPacket): boolean {
+  const unavailable =
+    packet.capabilityInspection?.unavailableCapabilities ?? [];
+  return !unavailable.some((capability) => /\bbrowser\b/i.test(capability));
+}
+
+function enforceSupplementalLocalTimeoutProbeToolCall(
+  toolCalls: LLMToolCall[],
+  messages: LLMMessage[],
+): LLMToolCall[] {
+  const latest = messages.at(-1);
+  const latestText =
+    latest?.role === "user" ? readMessageContentText(latest.content) : "";
+  if (
+    !latestText.includes(
+      "Runtime correction: resumed timeout evidence is still content-poor.",
+    )
+  ) {
+    return toolCalls;
+  }
+  const selected =
+    toolCalls.find(
+      (call) => call.name === "sessions_spawn" || call.name === "sessions_send",
+    ) ?? toolCalls[0];
+  const selectedText =
+    selected?.name === "sessions_spawn"
+      ? readStringInput(selected.input, "task")
+      : selected?.name === "sessions_send"
+        ? readStringInput(selected.input, "message")
+        : null;
+  const url =
+    extractHttpUrls(latestText).find((candidate) => {
+      try {
+        return isLoopbackHostname(new URL(candidate).hostname);
+      } catch {
+        return false;
+      }
+    }) ?? extractHttpUrls(latestText)[0];
+  return [
+    {
+      id: selected?.id ?? "runtime-supplemental-local-timeout-probe",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        label:
+          (selected ? readStringInput(selected.input, "label") : undefined) ??
+          "supplemental local timeout probe",
+        timeout_seconds: SUPPLEMENTAL_LOCAL_TIMEOUT_PROBE_TIMEOUT_SECONDS,
+        task: [
+          "Use private browser page tools for browser-visible/local runtime evidence; do not spawn or continue another session.",
+          `Supplemental local timeout probe mode: call browser_open with timeout_ms ${SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS} and then stop with observed evidence or explicit unavailable fields.`,
+          selectedText,
+          url
+            ? `Open ${url} as an operator would see it with a bounded local-runtime attempt.`
+            : "Open the loopback URL from the parent correction with a bounded local-runtime attempt.",
+          "Return only observed evidence: final URL, title, visible marker/text, loading completion, console/network failures if available, screenshot/artifact references if captured, and any remaining unverified items.",
+          "If the page still does not produce evidence, report that status/body/header/rendered content remain unavailable and keep the release-risk conclusion source-bounded.",
+        ]
+          .filter(
+            (part): part is string =>
+              typeof part === "string" && part.trim().length > 0,
+          )
+          .join("\n\n"),
+      },
+    },
+  ];
+}
+
+function isContentPoorTimeoutEvidence(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized || !mentionsTimeout(normalized)) {
+    return false;
+  }
+  const hasPositiveSourceEvidence =
+    /\b(?:HTTP\s*(?:status\s*)?200|status\s*[:=]?\s*200|(?:response body|body text)\b[\s\S]{0,80}\b(?:observed|captured|returned)|headers?\b[\s\S]{0,80}\b(?:observed|captured|returned)|TURNKEYAI_[A-Z0-9_]+_OK|readyState\s*[:=]?\s*complete|page title|visible text|source (?:returned|responded)|returned release-risk evidence)\b/i.test(
+      normalized,
+    );
+  if (hasPositiveSourceEvidence) {
+    return false;
+  }
+  return (
+    /\b(?:no HTTP status|status code (?:was )?not obtained|no response headers?|no response body|body (?:was )?not retrieved|no usable evidence|no source content|returned no source content|verification did not complete|unverified|timed out before)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:sub-agent session timed out|execution paused before completion|WORKER_TIMEOUT|timed out after \d+(?:\.\d+)?s)\b/i.test(
+      normalized,
+    )
+  );
+}
+
+function buildSupplementalLocalTimeoutProbePrompt(input: {
+  url: string;
+  evidence: string;
+}): string {
+  return [
+    "Runtime correction: resumed timeout evidence is still content-poor.",
+    `The resumed source-check still lacks response status/body/header or rendered page evidence for ${input.url}.`,
+    "Spawn exactly one focused browser session now. Use the browser worker for browser-visible/local runtime evidence; do not use explore or public-source fetch.",
+    `Supplemental local timeout probe mode: call browser_open with timeout_ms ${SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS}, then stop with observed evidence or explicit unavailable fields.`,
+    "Open the loopback URL as an operator would see it with a bounded local-runtime attempt.",
+    "Return only observed evidence: final URL, title, visible marker/text, whether loading completed, console/network failures if available, screenshot/artifact references if captured, and any remaining unverified items.",
+    "If the page still does not produce evidence, report that status/body/header/rendered content remain unavailable and keep the release-risk conclusion source-bounded.",
+    `Prior content-poor timeout evidence:\n${input.evidence}`,
+  ].join("\n");
+}
+
+function readCompletedSessionEvidence(
+  parsed: NonNullable<ReturnType<typeof parseSessionToolResult>>,
+): string | null {
   if (typeof parsed.final_content === "string" && parsed.final_content.trim()) {
     const finalContent = parsed.final_content.trim();
     if (parsed.agent_id === "browser") {
-      const browserEvidence = [parsed.evidence_summary, finalContent, parsed.result]
-        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      const browserEvidence = [
+        parsed.evidence_summary,
+        finalContent,
+        parsed.result,
+      ]
+        .filter(
+          (item): item is string =>
+            typeof item === "string" && item.trim().length > 0,
+        )
         .map((item) => item.trim());
       return dedupeStrings(browserEvidence).join("\n\n");
     }
@@ -2125,12 +3475,17 @@ function readCompletedSessionEvidence(parsed: NonNullable<ReturnType<typeof pars
     }
   }
   const evidence = [parsed.result, parsed.evidence_summary]
-    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0,
+    )
     .map((item) => item.trim());
   return evidence.length > 0 ? [...new Set(evidence)].join("\n\n") : null;
 }
 
-function readBrowserRecoverySummary(payload: Record<string, unknown>): string | null {
+function readBrowserRecoverySummary(
+  payload: Record<string, unknown>,
+): string | null {
   const recovery = payload["browserRecovery"];
   if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
     return null;
@@ -2152,7 +3507,7 @@ function readInlineBrowserRecoverySummary(values: string[]): string | null {
   if (!joined) return null;
   if (
     !/\b(?:browser_cdp_unavailable|cdp_command_timeout|detached_target|attach_failed|target_not_found|expert_session_detached|CDP command timed out|browser target detached|target attach failed)\b/i.test(
-      joined
+      joined,
     )
   ) {
     return null;
@@ -2168,17 +3523,27 @@ function maybeAppendBrowserRecoveryVisibility(input: {
   if (input.browserRecoverySummaries.length === 0) {
     return input.result;
   }
-  if (!/continue|recover|reopen|reconnect|restart|unavailable|previous browser session|times? out|timed? out|timeout|detach(?:ed|es)?|attach(?:ed)?|CDP/i.test(input.taskPrompt)) {
+  if (
+    !/continue|recover|reopen|reconnect|restart|unavailable|previous browser session|times? out|timed? out|timeout|detach(?:ed|es)?|attach(?:ed)?|CDP/i.test(
+      input.taskPrompt,
+    )
+  ) {
     return input.result;
   }
-  if (/\b(recovered|recovery|reopen(?:ed)?|reconnect(?:ed)?|warm|cold|session was unavailable|new browser session|timed? out|timeout|cdp_command_timeout|detached|attach(?:ed)? failed|browser_cdp_unavailable)\b/i.test(input.result.text)) {
+  if (
+    /\b(recovered|recovery|reopen(?:ed)?|reconnect(?:ed)?|warm|cold|session was unavailable|new browser session|timed? out|timeout|cdp_command_timeout|detached|attach(?:ed)? failed|browser_cdp_unavailable)\b/i.test(
+      input.result.text,
+    )
+  ) {
     return input.result;
   }
   if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
     return input.result;
   }
   const joinedSummaries = input.browserRecoverySummaries.join("\n");
-  const resumeMode = joinedSummaries.match(/Resume mode:\s*(warm|cold)/i)?.[1]?.toLowerCase();
+  const resumeMode = joinedSummaries
+    .match(/Resume mode:\s*(warm|cold)/i)?.[1]
+    ?.toLowerCase();
   const continuity = resumeMode
     ? `Browser continuity: browser context was recovered before the page was rechecked (resume mode: ${resumeMode}).`
     : `Browser continuity: ${sliceUtf8(joinedSummaries, 600)}`;
@@ -2188,7 +3553,90 @@ function maybeAppendBrowserRecoveryVisibility(input: {
   };
 }
 
-function maybeAppendTimeoutContinuationVisibility(result: GenerateTextResult): GenerateTextResult {
+function maybeAppendBrowserFailureBucketVisibility(input: {
+  result: GenerateTextResult;
+  taskPrompt: string;
+  evidenceText: string;
+}): GenerateTextResult {
+  const buckets = collectBrowserFailureBucketNames(input.evidenceText);
+  if (buckets.length === 0) {
+    return input.result;
+  }
+  if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
+    return input.result;
+  }
+  const missingBuckets = buckets.filter(
+    (bucket) => !browserFailureBucketVisible(input.result.text, bucket),
+  );
+  if (missingBuckets.length === 0) {
+    return input.result;
+  }
+  const limitation = buildBrowserFailureBucketVisibilityLine(missingBuckets);
+  return {
+    ...input.result,
+    text: `${input.result.text.trim()}\n\n${limitation}`.trim(),
+  };
+}
+
+function collectToolResultContentText(
+  results: RoleToolExecutionResult[],
+): string {
+  return results
+    .map((result) => (typeof result.content === "string" ? result.content : ""))
+    .filter((content) => content.trim().length > 0)
+    .join("\n\n");
+}
+
+function collectBrowserFailureBucketNames(text: string): string[] {
+  const buckets = new Set<string>();
+  const pattern =
+    /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|transport_failure|owner_mismatch|lease_conflict)\b/gi;
+  for (const match of text.matchAll(pattern)) {
+    buckets.add(match[1]!.toLowerCase());
+  }
+  return [...buckets].sort();
+}
+
+function browserFailureBucketVisible(text: string, bucket: string): boolean {
+  if (bucket === "cdp_command_timeout") {
+    return /\b(?:CDP|snapshot|screenshot|capture|browser)\b[\s\S]{0,160}\b(?:timed out|timeout|incomplete|not captured|not verified|unverified|bounded)\b/i.test(
+      text,
+    );
+  }
+  if (new RegExp(`\\b${escapeRegExp(bucket)}\\b`, "i").test(text)) {
+    return true;
+  }
+  if (bucket === "browser_cdp_unavailable") {
+    return /\b(?:browser|CDP|Chrome DevTools)\b[\s\S]{0,160}\b(?:unavailable|unreachable|not reachable|connection refused)\b/i.test(
+      text,
+    );
+  }
+  return /\b(?:browser|session|target|transport|attach|detached|profile)\b[\s\S]{0,160}\b(?:recovered|failed|unavailable|not found|detached|bounded|unverified)\b/i.test(
+    text,
+  );
+}
+
+function buildBrowserFailureBucketVisibilityLine(buckets: string[]): string {
+  if (buckets.includes("cdp_command_timeout")) {
+    return [
+      `Browser limitation: ${buckets.join(", ")} occurred during browser CDP capture/snapshot work.`,
+      "Treat the verified page facts as bounded to recovered browser evidence; deeper CDP traversal or missing capture details remain unverified.",
+      "Next action: retry or continue the browser capture with a longer timeout if those missing details matter.",
+    ].join(" ");
+  }
+  return [
+    `Browser limitation: ${buckets.join(", ")} occurred during browser work.`,
+    "Treat the final answer as bounded to the evidence that was recovered, and retry or continue the browser task if the missing evidence matters.",
+  ].join(" ");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function maybeAppendTimeoutContinuationVisibility(
+  result: GenerateTextResult,
+): GenerateTextResult {
   if (hasTimeoutCloseoutGuidance(result.text)) {
     return result;
   }
@@ -2212,7 +3660,9 @@ function shouldAppendRecoveredTimeoutCloseoutVisibility(input: {
   );
 }
 
-function maybeAppendRecoveredTimeoutCloseoutVisibility(result: GenerateTextResult): GenerateTextResult {
+function maybeAppendRecoveredTimeoutCloseoutVisibility(
+  result: GenerateTextResult,
+): GenerateTextResult {
   if (hasTimeoutCloseoutGuidance(result.text)) {
     return result;
   }
@@ -2240,11 +3690,17 @@ function shouldPreserveRecoveredTimeoutCloseout(input: {
 
 function hasTimeoutCloseoutGuidance(text: string): boolean {
   return (
-    /\b(?:continue|retry|resume|resumable|bounded retry|timeout-gated)\b/i.test(text) ||
-    /\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|bounded retry)\b/i.test(text) ||
-    /\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b/i.test(text) ||
+    /\b(?:continue|retry|resume|resumable|bounded retry|timeout-gated)\b/i.test(
+      text,
+    ) ||
+    /\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|bounded retry)\b/i.test(
+      text,
+    ) ||
+    /\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b/i.test(
+      text,
+    ) ||
     /\btimeouts?\b[\s\S]{0,80}\b(?:retry|recover|configure|exclude|timeout-gated|bounded retry)\b/i.test(
-      text
+      text,
     )
   );
 }
@@ -2253,21 +3709,29 @@ function mentionsTimeout(text: string): boolean {
   return /\b(?:timeout|timed out)\b/i.test(text);
 }
 
-function toolTraceHasCall(toolTrace: NativeToolRoundTrace[], toolName: string): boolean {
-  return toolTrace.some((roundTrace) => roundTrace.calls.some((call) => call.name === toolName));
+function toolTraceHasCall(
+  toolTrace: NativeToolRoundTrace[],
+  toolName: string,
+): boolean {
+  return toolTrace.some((roundTrace) =>
+    roundTrace.calls.some((call) => call.name === toolName),
+  );
 }
 
 function toolTraceHasTimeoutResult(toolTrace: NativeToolRoundTrace[]): boolean {
   return toolTrace.some((roundTrace) =>
     roundTrace.results.some((result) => {
-      if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+      if (
+        result.toolName !== "sessions_spawn" &&
+        result.toolName !== "sessions_send"
+      ) {
         return false;
       }
       if (typeof result.content !== "string") {
         return false;
       }
       return parseSessionToolResult(result.content)?.status === "timeout";
-    })
+    }),
   );
 }
 
@@ -2279,17 +3743,22 @@ function hasSessionTimeoutEvidence(input: {
   if (toolTraceHasTimeoutResult(input.toolTrace)) {
     return true;
   }
-  return contextHasTimeoutSessionResult(buildContinuationDirectiveContext(input.taskPrompt, input.messages));
+  return contextHasTimeoutSessionResult(
+    buildContinuationDirectiveContext(input.taskPrompt, input.messages),
+  );
 }
 
-function maybeRedactForbiddenLocalUrls(input: { result: GenerateTextResult; packet: RolePromptPacket }): GenerateTextResult {
+function maybeRedactForbiddenLocalUrls(input: {
+  result: GenerateTextResult;
+  packet: RolePromptPacket;
+}): GenerateTextResult {
   const constraintText = `${input.packet.taskPrompt}\n${input.packet.outputContract}`;
   if (!forbidsFinalUrls(constraintText)) {
     return input.result;
   }
   const redacted = input.result.text.replace(
     /\bhttps?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/[^\s)\],;]*)?/gi,
-    "local fixture source"
+    "local fixture source",
   );
   if (redacted === input.result.text) {
     return input.result;
@@ -2302,7 +3771,7 @@ function maybeRedactForbiddenLocalUrls(input: { result: GenerateTextResult; pack
 
 function forbidsFinalUrls(text: string): boolean {
   return /\b(?:do not include (?:source )?urls?|do not use [^\n.]*links?|links? (?:are )?forbidden|no links?|bare http:\/\/\s*\/\s*https?:\/\/ URLs?)\b/i.test(
-    text
+    text,
   );
 }
 
@@ -2311,7 +3780,7 @@ function containsAnyToolCallForm(result: GenerateTextResult): boolean {
     return true;
   }
   return /<\s*(?:minimax:)?tool_call\b|<\s*invoke\b|<\/\s*(?:minimax:)?tool_call\s*>|\btool_calls?\s*[:=]/i.test(
-    result.text
+    result.text,
   );
 }
 
@@ -2339,8 +3808,10 @@ function hasPermissionGateEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
       round.calls.some((call) => call.name.startsWith("permission_")) ||
       (round.progress ?? []).some((progress) => {
         const eventType = progress.detail?.["eventType"];
-        return typeof eventType === "string" && eventType.startsWith("permission.");
-      })
+        return (
+          typeof eventType === "string" && eventType.startsWith("permission.")
+        );
+      }),
   );
 }
 
@@ -2353,10 +3824,55 @@ function shouldRepairStalePendingApproval(input: {
   if (hasStalePendingApprovalRepairPrompt(input.messages)) {
     return false;
   }
-  if (!mentionsPendingApproval(input.resultText) || !requestsApprovalGatedBrowserAction(input.taskPrompt)) {
+  if (
+    !mentionsPendingApproval(input.resultText) ||
+    !requestsApprovalGatedBrowserAction(input.taskPrompt)
+  ) {
     return false;
   }
-  return latestPermissionToolName(input.toolTrace) === "permission_applied" || taskPromptSaysApprovalAlreadyApplied(input.taskPrompt);
+  return (
+    latestPermissionToolName(input.toolTrace) === "permission_applied" ||
+    taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
+  );
+}
+
+function shouldRepairPendingApprovalWaitTimeoutCheck(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasPendingApprovalWaitTimeoutCheckRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (
+    !mentionsPendingApproval(input.resultText) ||
+    !requestsApprovalGatedBrowserAction(input.taskPrompt)
+  ) {
+    return false;
+  }
+  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+    return false;
+  }
+  return latestPermissionToolName(input.toolTrace) === "permission_query";
+}
+
+function shouldRepairApprovalWaitTimeoutCloseout(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasApprovalWaitTimeoutCloseoutRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+    return false;
+  }
+  if (!hasApprovalWaitTimeoutEvidence(input.toolTrace)) {
+    return false;
+  }
+  return !looksLikeCompleteApprovalWaitTimeoutCloseout(input.resultText);
 }
 
 function shouldRepairIncompleteApprovedBrowserAction(input: {
@@ -2371,10 +3887,16 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
     return false;
   }
-  if (latestPermissionToolName(input.toolTrace) !== "permission_applied" && !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
+  if (
+    latestPermissionToolName(input.toolTrace) !== "permission_applied" &&
+    !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
+  ) {
     return false;
   }
-  return matchesAny(input.resultText, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS);
+  return matchesAny(
+    input.resultText,
+    INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS,
+  );
 }
 
 function shouldRepairMissingBrowserEvidence(input: {
@@ -2399,6 +3921,78 @@ function shouldRepairMissingBrowserEvidence(input: {
   return matchesAny(input.resultText, MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS);
 }
 
+function shouldRepairMissingProductSignalBrowserEvidence(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: GenerateTextInput["tools"];
+  evidenceText?: string;
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_spawn")) {
+    return false;
+  }
+  if (hasMissingBrowserEvidenceRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (!taskRequestsProductSignalDashboardEvidence(input.taskPrompt)) {
+    return false;
+  }
+  if (hasProductSignalDashboardMetrics(input.resultText)) {
+    return false;
+  }
+  const evidenceText = [
+    input.evidenceText,
+    collectCompletedSessionEvidenceText(input.toolTrace),
+  ]
+    .filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0,
+    )
+    .join("\n\n");
+  if (hasProductSignalDashboardMetrics(evidenceText)) {
+    return false;
+  }
+  return (
+    matchesAny(input.resultText, MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS) ||
+    /\b(?:SPAs?|server HTML shells?|HTML shells?|shell only|partial text|browser rendering)\b[\s\S]{0,180}\b(?:not confirmed|not verified|unconfirmed|unverified|without|lacks?)\b/i.test(
+      input.resultText,
+    ) ||
+    /\b(?:not confirmed|not verified|unconfirmed|unverified|without|lacks?)\b[\s\S]{0,180}\b(?:SPAs?|server HTML shells?|HTML shells?|shell only|browser rendering|rendered dashboard)\b/i.test(
+      input.resultText,
+    )
+  );
+}
+
+function shouldSuppressToolsForAwaitingContextSetup(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+}): boolean {
+  if (hasAwaitingContextSetupNoToolRepairPrompt(input.messages)) {
+    return false;
+  }
+  return taskPromptRequestsAwaitingContextSetup(input.taskPrompt);
+}
+
+function taskPromptRequestsAwaitingContextSetup(taskPrompt: string): boolean {
+  if (
+    /\b(?:durable memory|memory_search|memory_get|check durable memory|inspect any candidate memory|recover the launch window|launch window|residual risk|previously captured)\b/i.test(
+      taskPrompt,
+    )
+  ) {
+    return false;
+  }
+  return (
+    /\bno research (?:is )?(?:needed|required)\b|\bno action (?:is )?(?:needed|required)\b/i.test(
+      taskPrompt,
+    ) &&
+    /\bbriefly acknowledge\b|\backnowledge\b/i.test(taskPrompt) &&
+    /\b(?:continue|resume|proceed)\b[\s\S]{0,120}\b(?:context|details?|available|provided)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
 function shouldRepairMissingRequestedNextAction(input: {
   taskPrompt: string;
   resultText: string;
@@ -2407,11 +4001,15 @@ function shouldRepairMissingRequestedNextAction(input: {
   if (hasMissingRequestedNextActionRepairPrompt(input.messages)) {
     return false;
   }
-  if (!/\b(?:next action|next step|operator should|should take|safe fallback|fallback action)\b/i.test(input.taskPrompt)) {
+  if (
+    !/\b(?:next action|next step|operator should|should take|safe fallback|fallback action)\b/i.test(
+      input.taskPrompt,
+    )
+  ) {
     return false;
   }
   return !/\b(?:next action|next step|recommended action|recommend(?:ed)?|operator should|should (?:retry|reopen|check|watch|escalate|preserve|request|continue|stop|avoid)|safe fallback|fallback action)\b/i.test(
-    input.resultText
+    input.resultText,
   );
 }
 
@@ -2432,7 +4030,10 @@ function shouldRepairWeakEvidenceSynthesis(input: {
   if (shouldRepairMissingRequestedRiskDimension(input)) {
     return true;
   }
-  return !taskRequestsEstimate(input.taskPrompt) && matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS);
+  return (
+    !taskRequestsEstimate(input.taskPrompt) &&
+    matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS)
+  );
 }
 
 function shouldRepairFalseEvidenceBlockedSynthesis(input: {
@@ -2443,10 +4044,81 @@ function shouldRepairFalseEvidenceBlockedSynthesis(input: {
   if (hasFalseEvidenceBlockedSynthesisRepairPrompt(input.messages)) {
     return false;
   }
-  if (!matchesAny(input.resultText, FALSE_EVIDENCE_BLOCKED_SYNTHESIS_PATTERNS)) {
+  if (
+    !matchesAny(input.resultText, FALSE_EVIDENCE_BLOCKED_SYNTHESIS_PATTERNS)
+  ) {
     return false;
   }
   return !matchesAny(input.evidenceText, ACTUAL_EVIDENCE_BLOCKED_PATTERNS);
+}
+
+function shouldRepairMissingBrowserEvidenceDimensions(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  evidenceText: string;
+}): boolean {
+  if (hasMissingBrowserEvidenceDimensionsRepairPrompt(input.messages)) {
+    return false;
+  }
+  return findMissingBrowserEvidenceDimensions(input).length > 0;
+}
+
+function findMissingBrowserEvidenceDimensions(input: {
+  taskPrompt: string;
+  resultText: string;
+  evidenceText: string;
+}): string[] {
+  const dimensions = [
+    {
+      label: "embedded frame source state",
+      requested: /\b(?:iframe|frame|embedded source)\b/i,
+      evidence:
+        /\b(?:Frame panel|embedded source frame|embedded backlog source)\b[\s\S]{0,180}\b(?:backlog\s*7|Frame Captain)\b|\b(?:backlog\s*7|Frame Captain)\b[\s\S]{0,180}\b(?:Frame panel|embedded source frame|embedded backlog source)\b/i,
+      result:
+        /\b(?:frame|iframe|embedded source)\b[\s\S]{0,220}\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b|\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b[\s\S]{0,220}\b(?:frame|iframe|embedded source)\b/i,
+      negated:
+        /\bnot verified\b[\s\S]{0,120}\b(?:frame|iframe|embedded source)\b|\b(?:frame|iframe|embedded source)\b[\s\S]{0,120}\bnot verified\b/i,
+    },
+    {
+      label: "shadow review state",
+      requested: /\b(?:shadow|review component)\b/i,
+      evidence:
+        /\b(?:Shadow review|shadow component|review component)\b[\s\S]{0,180}\b(?:risk desk|approval required|approval requirement)\b|\b(?:risk desk|approval required|approval requirement)\b[\s\S]{0,180}\b(?:Shadow review|shadow component|review component)\b/i,
+      result:
+        /\b(?:shadow|review component)\b[\s\S]{0,220}\b(?:risk desk|approval required|approval requirement|approval is required)\b|\b(?:risk desk|approval required|approval requirement|approval is required)\b[\s\S]{0,220}\b(?:shadow|review component)\b/i,
+      negated:
+        /\bnot verified\b[\s\S]{0,120}\b(?:shadow|review component)\b|\b(?:shadow|review component)\b[\s\S]{0,120}\bnot verified\b/i,
+    },
+    {
+      label: "details popup state",
+      requested: /\bpopup\b/i,
+      evidence:
+        /\bpopup\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\bpopup\b/i,
+      result:
+        /\bpopup\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\bpopup\b/i,
+    },
+    {
+      label: "product signal dashboard counters",
+      requested:
+        /\b(?:product-signals|live signal dashboard|product signal dashboard)\b/i,
+      evidence:
+        /\b(?:TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK|product signals? dashboard|Mission Control)\b[\s\S]{0,260}\bStuck missions?\s*:\s*6\b[\s\S]{0,160}\bWeak answer rate\s*:\s*24%(?!\d)|\bStuck missions?\s*:\s*6\b[\s\S]{0,160}\bWeak answer rate\s*:\s*24%(?!\d)[\s\S]{0,260}\b(?:TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK|product signals? dashboard|Mission Control)\b/i,
+      result:
+        /\bStuck missions?\s*:\s*6\b[\s\S]{0,200}\bWeak answer rate\s*:\s*24%(?!\d)|\bWeak answer rate\s*:\s*24%(?!\d)[\s\S]{0,200}\bStuck missions?\s*:\s*6\b/i,
+      negated:
+        /\b(?:Stuck missions?|Weak answer rate|product signals? dashboard|live signal dashboard)\b[\s\S]{0,160}\b(?:not verified|unverified|not confirmed|unconfirmed)\b/i,
+    },
+  ] as const;
+
+  return dimensions.flatMap((dimension) =>
+    dimension.requested.test(input.taskPrompt) &&
+    dimension.evidence.test(input.evidenceText) &&
+    (!dimension.result.test(input.resultText) ||
+      ("negated" in dimension && dimension.negated.test(input.resultText)))
+      ? [dimension.label]
+      : [],
+  );
 }
 
 function shouldRepairMissingRequestedRiskDimension(input: {
@@ -2454,10 +4126,15 @@ function shouldRepairMissingRequestedRiskDimension(input: {
   resultText: string;
   messages: LLMMessage[];
 }): boolean {
-  if (!/\brisks?\b/i.test(input.taskPrompt) || /\brisks?\b/i.test(input.resultText)) {
+  if (
+    !/\brisks?\b/i.test(input.taskPrompt) ||
+    /\brisks?\b/i.test(input.resultText)
+  ) {
     return false;
   }
-  return input.messages.some((message) => /\brisks?\b/i.test(readMessageContentText(message.content)));
+  return input.messages.some((message) =>
+    /\brisks?\b/i.test(readMessageContentText(message.content)),
+  );
 }
 
 function taskRequestsEstimate(taskPrompt: string): boolean {
@@ -2478,6 +4155,8 @@ const MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS = [
   /\b(?:browser|rendered|DOM|page|snapshot|screenshot|popup|iframe|frame|shadow)\b[\s\S]{0,120}\b(?:tools?|tooling|worker|agent|session)\b[\s\S]{0,80}\b(?:unavailable|not available|disabled|missing|could not be called|cannot be called|failed)\b/i,
   /\b(?:tools?|tooling|worker|agent|session)\b[\s\S]{0,80}\b(?:unavailable|not available|disabled|missing|could not be called|cannot be called|failed)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|page|snapshot|screenshot|popup|iframe|frame|shadow)\b/i,
   /\b(?:static|raw|server|HTTP)\s+(?:fetch|HTML|extraction|request)\b[\s\S]{0,160}\b(?:instead of|without|not)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b/i,
+  /\b(?:static|raw|server|HTTP)\s+(?:fetch|HTML|extraction|request)\b[\s\S]{0,180}\b(?:cannot|can't|could not|unable to)\b[\s\S]{0,160}\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b/i,
+  /\blive browser session\b[\s\S]{0,120}\b(?:needed|required|necessary)\b/i,
   /\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b[\s\S]{0,160}\b(?:not verified|unverified|unable to verify|was not verified|could not verify)\b/i,
 ];
 
@@ -2522,16 +4201,29 @@ function shouldRepairStaleDeniedApproval(input: {
   if (hasStaleDeniedApprovalRepairPrompt(input.messages)) {
     return false;
   }
-  if (!mentionsPendingApproval(input.resultText) || !requestsApprovalGatedBrowserAction(input.taskPrompt)) {
+  if (
+    !mentionsPendingApproval(input.resultText) ||
+    !requestsApprovalGatedBrowserAction(input.taskPrompt)
+  ) {
     return false;
   }
   return latestPermissionResultStatus(input.toolTrace) === "denied";
 }
 
-function latestPermissionToolName(toolTrace: NativeToolRoundTrace[]): string | null {
-  for (let roundIndex = toolTrace.length - 1; roundIndex >= 0; roundIndex -= 1) {
+function latestPermissionToolName(
+  toolTrace: NativeToolRoundTrace[],
+): string | null {
+  for (
+    let roundIndex = toolTrace.length - 1;
+    roundIndex >= 0;
+    roundIndex -= 1
+  ) {
     const round = toolTrace[roundIndex]!;
-    for (let callIndex = round.calls.length - 1; callIndex >= 0; callIndex -= 1) {
+    for (
+      let callIndex = round.calls.length - 1;
+      callIndex >= 0;
+      callIndex -= 1
+    ) {
       const name = round.calls[callIndex]!.name;
       if (name.startsWith("permission_")) {
         return name;
@@ -2541,17 +4233,34 @@ function latestPermissionToolName(toolTrace: NativeToolRoundTrace[]): string | n
   return null;
 }
 
-function latestPermissionResultStatus(toolTrace: NativeToolRoundTrace[]): string | null {
-  for (let roundIndex = toolTrace.length - 1; roundIndex >= 0; roundIndex -= 1) {
+function latestPermissionResultStatus(
+  toolTrace: NativeToolRoundTrace[],
+): string | null {
+  for (
+    let roundIndex = toolTrace.length - 1;
+    roundIndex >= 0;
+    roundIndex -= 1
+  ) {
     const round = toolTrace[roundIndex]!;
-    for (let progressIndex = (round.progress?.length ?? 0) - 1; progressIndex >= 0; progressIndex -= 1) {
+    for (
+      let progressIndex = (round.progress?.length ?? 0) - 1;
+      progressIndex >= 0;
+      progressIndex -= 1
+    ) {
       const progress = round.progress![progressIndex]!;
-      if (progress.toolName === "permission_result" && progress.detail?.["eventType"] === "permission.result") {
+      if (
+        progress.toolName === "permission_result" &&
+        progress.detail?.["eventType"] === "permission.result"
+      ) {
         const status = progress.detail["status"];
         if (typeof status === "string") return status;
       }
     }
-    for (let resultIndex = round.results.length - 1; resultIndex >= 0; resultIndex -= 1) {
+    for (
+      let resultIndex = round.results.length - 1;
+      resultIndex >= 0;
+      resultIndex -= 1
+    ) {
       const result = round.results[resultIndex]!;
       if (result.toolName !== "permission_result") continue;
       const parsed = parseJsonObject(result.content);
@@ -2562,7 +4271,48 @@ function latestPermissionResultStatus(toolTrace: NativeToolRoundTrace[]): string
   return null;
 }
 
-function expectsExactFinalAnswerShape(taskPrompt: string, resultText: string): boolean {
+function hasApprovalWaitTimeoutEvidence(
+  toolTrace: NativeToolRoundTrace[],
+): boolean {
+  if (latestPermissionResultStatus(toolTrace) === "pending") {
+    return true;
+  }
+  return toolTrace.some((round) =>
+    round.results.some((result) => {
+      const parsed = parseJsonObject(result.content);
+      return parsed?.["status"] === "approval_wait_timeout";
+    }),
+  );
+}
+
+function looksLikeCompleteApprovalWaitTimeoutCloseout(text: string): boolean {
+  if (
+    /\b(?:thread|flow|mission|task)\b[\s\S]{0,80}\b(?:remains?|stays?)\s+open\b/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  return (
+    /\b(?:approval|permission|operator decision)\b[\s\S]{0,180}\b(?:pending|did not arrive|still pending|timed out|timeout|wait[- ]timeout)\b/i.test(
+      text,
+    ) &&
+    /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:browser form submission|form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno form (?:was )?submitted\b/i.test(
+      text,
+    ) &&
+    /\b(?:residual risk|risk|unverified|not verified|pending approval remains|pending decision remains)\b/i.test(
+      text,
+    ) &&
+    /\b(?:next action|safest next step|safe fallback|ask the operator|retry|continue|re-?run|re-?initiate|flow is complete|closeout confirmed)\b/i.test(
+      text,
+    )
+  );
+}
+
+function expectsExactFinalAnswerShape(
+  taskPrompt: string,
+  resultText: string,
+): boolean {
   const combined = `${taskPrompt}\n${resultText}`;
   if (/^\s*(?:\{[\s\S]*\}|\[[\s\S]*\])\s*$/.test(resultText)) {
     try {
@@ -2573,7 +4323,7 @@ function expectsExactFinalAnswerShape(taskPrompt: string, resultText: string): b
     }
   }
   return /\b(?:respond with only|output only|answer only|final answer must|answer must be|use this exact final answer|exact final answer shape|valid json|json object|json array|csv only|markdown table only)\b|^\s*Final Answer\s*:/im.test(
-    combined
+    combined,
   );
 }
 
@@ -2581,7 +4331,9 @@ function hasMissingApprovalGateRepairPrompt(messages: LLMMessage[]): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: approval-gated browser action")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval-gated browser action",
+      ),
   );
 }
 
@@ -2589,7 +4341,33 @@ function hasStalePendingApprovalRepairPrompt(messages: LLMMessage[]): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: approval already applied")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval already applied",
+      ),
+  );
+}
+
+function hasPendingApprovalWaitTimeoutCheckRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval decision has not arrived",
+      ),
+  );
+}
+
+function hasApprovalWaitTimeoutCloseoutRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval wait-timeout evidence is available",
+      ),
   );
 }
 
@@ -2597,39 +4375,69 @@ function hasStaleDeniedApprovalRepairPrompt(messages: LLMMessage[]): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: approval was denied")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval was denied",
+      ),
   );
 }
 
-function hasIncompleteApprovedBrowserActionRepairPrompt(messages: LLMMessage[]): boolean {
+function hasIncompleteApprovedBrowserActionRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: approved browser action has not executed")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approved browser action has not executed",
+      ),
   );
 }
 
-function hasMissingBrowserEvidenceRepairPrompt(messages: LLMMessage[]): boolean {
+function hasMissingBrowserEvidenceRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: browser-visible evidence is missing")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: browser-visible evidence is missing",
+      ),
   );
 }
 
-function hasIncompleteApprovedBrowserSessionContinuationPrompt(messages: LLMMessage[]): boolean {
+function hasAwaitingContextSetupNoToolRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: approved browser action is incomplete inside an existing browser session")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: this turn is setup-only",
+      ),
   );
 }
 
-function hasMissingRequestedNextActionRepairPrompt(messages: LLMMessage[]): boolean {
+function hasIncompleteApprovedBrowserSessionContinuationPrompt(
+  messages: LLMMessage[],
+): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: requested next action is missing")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approved browser action is incomplete inside an existing browser session",
+      ),
+  );
+}
+
+function hasMissingRequestedNextActionRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: requested next action is missing",
+      ),
   );
 }
 
@@ -2637,32 +4445,66 @@ function hasWeakEvidenceSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: final answer weakens verified evidence")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: final answer weakens verified evidence",
+      ),
   );
 }
 
-function hasFalseEvidenceBlockedSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
+function hasFalseEvidenceBlockedSynthesisRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
-      readMessageContentText(message.content).includes("Runtime correction: final answer falsely marks completed evidence")
+      readMessageContentText(message.content).includes(
+        "Runtime correction: final answer falsely marks completed evidence",
+      ),
+  );
+}
+
+function hasMissingBrowserEvidenceDimensionsRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: final answer omitted requested browser evidence dimensions",
+      ),
   );
 }
 
 function mentionsPendingApproval(text: string): boolean {
   return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once you approve|after you approve|before (?:the )?(?:browser worker )?can)\b/i.test(
-    text
+    text,
   );
 }
 
 function taskPromptSaysApprovalAlreadyApplied(taskPrompt: string): boolean {
   return /\b(?:runtime\s+)?permission cache\b[\s\S]{0,120}\balready applied\b|\bpermission\.applied\b|\bpermission_applied\b/i.test(
-    taskPrompt
+    taskPrompt,
+  );
+}
+
+function taskPromptRequestsApprovalWaitTimeoutCloseout(
+  taskPrompt: string,
+): boolean {
+  return (
+    /\b(?:operator decision|approval|permission)\b[\s\S]{0,180}\b(?:does not arrive|doesn't arrive|does not come through|doesn't come through|no decision arrives|no approval arrives|wait timeout|wait-timeout|timed out|timeout|during this attempt|attempt cycle)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\bif\b[\s\S]{0,120}\b(?:decision|approval|permission)\b[\s\S]{0,120}\b(?:not arrive|pending|timeout|timed out|wait)\b/i.test(
+      taskPrompt,
+    )
   );
 }
 
 function isAppliedApprovalBrowserContinuation(taskPrompt: string): boolean {
-  return taskPromptSaysApprovalAlreadyApplied(taskPrompt) && requestsApprovalGatedBrowserAction(taskPrompt);
+  return (
+    taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
+    requestsApprovalGatedBrowserAction(taskPrompt)
+  );
 }
 
 function requestsApprovalGatedBrowserAction(taskPrompt: string): boolean {
@@ -2672,7 +4514,9 @@ function requestsApprovalGatedBrowserAction(taskPrompt: string): boolean {
   return (
     /\bapproval\b/i.test(taskPrompt) &&
     /\bbrowser\b/i.test(taskPrompt) &&
-    /\b(?:submit|submission|form|mutat(?:e|ion)|side[- ]effect|dry[- ]run action|approved scoped action)\b/i.test(taskPrompt)
+    /\b(?:submit|submission|form|mutat(?:e|ion)|side[- ]effect|dry[- ]run action|approved scoped action)\b/i.test(
+      taskPrompt,
+    )
   );
 }
 
@@ -2681,7 +4525,7 @@ function disclaimsApprovalGatedBrowserAction(taskPrompt: string): boolean {
     return false;
   }
   return /\bno\b[^.\n]{0,180}\b(?:browser\s+)?(?:form|click|navigation|submit|submission|mutation|side[- ]effect|approval[- ]gated action)\b[^.\n]{0,120}\b(?:needed|required|necessary|will be performed|should run|is needed)\b/i.test(
-    taskPrompt
+    taskPrompt,
   );
 }
 
@@ -2701,6 +4545,24 @@ function buildStalePendingApprovalRepairPrompt(): string {
     "Runtime correction: approval already applied, but the assistant tried to finalize with a pending-approval explanation.",
     "Do not wait again. Continue from the applied approval point now.",
     "Use native tools for the approved scoped action, preferably sessions_spawn with agent_id=browser, then summarize the concrete browser result.",
+  ].join("\n");
+}
+
+function buildPendingApprovalWaitTimeoutCheckRepairPrompt(): string {
+  return [
+    "Runtime correction: approval decision has not arrived during an attempt that requested a no-decision closeout.",
+    "Call permission_result for the pending approval_id from permission.query now.",
+    "If it is still pending, do not call permission_applied and do not call browser tools.",
+    "Then write a safe wait-timeout closeout: state what remains pending, state that no browser form submission or side effect ran, keep the unexecuted result unverified, and give the safe fallback or next action.",
+  ].join("\n");
+}
+
+function buildApprovalWaitTimeoutCloseoutRepairPrompt(): string {
+  return [
+    "Runtime correction: approval wait-timeout evidence is available, but the final closeout is incomplete or leaves the thread open.",
+    "Do not call tools.",
+    "Rewrite the final answer as a terminal closeout for this attempt: approval remains pending, no browser form submission or side effect ran, the unexecuted result is not verified, and the safe next action is to ask the operator to approve a new request or rerun the attempt when ready.",
+    "Do not say the thread, flow, mission, or task remains open.",
   ].join("\n");
 }
 
@@ -2737,13 +4599,67 @@ function buildIncompleteApprovedBrowserSessionContinuationPrompt(input: {
 }
 
 function buildMissingBrowserEvidenceRepairPrompt(taskPrompt: string): string {
+  const supplementalLocalTimeoutProbe =
+    shouldAddSupplementalLocalTimeoutProbeToBrowserRepair(taskPrompt);
   return [
     "Runtime correction: browser-visible evidence is missing.",
+    ...(supplementalLocalTimeoutProbe
+      ? [
+          "Runtime correction: resumed timeout evidence is still content-poor.",
+          `The resumed source-check still lacks response status/body/header or rendered page evidence for ${supplementalLocalTimeoutProbe}.`,
+          `Supplemental local timeout probe mode: call browser_open with timeout_ms ${SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS}, then stop with observed evidence or explicit unavailable fields.`,
+        ]
+      : []),
     "The task requires browser-observed evidence such as rendered DOM, JavaScript/client-side state, iframe/frame content, shadow-style component state, popup state, dashboard state, or a user-visible page review.",
     "Do not finalize from raw HTTP fetch, server HTML, memory, or a tool-unavailable explanation while native session tools are still available.",
     "Call sessions_spawn with agent_id=browser for the browser-visible portion of the task.",
     "The delegated browser task must include the relevant URL, the visible states to inspect, and a requirement to return only observed facts plus any concrete blocker.",
     `Original task:\n${sliceUtf8(taskPrompt, 1400)}`,
+  ].join("\n");
+}
+
+function buildMissingProductSignalBrowserEvidenceRepairPrompt(
+  taskPrompt: string,
+): string {
+  const dashboardUrl = extractProductSignalDashboardUrl(taskPrompt);
+  return [
+    "Runtime correction: browser-visible evidence is missing.",
+    "Runtime correction: the live product signal dashboard evidence is still incomplete.",
+    "Do not finalize from SPA/server HTML shell evidence or from a generic browser-unavailable explanation while native session tools are still available.",
+    "Call sessions_spawn with agent_id=browser for the product signal dashboard only.",
+    `Dashboard URL: ${dashboardUrl ?? "use the product-signals/live signal dashboard URL from the original task"}.`,
+    "The browser sub-agent must inspect the rendered page as an operator would see it and return the exact visible signal marker, Stuck missions counter, Weak answer rate counter, Mission Control recommendation if visible, final URL, page title, and any concrete blocker.",
+    "If rendering still cannot be verified, report the attempted browser observation and explicit unavailable fields; do not substitute raw HTML shell text for dashboard evidence.",
+    `Original task:\n${sliceUtf8(taskPrompt, 1400)}`,
+  ].join("\n");
+}
+
+function shouldAddSupplementalLocalTimeoutProbeToBrowserRepair(
+  taskPrompt: string,
+): string | null {
+  if (!looksBoundedTimeoutSourceCheck(taskPrompt)) {
+    return null;
+  }
+  return (
+    extractHttpUrls(taskPrompt).find((candidate) => {
+      try {
+        return isLoopbackHostname(new URL(candidate).hostname);
+      } catch {
+        return false;
+      }
+    }) ?? null
+  );
+}
+
+function buildAwaitingContextSetupNoToolRepairPrompt(
+  taskPrompt: string,
+): string {
+  return [
+    "Runtime correction: this turn is setup-only and explicitly says no research or action is needed yet.",
+    "Do not call memory, browser, search, session, or task tools for this turn.",
+    "Write a brief final answer that acknowledges the thread is ready, states no research is queued, and says the mission can continue when context is provided.",
+    "Keep it concise and complete.",
+    `Original task:\n${sliceUtf8(taskPrompt, 1000)}`,
   ].join("\n");
 }
 
@@ -2767,14 +4683,38 @@ function buildWeakEvidenceSynthesisRepairPrompt(): string {
   ].join("\n");
 }
 
-function buildFalseEvidenceBlockedSynthesisRepairPrompt(finalContents: string[]): string {
+function buildFalseEvidenceBlockedSynthesisRepairPrompt(
+  finalContents: string[],
+): string {
   return [
     "Runtime correction: final answer falsely marks completed evidence as blocked, inaccessible, failed, incomplete, or truncated.",
     "Do not call tools. Rewrite the final answer using only the delegated session evidence already present.",
     "The completed source evidence below is usable. Do not describe source content, browser evidence, rendered DOM, page content, or extraction as inaccessible, failed, incomplete, blocked, or truncated unless that exact blocker appears in the source evidence.",
     "Preserve the original requested final answer shape, section labels, bullet labels, no-link rules, and residual-risk requirement.",
     "It is okay to say the evidence is source-bounded to local fixtures or that real-world validation remains; do not turn that scope limitation into a tool/browser/content failure.",
-    ...finalContents.map((content, index) => `Source ${index + 1} completed evidence:\n${sliceUtf8(content, 2400)}`),
+    ...finalContents.map(
+      (content, index) =>
+        `Source ${index + 1} completed evidence:\n${sliceUtf8(content, 2400)}`,
+    ),
+  ].join("\n");
+}
+
+function buildMissingBrowserEvidenceDimensionsRepairPrompt(input: {
+  taskPrompt: string;
+  resultText: string;
+  evidenceText: string;
+}): string {
+  const missing = findMissingBrowserEvidenceDimensions(input);
+  return [
+    "Runtime correction: final answer omitted requested browser evidence dimensions.",
+    `Missing dimensions: ${missing.join(", ")}.`,
+    "Do not call tools. Rewrite the final answer using only the completed browser evidence below.",
+    "Carry each missing requested browser dimension into the final answer when the evidence supports it.",
+    "For unavailable dimensions, write not verified only if the completed browser evidence actually lacks that dimension.",
+    "Keep residual risk visible, but do not mark frame, shadow, popup, or rendered page state unverified when the completed browser evidence contains it.",
+    `Original task:\n${sliceUtf8(input.taskPrompt, 1400)}`,
+    `Previous final answer:\n${sliceUtf8(input.resultText, 1400)}`,
+    `Completed browser evidence:\n${sliceUtf8(input.evidenceText, 3600)}`,
   ].join("\n");
 }
 
@@ -2782,7 +4722,9 @@ function parseJsonObject(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "string" || value.trim().length === 0) return null;
   try {
     const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
@@ -2796,19 +4738,25 @@ function readMessageContentText(content: LLMMessage["content"]): string {
     .map((block) => {
       if (block && typeof block === "object" && "type" in block) {
         if (block.type === "text" && "text" in block) return String(block.text);
-        if (block.type === "tool_result" && "content" in block) return String(block.content);
+        if (block.type === "tool_result" && "content" in block)
+          return String(block.content);
       }
       return "";
     })
     .join("\n");
 }
 
-function findSessionContinuationDirective(taskPrompt: string): SessionContinuationDirective | null {
+function findSessionContinuationDirective(
+  taskPrompt: string,
+): SessionContinuationDirective | null {
   const latestUserText = extractLatestUserContinuationText(taskPrompt);
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
-  const messageHint = buildSessionContinuationMessageHint(taskPrompt, latestUserText);
+  const messageHint = buildSessionContinuationMessageHint(
+    taskPrompt,
+    latestUserText,
+  );
   const sessionResults = extractSessionToolResultRecords(taskPrompt);
   let selectedSessionKey: string | null = null;
   let selectedPriority = 0;
@@ -2818,7 +4766,10 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     if (typeof sessionKey !== "string" || !sessionKey.trim()) {
       continue;
     }
-    const priority = sessionToolResultContinuationPriority(result);
+    const priority = sessionToolResultContinuationPriority(
+      result,
+      latestUserText,
+    );
     if (priority <= selectedPriority) {
       continue;
     }
@@ -2837,7 +4788,31 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     }
     return { sessionKey: selectedSessionKey, messageHint };
   }
-  const sessionMatches = [...taskPrompt.matchAll(/"session_key"\s*:\s*"([^"]+)"/g)];
+  const explicitSessionKey = selectExplicitContinuationSessionKey(
+    taskPrompt,
+    latestUserText,
+  );
+  if (explicitSessionKey) {
+    return { sessionKey: explicitSessionKey, messageHint };
+  }
+  const listedSession = selectListedContinuationSessionKey(
+    taskPrompt,
+    latestUserText,
+  );
+  const hasTruncatedTimeoutCandidate =
+    contextHasTruncatedTimeoutContinuationCandidate(taskPrompt, latestUserText);
+  if (
+    listedSession &&
+    !(hasTruncatedTimeoutCandidate && listedSession.priority < 5)
+  ) {
+    return { sessionKey: listedSession.sessionKey, messageHint };
+  }
+  if (hasTruncatedTimeoutCandidate) {
+    return null;
+  }
+  const sessionMatches = [
+    ...taskPrompt.matchAll(/"session_key"\s*:\s*"([^"]+)"/g),
+  ];
   for (let index = sessionMatches.length - 1; index >= 0; index -= 1) {
     const match = sessionMatches[index]!;
     const sessionKey = match[1];
@@ -2856,34 +4831,69 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
   return null;
 }
 
-function continuationRequestPrefersResumableSession(input: { latestUserText: string; context: string }): boolean {
-  if (/\b(?:timeout|timed out|resumable|interrupted|cancelled|canceled|slow-source|slow source|source-check)\b/i.test(input.latestUserText)) {
+function continuationRequestPrefersResumableSession(input: {
+  latestUserText: string;
+  context: string;
+}): boolean {
+  if (
+    /\b(?:timeout|timed out|resumable|interrupted|cancelled|canceled|slow-source|slow source|source-check)\b/i.test(
+      input.latestUserText,
+    )
+  ) {
     return true;
   }
-  if (!/\b(?:timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(input.context)) {
+  if (
+    !/\b(?:timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(
+      input.context,
+    )
+  ) {
     return false;
   }
-  return /\b(?:same|existing|previous|prior|attempt|source|retry|resume|continue)\b/i.test(input.latestUserText);
+  return /\b(?:same|existing|previous|prior|attempt|source|retry|resume|continue)\b/i.test(
+    input.latestUserText,
+  );
 }
 
-function findSessionContinuationLookupDirective(taskPrompt: string, context: string): SessionContinuationLookupDirective | null {
+function findSessionContinuationLookupDirective(
+  taskPrompt: string,
+  context: string,
+): SessionContinuationLookupDirective | null {
   const latestUserText = extractLatestUserContinuationText(taskPrompt);
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
   if (contextHasSessionListResult(context)) {
-    return null;
+    return contextHasTruncatedTimeoutContinuationCandidate(
+      context,
+      latestUserText,
+    )
+      ? {
+          messageHint: buildSessionContinuationMessageHint(
+            taskPrompt,
+            latestUserText,
+          ),
+        }
+      : null;
   }
   return {
-    messageHint: buildSessionContinuationMessageHint(taskPrompt, latestUserText),
+    messageHint: buildSessionContinuationMessageHint(
+      taskPrompt,
+      latestUserText,
+    ),
   };
 }
 
-function buildContinuationDirectiveContext(taskPrompt: string, messages: LLMMessage[]): string {
+function buildContinuationDirectiveContext(
+  taskPrompt: string,
+  messages: LLMMessage[],
+): string {
   const toolEvidence = messages
     .filter((message) => message.role === "tool")
     .map((message) => llmMessageContentToText(message.content))
-    .filter((content) => content.includes("session_key") || content.includes('"sessions"'))
+    .filter(
+      (content) =>
+        content.includes("session_key") || content.includes('"sessions"'),
+    )
     .join("\n");
   return toolEvidence ? `${taskPrompt}\n${toolEvidence}` : taskPrompt;
 }
@@ -2912,7 +4922,11 @@ function llmMessageContentToText(content: LLMMessage["content"]): string {
 }
 
 function sessionContextSupportsContinuation(context: string): boolean {
-  if (/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
+  if (
+    /\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(
+      context,
+    )
+  ) {
     return true;
   }
   if (contextHasListedContinuableSession(context)) {
@@ -2926,20 +4940,32 @@ function sessionContextSupportsContinuation(context: string): boolean {
   return false;
 }
 
-function shouldCloseoutCancelledSessionWithoutContinuation(input: { taskPrompt: string; messages: LLMMessage[] }): boolean {
-  const context = buildContinuationDirectiveContext(input.taskPrompt, input.messages);
+function shouldCloseoutCancelledSessionWithoutContinuation(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+}): boolean {
+  const context = buildContinuationDirectiveContext(
+    input.taskPrompt,
+    input.messages,
+  );
   if (!contextHasCancelledSessionResult(context)) {
     return false;
   }
-  return !isExplicitSessionContinuationRequest(extractLatestUserContinuationText(input.taskPrompt));
+  return !isExplicitSessionContinuationRequest(
+    extractLatestUserContinuationText(input.taskPrompt),
+  );
 }
 
 function contextHasCancelledSessionResult(context: string): boolean {
-  return extractSessionToolResultRecords(context).some((result) => result["status"] === "cancelled");
+  return extractSessionToolResultRecords(context).some(
+    (result) => result["status"] === "cancelled",
+  );
 }
 
 function contextHasTimeoutSessionResult(context: string): boolean {
-  return extractSessionToolResultRecords(context).some((result) => result["status"] === "timeout");
+  return extractSessionToolResultRecords(context).some(
+    (result) => result["status"] === "timeout",
+  );
 }
 
 function shouldAppendTimeoutContinuationVisibility(input: {
@@ -2947,18 +4973,32 @@ function shouldAppendTimeoutContinuationVisibility(input: {
   messages: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  const taskPromptSuffix = input.taskPrompt.slice(Math.max(0, input.taskPrompt.length - 4000));
+  const taskPromptSuffix = input.taskPrompt.slice(
+    Math.max(0, input.taskPrompt.length - 4000),
+  );
   if (
-    !isExplicitSessionContinuationRequest(extractLatestUserContinuationText(taskPromptSuffix)) &&
+    !isExplicitSessionContinuationRequest(
+      extractLatestUserContinuationText(taskPromptSuffix),
+    ) &&
     !isExplicitSessionContinuationRequest(taskPromptSuffix)
   ) {
     return false;
   }
-  if (!input.toolTrace.some((roundTrace) => roundTrace.calls.some((call) => call.name === "sessions_send"))) {
+  if (
+    !input.toolTrace.some((roundTrace) =>
+      roundTrace.calls.some((call) => call.name === "sessions_send"),
+    )
+  ) {
     return false;
   }
-  const context = buildContinuationDirectiveContext(input.taskPrompt, input.messages);
-  return toolTraceHasTimeoutResult(input.toolTrace) || contextHasTimeoutSessionResult(context);
+  const context = buildContinuationDirectiveContext(
+    input.taskPrompt,
+    input.messages,
+  );
+  return (
+    toolTraceHasTimeoutResult(input.toolTrace) ||
+    contextHasTimeoutSessionResult(context)
+  );
 }
 
 function contextHasSessionListResult(context: string): boolean {
@@ -2999,7 +5039,222 @@ function contextHasListedContinuableSession(context: string): boolean {
   return false;
 }
 
-function extractSessionToolResultRecords(context: string): Array<Record<string, unknown>> {
+function selectListedContinuationSessionKey(
+  context: string,
+  latestUserText: string,
+): { sessionKey: string; priority: number } | null {
+  let selected: {
+    sessionKey: string;
+    priority: number;
+    lastActiveAt: number;
+  } | null = null;
+  for (const parsed of parseJsonObjectsFromContext(context)) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      continue;
+    }
+    const sessions = (parsed as Record<string, unknown>)["sessions"];
+    if (!Array.isArray(sessions)) {
+      continue;
+    }
+    for (const session of sessions) {
+      if (!session || typeof session !== "object" || Array.isArray(session)) {
+        continue;
+      }
+      const record = session as Record<string, unknown>;
+      const sessionKey =
+        typeof record["session_key"] === "string"
+          ? record["session_key"].trim()
+          : "";
+      const priority = listedSessionContinuationPriority(
+        record,
+        latestUserText,
+      );
+      if (!sessionKey || priority <= 0) {
+        continue;
+      }
+      const lastActiveAt =
+        typeof record["last_active_at"] === "number"
+          ? record["last_active_at"]
+          : 0;
+      if (
+        !selected ||
+        priority > selected.priority ||
+        (priority === selected.priority &&
+          lastActiveAt >= selected.lastActiveAt)
+      ) {
+        selected = { sessionKey, priority, lastActiveAt };
+      }
+    }
+  }
+  return selected
+    ? { sessionKey: selected.sessionKey, priority: selected.priority }
+    : null;
+}
+
+function selectExplicitContinuationSessionKey(
+  context: string,
+  latestUserText: string,
+): string | null {
+  let selected: { sessionKey: string; priority: number; index: number } | null =
+    null;
+  const matches = [
+    ...context.matchAll(/\bworker:[A-Za-z0-9_-]+:task(?::|-)[^\s"'`,|}\]]+/g),
+  ];
+  for (const match of matches) {
+    const sessionKey = match[0];
+    if (!sessionKey || /(?:…|\.{3})/.test(sessionKey)) {
+      continue;
+    }
+    const index = match.index ?? 0;
+    const local = context.slice(
+      Math.max(0, index - 800),
+      Math.min(context.length, index + 800),
+    );
+    if (
+      /"session_key"\s*:\s*"/.test(
+        context.slice(Math.max(0, index - 40), index),
+      )
+    ) {
+      continue;
+    }
+    const priority = explicitSessionContinuationPriority(
+      sessionKey,
+      local,
+      latestUserText,
+    );
+    if (priority <= 0) {
+      continue;
+    }
+    if (
+      !selected ||
+      priority > selected.priority ||
+      (priority === selected.priority && index > selected.index)
+    ) {
+      selected = { sessionKey, priority, index };
+    }
+  }
+  return selected?.sessionKey ?? null;
+}
+
+function explicitSessionContinuationPriority(
+  sessionKey: string,
+  localContext: string,
+  latestUserText: string,
+): number {
+  if (
+    !/\b(?:resume|continue|continuation|timed out|timeout|resumable|interrupted|source-check|source check)\b/i.test(
+      localContext,
+    )
+  ) {
+    return 0;
+  }
+  let priority = 1;
+  const agentId = inferWorkerKindFromSessionKey(sessionKey) ?? "";
+  if (/\b(?:timeout|timed out|WORKER_TIMEOUT)\b/i.test(localContext)) {
+    priority += 3;
+  }
+  if (
+    /\b(?:resume|continue|continuation|same|existing)\b/i.test(localContext)
+  ) {
+    priority += 2;
+  }
+  if (
+    agentId === "explore" &&
+    /\b(?:slow-source|slow source|source-check|source check|source|research|release-risk|release risk)\b/i.test(
+      latestUserText,
+    )
+  ) {
+    priority += 3;
+  }
+  if (
+    agentId === "browser" &&
+    /\b(?:browser|dashboard|page|tab|rendered|visual)\b/i.test(latestUserText)
+  ) {
+    priority += 2;
+  }
+  return priority;
+}
+
+function listedSessionContinuationPriority(
+  record: Record<string, unknown>,
+  latestUserText: string,
+): number {
+  const status = typeof record["status"] === "string" ? record["status"] : "";
+  const agentId =
+    typeof record["agent_id"] === "string" ? record["agent_id"] : "";
+  const label = typeof record["label"] === "string" ? record["label"] : "";
+  let priority = 0;
+  if (status === "timeout") {
+    priority = 5;
+  } else if (
+    status === "resumable" ||
+    status === "waiting_input" ||
+    status === "waiting_external"
+  ) {
+    priority = 3;
+  } else if (status === "cancelled" || status === "canceled") {
+    priority = 3;
+  } else if (status === "done" || status === "completed") {
+    priority = 1;
+  }
+  if (priority === 0) {
+    return 0;
+  }
+  const relevanceText = `${agentId} ${label}`;
+  if (
+    /\b(?:slow-source|slow source|source-check|source check|source|research|release-risk|release risk)\b/i.test(
+      latestUserText,
+    )
+  ) {
+    if (agentId === "explore") {
+      priority += 3;
+    }
+    if (/\b(?:slow|source|fetch|research|risk)\b/i.test(label)) {
+      priority += 2;
+    }
+  }
+  if (
+    /\b(?:browser|dashboard|page|tab|rendered|visual)\b/i.test(
+      latestUserText,
+    ) &&
+    agentId === "browser"
+  ) {
+    priority += 2;
+  }
+  if (
+    /\b(?:slow-source|slow source|source-check|source check)\b/i.test(
+      latestUserText,
+    ) &&
+    /\bbrowser\b/i.test(relevanceText)
+  ) {
+    priority -= 1;
+  }
+  return priority;
+}
+
+function contextHasTruncatedTimeoutContinuationCandidate(
+  context: string,
+  latestUserText: string,
+): boolean {
+  if (
+    !continuationRequestPrefersResumableSession({
+      latestUserText,
+      context,
+    })
+  ) {
+    return false;
+  }
+  const truncatedWorkerKey =
+    /"session_key"\s*:\s*"worker:[^"]*(?:…|\.{3})[^"]*"/i;
+  if (!truncatedWorkerKey.test(context)) {
+    return false;
+  }
+  return /\b(?:timeout|timed out|WORKER_TIMEOUT)\b/i.test(context);
+}
+
+function extractSessionToolResultRecords(
+  context: string,
+): Array<Record<string, unknown>> {
   const records: Array<Record<string, unknown>> = [];
   for (const parsed of parseJsonObjectsFromContext(context)) {
     collectSessionToolResultRecords(parsed, records);
@@ -3007,7 +5262,10 @@ function extractSessionToolResultRecords(context: string): Array<Record<string, 
   return records;
 }
 
-function collectSessionToolResultRecords(value: unknown, records: Array<Record<string, unknown>>): void {
+function collectSessionToolResultRecords(
+  value: unknown,
+  records: Array<Record<string, unknown>>,
+): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return;
   }
@@ -3017,7 +5275,10 @@ function collectSessionToolResultRecords(value: unknown, records: Array<Record<s
   }
   for (const key of ["content", "resultContent"]) {
     const nested = result[key];
-    if (typeof nested !== "string" || !nested.includes(SESSION_TOOL_RESULT_PROTOCOL)) {
+    if (
+      typeof nested !== "string" ||
+      !nested.includes(SESSION_TOOL_RESULT_PROTOCOL)
+    ) {
       continue;
     }
     for (const parsed of parseJsonObjectsFromContext(nested)) {
@@ -3026,21 +5287,63 @@ function collectSessionToolResultRecords(value: unknown, records: Array<Record<s
   }
 }
 
-function sessionToolResultSupportsContinuation(result: Record<string, unknown>): boolean {
+function sessionToolResultSupportsContinuation(
+  result: Record<string, unknown>,
+): boolean {
   return sessionToolResultContinuationPriority(result) > 0;
 }
 
-function sessionToolResultContinuationPriority(result: Record<string, unknown>): number {
+function sessionToolResultContinuationPriority(
+  result: Record<string, unknown>,
+  latestUserText = "",
+): number {
   if (result["protocol"] !== SESSION_TOOL_RESULT_PROTOCOL) {
     return 0;
   }
-  if (result["status"] === "timeout" || result["status"] === "cancelled" || result["resumable"] === true) {
-    return 3;
+  let priority = 0;
+  if (
+    result["status"] === "timeout" ||
+    result["status"] === "cancelled" ||
+    result["resumable"] === true
+  ) {
+    priority = result["status"] === "timeout" ? 4 : 3;
+  } else if (result["status"] === "completed") {
+    priority = 1;
   }
-  if (result["status"] === "completed") {
-    return 1;
+  if (priority === 0) {
+    return 0;
   }
-  return 0;
+  const agentId =
+    typeof result["agent_id"] === "string" ? result["agent_id"] : "";
+  if (
+    result["status"] === "timeout" &&
+    /\b(?:timeout|timed out|slow-source|slow source|source-check|source check)\b/i.test(
+      latestUserText,
+    )
+  ) {
+    priority += 3;
+  }
+  if (
+    agentId === "explore" &&
+    /\b(?:slow-source|slow source|source-check|source check|source|research)\b/i.test(
+      latestUserText,
+    )
+  ) {
+    priority += 2;
+  }
+  if (
+    agentId === "browser" &&
+    /\b(?:browser|dashboard|page|tab|rendered|visual)\b/i.test(latestUserText)
+  ) {
+    priority += 2;
+  }
+  if (
+    result["status"] === "cancelled" &&
+    /\b(?:cancelled|canceled)\b/i.test(latestUserText)
+  ) {
+    priority += 3;
+  }
+  return priority;
 }
 
 function parseJsonObjectsFromContext(context: string): unknown[] {
@@ -3100,19 +5403,37 @@ function findJsonObjectEnd(context: string, start: number): number | null {
 
 function isExplicitSessionContinuationRequest(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").trim();
-  if (!/\b(continue|continuation|resume|retry|revisit|follow-?up)\b/i.test(normalized)) {
+  if (
+    !/\b(continue|continuation|resume|retry|revisit|follow-?up)\b/i.test(
+      normalized,
+    )
+  ) {
     return false;
   }
-  if (/\b(?:follow-?up|later|afterward|afterwards|future)\b.{0,120}\b(?:may|might|can|could|should)\s+(?:ask|request)\b/i.test(normalized)) {
+  if (
+    /\b(?:follow-?up|later|afterward|afterwards|future)\b.{0,120}\b(?:may|might|can|could|should)\s+(?:ask|request)\b/i.test(
+      normalized,
+    )
+  ) {
     return false;
   }
-  if (/\b(?:may|might|can|could|should)\s+(?:ask|request)\b.{0,120}\b(?:continue|resume|retry|revisit|follow-?up)\b/i.test(normalized)) {
+  if (
+    /\b(?:may|might|can|could|should)\s+(?:ask|request)\b.{0,120}\b(?:continue|resume|retry|revisit|follow-?up)\b/i.test(
+      normalized,
+    )
+  ) {
     return false;
   }
-  if (/^(?:please\s+)?(?:continue|resume|retry|revisit|follow-?up)\b/i.test(normalized)) {
+  if (
+    /^(?:please\s+)?(?:continue|resume|retry|revisit|follow-?up)\b/i.test(
+      normalized,
+    )
+  ) {
     return true;
   }
-  return /\b(?:continue|resume|retry|revisit)\s+(?:from|the|that|this|same|existing|previous|prior)\b/i.test(normalized);
+  return /\b(?:continue|resume|retry|revisit)\s+(?:from|the|that|this|same|existing|previous|prior)\b/i.test(
+    normalized,
+  );
 }
 
 function extractLatestUserContinuationText(taskPrompt: string): string {
@@ -3120,13 +5441,27 @@ function extractLatestUserContinuationText(taskPrompt: string): string {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const latestUserLine = [...lines].reverse().find((line) => /^\[?user\]?(?:[:：]|\s+)/i.test(line));
-  const content = latestUserLine ? latestUserLine.replace(/^\[?user\]?(?:[:：]|\s+)\s*/i, "") : lines.at(-1) ?? taskPrompt;
-  return sliceUtf8(content.replace(/\s+/g, " ").trim() || "Continue the same delegated work from the existing session.", 1200);
+  const latestUserLine = [...lines]
+    .reverse()
+    .find((line) => /^\[?user\]?(?:[:：]|\s+)/i.test(line));
+  const content = latestUserLine
+    ? latestUserLine.replace(/^\[?user\]?(?:[:：]|\s+)\s*/i, "")
+    : (lines.at(-1) ?? taskPrompt);
+  return sliceUtf8(
+    content.replace(/\s+/g, " ").trim() ||
+      "Continue the same delegated work from the existing session.",
+    1200,
+  );
 }
 
-function buildSessionContinuationMessageHint(taskPrompt: string, latestUserText: string): string {
-  const priorContext = extractPriorContinuationContext(taskPrompt, latestUserText);
+function buildSessionContinuationMessageHint(
+  taskPrompt: string,
+  latestUserText: string,
+): string {
+  const priorContext = extractPriorContinuationContext(
+    taskPrompt,
+    latestUserText,
+  );
   if (!priorContext) {
     return latestUserText;
   }
@@ -3140,9 +5475,13 @@ function buildSessionContinuationMessageHint(taskPrompt: string, latestUserText:
   ].join("\n");
 }
 
-function extractPriorContinuationContext(taskPrompt: string, latestUserText: string): string {
+function extractPriorContinuationContext(
+  taskPrompt: string,
+  latestUserText: string,
+): string {
   const latestIndex = taskPrompt.lastIndexOf(latestUserText);
-  const priorRaw = latestIndex > 0 ? taskPrompt.slice(0, latestIndex) : taskPrompt;
+  const priorRaw =
+    latestIndex > 0 ? taskPrompt.slice(0, latestIndex) : taskPrompt;
   const compact = priorRaw
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -3158,7 +5497,7 @@ function extractPriorContinuationContext(taskPrompt: string, latestUserText: str
 
 function applySessionContinuationDirective(
   toolCalls: LLMToolCall[],
-  directive: SessionContinuationDirective | null
+  directive: SessionContinuationDirective | null,
 ): LLMToolCall[] {
   if (!directive || toolCalls.length === 0) {
     return toolCalls;
@@ -3173,17 +5512,23 @@ function applySessionContinuationDirective(
               input: {
                 ...call.input,
                 session_key: directive.sessionKey,
-                message: mergeSessionContinuationMessage(directive, readStringInput(call.input, "message")),
+                message: mergeSessionContinuationMessage(
+                  directive,
+                  readStringInput(call.input, "message"),
+                ),
               },
             }
-          : call
+          : call,
       );
   }
-  const spawnIndex = toolCalls.findIndex((call) => call.name === "sessions_spawn");
+  const spawnIndex = toolCalls.findIndex(
+    (call) => call.name === "sessions_spawn",
+  );
   if (spawnIndex < 0) {
     return toolCalls;
   }
-  const rewritten = toolCalls[spawnIndex]!;
+  const rewritten =
+    toolCalls[spawnIndex]!;
   return [
     ...toolCalls.slice(0, spawnIndex),
     {
@@ -3191,38 +5536,70 @@ function applySessionContinuationDirective(
       name: "sessions_send",
       input: {
         session_key: directive.sessionKey,
-        message: mergeSessionContinuationMessage(directive, readStringInput(rewritten.input, "task")),
-        ...(readStringInput(rewritten.input, "label") ? { label: readStringInput(rewritten.input, "label") } : {}),
+        message: mergeSessionContinuationMessage(
+          directive,
+          readStringInput(rewritten.input, "task"),
+        ),
+        ...(readStringInput(rewritten.input, "label")
+          ? { label: readStringInput(rewritten.input, "label") }
+          : {}),
       },
     },
-    ...toolCalls.slice(spawnIndex + 1).filter((call) => call.name !== "sessions_spawn"),
+    ...toolCalls
+      .slice(spawnIndex + 1)
+      .filter((call) => call.name !== "sessions_spawn"),
   ];
 }
 
-function mergeSessionContinuationMessage(directive: SessionContinuationDirective, proposedMessage: string | undefined): string {
+function mergeSessionContinuationMessage(
+  directive: SessionContinuationDirective,
+  proposedMessage: string | undefined,
+): string {
   const proposed = proposedMessage?.trim();
-  if (!proposed || proposed === directive.messageHint || proposed.includes("Continuation context from the original task")) {
+  if (
+    !proposed ||
+    proposed === directive.messageHint ||
+    proposed.includes("Continuation context from the original task")
+  ) {
     return proposed || directive.messageHint;
   }
-  if (!directive.messageHint.includes("Continuation context from the original task")) {
+  if (
+    !directive.messageHint.includes(
+      "Continuation context from the original task",
+    )
+  ) {
     return proposed;
   }
-  return [proposed, "", "Runtime continuity guard:", directive.messageHint].join("\n");
+  return [
+    proposed,
+    "",
+    "Runtime continuity guard:",
+    directive.messageHint,
+  ].join("\n");
 }
 
 function applySessionContinuationLookupDirective(
   toolCalls: LLMToolCall[],
-  directive: SessionContinuationLookupDirective | null
+  directive: SessionContinuationLookupDirective | null,
 ): LLMToolCall[] {
   if (!directive || toolCalls.length === 0) {
     return toolCalls;
   }
-  const sendIndex = toolCalls.findIndex((call) => call.name === "sessions_send");
+  const sendIndex = toolCalls.findIndex(
+    (call) => call.name === "sessions_send",
+  );
   if (sendIndex >= 0) {
     const sent = toolCalls[sendIndex]!;
-    const agentId = inferWorkerKindFromSessionKey(readStringInput(sent.input, "session_key"));
+    const agentId = inferWorkerKindFromSessionKey(
+      readStringInput(sent.input, "session_key"),
+    );
     return [
-      ...toolCalls.slice(0, sendIndex).filter((call) => call.name !== "sessions_spawn" && call.name !== "sessions_send"),
+      ...toolCalls
+        .slice(0, sendIndex)
+        .filter(
+          (call) =>
+            call.name !== "sessions_spawn" && call.name !== "sessions_send",
+        ),
       {
         ...sent,
         name: "sessions_list",
@@ -3232,13 +5609,20 @@ function applySessionContinuationLookupDirective(
           reason: `continuation lookup: ${directive.messageHint}`,
         },
       },
-      ...toolCalls.slice(sendIndex + 1).filter((call) => call.name !== "sessions_spawn" && call.name !== "sessions_send"),
+      ...toolCalls
+        .slice(sendIndex + 1)
+        .filter(
+          (call) =>
+            call.name !== "sessions_spawn" && call.name !== "sessions_send",
+        ),
     ];
   }
   if (toolCalls.some((call) => call.name === "sessions_list")) {
     return toolCalls.filter((call) => call.name !== "sessions_spawn");
   }
-  const spawnIndex = toolCalls.findIndex((call) => call.name === "sessions_spawn");
+  const spawnIndex = toolCalls.findIndex(
+    (call) => call.name === "sessions_spawn",
+  );
   if (spawnIndex < 0) {
     return toolCalls;
   }
@@ -3255,7 +5639,9 @@ function applySessionContinuationLookupDirective(
         reason: `continuation lookup: ${directive.messageHint}`,
       },
     },
-    ...toolCalls.slice(spawnIndex + 1).filter((call) => call.name !== "sessions_spawn"),
+    ...toolCalls
+      .slice(spawnIndex + 1)
+      .filter((call) => call.name !== "sessions_spawn"),
   ];
 }
 
@@ -3267,14 +5653,61 @@ function inferWorkerKindFromSessionKey(sessionKey: unknown): string | null {
   return match?.[1] ?? null;
 }
 
-function normalizeSessionToolCalls(toolCalls: LLMToolCall[], sessionContext = ""): LLMToolCall[] {
+const SESSION_SEND_ALIAS_NAMES = new Set([
+  "session_continue",
+  "session_resume",
+  "session_update",
+  "sessions_continue",
+  "sessions_resume",
+  "sessions_update",
+]);
+
+function normalizeSessionToolAliasCalls(
+  toolCalls: LLMToolCall[],
+): LLMToolCall[] {
+  return toolCalls.map((call) => {
+    if (!SESSION_SEND_ALIAS_NAMES.has(call.name)) {
+      return call;
+    }
+    const sessionKey =
+      readStringInput(call.input, "session_key") ??
+      readStringInput(call.input, "session") ??
+      readStringInput(call.input, "session_id") ??
+      readStringInput(call.input, "worker_session") ??
+      readStringInput(call.input, "worker_session_key");
+    const message =
+      readStringInput(call.input, "message") ??
+      readStringInput(call.input, "task") ??
+      readStringInput(call.input, "instruction") ??
+      readStringInput(call.input, "instructions") ??
+      readStringInput(call.input, "update") ??
+      readStringInput(call.input, "content") ??
+      readStringInput(call.input, "query");
+    return {
+      ...call,
+      name: "sessions_send",
+      input: {
+        ...call.input,
+        ...(sessionKey ? { session_key: sessionKey } : {}),
+        ...(message ? { message } : {}),
+      },
+    };
+  });
+}
+
+function normalizeSessionToolCalls(
+  toolCalls: LLMToolCall[],
+  sessionContext = "",
+): LLMToolCall[] {
   const knownSessionKeys = extractKnownWorkerSessionKeys(sessionContext);
   return toolCalls.map((call) => {
     if (call.name !== "sessions_send" && call.name !== "sessions_history") {
       return call;
     }
     const sessionKey = readStringInput(call.input, "session_key");
-    const extractedSessionKey = sessionKey ? extractWorkerSessionKey(sessionKey) : undefined;
+    const extractedSessionKey = sessionKey
+      ? extractWorkerSessionKey(sessionKey)
+      : undefined;
     const normalizedSessionKey = extractedSessionKey
       ? resolveKnownWorkerSessionKey(extractedSessionKey, knownSessionKeys)
       : undefined;
@@ -3293,13 +5726,16 @@ function normalizeSessionToolCalls(toolCalls: LLMToolCall[], sessionContext = ""
 
 function normalizePrivateUrlResearchSpawnCalls(
   toolCalls: LLMToolCall[],
-  context: { browserAvailable: boolean; taskPrompt: string }
+  context: { browserAvailable: boolean; taskPrompt: string },
 ): LLMToolCall[] {
   if (!context.browserAvailable) {
     return toolCalls;
   }
   return toolCalls.map((call) => {
-    if (call.name !== "sessions_spawn" || readStringInput(call.input, "agent_id") !== "explore") {
+    if (
+      call.name !== "sessions_spawn" ||
+      readStringInput(call.input, "agent_id") !== "explore"
+    ) {
       return call;
     }
     const task = readStringInput(call.input, "task") ?? "";
@@ -3309,7 +5745,10 @@ function normalizePrivateUrlResearchSpawnCalls(
       toolCallText: combined,
       taskPrompt: context.taskPrompt,
     });
-    if (!containsPrivateOrLoopbackHttpUrl(combined) && !targetsBrowserRequiredUrl) {
+    if (
+      !containsPrivateOrLoopbackHttpUrl(combined) &&
+      !targetsBrowserRequiredUrl
+    ) {
       return call;
     }
     if (
@@ -3341,9 +5780,131 @@ function normalizePrivateUrlResearchSpawnCalls(
   });
 }
 
+function normalizeBoundedTimeoutSourceSpawnAgents(
+  toolCalls: LLMToolCall[],
+  context: { exploreAvailable: boolean; taskPrompt: string },
+): LLMToolCall[] {
+  if (
+    !context.exploreAvailable ||
+    !looksBoundedTimeoutSourceCheck(context.taskPrompt)
+  ) {
+    return toolCalls;
+  }
+  return toolCalls.map((call) => {
+    if (
+      call.name !== "sessions_spawn" ||
+      readStringInput(call.input, "agent_id") !== "browser"
+    ) {
+      return call;
+    }
+    const task = readStringInput(call.input, "task") ?? "";
+    const label = readStringInput(call.input, "label") ?? "";
+    const callText = [task, label].join("\n");
+    if (extractHttpUrls(callText).length === 0) {
+      return call;
+    }
+    const browserRequired =
+      taskRequiresBrowserEvidence(context.taskPrompt) ||
+      taskRequiresBrowserEvidence(callText) ||
+      toolCallTargetsBrowserRequiredUrl({
+        toolCallText: callText,
+        taskPrompt: context.taskPrompt,
+      });
+    if (browserRequired) {
+      return call;
+    }
+    return {
+      ...call,
+      input: {
+        ...call.input,
+        agent_id: "explore",
+        task: [
+          "Use the explore worker for this bounded source-check; browser-visible/rendered evidence was not requested.",
+          task,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      },
+    };
+  });
+}
+
+function normalizeBoundedTimeoutDuplicateSourceSpawns(
+  toolCalls: LLMToolCall[],
+  context: { taskPrompt: string },
+): LLMToolCall[] {
+  if (!looksBoundedTimeoutSourceCheck(context.taskPrompt)) {
+    return toolCalls;
+  }
+  const selectedByUrlSet = new Map<string, { index: number; score: number }>();
+  const droppedIndexes = new Set<number>();
+  toolCalls.forEach((call, index) => {
+    if (call.name !== "sessions_spawn") {
+      return;
+    }
+    const urls = dedupeStrings(
+      extractHttpUrls(
+        [
+          readStringInput(call.input, "task") ?? "",
+          readStringInput(call.input, "label") ?? "",
+        ].join("\n"),
+      ).map(normalizeUrlForComparison),
+    ).sort();
+    if (urls.length !== 1) {
+      return;
+    }
+    const urlSetKey = urls.join("\n");
+    const score = scoreBoundedTimeoutSourceSpawn(call, context.taskPrompt);
+    const current = selectedByUrlSet.get(urlSetKey);
+    if (!current || score > current.score) {
+      if (current) {
+        droppedIndexes.add(current.index);
+      }
+      selectedByUrlSet.set(urlSetKey, { index, score });
+      return;
+    }
+    droppedIndexes.add(index);
+  });
+  if (droppedIndexes.size === 0) {
+    return toolCalls;
+  }
+  return toolCalls.filter((_, index) => !droppedIndexes.has(index));
+}
+
+function looksBoundedTimeoutSourceCheck(text: string): boolean {
+  return (
+    /\b(?:bounded attempt|bounded retry|does not return|doesn't return|slow[- ]source|source[- ]check|timeout|timed out|resume(?:d)? the existing source|continue from the slow[- ]source)\b/i.test(
+      text,
+    ) && extractHttpUrls(text).length > 0
+  );
+}
+
+function scoreBoundedTimeoutSourceSpawn(
+  call: LLMToolCall,
+  taskPrompt: string,
+): number {
+  const agentId = readStringInput(call.input, "agent_id") ?? "";
+  const callText = [
+    readStringInput(call.input, "task") ?? "",
+    readStringInput(call.input, "label") ?? "",
+  ].join("\n");
+  const browserRequired =
+    taskRequiresBrowserEvidence(taskPrompt) ||
+    taskRequiresBrowserEvidence(callText) ||
+    toolCallTargetsBrowserRequiredUrl({ toolCallText: callText, taskPrompt });
+  if (browserRequired) {
+    if (agentId === "browser") return 30;
+    if (agentId === "explore") return 10;
+    return 0;
+  }
+  if (agentId === "explore") return 30;
+  if (agentId === "browser") return 10;
+  return 0;
+}
+
 function normalizeApprovalGatedBrowserSpawnCalls(
   toolCalls: LLMToolCall[],
-  context: { taskPrompt: string; sessionContext: string }
+  context: { taskPrompt: string; sessionContext: string },
 ): LLMToolCall[] {
   const browserSpawnCalls = toolCalls.filter(isBrowserSessionSpawn);
   if (browserSpawnCalls.length <= 1) {
@@ -3376,18 +5937,90 @@ function normalizeApprovalGatedBrowserSpawnCalls(
 }
 
 function isBrowserSessionSpawn(call: LLMToolCall): boolean {
-  return call.name === "sessions_spawn" && readStringInput(call.input, "agent_id") === "browser";
+  return (
+    call.name === "sessions_spawn" &&
+    readStringInput(call.input, "agent_id") === "browser"
+  );
 }
 
-function hasCompletedBrowserSessionEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
+function hasCompletedBrowserSessionEvidence(
+  toolTrace: NativeToolRoundTrace[],
+): boolean {
   return toolTrace.some((round) =>
     round.results.some((result) => {
-      if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+      if (
+        result.toolName !== "sessions_spawn" &&
+        result.toolName !== "sessions_send"
+      ) {
         return false;
       }
-      const parsed = result.content ? parseSessionToolResult(result.content) : null;
-      return Boolean(parsed && parsed.status === "completed" && parsed.agent_id === "browser" && readCompletedSessionEvidence(parsed));
-    })
+      const parsed = result.content
+        ? parseSessionToolResult(result.content)
+        : null;
+      return Boolean(
+        parsed &&
+        parsed.status === "completed" &&
+        parsed.agent_id === "browser" &&
+        readCompletedSessionEvidence(parsed),
+      );
+    }),
+  );
+}
+
+function collectCompletedSessionEvidenceText(
+  toolTrace: NativeToolRoundTrace[],
+): string {
+  const evidence: string[] = [];
+  for (const round of toolTrace) {
+    for (const result of round.results) {
+      if (
+        result.toolName !== "sessions_spawn" &&
+        result.toolName !== "sessions_send"
+      ) {
+        continue;
+      }
+      const parsed = result.content
+        ? parseSessionToolResult(result.content)
+        : null;
+      if (!parsed || parsed.status !== "completed") {
+        continue;
+      }
+      const completedEvidence = readCompletedSessionEvidence(parsed);
+      if (completedEvidence) {
+        evidence.push(completedEvidence);
+      }
+    }
+  }
+  return dedupeStrings(evidence).join("\n\n");
+}
+
+function taskRequestsProductSignalDashboardEvidence(text: string): boolean {
+  return /\b(?:product-signals|live signal dashboard|product signal dashboard)\b/i.test(
+    text,
+  );
+}
+
+function hasProductSignalDashboardMetrics(text: string): boolean {
+  return (
+    /\bStuck missions?\s*:\s*6\b/i.test(text) &&
+    /\bWeak answer rate\s*:\s*24%(?!\d)/i.test(text)
+  );
+}
+
+function extractProductSignalDashboardUrl(taskPrompt: string): string | null {
+  const lines = taskPrompt.split(/\r?\n/);
+  for (const line of lines) {
+    if (!taskRequestsProductSignalDashboardEvidence(line)) {
+      continue;
+    }
+    const url = extractHttpUrls(line)[0];
+    if (url) {
+      return url;
+    }
+  }
+  return (
+    extractHttpUrls(taskPrompt).find((url) => /product-signals/i.test(url)) ??
+    null
   );
 }
 
@@ -3401,10 +6034,10 @@ function taskRequiresBrowserEvidence(text: string): boolean {
   }
   return (
     /\b(?:browser-visible|browser rendered|browser-rendered|browser-observed|as (?:a|an) (?:user|operator) would see|user-visible|visible page|rendered page|rendered DOM|client[- ]side|JavaScript-rendered|JS-rendered|dynamic dashboard|live dashboard)\b/i.test(
-      normalized
+      normalized,
     ) ||
     /\b(?:iframe|embedded source frame|frame content|shadow(?:-style)? component|shadow DOM|details popup|popup workflow|open the details popup)\b/i.test(
-      normalized
+      normalized,
     )
   );
 }
@@ -3412,34 +6045,51 @@ function taskRequiresBrowserEvidence(text: string): boolean {
 function explicitlyDisclaimsBrowserRenderedEvidence(text: string): boolean {
   return (
     /\b(?:not|never)\s+(?:a\s+)?(?:browser-visible|browser-rendered|browser rendered|browser-observed|user-visible)\b/i.test(
-      text
+      text,
     ) ||
     /\b(?:no|without)\s+(?:client[- ]side|JavaScript-rendered|JS-rendered|rendered DOM|browser-rendered|browser rendered|browser-visible)\s+(?:rendering|content|evidence|required|needed)?\b/i.test(
-      text
+      text,
     ) ||
     /\bstatic HTML only\b[\s\S]{0,80}\b(?:no|without)\s+(?:JavaScript|JS|client[- ]side|browser-rendered|browser rendered)\b/i.test(
-      text
+      text,
     )
   );
 }
 
-function toolCallTargetsBrowserRequiredUrl(input: { toolCallText: string; taskPrompt: string }): boolean {
+function toolCallTargetsBrowserRequiredUrl(input: {
+  toolCallText: string;
+  taskPrompt: string;
+}): boolean {
   const urls = extractHttpUrls(input.toolCallText);
   if (urls.length === 0 || !taskRequiresBrowserEvidence(input.taskPrompt)) {
     return false;
   }
-  return urls.some((url) => taskPromptRequiresBrowserForUrl(input.taskPrompt, url));
+  return urls.some((url) =>
+    taskPromptRequiresBrowserForUrl(input.taskPrompt, url),
+  );
 }
 
-function taskPromptRequiresBrowserForUrl(taskPrompt: string, url: string): boolean {
+function taskPromptRequiresBrowserForUrl(
+  taskPrompt: string,
+  url: string,
+): boolean {
   const normalizedUrl = normalizeUrlForComparison(url);
   const lines = taskPrompt.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
-    if (!extractHttpUrls(line).some((candidate) => normalizeUrlForComparison(candidate) === normalizedUrl)) {
+    if (
+      !extractHttpUrls(line).some(
+        (candidate) => normalizeUrlForComparison(candidate) === normalizedUrl,
+      )
+    ) {
       continue;
     }
-    const localContext = [lines[index - 1], line, lines[index + 1], lines[index + 2]]
+    const localContext = [
+      lines[index - 1],
+      line,
+      lines[index + 1],
+      lines[index + 2],
+    ]
       .filter((item): item is string => typeof item === "string")
       .join("\n");
     if (taskRequiresBrowserEvidence(localContext)) {
@@ -3466,22 +6116,35 @@ function looksApprovalGatedBrowserSideEffect(text: string): boolean {
   }
   const hasApprovalContext =
     /\b(?:approval|approve|approved|permission|authorize|authorized|operator\s+review|gate|gated|dry-?run)\b/i.test(
-      normalized
+      normalized,
     ) || /\bbrowser\.[a-z0-9_.-]+\b/i.test(normalized);
   const hasBrowserMutation =
     /\b(?:submit|click|press|type|fill|select|upload|download|delete|save|apply|confirm|purchase|checkout|sign\s*in|log\s*in|form)\b/i.test(
-      normalized
-    ) || /\bbrowser\.(?:form\.submit|click|input|type|select|upload|download|permission)\b/i.test(normalized);
+      normalized,
+    ) ||
+    /\bbrowser\.(?:form\.submit|click|input|type|select|upload|download|permission)\b/i.test(
+      normalized,
+    );
   return hasApprovalContext && hasBrowserMutation;
 }
 
-function hasExecutedSessionsSend(toolTrace: NativeToolRoundTrace[], sessionKey: string): boolean {
+function hasExecutedSessionsSend(
+  toolTrace: NativeToolRoundTrace[],
+  sessionKey: string,
+): boolean {
   return toolTrace.some((round) =>
-    round.calls.some((call) => call.name === "sessions_send" && readStringInput(call.input, "session_key") === sessionKey)
+    round.calls.some(
+      (call) =>
+        call.name === "sessions_send" &&
+        readStringInput(call.input, "session_key") === sessionKey,
+    ),
   );
 }
 
-function hasToolDefinition(tools: GenerateTextInput["tools"] | undefined, name: string): boolean {
+function hasToolDefinition(
+  tools: GenerateTextInput["tools"] | undefined,
+  name: string,
+): boolean {
   return (tools ?? []).some((tool) => tool.name === name);
 }
 
@@ -3490,23 +6153,29 @@ function extractWorkerSessionKey(value: string): string | undefined {
 }
 
 function extractKnownWorkerSessionKeys(context: string): string[] {
-  const matches = context.match(/\bworker:[A-Za-z0-9_-]+:task(?::|-)[^\s"'`,|}\]]+/g) ?? [];
+  const matches =
+    context.match(/\bworker:[A-Za-z0-9_-]+:task(?::|-)[^\s"'`,|}\]]+/g) ?? [];
   return [...new Set(matches)];
 }
 
-function resolveKnownWorkerSessionKey(sessionKey: string, knownSessionKeys: string[]): string {
+function resolveKnownWorkerSessionKey(
+  sessionKey: string,
+  knownSessionKeys: string[],
+): string {
   if (knownSessionKeys.includes(sessionKey)) {
     return sessionKey;
   }
   const sessionSignature = relaxedSessionKeySignature(sessionKey);
-  const matches = knownSessionKeys.filter((candidate) => relaxedSessionKeySignature(candidate) === sessionSignature);
+  const matches = knownSessionKeys.filter(
+    (candidate) => relaxedSessionKeySignature(candidate) === sessionSignature,
+  );
   if (matches.length === 1) {
     return matches[0]!;
   }
   const truncatedPrefix = readTruncatedSessionKeyPrefix(sessionSignature);
   if (truncatedPrefix) {
     const prefixMatches = knownSessionKeys.filter((candidate) =>
-      relaxedSessionKeySignature(candidate).startsWith(truncatedPrefix)
+      relaxedSessionKeySignature(candidate).startsWith(truncatedPrefix),
     );
     if (prefixMatches.length === 1) {
       return prefixMatches[0]!;
@@ -3532,7 +6201,10 @@ function readTruncatedSessionKeyPrefix(sessionKey: string): string | null {
   return prefix.length >= 24 ? prefix : null;
 }
 
-function readStringInput(input: Record<string, unknown>, key: string): string | undefined {
+function readStringInput(
+  input: Record<string, unknown>,
+  key: string,
+): string | undefined {
   const value = input[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -3563,7 +6235,10 @@ function containsPrivateNonLoopbackHttpUrl(text: string): boolean {
   return extractHttpUrls(text).some((url) => {
     try {
       const parsed = new URL(url);
-      return isPrivateOrLoopbackHostname(parsed.hostname) && !isLoopbackHostname(parsed.hostname);
+      return (
+        isPrivateOrLoopbackHostname(parsed.hostname) &&
+        !isLoopbackHostname(parsed.hostname)
+      );
     } catch {
       return false;
     }
@@ -3605,7 +6280,10 @@ function isPrivateOrLoopbackHostname(hostname: string): boolean {
   if (normalized.startsWith("::ffff:")) {
     return isPrivateOrLoopbackHostname(normalized.slice("::ffff:".length));
   }
-  if (/^(?:fc|fd)[0-9a-f]{2}:/i.test(normalized) || /^fe[89ab][0-9a-f]:/i.test(normalized)) {
+  if (
+    /^(?:fc|fd)[0-9a-f]{2}:/i.test(normalized) ||
+    /^fe[89ab][0-9a-f]:/i.test(normalized)
+  ) {
     return true;
   }
   const parts = normalized.split(".");
@@ -3613,7 +6291,9 @@ function isPrivateOrLoopbackHostname(hostname: string): boolean {
     return false;
   }
   const numbers = parts.map((part) => Number(part));
-  if (numbers.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+  if (
+    numbers.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
     return false;
   }
   const a = numbers[0]!;
@@ -3641,7 +6321,11 @@ function isLoopbackHostname(hostname: string): boolean {
     return false;
   }
   const numbers = parts.map((part) => Number(part));
-  return numbers.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && numbers[0] === 127;
+  return (
+    numbers.every(
+      (part) => Number.isInteger(part) && part >= 0 && part <= 255,
+    ) && numbers[0] === 127
+  );
 }
 
 function buildGatewayInput(input: {
@@ -3672,8 +6356,9 @@ function buildGatewayInput(input: {
         "",
         "Runtime session continuation directive:",
         `A resumable sub-agent session is available: ${input.sessionContinuationDirective.sessionKey}.`,
-        "If this turn continues, resumes, retries, or revisits the same delegated work, use sessions_send with that session_key before considering sessions_spawn.",
-        "Spawn a new session only if the user asks for a new independent task or the existing session is clearly irrelevant.",
+        "If this turn continues, resumes, retries, or revisits the same delegated work, call sessions_send with that session_key as the first and only tool call for that continuation attempt.",
+        "Do not call memory_search, sessions_history, sessions_list, or sessions_spawn before that sessions_send; the runtime already selected the resumable session.",
+        "Spawn a new session only on a later turn if the user asks for a new independent task or the existing session is clearly irrelevant.",
         `Continuation message hint: ${input.sessionContinuationDirective.messageHint}`,
       ].join("\n")
     : "";
@@ -3705,19 +6390,44 @@ function buildGatewayInput(input: {
       flowId: input.activation.flow.flowId,
     },
     envelope: {
-      artifactIds: input.artifactIds ?? input.packet.promptAssembly?.usedArtifacts ?? [],
+      artifactIds:
+        input.artifactIds ?? input.packet.promptAssembly?.usedArtifacts ?? [],
       toolCount: input.tools?.length ?? 0,
-      toolSchemaBytes: input.tools ? Buffer.byteLength(JSON.stringify(input.tools), "utf8") : 0,
-      toolResultCount: input.envelopeHint?.toolResultCount ?? input.packet.promptAssembly?.envelopeHint?.toolResultCount ?? 0,
-      toolResultBytes: input.envelopeHint?.toolResultBytes ?? input.packet.promptAssembly?.envelopeHint?.toolResultBytes ?? 0,
+      toolSchemaBytes: input.tools
+        ? Buffer.byteLength(JSON.stringify(input.tools), "utf8")
+        : 0,
+      toolResultCount:
+        input.envelopeHint?.toolResultCount ??
+        input.packet.promptAssembly?.envelopeHint?.toolResultCount ??
+        0,
+      toolResultBytes:
+        input.envelopeHint?.toolResultBytes ??
+        input.packet.promptAssembly?.envelopeHint?.toolResultBytes ??
+        0,
       inlineAttachmentBytes:
-        input.envelopeHint?.inlineAttachmentBytes ?? input.packet.promptAssembly?.envelopeHint?.inlineAttachmentBytes ?? 0,
-      inlineImageCount: input.envelopeHint?.inlineImageCount ?? input.packet.promptAssembly?.envelopeHint?.inlineImageCount ?? 0,
-      inlineImageBytes: input.envelopeHint?.inlineImageBytes ?? input.packet.promptAssembly?.envelopeHint?.inlineImageBytes ?? 0,
-      inlinePdfCount: input.envelopeHint?.inlinePdfCount ?? input.packet.promptAssembly?.envelopeHint?.inlinePdfCount ?? 0,
-      inlinePdfBytes: input.envelopeHint?.inlinePdfBytes ?? input.packet.promptAssembly?.envelopeHint?.inlinePdfBytes ?? 0,
+        input.envelopeHint?.inlineAttachmentBytes ??
+        input.packet.promptAssembly?.envelopeHint?.inlineAttachmentBytes ??
+        0,
+      inlineImageCount:
+        input.envelopeHint?.inlineImageCount ??
+        input.packet.promptAssembly?.envelopeHint?.inlineImageCount ??
+        0,
+      inlineImageBytes:
+        input.envelopeHint?.inlineImageBytes ??
+        input.packet.promptAssembly?.envelopeHint?.inlineImageBytes ??
+        0,
+      inlinePdfCount:
+        input.envelopeHint?.inlinePdfCount ??
+        input.packet.promptAssembly?.envelopeHint?.inlinePdfCount ??
+        0,
+      inlinePdfBytes:
+        input.envelopeHint?.inlinePdfBytes ??
+        input.packet.promptAssembly?.envelopeHint?.inlinePdfBytes ??
+        0,
       multimodalPartCount:
-        input.envelopeHint?.multimodalPartCount ?? input.packet.promptAssembly?.envelopeHint?.multimodalPartCount ?? 0,
+        input.envelopeHint?.multimodalPartCount ??
+        input.packet.promptAssembly?.envelopeHint?.multimodalPartCount ??
+        0,
     },
   };
 }
@@ -3769,12 +6479,85 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
-function deriveToolResultEnvelope(messages: LLMMessage[]): { toolResultCount: number; toolResultBytes: number } {
+function deriveToolResultEnvelope(messages: LLMMessage[]): {
+  toolResultCount: number;
+  toolResultBytes: number;
+} {
   const toolMessages = messages.filter((message) => message.role === "tool");
   return {
     toolResultCount: toolMessages.length,
-    toolResultBytes: Buffer.byteLength(JSON.stringify(toolMessages.map((message) => message.content)), "utf8"),
+    toolResultBytes: Buffer.byteLength(
+      JSON.stringify(toolMessages.map((message) => message.content)),
+      "utf8",
+    ),
   };
+}
+
+function resolveEffectiveToolLoopWallClockMs(input: {
+  maxWallClockMs?: number;
+  toolCalls: LLMToolCall[];
+}): number | undefined {
+  const maxWallClockMs = input.maxWallClockMs;
+  const configured =
+    typeof maxWallClockMs === "number" &&
+    Number.isFinite(maxWallClockMs) &&
+    maxWallClockMs > 0
+      ? Math.floor(maxWallClockMs)
+      : undefined;
+  if (!input.toolCalls.some(isSlowLoopbackBrowserSessionToolCall)) {
+    return configured;
+  }
+  return Math.max(configured ?? 0, MAX_BROWSER_OPEN_TIMEOUT_MS);
+}
+
+function isSlowLoopbackBrowserSessionToolCall(call: LLMToolCall): boolean {
+  if (call.name !== "sessions_spawn" && call.name !== "sessions_send") {
+    return false;
+  }
+  const record = isRecord(call.input) ? call.input : null;
+  if (!record) {
+    return false;
+  }
+  const agentId = typeof record.agent_id === "string" ? record.agent_id : null;
+  if (call.name === "sessions_spawn" && agentId !== "browser") {
+    return false;
+  }
+  const text =
+    call.name === "sessions_spawn"
+      ? readString(record.task)
+      : readString(record.message);
+  if (!text || !isSlowDiagnosticText(text)) {
+    return false;
+  }
+  const urls = text.match(/https?:\/\/[^\s)]+/gi) ?? [];
+  return urls.some(isLoopbackUrl);
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isSlowDiagnosticText(value: string): boolean {
+  return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(
+    value,
+  );
+}
+
+function isLoopbackUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw.replace(/["'`,;:.!?。，“”‘’！？：]+$/g, ""));
+    return (
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function createToolExecutionSignal(input: {
@@ -3784,9 +6567,14 @@ function createToolExecutionSignal(input: {
 }): { signal?: AbortSignal; dispose(): void } {
   const maxWallClockMs = input.maxWallClockMs;
   const hasWallClockBudget =
-    typeof maxWallClockMs === "number" && Number.isFinite(maxWallClockMs) && maxWallClockMs > 0;
+    typeof maxWallClockMs === "number" &&
+    Number.isFinite(maxWallClockMs) &&
+    maxWallClockMs > 0;
   if (!hasWallClockBudget) {
-    return { ...(input.parentSignal ? { signal: input.parentSignal } : {}), dispose() {} };
+    return {
+      ...(input.parentSignal ? { signal: input.parentSignal } : {}),
+      dispose() {},
+    };
   }
 
   const controller = new AbortController();
@@ -3801,14 +6589,20 @@ function createToolExecutionSignal(input: {
   if (input.parentSignal?.aborted) {
     abort(input.parentSignal.reason ?? "operation aborted");
   } else if (input.parentSignal) {
-    parentAbortHandler = () => abort(input.parentSignal?.reason ?? "operation aborted");
-    input.parentSignal.addEventListener("abort", parentAbortHandler, { once: true });
+    parentAbortHandler = () =>
+      abort(input.parentSignal?.reason ?? "operation aborted");
+    input.parentSignal.addEventListener("abort", parentAbortHandler, {
+      once: true,
+    });
   }
 
   const remainingMs = Math.max(0, Math.ceil(maxWallClockMs - input.elapsedMs));
   timeoutHandle = setTimeout(
-    () => abort(`Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`),
-    remainingMs
+    () =>
+      abort(
+        `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
+      ),
+    remainingMs,
   );
 
   return {
@@ -3825,12 +6619,55 @@ function createToolExecutionSignal(input: {
 }
 
 function prepareToolHistoryForGateway(messages: LLMMessage[]): LLMMessage[] {
-  return compactOlderToolHistoryForGateway(pruneToolResultMessagesForGateway(messages));
+  const limits = readToolResultPruningLimits();
+  return compactOlderToolHistoryForGateway(
+    pruneToolResultMessagesForGateway(messages, limits),
+    limits,
+  );
+}
+
+function summarizeToolResultPruning(
+  beforeMessages: LLMMessage[],
+  afterMessages: LLMMessage[],
+  limits: ToolResultPruningLimits = readToolResultPruningLimits(),
+): ToolResultPruningSnapshot | undefined {
+  const prunedToolContents = afterMessages
+    .filter((message) => message.role === "tool")
+    .map((message) => readToolResultContentText(message.content))
+    .filter(isPrunedToolResultContent);
+  const compactedHistory = afterMessages.some((message) =>
+    readMessageContentText(message.content).startsWith(
+      "Earlier tool history compacted to fit the request envelope:",
+    ),
+  );
+  if (prunedToolContents.length === 0 && !compactedHistory) {
+    return undefined;
+  }
+  const beforeEnvelope = deriveToolResultEnvelope(beforeMessages);
+  const afterEnvelope = deriveToolResultEnvelope(afterMessages);
+  return {
+    prunedToolResults: prunedToolContents.length,
+    reasons: [
+      ...new Set(
+        prunedToolContents
+          .map(readPrunedToolResultReason)
+          .filter((reason): reason is string => Boolean(reason)),
+      ),
+    ],
+    compactedHistory,
+    toolResultCountBefore: beforeEnvelope.toolResultCount,
+    toolResultCountAfter: afterEnvelope.toolResultCount,
+    toolResultBytesBefore: beforeEnvelope.toolResultBytes,
+    toolResultBytesAfter: afterEnvelope.toolResultBytes,
+    messageCountBefore: beforeMessages.length,
+    messageCountAfter: afterMessages.length,
+    limits,
+  };
 }
 
 function withFinalToolRoundWarning(
   messages: LLMMessage[],
-  input: { active: boolean; round: number; maxRounds: number }
+  input: { active: boolean; round: number; maxRounds: number },
 ): LLMMessage[] {
   if (!input.active) {
     return messages;
@@ -3857,11 +6694,16 @@ function withFinalToolRoundWarning(
   ];
 }
 
-function pruneToolResultMessagesForGateway(messages: LLMMessage[]): LLMMessage[] {
+function pruneToolResultMessagesForGateway(
+  messages: LLMMessage[],
+  limits: ToolResultPruningLimits,
+): LLMMessage[] {
   const toolMessageIndexes = messages
     .map((message, index) => (message.role === "tool" ? index : -1))
     .filter((index) => index >= 0);
-  const recentFullIndexes = new Set(toolMessageIndexes.slice(-TOOL_RESULT_RECENT_FULL_COUNT));
+  const recentFullIndexes = new Set(
+    toolMessageIndexes.slice(-limits.recentFullCount),
+  );
 
   const prunedMessages = messages.map((message, index) => {
     if (message.role !== "tool") {
@@ -3869,8 +6711,9 @@ function pruneToolResultMessagesForGateway(messages: LLMMessage[]): LLMMessage[]
     }
     const content = readToolResultContentText(message.content);
     const contentBytes = Buffer.byteLength(content, "utf8");
-    const shouldHardPrune = contentBytes > TOOL_RESULT_HARD_PRUNE_MAX_BYTES;
-    const shouldSoftPrune = !recentFullIndexes.has(index) && contentBytes > TOOL_RESULT_SOFT_PRUNE_MAX_BYTES;
+    const shouldHardPrune = contentBytes > limits.hardMaxBytes;
+    const shouldSoftPrune =
+      !recentFullIndexes.has(index) && contentBytes > limits.softMaxBytes;
     if (!shouldHardPrune && !shouldSoftPrune) {
       return message;
     }
@@ -3880,30 +6723,43 @@ function pruneToolResultMessagesForGateway(messages: LLMMessage[]): LLMMessage[]
         tool_call_id: message.toolCallId ?? null,
         tool_name: message.name ?? null,
         original_bytes: contentBytes,
-        reason: shouldHardPrune ? "over_hard_limit" : "older_than_recent_window",
+        reason: shouldHardPrune
+          ? "over_hard_limit"
+          : "older_than_recent_window",
         retained_summary: summarizeToolResultContent(content),
       },
       null,
-      2
+      2,
     );
     return replaceToolResultContent(message, prunedContent);
   });
 
-  return pruneToolResultsToTotalBudget(prunedMessages, recentFullIndexes);
+  return pruneToolResultsToTotalBudget(
+    prunedMessages,
+    recentFullIndexes,
+    limits,
+  );
 }
 
-function compactOlderToolHistoryForGateway(messages: LLMMessage[]): LLMMessage[] {
-  if (messages.length <= ROLE_TOOL_HISTORY_MAX_MESSAGES) {
+function compactOlderToolHistoryForGateway(
+  messages: LLMMessage[],
+  limits: ToolResultPruningLimits,
+): LLMMessage[] {
+  if (messages.length <= limits.historyMaxMessages) {
     return messages;
   }
   const toolMessageIndexes = messages
     .map((message, index) => (message.role === "tool" ? index : -1))
     .filter((index) => index >= 0);
-  if (toolMessageIndexes.length <= TOOL_RESULT_RECENT_FULL_COUNT) {
+  if (toolMessageIndexes.length <= limits.recentFullCount) {
     return messages;
   }
 
-  for (let keepToolCount = TOOL_RESULT_RECENT_FULL_COUNT; keepToolCount >= 1; keepToolCount -= 1) {
+  for (
+    let keepToolCount = limits.recentFullCount;
+    keepToolCount >= 1;
+    keepToolCount -= 1
+  ) {
     const firstKeptToolIndex = toolMessageIndexes.slice(-keepToolCount)[0];
     if (firstKeptToolIndex === undefined) continue;
     const keepStart = findToolCallAssistantIndex(messages, firstKeptToolIndex);
@@ -3915,7 +6771,7 @@ function compactOlderToolHistoryForGateway(messages: LLMMessage[]): LLMMessage[]
       summary,
       ...messages.slice(keepStart),
     ];
-    if (compacted.length <= ROLE_TOOL_HISTORY_MAX_MESSAGES) {
+    if (compacted.length <= limits.historyMaxMessages) {
       return compacted;
     }
   }
@@ -3923,9 +6779,13 @@ function compactOlderToolHistoryForGateway(messages: LLMMessage[]): LLMMessage[]
   return messages;
 }
 
-function findToolCallAssistantIndex(messages: LLMMessage[], toolMessageIndex: number): number {
+function findToolCallAssistantIndex(
+  messages: LLMMessage[],
+  toolMessageIndex: number,
+): number {
   const toolMessage = messages[toolMessageIndex];
-  const toolCallId = toolMessage?.role === "tool" ? toolMessage.toolCallId : undefined;
+  const toolCallId =
+    toolMessage?.role === "tool" ? toolMessage.toolCallId : undefined;
   for (let index = toolMessageIndex - 1; index >= 2; index -= 1) {
     const message = messages[index];
     if (message?.role !== "assistant") continue;
@@ -3935,6 +6795,61 @@ function findToolCallAssistantIndex(messages: LLMMessage[], toolMessageIndex: nu
     }
   }
   return toolMessageIndex;
+}
+
+function findLatestAssistantToolUseMessageIndex(
+  messages: LLMMessage[],
+): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant" && countToolUseBlocks(message) > 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function findFollowingToolMessageIndexes(
+  messages: LLMMessage[],
+  assistantMessageIndex: number,
+): number[] {
+  if (assistantMessageIndex < 0) {
+    return [];
+  }
+  const indexes: number[] = [];
+  for (
+    let index = assistantMessageIndex + 1;
+    index < messages.length;
+    index += 1
+  ) {
+    if (messages[index]?.role === "tool") {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
+
+function countToolUseBlocks(message: LLMMessage | undefined): number {
+  if (!message || !Array.isArray(message.content)) {
+    return 0;
+  }
+  return message.content.filter((block) => block.type === "tool_use").length;
+}
+
+function countToolResultBlocks(
+  messages: LLMMessage[],
+  indexes: number[],
+): number {
+  return indexes.reduce((count, index) => {
+    const message = messages[index];
+    if (!message || !Array.isArray(message.content)) {
+      return count;
+    }
+    return (
+      count +
+      message.content.filter((block) => block.type === "tool_result").length
+    );
+  }, 0);
 }
 
 function extractAssistantToolUseIds(message: LLMMessage): string[] {
@@ -3949,16 +6864,23 @@ function buildCompactedToolHistoryMessage(messages: LLMMessage[]): LLMMessage {
   for (const message of messages) {
     if (message.role === "assistant") {
       const calls = Array.isArray(message.content)
-        ? message.content.filter((block): block is Extract<LLMContentBlock, { type: "tool_use" }> => block.type === "tool_use")
+        ? message.content.filter(
+            (block): block is Extract<LLMContentBlock, { type: "tool_use" }> =>
+              block.type === "tool_use",
+          )
         : [];
       for (const call of calls) {
-        lines.push(`- called ${call.name} (${call.id}): ${summarizeToolArgs(call.input)}`);
+        lines.push(
+          `- called ${call.name} (${call.id}): ${summarizeToolArgs(call.input)}`,
+        );
       }
       continue;
     }
     if (message.role === "tool") {
       const content = readToolResultContentText(message.content);
-      lines.push(`- result ${message.name ?? "tool"} (${message.toolCallId ?? "unknown"}): ${summarizeToolResultContent(content)}`);
+      lines.push(
+        `- result ${message.name ?? "tool"} (${message.toolCallId ?? "unknown"}): ${summarizeToolResultContent(content)}`,
+      );
     }
   }
   return {
@@ -3975,16 +6897,19 @@ function summarizeToolArgs(input: Record<string, unknown>): string {
 
 function pruneToolResultsToTotalBudget(
   messages: LLMMessage[],
-  recentFullIndexes: Set<number>
+  recentFullIndexes: Set<number>,
+  limits: ToolResultPruningLimits,
 ): LLMMessage[] {
   let totalBytes = deriveToolResultEnvelope(messages).toolResultBytes;
-  if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
+  if (totalBytes <= limits.totalMaxBytes) {
     return messages;
   }
 
   let nextMessages = messages;
   const olderToolIndexes = messages
-    .map((message, index) => (message.role === "tool" && !recentFullIndexes.has(index) ? index : -1))
+    .map((message, index) =>
+      message.role === "tool" && !recentFullIndexes.has(index) ? index : -1,
+    )
     .filter((index) => index >= 0);
 
   for (const index of olderToolIndexes) {
@@ -4003,12 +6928,12 @@ function pruneToolResultsToTotalBudget(
         retained_summary: summarizeToolResultContent(content),
       },
       null,
-      2
+      2,
     );
     nextMessages = [...nextMessages];
     nextMessages[index] = replaceToolResultContent(message, prunedContent);
     totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
-    if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
+    if (totalBytes <= limits.totalMaxBytes) {
       return nextMessages;
     }
   }
@@ -4033,13 +6958,15 @@ function pruneToolResultsToTotalBudget(
         retained_summary: summarizeToolResultContent(content),
       },
       null,
-      2
+      2,
     );
     nextMessages = nextMessages.map((candidate, candidateIndex) =>
-      candidateIndex === index ? replaceToolResultContent(message, prunedContent) : candidate
+      candidateIndex === index
+        ? replaceToolResultContent(message, prunedContent)
+        : candidate,
     );
     totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
-    if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
+    if (totalBytes <= limits.totalMaxBytes) {
       return nextMessages;
     }
   }
@@ -4060,13 +6987,15 @@ function pruneToolResultsToTotalBudget(
         retained_summary: summarizeToolResultContent(content),
       },
       null,
-      2
+      2,
     );
     nextMessages = nextMessages.map((candidate, candidateIndex) =>
-      candidateIndex === index ? replaceToolResultContent(message, prunedContent) : candidate
+      candidateIndex === index
+        ? replaceToolResultContent(message, prunedContent)
+        : candidate,
     );
     totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
-    if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
+    if (totalBytes <= limits.totalMaxBytes) {
       return nextMessages;
     }
   }
@@ -4088,7 +7017,10 @@ function readToolResultContentText(content: LLMMessage["content"]): string {
     .join("\n");
 }
 
-function replaceToolResultContent(message: LLMMessage, content: string): LLMMessage {
+function replaceToolResultContent(
+  message: LLMMessage,
+  content: string,
+): LLMMessage {
   if (typeof message.content === "string") {
     return { ...message, content };
   }
@@ -4100,7 +7032,7 @@ function replaceToolResultContent(message: LLMMessage, content: string): LLMMess
             ...block,
             content,
           }
-        : block
+        : block,
     ),
   };
 }
@@ -4110,11 +7042,23 @@ function summarizeToolResultContent(content: string): string {
   if (!normalized) {
     return "(empty tool result)";
   }
-  return normalized.length > 512 ? `${normalized.slice(0, 512)}...` : normalized;
+  return normalized.length > 512
+    ? `${normalized.slice(0, 512)}...`
+    : normalized;
 }
 
 function isPrunedToolResultContent(content: string): boolean {
   return content.includes('"tool_result_pruned": true');
+}
+
+function readPrunedToolResultReason(content: string): string | undefined {
+  try {
+    const parsed = JSON.parse(content) as { reason?: unknown };
+    return typeof parsed.reason === "string" ? parsed.reason : undefined;
+  } catch {
+    const match = content.match(/"reason"\s*:\s*"([^"]+)"/);
+    return match?.[1];
+  }
 }
 
 function countToolCalls(rounds: NativeToolRoundTrace[]): number {
@@ -4130,13 +7074,25 @@ function buildLocalEvidenceCloseout(input: {
   };
   error: unknown;
 }): GenerateTextResult | null {
-  if (expectsExactFinalAnswerShape(input.packet.taskPrompt, input.packet.outputContract)) {
+  if (
+    expectsExactFinalAnswerShape(
+      input.packet.taskPrompt,
+      input.packet.outputContract,
+    )
+  ) {
     return null;
   }
   const toolResults = input.messages
     .filter((message) => message.role === "tool")
-    .map((message) => parseSessionToolResult(readToolResultContentText(message.content)))
-    .filter((result): result is NonNullable<ReturnType<typeof parseSessionToolResult>> => Boolean(result));
+    .map((message) =>
+      parseSessionToolResult(readToolResultContentText(message.content)),
+    )
+    .filter(
+      (
+        result,
+      ): result is NonNullable<ReturnType<typeof parseSessionToolResult>> =>
+        Boolean(result),
+    );
   const completedEvidence = toolResults
     .filter((result) => result.status === "completed")
     .map((result) => readCompletedSessionEvidence(result))
@@ -4144,11 +7100,23 @@ function buildLocalEvidenceCloseout(input: {
   const sessionToolResultMessages = new Set(
     input.messages
       .filter((message) => message.role === "tool")
-      .filter((message) => parseSessionToolResult(readToolResultContentText(message.content)) != null)
+      .filter(
+        (message) =>
+          parseSessionToolResult(readToolResultContentText(message.content)) !=
+          null,
+      ),
   );
   const genericToolEvidence = input.messages
-    .filter((message) => message.role === "tool" && !sessionToolResultMessages.has(message))
-    .map((message) => readToolResultContentText(message.content))
+    .filter(
+      (message) =>
+        message.role === "tool" && !sessionToolResultMessages.has(message),
+    )
+    .map((message) => ({
+      content: readToolResultContentText(message.content),
+      toolName: message.name,
+    }))
+    .filter((item) => !isControlPlaneToolResultName(item.toolName))
+    .map((item) => item.content)
     .filter((content) => !isLikelyFailedToolContent(content))
     .map((content) => readGenericToolEvidence(content))
     .filter((evidence): evidence is string => Boolean(evidence));
@@ -4161,10 +7129,14 @@ function buildLocalEvidenceCloseout(input: {
     /\bcancel(?:led|ed|lation)\b/i.test(
       [
         input.packet.taskPrompt,
-        ...input.messages.map((message) => readToolResultContentText(message.content)),
-      ].join("\n")
+        ...input.messages.map((message) =>
+          readToolResultContentText(message.content),
+        ),
+      ].join("\n"),
     );
-  const evidence = allEvidence.map((item, index) => `Source ${index + 1}: ${sliceUtf8(item, 4 * 1024)}`).join("\n");
+  const evidence = allEvidence
+    .map((item, index) => `Source ${index + 1}: ${sliceUtf8(item, 4 * 1024)}`)
+    .join("\n");
   return {
     text: [
       `Verified: ${evidence}`,
@@ -4175,7 +7147,9 @@ function buildLocalEvidenceCloseout(input: {
       "Next action: Use the verified source facts for the requested task, and continue the same session if broader verification is needed.",
     ].join("\n"),
     modelId: input.selection.modelId ?? "local-evidence-closeout",
-    ...(input.selection.modelChainId ? { modelChainId: input.selection.modelChainId } : {}),
+    ...(input.selection.modelChainId
+      ? { modelChainId: input.selection.modelChainId }
+      : {}),
     providerId: "local",
     protocol: "openai-compatible",
     adapterName: "local-evidence-closeout",
@@ -4187,7 +7161,9 @@ function buildLocalEvidenceCloseout(input: {
 }
 
 function hasUsableEvidence(rounds: NativeToolRoundTrace[]): boolean {
-  return rounds.some((round) => round.results.some((result) => !result.isError && result.skipped !== true));
+  return rounds.some((round) =>
+    round.results.some((result) => !result.isError && result.skipped !== true),
+  );
 }
 
 function readGenericToolEvidence(content: string): string | null {
@@ -4199,12 +7175,21 @@ function readGenericToolEvidence(content: string): string | null {
     const parsed = JSON.parse(trimmed) as unknown;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const record = parsed as Record<string, unknown>;
-      const payload = record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
-        ? (record.payload as Record<string, unknown>)
-        : null;
-      const payloadPage = payload?.page && typeof payload.page === "object" && !Array.isArray(payload.page)
-        ? (payload.page as Record<string, unknown>)
-        : null;
+      if (isControlPlaneToolResultRecord(record)) {
+        return null;
+      }
+      const payload =
+        record.payload &&
+        typeof record.payload === "object" &&
+        !Array.isArray(record.payload)
+          ? (record.payload as Record<string, unknown>)
+          : null;
+      const payloadPage =
+        payload?.page &&
+        typeof payload.page === "object" &&
+        !Array.isArray(payload.page)
+          ? (payload.page as Record<string, unknown>)
+          : null;
       const parts = [
         readStringField(record.summary),
         readStringField(payload?.content),
@@ -4224,9 +7209,33 @@ function readGenericToolEvidence(content: string): string | null {
   return sliceUtf8(summarizeToolResultContent(trimmed), 4 * 1024);
 }
 
+function isControlPlaneToolResultName(toolName: string | undefined): boolean {
+  return toolName === "sessions_list" || toolName === "sessions_history";
+}
+
+function isControlPlaneToolResultRecord(
+  record: Record<string, unknown>,
+): boolean {
+  if (
+    Array.isArray(record["sessions"]) ||
+    Array.isArray(record["messages"]) ||
+    Array.isArray(record["transcript"])
+  ) {
+    return true;
+  }
+  return (
+    typeof record["inspection_guidance"] === "string" ||
+    typeof record["session_key"] === "string" ||
+    typeof record["task_id"] === "string"
+  );
+}
+
 function isLikelyFailedToolContent(content: string): boolean {
-  return /\b(status"\s*:\s*"failed|isError"\s*:\s*true|missing required|timed out|timeout|failed:|error:|skipped)\b/i.test(content) ||
-    /^tool_call_.*(?:skipp|error|fail)/i.test(content.trim());
+  return (
+    /\b(status"\s*:\s*"failed|isError"\s*:\s*true|missing required|timed out|timeout|failed:|error:|skipped)\b/i.test(
+      content,
+    ) || /^tool_call_.*(?:skipp|error|fail)/i.test(content.trim())
+  );
 }
 
 function readStringField(value: unknown): string | null {
@@ -4260,7 +7269,10 @@ function formatDurationMs(ms: number): string {
   return `${Number(hours.toFixed(2))}h`;
 }
 
-function replaceInitialPromptMessages(messages: LLMMessage[], reducedPromptMessages: LLMMessage[]): LLMMessage[] {
+function replaceInitialPromptMessages(
+  messages: LLMMessage[],
+  reducedPromptMessages: LLMMessage[],
+): LLMMessage[] {
   const toolLoopHistory = messages.slice(2);
   return [...reducedPromptMessages, ...toolLoopHistory];
 }

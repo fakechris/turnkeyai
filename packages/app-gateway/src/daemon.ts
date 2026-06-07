@@ -418,24 +418,13 @@ const missionThreadBridge = createMissionThreadBridge({
 });
 const stopMissionThreadBridge = missionThreadBridge.start(2000);
 const missionOrchestrator = {
-  async spawnThread(input: { title: string; desc: string; owner: string }) {
-    // PR K3.5: default to SOLO (single lead role). The prior K3.5 init
-    // forced every mission into a lead+analyst team, which wasted a
-    // delegation hop on simple questions ("explain X") that the lead
-    // could answer directly. Multi-agent teams will be opt-in via a
-    // mission `mode`-driven roster in K4 (research → analyst, browser
-    // → operator+browser-worker, etc.). The prompt-policy is already
-    // mode-aware: a 1-role team gets a solo prompt with no @-mention
-    // protocol at all, so real LLMs simply answer.
-    const lead = {
-      roleId: "role-lead",
-      name: "Lead",
-      seat: "lead" as const,
-      runtime: "local" as const,
-      modelRef: "claude-opus",
-      modelChain: "lead_reasoning",
-    };
-    const roles = [lead];
+  async spawnThread(input: {
+    title: string;
+    desc: string;
+    owner: string;
+    mode: import("@turnkeyai/core-types/mission").MissionMode;
+  }) {
+    const roles = buildMissionRuntimeRoles(input.mode);
     const thread = await teamThreadStore.create({
       teamName: `Mission: ${input.title}`,
       leadRoleId: roles[0]!.roleId,
@@ -462,6 +451,58 @@ const missionOrchestrator = {
   },
   threadBridge: missionThreadBridge,
 };
+
+function buildMissionRuntimeRoles(mode: import("@turnkeyai/core-types/mission").MissionMode) {
+  const lead = {
+    roleId: "role-lead",
+    name: "Lead",
+    seat: "lead" as const,
+    runtime: "local" as const,
+    modelRef: "claude-opus",
+    modelChain: "lead_reasoning",
+  };
+
+  if (mode === "research" || mode === "investigation") {
+    return [
+      lead,
+      {
+        roleId: "role-explore",
+        name: "Explore",
+        seat: "member" as const,
+        runtime: "local" as const,
+        capabilities: ["explore"],
+        modelRef: "gpt-5",
+        modelChain: "explore_primary",
+      },
+      {
+        roleId: "role-browser",
+        name: "Browser",
+        seat: "member" as const,
+        runtime: "local" as const,
+        capabilities: ["browser"],
+        modelRef: "gemini",
+        modelChain: "browser_primary",
+      },
+    ];
+  }
+
+  if (mode === "browser") {
+    return [
+      lead,
+      {
+        roleId: "role-browser",
+        name: "Browser",
+        seat: "member" as const,
+        runtime: "local" as const,
+        capabilities: ["browser"],
+        modelRef: "gemini",
+        modelChain: "browser_primary",
+      },
+    ];
+  }
+
+  return [lead];
+}
 
 await mkdir(DATA_DIR, { recursive: true });
 

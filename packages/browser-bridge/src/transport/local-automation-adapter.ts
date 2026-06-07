@@ -119,7 +119,7 @@ export class LocalAutomationBrowserAdapter implements BrowserTransportAdapter {
   async openTarget(
     browserSessionId: string,
     url: string,
-    owner?: { ownerType?: BrowserSession["ownerType"]; ownerId?: string }
+    owner?: { ownerType?: BrowserSession["ownerType"]; ownerId?: string; timeoutMs?: number }
   ): Promise<BrowserTarget> {
     return this.sessionManager.openTarget(browserSessionId, url, owner);
   }

@@ -962,6 +962,152 @@ test("chrome session manager releases a resumed session when openTarget fails", 
   assert.equal(released, 1);
 });
 
+test("chrome session manager extends openTarget timeout for slow loopback URLs", async () => {
+  let observedGoto: { url: string; timeout?: number; waitUntil?: string } | null = null;
+  let released = 0;
+  const fakePage = {
+    async goto(url: string, options?: { timeout?: number; waitUntil?: string }) {
+      observedGoto = {
+        url,
+        ...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
+        ...(options?.waitUntil !== undefined ? { waitUntil: options.waitUntil } : {}),
+      };
+      return { status: () => 200 };
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return observedGoto?.url ?? "about:blank";
+    },
+    async title() {
+      return "Slow";
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    on() {
+      return this;
+    },
+    async newPage() {
+      return fakePage;
+    },
+  } as unknown as BrowserContext;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    browserSessionManager: {
+      async resumeSession(input: { browserSessionId: string }) {
+        return {
+          session: {
+            browserSessionId: input.browserSessionId,
+            ownerType: "thread",
+            ownerId: "thread-1",
+            profileId: "profile-1",
+            status: "busy",
+            targetIds: [],
+            activeTargetId: undefined,
+            lastActiveAt: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          profile: {
+            profileId: "profile-1",
+            ownerType: "thread",
+            ownerId: "thread-1",
+            persistentDir: "/tmp/browser-profile-1",
+            loginState: "unknown",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        };
+      },
+      async ensureTarget() {
+        return {
+          targetId: "target-1",
+          browserSessionId: "browser-session-5",
+          transportSessionId: "page-1",
+          url: "http://127.0.0.1:61930/slow-fixture",
+          title: "Slow",
+          status: "attached",
+          createdAt: 1,
+          updatedAt: 2,
+        };
+      },
+      async releaseSession() {
+        released += 1;
+      },
+    } as never,
+    launchPersistentContext: async () => fakeContext,
+    createEphemeralContext: async () => fakeContext,
+  });
+
+  await manager.openTarget("browser-session-5", "http://127.0.0.1:61930/slow-fixture");
+  assert.deepEqual(observedGoto, {
+    url: "http://127.0.0.1:61930/slow-fixture",
+    waitUntil: "domcontentloaded",
+    timeout: 240_000,
+  });
+  assert.equal(released, 1);
+});
+
+test("chrome session manager applies open action timeout to page navigation", async () => {
+  let observedGoto: { url: string; timeout?: number; waitUntil?: string } | null = null;
+  const fakePage = {
+    async goto(url: string, options?: { timeout?: number; waitUntil?: string }) {
+      observedGoto = {
+        url,
+        ...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
+        ...(options?.waitUntil !== undefined ? { waitUntil: options.waitUntil } : {}),
+      };
+      return { status: () => 200 };
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return observedGoto?.url ?? "about:blank";
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "open"; url: string; timeoutMs?: number };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const output = await internal.executeAction({
+    page: fakePage,
+    action: { kind: "open", url: "http://127.0.0.1:61930/slow-fixture", timeoutMs: 240_000 },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "",
+    lastStatusCode: 0,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-open-timeout",
+  });
+
+  assert.deepEqual(observedGoto, {
+    url: "http://127.0.0.1:61930/slow-fixture",
+    waitUntil: "domcontentloaded",
+    timeout: 240_000,
+  });
+  assert.equal(output.traceOutput?.timeoutMs, 240_000);
+});
+
 test("chrome session manager executes hover key select drag and waitFor input actions", async () => {
   const hoverSelectors: string[] = [];
   let hoverCount = 0;

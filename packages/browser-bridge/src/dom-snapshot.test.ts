@@ -7,6 +7,7 @@ import { captureDomSnapshot } from "./dom-snapshot";
 
 test("captureDomSnapshot waits briefly for Loading placeholder to render", async () => {
   const calls: Array<{ name: string; timeout?: number }> = [];
+  let evaluateExpression = "";
   const recordCall = (name: string, timeout?: number) => {
     calls.push(timeout === undefined ? { name } : { name, timeout });
   };
@@ -17,8 +18,9 @@ test("captureDomSnapshot waits briefly for Loading placeholder to render", async
     async waitForFunction(_expression: string, _arg?: unknown, options?: { timeout?: number }) {
       recordCall("waitForFunction", options?.timeout);
     },
-    async evaluate() {
+    async evaluate(expression: string) {
       recordCall("evaluate");
+      evaluateExpression = expression;
       return {
         finalUrl: "http://127.0.0.1/product-signals",
         title: "Workbench Product Signals",
@@ -39,6 +41,9 @@ test("captureDomSnapshot waits briefly for Loading placeholder to render", async
     ["waitForLoadState", "waitForFunction", "evaluate"]
   );
   assert.equal(calls[1]?.timeout, 2_000);
+  assert.match(evaluateExpression, /shadowRoot/);
+  assert.match(evaluateExpression, /textContent/);
+  assert.match(evaluateExpression, /querySelectorAll\("iframe"\)/);
   assert.match(snapshot.textExcerpt, /Stuck missions: 6/);
   assert.match(snapshot.textExcerpt, /Weak answer rate: 24%/);
 });

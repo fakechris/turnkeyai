@@ -147,6 +147,25 @@ test("browser task planner strips prose periods from repository URLs", () => {
   }
 });
 
+test("browser task planner gives slow loopback sources an extended open timeout", () => {
+  const planner = new DefaultBrowserTaskPlanner();
+  const input = buildTestInvocationInput({
+    handoff: {
+      payload: {
+        instructions:
+          "Inspect the slow source http://127.0.0.1:61930/slow-fixture through the browser. Use a bounded attempt if loading does not finish in time.",
+      },
+    },
+  });
+
+  const request = planner.buildRequest(input);
+  assert.ok(request);
+  assert.equal(request.actions[0]?.kind, "open");
+  if (request.actions[0]?.kind === "open") {
+    assert.equal(request.actions[0].timeoutMs, 240_000);
+  }
+});
+
 test("browser task planner reuses the previous browser session when available", () => {
   const planner = new DefaultBrowserTaskPlanner();
   const input = buildTestInvocationInput({

@@ -138,6 +138,58 @@ test("gateway blocks oversized request envelopes before the protocol client runs
   }
 });
 
+test("gateway applies custom request envelope limits before provider dispatch", async () => {
+  const originalKey = process.env.TEST_MODEL_API_KEY;
+  process.env.TEST_MODEL_API_KEY = "test-key";
+
+  try {
+    let clientCalled = false;
+    const gateway = new LLMGateway({
+      registry: new ModelRegistry(new InMemoryCatalogSource()),
+      clients: [
+        new StubClient(async () => {
+          clientCalled = true;
+          return {
+            text: "should not happen",
+            modelId: "test-model",
+            providerId: "test",
+            protocol: "openai-compatible",
+            adapterName: "stub",
+            raw: {},
+          };
+        }),
+      ],
+      requestEnvelopeLimits: {
+        maxPromptChars: 25,
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        gateway.generate({
+          modelId: "test-model",
+          messages: [
+            { role: "system", content: "You are helpful." },
+            { role: "user", content: "Summarize the current thread state." },
+          ],
+        }),
+      (error: unknown) => {
+        assert.equal(clientCalled, false);
+        assert.ok(error instanceof RequestEnvelopeOverflowError);
+        assert.ok(error.details.diagnostics.overLimitKeys.includes("promptChars"));
+        assert.equal(error.details.limits.maxPromptChars, 25);
+        return true;
+      }
+    );
+  } finally {
+    if (originalKey === undefined) {
+      delete process.env.TEST_MODEL_API_KEY;
+    } else {
+      process.env.TEST_MODEL_API_KEY = originalKey;
+    }
+  }
+});
+
 test("gateway returns request envelope diagnostics on successful model calls", async () => {
   process.env.TEST_MODEL_API_KEY = "test-key";
 

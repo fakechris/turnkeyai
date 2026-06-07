@@ -25,7 +25,7 @@ export type MissionCompletionDecision =
   | {
       action: "update";
       reason: MissionCompletionReason;
-      patch: Partial<Pick<Mission, "status" | "progress" | "blockers">>;
+      patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals">>;
       recovery?: MissionCompletionRecovery;
     };
 
@@ -61,6 +61,18 @@ export function evaluateMissionCompletion(input: {
     return { action: "none", reason: "terminal" };
   }
 
+  if (
+    mission.pendingApprovals > 0 &&
+    hasCompletePendingApprovalWaitTimeoutCloseout(mission, messages) &&
+    !hasActiveExecution(input.roleRuns, input.workerSessions)
+  ) {
+    return {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1, pendingApprovals: 0 },
+    };
+  }
+
   if (mission.pendingApprovals > 0) {
     if (mission.status === "needs_approval") {
       return { action: "none", reason: "pending_approval" };
@@ -74,6 +86,18 @@ export function evaluateMissionCompletion(input: {
 
   if (mission.status === "done") {
     return { action: "none", reason: "terminal" };
+  }
+
+  if (
+    mission.blockers > 0 &&
+    hasCompleteBoundedFailureCloseout(mission, messages) &&
+    !hasActiveExecution(input.roleRuns, input.workerSessions)
+  ) {
+    return {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1, blockers: 0 },
+    };
   }
 
   if (mission.blockers > 0) {
@@ -182,8 +206,27 @@ function hasFinalLeadAssistantMessage(
   const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
   return Boolean(
     latest &&
-      !isIncompleteLeadFinalAnswer(latest.message) &&
+      !isIncompleteLeadFinalAnswer(mission, latest.message) &&
       !hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index)
+  );
+}
+
+function hasCompleteBoundedFailureCloseout(mission: Mission, messages: TeamMessage[]): boolean {
+  const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  return Boolean(
+    latest &&
+      !isIncompleteLeadFinalAnswer(mission, latest.message) &&
+      !hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index) &&
+      looksLikeCompleteBoundedFailureCloseout(mission.desc, latest.message.content)
+  );
+}
+
+function hasCompletePendingApprovalWaitTimeoutCloseout(mission: Mission, messages: TeamMessage[]): boolean {
+  const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  return Boolean(
+    latest &&
+      !hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index) &&
+      looksLikeCompletePendingApprovalWaitTimeoutCloseout(latest.message.content)
   );
 }
 
@@ -200,7 +243,7 @@ function findIncompleteLeadFinalAnswer(
   messages: TeamMessage[]
 ): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" | "stale_pending_approval" } | null {
   const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
-  return latest ? isIncompleteLeadFinalAnswer(latest.message) : null;
+  return latest ? isIncompleteLeadFinalAnswer(mission, latest.message) : null;
 }
 
 function findLatestLeadAnswerCandidateWithIndex(
@@ -220,10 +263,20 @@ function findLatestLeadAnswerCandidateWithIndex(
     if ((message.toolCalls?.length ?? 0) > 0) continue;
     if (message.toolStatus === "pending") continue;
     if (index <= staleBeforeIndex) continue;
-    if (/@\{[^}]+\}/.test(content)) continue;
+    if (hasDispatchMention(content)) continue;
     latest = { message, index };
   }
   return latest;
+}
+
+function hasDispatchMention(content: string): boolean {
+  for (const match of content.matchAll(/@\{([^}]+)\}/g)) {
+    const mention = match[1]?.trim();
+    if (!mention) continue;
+    if (/^<[^>]+>$/.test(mention)) continue;
+    return true;
+  }
+  return false;
 }
 
 function hasUnresolvedLeadToolTurnBeforeAnswer(
@@ -266,9 +319,13 @@ function findLatestUserMessageIndex(messages: TeamMessage[]): number {
 }
 
 function isIncompleteLeadFinalAnswer(
+  mission: Mission,
   message: TeamMessage
 ): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" | "stale_pending_approval" } | null {
   if (looksLikeCompleteApprovalCloseout(message.content)) {
+    return null;
+  }
+  if (looksLikeCompleteAwaitingContextCloseout(mission.desc, message.content)) {
     return null;
   }
   if (looksLikeStalePendingApprovalAnswer(message.content)) {
@@ -287,6 +344,61 @@ function isIncompleteLeadFinalAnswer(
 function looksLikeStalePendingApprovalAnswer(content: string): boolean {
   return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once you approve|after you approve)\b/i.test(
     content
+  );
+}
+
+function looksLikeCompletePendingApprovalWaitTimeoutCloseout(content: string): boolean {
+  return (
+    /\b(?:approval|permission|operator decision)\b[\s\S]{0,180}\b(?:did not arrive|still pending|pending|timed out|timeout|wait[- ]timeout|wait boundary|attempt cycle)\b/i.test(
+      content
+    ) &&
+    /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno form submission or browser side effect was performed\b/i.test(
+      content
+    ) &&
+    /\b(?:next action|safest next step|safe fallback|ask the operator|retry|continue|re-?run|re-?initiate|flow is complete|closeout confirmed)\b/i.test(
+      content
+    )
+  );
+}
+
+function looksLikeCompleteAwaitingContextCloseout(missionDesc: string, content: string): boolean {
+  if (
+    !/\bno research (?:is )?needed\b|\bno action (?:is )?needed\b|\bcontext (?:is )?available\b|\bwhen .*context .*available\b/i.test(
+      missionDesc
+    )
+  ) {
+    return false;
+  }
+  const strictCloseout =
+    /\b(?:resume|continue|proceed)\b[\s\S]{0,120}\b(?:context|available|provided)\b/i.test(content) &&
+    /\bno research (?:is )?(?:needed|required)\b|\bno research required\b/i.test(content) &&
+    /\b(?:flow|mission|task)\b[\s\S]{0,80}\b(?:closed|complete|completed|ready)\b/i.test(content);
+  const conciseSetupAck =
+    /\b(?:thread|mission|task)\b[\s\S]{0,80}\b(?:opened|queued|ready|initiated|acknowledged)\b/i.test(content) &&
+    /\b(?:awaiting|waiting for|when|once)\b[\s\S]{0,120}\b(?:context|details|input|provided|available)\b/i.test(content);
+  return strictCloseout || conciseSetupAck;
+}
+
+function looksLikeCompleteBoundedFailureCloseout(missionDesc: string, content: string): boolean {
+  if (!missionAllowsBrowserBoundedFailureCloseout(missionDesc)) {
+    return false;
+  }
+  return (
+    /\b(?:browser|CDP|Chrome DevTools|automation|browser automation|snapshot|screenshot|capture|scroll)\b[\s\S]{0,200}\b(?:unavailable|unreachable|cannot be reached|could not be reached|connection refused|ECONNREFUSED|could not establish|cannot establish|browser_cdp_unavailable|timed out|timeouts?|timeout|cdp_command_timeout)\b|\b(?:timed out|timeouts?|timeout|cdp_command_timeout)\b[\s\S]{0,200}\b(?:browser|CDP|Chrome DevTools|automation|snapshot|screenshot|capture|scroll)\b/i.test(
+      content
+    ) &&
+    /\bwhat was verified\b|\bverified\b[\s\S]{0,100}\b(?:URL|target|reachable|connection|port)\b/i.test(content) &&
+    /\bwhat remains unverified\b|\b(?:remains? )?unverified\b|\bnot verified\b/i.test(content) &&
+    /\bnext action\b|\boperator\b[\s\S]{0,120}\b(?:should|can|must|next)\b|\bmanual(?:ly)?\b/i.test(content) &&
+    /\b(?:flow|mission|task|automated work)\b[\s\S]{0,120}\b(?:closed|complete|completed|no further|not possible|cannot continue)\b|\b(?:source[- ]bounded|bounded to|scope (?:is )?limited|scope of the fixture|cannot validate real[- ]world)\b|\b(?:browser runtime infrastructure issue|target application is not the source of the failure|restart or repair the browser runtime|re-submit the review task|resubmit the review task|no live production system is affected)\b/i.test(
+      content
+    )
+  );
+}
+
+function missionAllowsBrowserBoundedFailureCloseout(missionDesc: string): boolean {
+  return /\bif\b[\s\S]{0,120}\b(?:browser|CDP|automation)\b[\s\S]{0,120}\b(?:cannot|can't|unavailable|unreachable|refused|cannot be reached|could not be reached|times? out|timed out|timeout)\b[\s\S]{0,160}\b(?:close out|closeout|what was verified|remains? unverified|next action)\b/i.test(
+    missionDesc
   );
 }
 
@@ -323,10 +435,12 @@ function looksLikeCompleteDeniedApprovalCloseout(content: string): boolean {
   return (
     /\bdenied\b/i.test(content) &&
     /\b(?:safe closeout|safe fallback|closed safely|task closed safely)\b/i.test(content) &&
-    /\b(?:no mutation was performed|no side effects? (?:occurred|were applied)|no form submission was (?:or will be )?performed|side effect did not run|action not performed)\b/i.test(
+    /\b(?:no mutation was performed|no side effects? (?:occurred|were applied)|no form submission was (?:or will be )?performed|form submission was never submitted|was never submitted|side effect did not run|action not performed|no action was performed)\b/i.test(
       content
     ) &&
-    /\b(?:complete|closed out|closes cleanly|no further browser work is queued)\b/i.test(content)
+    /\b(?:complete|closed out|closes cleanly|halts cleanly|no further browser work is queued|safe next action|re-?initiate|re-?review)\b/i.test(
+      content
+    )
   );
 }
 

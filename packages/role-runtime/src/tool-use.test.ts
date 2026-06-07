@@ -102,6 +102,253 @@ test("sessions_spawn marks a selected worker with no executable result as a fail
   assert.equal(result.progress?.at(-1)?.phase, "failed");
 });
 
+test("sessions_spawn maps null worker output with timeout summary state to resumable timeout", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "browser", workerRunKey: "worker:browser:timeout-null" };
+    },
+    async send() {
+      return null;
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:timeout-null",
+        workerType: "browser",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Browser opened the loopback source and captured a timeout before DOMContentLoaded.",
+          createdAt: 2,
+        },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-timeout-null",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open the slow loopback page.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Open the slow loopback page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as {
+    status: string;
+    evidence_available: boolean;
+    evidence_summary: string;
+    result: string;
+  };
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.evidence_available, true);
+  assert.match(body.evidence_summary, /loopback source/);
+  assert.doesNotMatch(body.result, /no executable result/i);
+  assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+});
+
+test("sessions_spawn floors model-short timeout for slow loopback browser tasks", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "browser", workerRunKey: "worker:browser:slow-loopback" };
+    },
+    async send() {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Slow loopback check completed.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    maxSessionToolTimeoutMs: 100,
+    hardTimeoutGraceMs: 1,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-slow-loopback-floor",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Inspect the localhost slow source at http://127.0.0.1:61930/slow-fixture with a bounded browser attempt.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Inspect this localhost slow source through a browser-visible local-runtime path.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; result: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(body.status, "completed");
+  assert.equal(body.result, "Slow loopback check completed.");
+});
+
+test("sessions_spawn floors model-short timeout for local approval browser tasks", async () => {
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      return {
+        status: "pending",
+        approvalId: "ap.thread-1.local-approval-floor",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Approval is pending.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async waitForDecision(input) {
+      return {
+        status: "approved",
+        approvalId: input.approvalId,
+        action: "browser.form.submit",
+        message: "Approved.",
+      };
+    },
+    async apply(input) {
+      return {
+        status: "applied",
+        approvalId: input.approvalId,
+        cacheKey: "thread-1:browser:mutate:approval:browser.form.submit",
+        message: "Applied.",
+      };
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "browser", workerRunKey: "worker:browser:approval-form" };
+    },
+    async send() {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Approval form submitted after permission.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    maxSessionToolTimeoutMs: 100,
+    hardTimeoutGraceMs: 1,
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-local-approval-floor",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open http://127.0.0.1:61930/approval-form and submit the dry-run form after approval.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Complete the local approval dry-run action after the operator approves browser.form.submit.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; result: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(body.status, "completed");
+  assert.equal(body.result, "Approval form submitted after permission.");
+});
+
+test("sessions_spawn lets supplemental local timeout browser probe exceed foreground cap", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "browser", workerRunKey: "worker:browser:supplemental-timeout-probe" };
+    },
+    async send() {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Supplemental probe returned bounded negative evidence.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    maxSessionToolTimeoutMs: 1,
+    hardTimeoutGraceMs: 1,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-supplemental-browser-probe",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: [
+          "Supplemental local timeout probe mode: call browser_open with timeout_ms 10000.",
+          "Open http://127.0.0.1:61930/slow-fixture as an operator would see it.",
+        ].join("\n"),
+        timeout_seconds: 90,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue a content-poor slow loopback timeout follow-up.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; result: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(body.status, "completed");
+  assert.equal(body.result, "Supplemental probe returned bounded negative evidence.");
+});
+
 test("sessions_spawn exposes sub-agent final content at top level", async () => {
   let capturedWorkerSession: unknown = null;
   const workerRuntime = {
@@ -457,6 +704,58 @@ test("sessions_spawn keeps browser for rendered, interactive, or user-session so
       seat: "lead",
       systemPrompt: "Lead.",
       taskPrompt: "Review dashboard.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { agent_id?: string };
+  assert.deepEqual(capturedPreferredWorkers, ["browser"]);
+  assert.equal(body.agent_id, "browser");
+  assert.match(result.progress?.[0]?.summary ?? "", /Started browser sub-agent/);
+});
+
+test("sessions_spawn keeps browser for approval form inspection before dry-run submission", async () => {
+  let capturedPreferredWorkers: unknown = null;
+  const workerRuntime = {
+    async spawn(input: WorkerInvocationInput) {
+      capturedPreferredWorkers = input.packet.preferredWorkerKinds;
+      return { workerType: "browser", workerRunKey: "worker:browser:approval-form" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Approval form inspected.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser", "explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-approval-form",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        label: "Inspect approval form structure",
+        task: [
+          "Navigate to http://127.0.0.1:61930/approval-form and inspect the form structure.",
+          "Extract all form fields, their IDs, names, types, labels, and placeholders.",
+          "Also list whether a submission control exists and whether the page states any approval/dry-run language.",
+        ].join(" "),
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
       outputContract: "Return result.",
       suggestedMentions: [],
     },
@@ -1230,11 +1529,83 @@ test("sessions_spawn does not require mutation approval for submitting a read-on
   assert.equal(result.isError, undefined);
 });
 
+test("sessions_spawn does not require mutation approval for read-only navigation links named submit", async () => {
+  let spawnCalled = false;
+  let permissionRequested = false;
+  const toolPermissionService: ToolPermissionService = {
+    async request() {
+      permissionRequested = true;
+      throw new Error("read-only navigation link inventory must not request mutation approval");
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-navigation-links" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Reviewed navigation links.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-readonly-submit-navigation-link",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: [
+          "Navigate to https://news.ycombinator.com/ and inspect the browser-rendered page as a user would see it.",
+          "Summarize visible story listings and navigation links such as new, past, comments, ask, show, jobs, submit, and login.",
+          "Do not click, submit, or change anything; this is a read-only browser review.",
+        ].join("\n"),
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Review live external page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(spawnCalled, true);
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, undefined);
+});
+
 test("sessions_spawn does not require mutation approval for read-only dashboard next-action review", async () => {
   for (const [id, task] of [
     [
       "dynamic-dashboard-review",
       "Review the operations dashboard at http://127.0.0.1:4101/ops-dashboard as a user would see it in the browser. Wait for full client-side rendering, then identify the operational state, escalation trigger, owner, and recommended next action for an operator.",
+    ],
+    [
+      "dashboard-before-paging-review",
+      "Navigate to http://127.0.0.1:4101/ops-dashboard and wait for the page to fully load and render. The operator wants help reading the live operations dashboard before paging anyone. Explain whether the escalation policy is triggered, who should own the next action, and what risk remains after the check.",
+    ],
+    [
+      "dashboard-whether-to-page-review",
+      "Open the rendered dashboard, review the queue status, and determine whether to send a page to the on-call operator. Do not page anyone; return the verified status and residual risk.",
     ],
     [
       "send-next-action",
@@ -1376,6 +1747,74 @@ test("sessions_spawn requires mutation approval for ambiguous browser submit out
     assert.equal(body.status, "requires_approval");
     assert.equal(body.blocked_before_side_effect, true);
   }
+});
+
+test("sessions_spawn requires mutation approval for explicit browser paging action", async () => {
+  let spawnCalled = false;
+  let requestedAction = "";
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      requestedAction = input.action;
+      return {
+        status: "pending",
+        approvalId: "ap.thread-1.page-on-call",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Approval is pending.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:page-on-call" };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-page-on-call",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open the dashboard and send a page to the on-call operator.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Send a page to on-call.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; blocked_before_side_effect: boolean };
+  assert.equal(spawnCalled, false);
+  assert.equal(requestedAction, "browser.mutate");
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "requires_approval");
+  assert.equal(body.blocked_before_side_effect, true);
 });
 
 test("sessions_spawn still requires approval when a later order action follows read-only priority order", async () => {
@@ -1627,6 +2066,97 @@ test("sessions_spawn returns structured permission error when approval wait fail
   assert.equal(result.progress?.some((event) => event.detail?.eventType === "permission.error"), true);
 });
 
+test("sessions_spawn returns approval wait-timeout when operator decision stays pending", async () => {
+  const previousWaitMs = process.env.TURNKEYAI_TOOL_PERMISSION_WAIT_MS;
+  process.env.TURNKEYAI_TOOL_PERMISSION_WAIT_MS = "25";
+  let observedTimeoutMs: number | undefined;
+  let spawnCalled = false;
+  try {
+    const toolPermissionService: ToolPermissionService = {
+      async request(input) {
+        return {
+          status: "pending",
+          approvalId: "ap.thread-1.call-approval-timeout",
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "missing",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Approval is pending.",
+        };
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async waitForDecision(input) {
+        observedTimeoutMs = input.timeoutMs;
+        return {
+          status: "pending",
+          approvalId: input.approvalId,
+          action: "browser.form.submit",
+          message: "Permission request is still pending.",
+        };
+      },
+      async apply() {
+        throw new Error("not reached");
+      },
+    };
+    const workerRuntime = {
+      async spawn() {
+        spawnCalled = true;
+        throw new Error("worker must not start while approval is pending");
+      },
+    } as unknown as WorkerRuntime;
+    const executor = createWorkerSessionToolExecutor({
+      workerRuntime,
+      availableWorkerKinds: ["browser"],
+      toolPermissionService,
+    });
+
+    const result = await executor.execute({
+      call: {
+        id: "call-approval-timeout",
+        name: "sessions_spawn",
+        input: {
+          agent_id: "browser",
+          task: "Submit the final account update form.",
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Submit the final account update form.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+
+    const body = JSON.parse(result.content) as { status: string; blocked_before_side_effect: boolean; message: string };
+    assert.equal(observedTimeoutMs, 25);
+    assert.equal(spawnCalled, false);
+    assert.equal(result.isError, true);
+    assert.equal(body.status, "approval_wait_timeout");
+    assert.equal(body.blocked_before_side_effect, true);
+    assert.match(body.message, /still pending/i);
+    assert.match(body.message, /side effect was not performed/i);
+    assert.equal(result.progress?.some((event) => event.detail?.eventType === "permission.query"), true);
+    assert.equal(result.progress?.some((event) => event.detail?.eventType === "permission.result"), true);
+    assert.equal(result.progress?.some((event) => event.detail?.eventType === "permission.applied"), false);
+  } finally {
+    if (previousWaitMs === undefined) {
+      delete process.env.TURNKEYAI_TOOL_PERMISSION_WAIT_MS;
+    } else {
+      process.env.TURNKEYAI_TOOL_PERMISSION_WAIT_MS = previousWaitMs;
+    }
+  }
+});
+
 test("sessions_spawn cancels the active worker when the tool call is cancelled", async () => {
   let resolveSend!: () => void;
   let sendStarted!: () => void;
@@ -1836,6 +2366,168 @@ test("sessions_send returns cancelled when the worker session was cancelled outs
   assert.equal(result.isError, true);
   assert.equal(body.status, "cancelled");
   assert.equal(body.result, "operator cancelled browser work");
+});
+
+test("sessions_send maps null resumed output with timeout summary state to resumable timeout", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:timeout-followup",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "role:lead",
+          },
+          state: {
+            workerRunKey: "worker:browser:timeout-followup",
+            workerType: "browser",
+            status: "resumable",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:timeout-followup",
+        workerType: "browser",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 3,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Follow-up browser worker retried the slow source and preserved the timeout evidence.",
+          createdAt: 3,
+        },
+      };
+    },
+    async resume() {
+      return null;
+    },
+    async send() {
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-send-timeout-null",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:timeout-followup",
+        message: "Continue the slow browser page.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the slow browser page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as {
+    status: string;
+    evidence_available: boolean;
+    evidence_summary: string;
+    result: string;
+  };
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.evidence_available, true);
+  assert.match(body.evidence_summary, /timeout evidence/);
+  assert.doesNotMatch(body.result, /no executable result/i);
+  assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+});
+
+test("sessions_send floors resumable continuation timeout for slow loopback browser tasks", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:slow-loopback-followup",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "role:lead",
+          },
+          state: {
+            workerRunKey: "worker:browser:slow-loopback-followup",
+            workerType: "browser",
+            status: "resumable",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:slow-loopback-followup",
+        workerType: "browser",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume() {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Slow loopback follow-up completed.",
+      };
+    },
+    async send() {
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    maxSessionToolTimeoutMs: 100,
+    hardTimeoutGraceMs: 1,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-send-slow-loopback-floor",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:slow-loopback-followup",
+        message: "Continue http://127.0.0.1:61930/slow-fixture with a bounded slow-source browser check.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the same browser/local slow-source diagnostic.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; result: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(body.status, "completed");
+  assert.equal(body.result, "Slow loopback follow-up completed.");
 });
 
 test("sessions_send cancels the active resumed worker before the worker send unwinds", async () => {
@@ -4364,12 +5056,15 @@ test("sessions_list filters by thread, kind, agent_id, parentSessionKey, and act
       tool_call_id: string | null;
       message_count: number;
     }>;
+    inspection_guidance: string;
   };
   assert.deepEqual(body.sessions.map((session) => session.session_key), ["worker:browser:recent"]);
   assert.equal(body.sessions[0]?.label, "Live browser check");
   assert.equal(body.sessions[0]?.parent_session_key, "role:role-lead:thread:thread-1");
   assert.equal(body.sessions[0]?.tool_call_id, "call-browser");
   assert.equal(body.sessions[0]?.message_count, 1);
+  assert.match(body.inspection_guidance, /Do not call sessions_list repeatedly/);
+  assert.match(body.inspection_guidance, /sessions_history or continue it with sessions_send/);
 });
 
 test("sessions_history reads durable session history with pagination and payload gating", async () => {
@@ -4586,6 +5281,7 @@ test("sessions_history can read the latest entries with tail=true", async () => 
     offset: number;
     tail: boolean;
     has_more: boolean;
+    inspection_guidance: string;
     messages: Array<{ id: string; content: string }>;
   };
   assert.equal(body.tail, true);
@@ -4593,6 +5289,37 @@ test("sessions_history can read the latest entries with tail=true", async () => 
   assert.equal(body.has_more, false);
   assert.deepEqual(body.messages.map((message) => message.id), ["history-3"]);
   assert.equal(body.messages[0]?.content, "Final evidence ledger.");
+  assert.match(body.inspection_guidance, /no later transcript entries/);
+  assert.match(body.inspection_guidance, /otherwise synthesize from this history/);
+
+  const completeResult = await executor.execute({
+    call: {
+      id: "call-tail-complete",
+      name: "sessions_history",
+      input: {
+        session_key: "worker:explore:tail",
+        limit: 5,
+        tail: true,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Read complete tail history.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+  const completeBody = JSON.parse(completeResult.content) as {
+    has_more_before: boolean;
+    inspection_guidance: string;
+  };
+  assert.equal(completeBody.has_more_before, false);
+  assert.match(completeBody.inspection_guidance, /complete available transcript/);
+  assert.match(completeBody.inspection_guidance, /Do not call sessions_history or sessions_list again/);
 });
 
 test("sessions_history returns opaque cursors for long transcript pagination", async () => {

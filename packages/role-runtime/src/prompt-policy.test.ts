@@ -271,6 +271,36 @@ test("default role prompt policy injects tool harness from the tool capability r
   );
 });
 
+test("default role prompt policy hides unavailable worker guidance from tool harness", async () => {
+  const policy = new DefaultRolePromptPolicy({
+    roleProfileRegistry: new DefaultRoleProfileRegistry(),
+    capabilityDiscoveryService: new DefaultCapabilityDiscoveryService({
+      availableWorkers: ["browser", "explore"],
+    }),
+    toolCapabilityRegistry: createNativeToolCapabilityRegistry({
+      availableWorkerKinds: ["browser", "explore"],
+    }),
+  });
+
+  const activation = buildFinanceActivationInput();
+  activation.runState.roleId = "role-lead";
+  activation.thread.leadRoleId = "role-lead";
+  activation.thread.roles = [
+    { roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local", capabilities: ["explore"] },
+    { roleId: "role-research", name: "Research Specialist", seat: "member", runtime: "local" },
+  ];
+
+  const packet = await policy.buildPacket(activation);
+
+  assert.deepEqual(packet.preferredWorkerKinds, ["explore"]);
+  assert.match(packet.systemPrompt, /Tool Usage Discipline/);
+  assert.match(packet.systemPrompt, /Sub-Agent Sessions/);
+  assert.match(packet.systemPrompt, /Executable sub-agent kinds:[\s\S]*- explore:/);
+  assert.doesNotMatch(packet.systemPrompt, /Browser Worker Rules/);
+  assert.doesNotMatch(packet.systemPrompt, /- browser:/);
+  assert.doesNotMatch(packet.systemPrompt, /spawn browser directly/);
+});
+
 test("default role prompt policy keeps a deterministic section order when session memory is included", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "prompt-policy-session-memory-order-"));
 

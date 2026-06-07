@@ -1070,6 +1070,45 @@ describe("MissionThreadBridge", () => {
     assert.equal(activity.events[1]!.actor, "browser-snapshot");
   });
 
+  it("exposes model-use boundaries on final thought runtime", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("a-model", "assistant", 1_000),
+          roleId: "role-lead",
+          content: "Final answer.",
+          metadata: {
+            modelUse: {
+              source: "turnkeyai-role-runtime",
+              callCount: 2,
+              totalInputTokens: 30,
+              totalOutputTokens: 12,
+              calls: [
+                { index: 1, phase: "tool_round", round: 0, modelId: "m1", providerId: "p", durationMs: 10 },
+                { index: 2, phase: "final_synthesis", modelId: "m1", providerId: "p", durationMs: 20 },
+              ],
+            },
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    assert.equal(activity.events.length, 1);
+    assert.equal(activity.events[0]?.runtime?.modelCallSource, "turnkeyai-role-runtime");
+    assert.equal(activity.events[0]?.runtime?.modelCallCount, "2");
+    assert.equal(activity.events[0]?.runtime?.modelInputTokens, "30");
+    assert.equal(activity.events[0]?.runtime?.modelOutputTokens, "12");
+    assert.match(activity.events[0]?.runtime?.modelCallBoundaries ?? "", /final_synthesis/);
+  });
+
   it("expands assistant tool-use trace into per-call timeline events (K3.5 §8)", async () => {
     // Real LLM path: the assistant turn that called sessions_spawn
     // and got a result back. `metadata.toolUse.rounds` is what

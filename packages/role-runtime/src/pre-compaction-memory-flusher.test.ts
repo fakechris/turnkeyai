@@ -66,6 +66,167 @@ test("pre-compaction memory flusher asks the model and writes durable thread mem
   });
 });
 
+test("pre-compaction memory flusher keeps task facts ahead of long system prompt text", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    return {
+      text: JSON.stringify({
+        preferences: [],
+        constraints: [],
+        longTermNotes: ["Project Aurora-19 launches Friday 14:15 with Field Ops Lead as owner."],
+      }),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const packet = buildPacket();
+  packet.systemPrompt = "system filler ".repeat(1_000);
+  packet.taskPrompt = [
+    "Important durable facts near the top of the handoff:",
+    "Project codename: Aurora-19.",
+    "Launch window: Friday 14:15.",
+    "Owner: Field Ops Lead.",
+    "Residual risk: vendor dry-run remains unverified.",
+    "background ".repeat(1_000),
+  ].join("\n");
+  const flusher = new DefaultPreCompactionMemoryFlusher({
+    gateway,
+    threadMemoryStore: new InMemoryThreadMemoryStore(),
+    maxPromptChars: 2_000,
+  });
+
+  const result = await flusher.flush({
+    activation: buildActivation(),
+    packet,
+    modelId: "claude-test",
+    reason: "request_envelope_overflow",
+  });
+
+  assert.equal(result.status, "written");
+  const userContent = String(gatewayInputs[0]?.messages.find((message) => message.role === "user")?.content ?? "");
+  assert.match(userContent, /Task excerpt before compaction:/);
+  assert.match(userContent, /Aurora-19/);
+  assert.match(userContent, /Friday 14:15/);
+  assert.match(userContent, /Field Ops Lead/);
+});
+
+test("pre-compaction memory flusher preserves structured task facts when model extraction is sparse", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => ({
+    text: JSON.stringify({
+      preferences: [],
+      constraints: [],
+      longTermNotes: [],
+    }),
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible",
+    adapterName: "test",
+    raw: {},
+  });
+  const memoryStore = new InMemoryThreadMemoryStore();
+  const packet = buildPacket();
+  packet.taskPrompt = [
+    "Important durable facts near the top of the handoff:",
+    "Project codename: Aurora-19.",
+    "Launch window: Friday 14:15.",
+    "Owner: Field Ops Lead.",
+    "Hard constraint: keep the external announcement conditional until Legal Review has confirmed the data-processing addendum.",
+    "Residual risk: the vendor dry-run note is still unverified, so external commitments should stay conditional.",
+  ].join("\n");
+  const flusher = new DefaultPreCompactionMemoryFlusher({
+    gateway,
+    threadMemoryStore: memoryStore,
+    now: () => 99,
+  });
+
+  const result = await flusher.flush({
+    activation: buildActivation(),
+    packet,
+    modelId: "claude-test",
+    reason: "request_envelope_overflow",
+  });
+
+  assert.equal(result.status, "written");
+  const stored = await memoryStore.get("thread-1");
+  const text = [...(stored?.constraints ?? []), ...(stored?.longTermNotes ?? [])].join("\n");
+  assert.match(text, /Aurora-19/);
+  assert.match(text, /Friday 14:15/);
+  assert.match(text, /Field Ops Lead/);
+  assert.match(text, /Legal Review/);
+  assert.match(text, /Aurora-19 hard constraint/i);
+  assert.match(text, /Aurora-19 residual risk/i);
+  assert.match(text, /vendor dry-run/);
+});
+
+test("pre-compaction memory flusher invalidates stale structured task facts during correction flush", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => ({
+    text: JSON.stringify({
+      preferences: [],
+      constraints: [],
+      longTermNotes: [
+        "Corrected Borealis-23 launch context is Thursday 16:45 with Ops Captain as owner. The previous Monday 10:15 Launch Manager note is stale and must not be used.",
+      ],
+    }),
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible",
+    adapterName: "test",
+    raw: {},
+  });
+  const memoryStore = new InMemoryThreadMemoryStore({
+    threadId: "thread-1",
+    updatedAt: 1,
+    preferences: [],
+    constraints: [
+      "Borealis-23 launch window is Monday 10:15; owner is Launch Manager; residual risk is staging checklist pending.",
+    ],
+    longTermNotes: ["Keep unrelated Vega-12 planning facts for next week."],
+  });
+  const packet = buildPacket();
+  packet.taskPrompt = [
+    "Update the launch handoff.",
+    "Remember this correction for Borealis-23 going forward.",
+    "Project codename: Borealis-23.",
+    "Launch window: Thursday 16:45.",
+    "Owner: Ops Captain.",
+    "Residual risk: payment processor signoff pending.",
+    "The previous Borealis-23 note is stale and must not be used going forward.",
+  ].join("\n");
+  const flusher = new DefaultPreCompactionMemoryFlusher({
+    gateway,
+    threadMemoryStore: memoryStore,
+    now: () => 123,
+  });
+
+  const result = await flusher.flush({
+    activation: buildActivation(),
+    packet,
+    modelId: "claude-test",
+    reason: "request_envelope_overflow",
+  });
+
+  assert.equal(result.status, "written");
+  const stored = await memoryStore.get("thread-1");
+  assert.ok(stored);
+  const text = [...(stored?.constraints ?? []), ...(stored?.longTermNotes ?? [])].join("\n");
+  assert.match(text, /Borealis-23/);
+  assert.match(text, /Thursday 16:45/);
+  assert.match(text, /Ops Captain/);
+  assert.match(text, /payment processor signoff/);
+  assert.match(text, /Borealis-23 residual risk/i);
+  assert.match(text, /Vega-12/);
+  assert.doesNotMatch(text, /Monday 10:15/);
+  assert.doesNotMatch(text, /Launch Manager/);
+  assert.doesNotMatch(text, /staging checklist/);
+});
+
 class InMemoryThreadMemoryStore implements ThreadMemoryStore {
   private records = new Map<string, ThreadMemoryRecord>();
 

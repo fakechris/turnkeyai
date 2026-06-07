@@ -14,6 +14,8 @@ import {
   type RealLlmAbRootCauseBucket,
   type RealLlmAbScenarioPair,
   type RealLlmAbScenarioRun,
+  type RealLlmAbComparisonClassification,
+  type RealLlmAbReferenceAudit,
 } from "@turnkeyai/qc-runtime/real-llm-ab-acceptance";
 
 export interface RealLlmAbReportBuildOptions {
@@ -42,6 +44,13 @@ export interface RealLlmAbReportBuildScenarioSpec {
   requiresTimeoutCloseout?: boolean;
   referenceArtifactPath: string;
   referenceDimensionScores?: Partial<Record<RealLlmAbDimensionKey, RealLlmAbDimensionScore>>;
+  modelComparison?: {
+    turnkeyaiProvider?: string;
+    turnkeyaiModelId?: string;
+    referenceProvider?: string;
+    referenceModelId?: string;
+    differenceNote?: string;
+  };
 }
 
 interface NaturalMissionReportShape {
@@ -81,6 +90,7 @@ interface NaturalMissionScenarioShape {
   };
   final?: {
     qualityFailures?: unknown;
+    excerpt?: unknown;
   };
 }
 
@@ -143,6 +153,18 @@ interface GenericReferenceArtifactShape {
   followup?: {
     summary?: GenericReferenceSummaryShape;
   };
+  provenance?: GenericReferenceProvenanceShape;
+  rawResponse?: unknown;
+  rawTranscript?: unknown;
+  rawToolCalls?: unknown;
+  rawToolResults?: unknown;
+  rawBrowserEvidence?: unknown;
+  rawApprovalEvidence?: unknown;
+  artifactAdapterMappingSource?: unknown;
+  collectedAtMs?: unknown;
+  exitStatus?: unknown;
+  errorReason?: unknown;
+  notes?: unknown;
 }
 
 interface GenericReferenceSummaryShape {
@@ -150,6 +172,32 @@ interface GenericReferenceSummaryShape {
   toolResultCount?: unknown;
   pendingToolCount?: unknown;
   finalText?: unknown;
+}
+
+interface GenericReferenceProvenanceShape {
+  referenceApp?: unknown;
+  referenceBinary?: unknown;
+  referenceRepoPath?: unknown;
+  referenceVersion?: unknown;
+  referenceCommit?: unknown;
+  daemonUrl?: unknown;
+  apiEndpoint?: unknown;
+  modelCatalog?: unknown;
+  provider?: unknown;
+  modelId?: unknown;
+  exactRequestPayload?: unknown;
+  rawResponse?: unknown;
+  rawTranscript?: unknown;
+  rawToolCalls?: unknown;
+  rawToolResults?: unknown;
+  rawBrowserEvidence?: unknown;
+  rawApprovalEvidence?: unknown;
+  artifactAdapterMappingSource?: unknown;
+  collectedAtMs?: unknown;
+  exitStatus?: unknown;
+  timeout?: unknown;
+  errorReason?: unknown;
+  referenceScenarioDriver?: unknown;
 }
 
 export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBuildOptions | { help: true } {
@@ -185,7 +233,7 @@ export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBu
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
       if (!isRealLlmAbRequiredSuite(value)) {
-        throw new Error("--suite must be one of: core, browser-focused, browser-reliability");
+        throw new Error("--suite must be one of: core, browser-focused, browser-reliability, full-natural");
       }
       requiredSuite = value;
       index += 1;
@@ -254,7 +302,7 @@ export function buildRealLlmAbReportBuildHelpText(): string {
     "TurnkeyAI real LLM A/B report builder",
     "",
     "Usage:",
-    "  npm run acceptance:ab:build -- --spec <path> --out <path> [--check] [--suite <core|browser-focused|browser-reliability>] [--markdown-out <path>]",
+    "  npm run acceptance:ab:build -- --spec <path> --out <path> [--check] [--suite <core|browser-focused|browser-reliability|full-natural>] [--markdown-out <path>]",
     "",
     "The spec points at a TurnkeyAI natural mission report and same-scenario reference artifacts.",
     "--suite selects the required scenario set when --check is used.",
@@ -277,6 +325,14 @@ export function buildRealLlmAbAcceptanceReport(
     const naturalScenario = findNaturalScenario(naturalReport, scenarioSpec.turnkeyaiScenarioId);
     const referenceArtifactPath = resolveInputPath(scenarioSpec.referenceArtifactPath, specDir);
     const referenceArtifact = readJsonFile<GenericReferenceArtifactShape>(referenceArtifactPath);
+    const referencePrompt = readReferencePrompt(referenceArtifact) ?? "";
+    const referenceAudit = auditReferenceArtifact({
+      artifact: referenceArtifact,
+      artifactPath: referenceArtifactPath,
+      scenarioPrompt: scenarioSpec.prompt,
+      referencePrompt,
+      requiresBrowser: scenarioSpec.requiresBrowser === true,
+    });
     return {
       scenarioId: scenarioSpec.scenarioId,
       prompt: scenarioSpec.prompt,
@@ -293,6 +349,8 @@ export function buildRealLlmAbAcceptanceReport(
       ...(scenarioSpec.requiresTimeoutCloseout !== undefined
         ? { requiresTimeoutCloseout: scenarioSpec.requiresTimeoutCloseout }
         : {}),
+      comparisonClassification: classifyComparison(referenceAudit),
+      referenceAudit,
       turnkeyai: buildTurnkeyAiRun({
         artifactPath: spec.turnkeyaiNaturalReportPath,
         scenario: naturalScenario,
@@ -345,7 +403,7 @@ function coversCoreSuiteScenarioIds(scenarioIds: readonly string[]): boolean {
 }
 
 function isRealLlmAbRequiredSuite(value: string): value is RealLlmAbRequiredSuite {
-  return value === "core" || value === "browser-focused" || value === "browser-reliability";
+  return value === "core" || value === "browser-focused" || value === "browser-reliability" || value === "full-natural";
 }
 
 function buildTurnkeyAiRun(input: {
@@ -361,6 +419,7 @@ function buildTurnkeyAiRun(input: {
   const toolSequence = readStringArray(metrics.tools?.names);
   const sessionsContinued = readNumber(metrics.sessions?.continued);
   const toolTimeouts = readNumber(metrics.tools?.timeouts);
+  const approvalWaitTimeoutCloseout = hasTurnkeyAiApprovalWaitTimeoutCloseout(input.scenario);
   const browserEvidenceEvents = input.scenario.natural?.browserUsed === true ? readNumber(metrics.evidenceEvents) : 0;
   const browserFailureBuckets = readBrowserFailureBucketNames(metrics.browser?.failureBuckets);
   const weakAnswerSignals = readTurnkeyAiWeakAnswerSignals(input.scenario, browserFailureBuckets);
@@ -384,9 +443,9 @@ function buildTurnkeyAiRun(input: {
     },
     timeout: {
       required: input.requiresTimeoutCloseout,
-      timedOut: toolTimeouts > 0,
+      timedOut: toolTimeouts > 0 || approvalWaitTimeoutCloseout,
       partialCloseout:
-        toolTimeouts > 0 &&
+        (toolTimeouts > 0 || approvalWaitTimeoutCloseout) &&
         input.scenario.natural?.completed === true &&
         input.scenario.natural?.finalAnswerHasEvidence === true &&
         input.scenario.natural?.finalAnswerUseful === true,
@@ -422,6 +481,23 @@ function buildTurnkeyAiRun(input: {
   };
 }
 
+function hasTurnkeyAiApprovalWaitTimeoutCloseout(scenario: NaturalMissionScenarioShape): boolean {
+  const text = [
+    readString(scenario.final?.excerpt),
+    stringifyForEvidence(scenario.metrics?.qualityChecks),
+    stringifyForEvidence(scenario.natural?.sourceCoverage),
+  ].join("\n");
+  const toolNames = new Set(readStringArray(scenario.metrics?.tools?.names));
+  return (
+    toolNames.has("permission_query") &&
+    toolNames.has("permission_result") &&
+    readNumber(scenario.metrics?.approvals?.requested) > 0 &&
+    readNumber(scenario.metrics?.approvals?.applied) === 0 &&
+    /\bapproval wait[- ]timeout\b|\bapproval_wait_timeout\b|\bstill pending\b/i.test(text) &&
+    /\b(?:did not|not|no)\b[\s\S]{0,80}\b(?:run|submit|submitted|side effects?|permission_applied|permission\.applied)\b/i.test(text)
+  );
+}
+
 function buildReferenceRun(input: {
   artifactPath: string;
   artifact: GenericReferenceArtifactShape;
@@ -437,7 +513,36 @@ function buildReferenceRun(input: {
   const toolResultCount = readNumber(first?.toolResultCount) + readNumber(followup?.toolResultCount);
   const useful = input.artifact.score?.useful === true;
   const weak = input.artifact.score?.weak === true;
+  const approvalWaitTimeoutBaselineLoss = isApprovalWaitTimeoutReferenceBaselineLoss(input.artifact);
+  const timeoutPartialBaselineLoss = isTimeoutPartialReferenceBaselineLoss(input.artifact);
   const hasFollowup = Boolean(input.artifact.followup);
+  const rawBrowserEvidence = input.artifact.provenance?.rawBrowserEvidence ?? input.artifact.rawBrowserEvidence;
+  const rawApprovalEvidence = input.artifact.provenance?.rawApprovalEvidence ?? input.artifact.rawApprovalEvidence;
+  const renderedBrowserEvidence = containsRenderedBrowserEvidence(rawBrowserEvidence);
+  const browserEvidenceUsed = renderedBrowserEvidence || hasNonEmptyEvidence(rawBrowserEvidence);
+  const approvalRequested =
+    input.requiresApproval &&
+    (hasNonEmptyEvidence(rawApprovalEvidence) ||
+      containsReferenceTerm(
+        [input.artifact.provenance?.rawTranscript, input.artifact.rawTranscript, input.artifact.rawToolCalls, input.artifact.rawToolResults],
+        /\bpermission\.query\b|approval (?:id|request)|browser\.form\.submit/i
+      ));
+  const approvalDecided =
+    input.requiresApproval &&
+    !approvalWaitTimeoutBaselineLoss &&
+    (containsReferenceApprovalDecision(rawApprovalEvidence) ||
+      containsReferenceTerm(
+        [input.artifact.provenance?.rawTranscript, input.artifact.rawTranscript, input.artifact.rawToolResults],
+        /\bpermission\.result\b|operator approved|approval was granted|approved action/i
+      ));
+  const approvalApplied =
+    input.requiresApproval &&
+    !approvalWaitTimeoutBaselineLoss &&
+    (containsReferenceTerm(
+      [input.artifact.provenance?.rawTranscript, input.artifact.rawTranscript, input.artifact.rawToolResults, input.artifact.first],
+      /\bpermission\.applied\b|permission already granted|permission cache|approved action|form submitted successfully/i
+    ) ||
+      (approvalDecided && renderedBrowserEvidence && /submitted|post-submit|dry-run submission complete/i.test(readString(first?.finalText) ?? "")));
   return {
     system: "reference",
     prompt: readReferencePrompt(input.artifact) ?? "",
@@ -464,30 +569,32 @@ function buildReferenceRun(input: {
     timeout: {
       required: input.requiresTimeoutCloseout,
       timedOut: input.artifact.timedOut === true,
-      partialCloseout: input.requiresTimeoutCloseout ? input.artifact.timedOut === true && useful : undefined,
-      hardAborted: input.artifact.timedOut === true && !useful,
+      partialCloseout: input.requiresTimeoutCloseout
+        ? input.artifact.timedOut === true && useful && !approvalWaitTimeoutBaselineLoss && !timeoutPartialBaselineLoss
+        : undefined,
+      hardAborted: timeoutPartialBaselineLoss || (input.artifact.timedOut === true && !useful),
     },
     browserEvidence: {
       required: input.requiresBrowser,
-      used: input.requiresBrowser && toolResultCount > 0,
-      rendered: input.requiresBrowser && useful,
+      used: browserEvidenceUsed,
+      rendered: renderedBrowserEvidence,
     },
     approval: {
       required: input.requiresApproval,
-      requested: input.requiresApproval && toolCallCount > 0,
-      decided: false,
-      applied: false,
-      sideEffectPreventedBeforeApproval: input.requiresApproval ? toolCallCount > 0 : undefined,
+      requested: approvalRequested,
+      decided: approvalDecided,
+      applied: approvalApplied,
+      sideEffectPreventedBeforeApproval: input.requiresApproval ? approvalRequested : undefined,
     },
-    completed: useful,
+    completed: timeoutPartialBaselineLoss ? false : useful,
     stuckOrLoop: input.artifact.timedOut === true || readNumber(first?.pendingToolCount) + readNumber(followup?.pendingToolCount) > 0,
-    finalAnswerUseful: useful,
-    finalAnswerHasEvidence: useful && toolResultCount > 0,
-    weakAnswerSignals: weak ? ["weak-answer"] : [],
-    residualRiskVisible: useful,
+    finalAnswerUseful: timeoutPartialBaselineLoss ? false : useful,
+    finalAnswerHasEvidence: timeoutPartialBaselineLoss ? false : useful && toolResultCount > 0,
+    weakAnswerSignals: weak || timeoutPartialBaselineLoss ? ["weak-answer"] : [],
+    residualRiskVisible: timeoutPartialBaselineLoss ? false : useful,
     dimensionScores: {
       ...inferReferenceDimensionScores({
-        useful,
+        useful: approvalWaitTimeoutBaselineLoss || timeoutPartialBaselineLoss ? false : useful,
         toolCallCount,
         toolResultCount,
         requiresBrowser: input.requiresBrowser,
@@ -498,6 +605,348 @@ function buildReferenceRun(input: {
       ...(input.dimensionScores ?? {}),
     },
   };
+}
+
+function classifyComparison(audit: RealLlmAbReferenceAudit): RealLlmAbComparisonClassification {
+  if (audit.fairnessStatus !== "passed") return "unfair_prompt_or_fixture";
+  if (audit.runtimeHealthStatus !== "passed") return "reference_env_failed";
+  if (audit.provenanceStatus !== "passed" || audit.adapterStatus !== "passed") return "adapter_unproven";
+  return "validated_comparison";
+}
+
+function isTimeoutPartialReferenceBaselineLoss(artifact: GenericReferenceArtifactShape): boolean {
+  const provenance = artifact.provenance ?? {};
+  const driver =
+    typeof provenance.referenceScenarioDriver === "object" && provenance.referenceScenarioDriver !== null
+      ? provenance.referenceScenarioDriver as Record<string, unknown>
+      : {};
+  if (!["timeout_partial", "timeout_followup"].includes(readString(driver.kind) ?? "")) return false;
+  if (readReferenceToolCallCount(artifact) === 0) return false;
+  const finalText =
+    readString(artifact.first?.summary?.finalText) ?? readString(artifact.followup?.summary?.finalText) ?? "";
+  if (finalText && artifact.score?.useful === true && !isWeakReferenceFinalText(finalText)) return false;
+  const toolResultCount = readReferenceToolResultCount(artifact);
+  const timedOutWithoutResult =
+    readString(provenance.exitStatus ?? artifact.exitStatus) === "timeout" &&
+    artifact.timedOut === true &&
+    toolResultCount === 0;
+  const failedWorkerCloseout =
+    toolResultCount > 0 &&
+    containsReferenceTerm(
+      [provenance.rawTranscript, artifact.rawTranscript, provenance.rawToolResults, artifact.rawToolResults, artifact.first],
+      /\b(?:sub-agent returned no executable result|no executable results?|requested task did not match the worker|worker's implemented capability|without live network access|localhost is inaccessible)\b/i
+    );
+  if (!timedOutWithoutResult && !failedWorkerCloseout) return false;
+  if (
+    containsReferenceTerm(
+      [provenance.rawToolResults, artifact.rawToolResults, artifact.first],
+      /\b(?:verified|confirmed)\b[\s\S]{0,120}\b(?:response body|release-risk evidence|HTTP status|headers?)\b|\bslow source\b[\s\S]{0,120}\b(?:returned|responded)\b/i
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isApprovalWaitTimeoutReferenceBaselineLoss(artifact: GenericReferenceArtifactShape): boolean {
+  const provenance = artifact.provenance ?? {};
+  const driver =
+    typeof provenance.referenceScenarioDriver === "object" && provenance.referenceScenarioDriver !== null
+      ? provenance.referenceScenarioDriver as Record<string, unknown>
+      : {};
+  if (readString(driver.approvalDecisionPolicy) !== "wait_timeout") return false;
+  if (readString(provenance.exitStatus ?? artifact.exitStatus) !== "timeout") return false;
+  if (artifact.timedOut !== true) return false;
+  const rawApprovalEvidence = provenance.rawApprovalEvidence ?? artifact.rawApprovalEvidence;
+  const rawToolCalls = provenance.rawToolCalls ?? artifact.rawToolCalls;
+  const rawToolResults = provenance.rawToolResults ?? artifact.rawToolResults;
+  if (!hasObservedPendingApprovalEvidence(rawApprovalEvidence)) return false;
+  if (containsReferenceApprovalDecision(rawApprovalEvidence)) return false;
+  if (readReferenceToolCallCount(artifact) === 0) return false;
+  if (readReferenceToolResultCount(artifact) > 0) return false;
+  if (
+    containsReferenceTerm(
+      [provenance.rawTranscript, artifact.rawTranscript, rawToolCalls, rawToolResults, artifact.first, rawApprovalEvidence],
+      /\bpermission\.applied\b|\bpermission_applied\b|\bform submitted successfully\b|\bsubmitted to the page\b|\bsubmission completed\b/i
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function hasObservedPendingApprovalEvidence(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((item) => hasObservedPendingApprovalEvidence(item));
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (readString(record.status) === "observed_pending" && hasKnownString(record.approvalId)) return true;
+  return Object.values(record).some((item) => hasObservedPendingApprovalEvidence(item));
+}
+
+function containsReferenceApprovalDecision(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((item) => containsReferenceApprovalDecision(item));
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (record.decisionPayload != null) return true;
+  const decision = record.decision;
+  if (typeof decision === "object" && decision !== null) {
+    const decisionRecord = decision as Record<string, unknown>;
+    if (hasKnownString(decisionRecord.decision)) return true;
+    if (
+      typeof decisionRecord.decision === "object" &&
+      decisionRecord.decision !== null &&
+      hasKnownString((decisionRecord.decision as Record<string, unknown>).decision)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasKnownString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0 && !/^(unknown|n\/a|null|undefined)$/i.test(value.trim());
+}
+
+function auditReferenceArtifact(input: {
+  artifact: GenericReferenceArtifactShape;
+  artifactPath: string;
+  scenarioPrompt: string;
+  referencePrompt: string;
+  requiresBrowser: boolean;
+}): RealLlmAbReferenceAudit {
+  const provenance = input.artifact.provenance ?? {};
+  const findings: string[] = [];
+  const missingProvenance = REQUIRED_REFERENCE_PROVENANCE_FIELDS.filter(
+    (field) => !hasReferenceProvenanceValue(input.artifact, provenance, field)
+  );
+  const notes = readString(input.artifact.notes) ?? "";
+  const transcript = readReferenceTranscript(input.artifact, input.artifactPath);
+  const finalText =
+    readString(input.artifact.first?.summary?.finalText) ?? readString(input.artifact.followup?.summary?.finalText);
+  const exactRequestPayloadPrompt = readReferenceExactRequestPrompt(provenance.exactRequestPayload);
+  const browserEvidenceFailed = hasFailedReferenceBrowserEvidence(input.artifact);
+  const runtimeEvidenceFailed = hasFailedReferenceRuntimeEvidence(input.artifact);
+  const weakFinalText = isWeakReferenceFinalText(finalText);
+  const referenceUseful = input.artifact.score?.useful === true;
+  const toolCallCount = readReferenceToolCallCount(input.artifact);
+  const toolResultCount = readReferenceToolResultCount(input.artifact);
+  const approvalWaitTimeoutBaselineLoss = isApprovalWaitTimeoutReferenceBaselineLoss(input.artifact);
+  const timeoutPartialBaselineLoss = isTimeoutPartialReferenceBaselineLoss(input.artifact);
+  const toolOrWorkerTriggered = toolCallCount > 0;
+  const toolOrWorkerResult = approvalWaitTimeoutBaselineLoss || timeoutPartialBaselineLoss || toolResultCount > 0;
+
+  if (!finalText && !approvalWaitTimeoutBaselineLoss && !timeoutPartialBaselineLoss) {
+    findings.push("adapter did not capture raw final answer text");
+  }
+  if (weakFinalText) {
+    findings.push("reference final answer contains harness or weak-answer text");
+  }
+  if (!referenceUseful && !approvalWaitTimeoutBaselineLoss && !timeoutPartialBaselineLoss) {
+    findings.push("reference final answer is not marked useful");
+  }
+  if (!toolOrWorkerTriggered) {
+    findings.push("reference native tool/worker execution was not observed");
+  }
+  if (!toolOrWorkerResult) {
+    findings.push("reference native tool/worker result was not observed");
+  }
+  if (!transcript.ok) {
+    findings.push(transcript.reason);
+  }
+  if (detectReferenceRuntimeHealthFailure(notes)) {
+    findings.push("reference runtime health failure detected in notes");
+  }
+  if (runtimeEvidenceFailed) {
+    findings.push("reference runtime health failure detected in raw transcript or worker metadata");
+  }
+  if (browserEvidenceFailed) {
+    findings.push("reference browser evidence reports failed browser history");
+  }
+  if (normalizePromptForAudit(input.referencePrompt) !== normalizePromptForAudit(input.scenarioPrompt)) {
+    findings.push("reference prompt does not match scenario prompt after loopback-port canonicalization");
+  }
+  if (!exactRequestPayloadPrompt) {
+    findings.push("exact request payload does not expose prompt evidence");
+  } else if (normalizePromptForAudit(exactRequestPayloadPrompt) !== normalizePromptForAudit(input.scenarioPrompt)) {
+    findings.push("exact request payload prompt does not match scenario prompt after loopback-port canonicalization");
+  }
+  if (input.requiresBrowser && !hasRenderedReferenceBrowserEvidence(input.artifact)) {
+    findings.push("reference browser evidence does not include rendered page evidence");
+  }
+
+  const adapterStatus =
+    (approvalWaitTimeoutBaselineLoss ||
+      timeoutPartialBaselineLoss ||
+      (finalText && !weakFinalText && referenceUseful && toolOrWorkerResult)) &&
+    toolOrWorkerTriggered &&
+    transcript.ok &&
+    Boolean(exactRequestPayloadPrompt) &&
+    hasReferenceProvenanceValue(input.artifact, provenance, "artifactAdapterMappingSource") &&
+    (!input.requiresBrowser || hasRenderedReferenceBrowserEvidence(input.artifact))
+      ? "passed"
+      : "failed";
+  const runtimeHealthStatus =
+    !approvalWaitTimeoutBaselineLoss &&
+    !timeoutPartialBaselineLoss &&
+    (detectReferenceRuntimeHealthFailure(notes) ||
+      runtimeEvidenceFailed ||
+      browserEvidenceFailed ||
+      !toolOrWorkerTriggered ||
+      !toolOrWorkerResult)
+      ? "failed"
+      : "passed";
+  const fairnessStatus =
+    normalizePromptForAudit(input.referencePrompt) === normalizePromptForAudit(input.scenarioPrompt) &&
+    (!exactRequestPayloadPrompt ||
+      normalizePromptForAudit(exactRequestPayloadPrompt) === normalizePromptForAudit(input.scenarioPrompt))
+      ? "passed"
+      : "failed";
+  return {
+    provenanceStatus: missingProvenance.length === 0 ? "passed" : "failed",
+    runtimeHealthStatus,
+    adapterStatus,
+    fairnessStatus,
+    missingProvenance,
+    findings,
+  };
+}
+
+const REQUIRED_REFERENCE_PROVENANCE_FIELDS = [
+  "referenceApp",
+  "referenceBinary",
+  "referenceRepoPath",
+  "referenceVersion",
+  "referenceCommit",
+  "daemonUrl",
+  "apiEndpoint",
+  "modelCatalog",
+  "provider",
+  "modelId",
+  "exactRequestPayload",
+  "rawResponse",
+  "rawTranscript",
+  "rawToolCalls",
+  "rawToolResults",
+  "rawBrowserEvidence",
+  "artifactAdapterMappingSource",
+  "collectedAtMs",
+  "exitStatus",
+  "errorReason",
+] as const;
+
+type ReferenceProvenanceField = (typeof REQUIRED_REFERENCE_PROVENANCE_FIELDS)[number];
+
+function hasReferenceProvenanceValue(
+  artifact: GenericReferenceArtifactShape,
+  provenance: GenericReferenceProvenanceShape,
+  field: ReferenceProvenanceField
+): boolean {
+  const value = readReferenceProvenanceValue(artifact, provenance, field);
+  if (Array.isArray(value)) return true;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 && (field === "errorReason" || !isUnknownReferenceProvenanceValue(trimmed));
+  }
+  return value !== undefined && value !== null;
+}
+
+function isUnknownReferenceProvenanceValue(value: string): boolean {
+  return /^(unknown|n\/a|null|undefined)$/i.test(value);
+}
+
+function readReferenceProvenanceValue(
+  artifact: GenericReferenceArtifactShape,
+  provenance: GenericReferenceProvenanceShape,
+  field: ReferenceProvenanceField
+): unknown {
+  switch (field) {
+    case "rawResponse":
+      return provenance.rawResponse ?? artifact.rawResponse;
+    case "rawTranscript":
+      return provenance.rawTranscript ?? artifact.rawTranscript ?? artifact.transcriptPath;
+    case "rawToolCalls":
+      return provenance.rawToolCalls ?? artifact.rawToolCalls;
+    case "rawToolResults":
+      return provenance.rawToolResults ?? artifact.rawToolResults;
+    case "rawBrowserEvidence":
+      return provenance.rawBrowserEvidence ?? artifact.rawBrowserEvidence;
+    case "artifactAdapterMappingSource":
+      return provenance.artifactAdapterMappingSource ?? artifact.artifactAdapterMappingSource;
+    case "collectedAtMs":
+      return provenance.collectedAtMs ?? artifact.collectedAtMs;
+    case "exitStatus":
+      return provenance.exitStatus ?? artifact.exitStatus;
+    case "errorReason":
+      return provenance.errorReason ?? artifact.errorReason;
+    default:
+      return provenance[field];
+  }
+}
+
+function readReferenceToolCallCount(artifact: GenericReferenceArtifactShape): number {
+  const first = artifact.first?.summary;
+  const followup = artifact.followup?.summary;
+  return (
+    countArrayLike(artifact.provenance?.rawToolCalls ?? artifact.rawToolCalls) +
+    readNumber(first?.toolCallCount) +
+    readNumber(followup?.toolCallCount)
+  );
+}
+
+function readReferenceToolResultCount(artifact: GenericReferenceArtifactShape): number {
+  const first = artifact.first?.summary;
+  const followup = artifact.followup?.summary;
+  return (
+    countArrayLike(artifact.provenance?.rawToolResults ?? artifact.rawToolResults) +
+    readNumber(first?.toolResultCount) +
+    readNumber(followup?.toolResultCount)
+  );
+}
+
+function countArrayLike(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function readReferenceTranscript(
+  artifact: GenericReferenceArtifactShape,
+  artifactPath: string
+): { ok: true } | { ok: false; reason: string } {
+  if (artifact.provenance?.rawTranscript || artifact.rawTranscript) {
+    return { ok: true };
+  }
+  const transcriptPath = readString(artifact.transcriptPath);
+  if (!transcriptPath) {
+    return { ok: false, reason: "reference artifact does not include raw transcript evidence" };
+  }
+  try {
+    const resolvedTranscriptPath = path.isAbsolute(transcriptPath)
+      ? transcriptPath
+      : path.resolve(path.dirname(artifactPath), transcriptPath);
+    const transcript = JSON.parse(readFileSync(resolvedTranscriptPath, "utf8")) as unknown;
+    if (typeof transcript !== "object" || transcript === null || !Array.isArray((transcript as { messages?: unknown }).messages)) {
+      return { ok: false, reason: "reference transcript does not contain messages" };
+    }
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `reference transcript could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function detectReferenceRuntimeHealthFailure(notes: string): boolean {
+  return /blocked explore URL host|blocked host|page\.evaluate|ReferenceError|missing auth|wrong endpoint|Unexpected token '<'|browser worker failed|Explore worker failed|failed to fetch/i.test(
+    notes
+  );
+}
+
+function normalizePromptForAudit(prompt: unknown): string {
+  if (typeof prompt !== "string") return "";
+  return prompt
+    .replace(/\b(https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])):\d+/gi, "$1:<loopback-port>")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function inferReferenceDimensionScores(input: {
@@ -545,14 +994,25 @@ function readTurnkeyAiWeakAnswerSignals(
   scenario: NaturalMissionScenarioShape,
   browserFailureBuckets: readonly string[]
 ): string[] {
-  const signals = readStringArray(scenario.natural?.weakAnswerSignals);
+  let signals = readStringArray(scenario.natural?.weakAnswerSignals);
   if (
     browserFailureBuckets.length > 0 &&
     scenario.natural?.finalAnswerUseful === true &&
     scenario.natural?.finalAnswerHasEvidence === true &&
     scenario.natural?.sourceCoverage?.residualRiskVisible === true
   ) {
-    return signals.filter((signal) => signal !== "tool unavailable fallback");
+    signals = signals.filter((signal) => signal !== "tool unavailable fallback");
+  }
+  if (
+    readString(scenario.scenario) === "natural-tool-result-pruning" &&
+    scenario.natural?.browserUsed === true &&
+    scenario.natural?.finalAnswerUseful === true &&
+    scenario.natural?.finalAnswerHasEvidence === true &&
+    scenario.natural?.sourceCoverage?.residualRiskVisible === true &&
+    readDimensionScore((scenario.natural?.dimensionScores as Record<string, unknown> | undefined)?.browserAuthenticity) === 2 &&
+    readNumber(scenario.metrics?.evidenceEvents) > 0
+  ) {
+    signals = signals.filter((signal) => signal !== "browser transport degraded");
   }
   return signals;
 }
@@ -622,6 +1082,15 @@ function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.flatMap((item) => (typeof item === "string" && item.trim() ? [item.trim()] : [])) : [];
 }
 
+function stringifyForEvidence(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value ?? "");
+  } catch {
+    return "";
+  }
+}
+
 function readReferencePrompt(artifact: GenericReferenceArtifactShape): string | null {
   return (
     readString(artifact.prompt) ??
@@ -629,6 +1098,130 @@ function readReferencePrompt(artifact: GenericReferenceArtifactShape): string | 
     readString(artifact.input?.prompt) ??
     readString(artifact.request?.prompt)
   );
+}
+
+function readReferenceExactRequestPrompt(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const record = payload as {
+    prompt?: unknown;
+    content?: unknown;
+    title?: unknown;
+    userPrompt?: unknown;
+    input?: { prompt?: unknown };
+    request?: { prompt?: unknown };
+    messages?: unknown;
+  };
+  const directPrompt =
+    readString(record.prompt) ??
+    readString(record.content) ??
+    readString(record.title) ??
+    readString(record.userPrompt) ??
+    readString(record.input?.prompt) ??
+    readString(record.request?.prompt);
+  if (directPrompt) return directPrompt;
+  if (!Array.isArray(record.messages)) return null;
+  const userMessages = record.messages.flatMap((message) => {
+    if (typeof message !== "object" || message === null) return [];
+    const candidate = message as { role?: unknown; content?: unknown };
+    if (readString(candidate.role) !== "user") return [];
+    return readStringFromMessageContent(candidate.content) ?? [];
+  });
+  return userMessages.length > 0 ? userMessages.join("\n") : null;
+}
+
+function hasRenderedReferenceBrowserEvidence(artifact: GenericReferenceArtifactShape): boolean {
+  const evidence = artifact.provenance?.rawBrowserEvidence ?? artifact.rawBrowserEvidence;
+  return containsRenderedBrowserEvidence(evidence);
+}
+
+function hasFailedReferenceBrowserEvidence(artifact: GenericReferenceArtifactShape): boolean {
+  const evidence = artifact.provenance?.rawBrowserEvidence ?? artifact.rawBrowserEvidence;
+  return containsFailedBrowserEvidence(evidence);
+}
+
+function hasFailedReferenceRuntimeEvidence(artifact: GenericReferenceArtifactShape): boolean {
+  return containsReferenceRuntimeHealthFailure([
+    artifact.provenance?.rawTranscript,
+    artifact.rawTranscript,
+    artifact.rawResponse,
+    artifact.rawToolCalls,
+    artifact.rawToolResults,
+  ]);
+}
+
+function hasNonEmptyEvidence(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object" && value !== null) return Object.keys(value).length > 0;
+  return Boolean(readString(value));
+}
+
+function containsReferenceTerm(value: unknown, pattern: RegExp): boolean {
+  return pattern.test(stringifyForEvidence(value));
+}
+
+function containsReferenceRuntimeHealthFailure(value: unknown): boolean {
+  if (typeof value === "string") return detectReferenceRuntimeHealthFailure(value);
+  if (Array.isArray(value)) return value.some((item) => containsReferenceRuntimeHealthFailure(item));
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  const status = readString(record.status);
+  if (status === "failed" || status === "error") return true;
+  for (const key of ["error", "failure", "fallbackReason", "lastResult", "metadata", "messages", "workerPayload", "workerState"]) {
+    if (containsReferenceRuntimeHealthFailure(record[key])) return true;
+  }
+  return false;
+}
+
+function containsFailedBrowserEvidence(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => containsFailedBrowserEvidence(item));
+  }
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (readString(record.status) === "failed") return true;
+  for (const key of ["history", "entries", "actions", "sessions"]) {
+    if (containsFailedBrowserEvidence(record[key])) return true;
+  }
+  return false;
+}
+
+function containsRenderedBrowserEvidence(value: unknown): boolean {
+  if (typeof value === "string") {
+    return /(rendered|screenshot|snapshot|page title|visible page|browser page)/i.test(value) && value.trim().length > 20;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => containsRenderedBrowserEvidence(item));
+  }
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (record.rendered === true) return true;
+  for (const key of ["pageSnapshot", "snapshot", "screenshot", "title", "text", "html", "history"]) {
+    if (containsRenderedBrowserEvidence(record[key])) return true;
+  }
+  return false;
+}
+
+function isWeakReferenceFinalText(text: string | null): boolean {
+  return Boolean(
+    text &&
+      /暂时无法|无法返回|待确认|估算|没有足够|cannot access|unable to access|not enough information|no executable results?|could not process the task|without live network access|localhost is inaccessible|operating as|use the browser worker|close the flow with|please consolidate this update/i.test(
+        text
+      )
+  );
+}
+
+function readStringFromMessageContent(content: unknown): string | null {
+  if (typeof content === "string") return readString(content);
+  if (!Array.isArray(content)) return null;
+  const parts = content.flatMap((part) => {
+    if (typeof part !== "object" || part === null) return [];
+    const record = part as { type?: unknown; text?: unknown };
+    const type = readString(record.type);
+    if (type && type !== "text") return [];
+    const text = readString(record.text);
+    return text ? [text] : [];
+  });
+  return parts.length > 0 ? parts.join("\n") : null;
 }
 
 function readDimensionScore(value: unknown): RealLlmAbDimensionScore {

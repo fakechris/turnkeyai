@@ -46,8 +46,32 @@ export async function captureDomSnapshot(input: {
       return Array.from(new Set(selectors));
     }
 
-    const bodyText = document.body ? document.body.innerText : "";
-    const textExcerpt = bodyText.replace(/\\s+/g, " ").trim().slice(0, 600);
+    function visibleTextFrom(root) {
+      if (!root) return "";
+      if (typeof root.innerText === "string") return root.innerText;
+      if (typeof root.textContent === "string") return root.textContent;
+      return "";
+    }
+
+    const textChunks = [visibleTextFrom(document.body)];
+    Array.from(document.querySelectorAll("*")).forEach((element) => {
+      if (!element.shadowRoot) return;
+      const text = visibleTextFrom(element.shadowRoot);
+      if (text) textChunks.push("Shadow root " + (element.id ? "#" + element.id : element.tagName.toLowerCase()) + ": " + text);
+    });
+    Array.from(document.querySelectorAll("iframe")).forEach((frame) => {
+      try {
+        const text = visibleTextFrom(frame.contentDocument && frame.contentDocument.body);
+        if (text) {
+          const label = frame.getAttribute("title") || frame.getAttribute("name") || frame.id || "iframe";
+          textChunks.push("Frame " + label + ": " + text);
+        }
+      } catch {
+        // Cross-origin frames are intentionally opaque to the DOM snapshot.
+      }
+    });
+
+    const textExcerpt = textChunks.join(" ").replace(/\\s+/g, " ").trim().slice(0, 1000);
     document.querySelectorAll("[data-turnkeyai-ref]").forEach((element) => {
       element.removeAttribute("data-turnkeyai-ref");
     });

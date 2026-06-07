@@ -1,4 +1,6 @@
-import type { WorkerExecutionResult, WorkerKind } from "@turnkeyai/core-types/team";
+import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
+import type { DecodedBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
+import type { BrowserResumeMode, WorkerExecutionResult, WorkerKind } from "@turnkeyai/core-types/team";
 
 export const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1" as const;
 
@@ -19,9 +21,17 @@ export interface SessionToolResultV1 {
   evidence_available?: boolean;
   evidence_summary?: string;
   tool_chain: WorkerKind[];
+  browser_session?: SessionToolBrowserSession;
   result: string;
   final_content: string | null;
   payload: unknown;
+}
+
+export interface SessionToolBrowserSession {
+  session_id: string;
+  target_id?: string;
+  resume_mode?: BrowserResumeMode;
+  source: DecodedBrowserSessionPayload["source"];
 }
 
 export function buildSessionToolResult(input: {
@@ -36,6 +46,7 @@ export function buildSessionToolResult(input: {
   toolCallId?: string | null;
 }): SessionToolResultV1 {
   const evidenceSummary = extractWorkerEvidenceSummary(input.result);
+  const browserSession = buildSessionToolBrowserSession(input.result);
   return {
     protocol: SESSION_TOOL_RESULT_PROTOCOL,
     task_id: input.taskId,
@@ -48,6 +59,7 @@ export function buildSessionToolResult(input: {
     ...(input.cached ? { cached: true } : {}),
     ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
     tool_chain: input.result ? [input.result.workerType] : [],
+    ...(browserSession ? { browser_session: browserSession } : {}),
     result: input.result?.summary ?? input.missingResultMessage,
     final_content: extractWorkerFinalContent(input.result),
     payload: input.result?.payload ?? null,
@@ -208,6 +220,7 @@ function normalizeSessionToolResult(value: Record<string, unknown>): SessionTool
   const label = readString(value.label);
   const parentSessionKey = readString(value.parent_session_key);
   const toolCallId = readString(value.tool_call_id);
+  const browserSession = parseSessionToolBrowserSession(value.browser_session);
   return {
     protocol: SESSION_TOOL_RESULT_PROTOCOL,
     task_id: taskId,
@@ -223,6 +236,7 @@ function normalizeSessionToolResult(value: Record<string, unknown>): SessionTool
     ...(typeof value.evidence_available === "boolean" ? { evidence_available: value.evidence_available } : {}),
     ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
     tool_chain: toolChain,
+    ...(browserSession ? { browser_session: browserSession } : {}),
     result,
     final_content: finalContent,
     payload: "payload" in value ? value.payload : null,
@@ -259,6 +273,45 @@ function readStatus(value: unknown): SessionToolResultStatus | null {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function buildSessionToolBrowserSession(result: WorkerExecutionResult | null): SessionToolBrowserSession | null {
+  const decoded = decodeBrowserSessionPayload(result?.payload);
+  if (!decoded) {
+    return null;
+  }
+  return {
+    session_id: decoded.sessionId,
+    ...(decoded.targetId ? { target_id: decoded.targetId } : {}),
+    ...(decoded.resumeMode ? { resume_mode: decoded.resumeMode } : {}),
+    source: decoded.source,
+  };
+}
+
+function parseSessionToolBrowserSession(value: unknown): SessionToolBrowserSession | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const sessionId = readString(value.session_id);
+  if (!sessionId) {
+    return null;
+  }
+  const targetId = readString(value.target_id);
+  const resumeMode = readResumeMode(value.resume_mode);
+  const source = value.source === "direct" || value.source === "browserRecovery" ? value.source : null;
+  if (!source) {
+    return null;
+  }
+  return {
+    session_id: sessionId,
+    ...(targetId ? { target_id: targetId } : {}),
+    ...(resumeMode ? { resume_mode: resumeMode } : {}),
+    source,
+  };
+}
+
+function readResumeMode(value: unknown): BrowserResumeMode | null {
+  return value === "hot" || value === "warm" || value === "cold" ? value : null;
 }
 
 function extractBrowserProfileFallbackSummary(payload: Record<string, unknown>): string | null {

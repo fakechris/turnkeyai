@@ -740,9 +740,11 @@ describe("mission-routes", () => {
     function buildOrchestrator() {
       const posts: Array<{ threadId: string; content: string }> = [];
       const ticks: string[] = [];
+      const spawns: Array<{ title: string; desc: string; owner: string; mode: Mission["mode"] }> = [];
       let nextThread = 0;
       const orchestrator = {
-        async spawnThread(input: { title: string; desc: string; owner: string }) {
+        async spawnThread(input: { title: string; desc: string; owner: string; mode: Mission["mode"] }) {
+          spawns.push(input);
           nextThread += 1;
           return {
             threadId: `thread-${nextThread}`,
@@ -766,7 +768,7 @@ describe("mission-routes", () => {
           },
         },
       };
-      return { orchestrator, posts, ticks };
+      return { orchestrator, posts, ticks, spawns };
     }
 
     async function flushMicrotasks(): Promise<void> {
@@ -801,12 +803,14 @@ describe("mission-routes", () => {
         const deps = composeMissionDeps({ dataDir: t.dir, clock });
         const posts: Array<{ threadId: string; content: string }> = [];
         const ticks: string[] = [];
+        const spawns: Array<{ title: string; desc: string; owner: string; mode: Mission["mode"] }> = [];
         let releasePost!: () => void;
         const postGate = new Promise<void>((resolve) => {
           releasePost = resolve;
         });
         const orchestrator = {
-          async spawnThread() {
+          async spawnThread(input: { title: string; desc: string; owner: string; mode: Mission["mode"] }) {
+            spawns.push(input);
             return {
               threadId: "thread-1",
               leadRoleId: "role-lead",
@@ -845,6 +849,14 @@ describe("mission-routes", () => {
         const mission = getJson() as { id: string; threadId: string; status: string; title: string };
         assert.equal(mission.title, "研究竞品");
         assert.equal(mission.threadId, "thread-1");
+        assert.deepEqual(spawns, [
+          {
+            title: "研究竞品",
+            desc: "看 5 款笔记软件的定价",
+            owner: "you",
+            mode: "research",
+          },
+        ]);
         // Status promoted from "draft" → "working" because the
         // coordination thread is live the moment the route returns.
         assert.equal(mission.status, "working");
@@ -950,11 +962,81 @@ describe("mission-routes", () => {
         await waitUntil("approval continuation post", () => posts.length === 2);
         assert.equal(posts[1]?.threadId, mission.threadId);
         assert.match(posts[1]?.content ?? "", /ap\.linked-browser-submit/);
+        assert.match(posts[1]?.content ?? "", /already recorded permission\.result and permission\.applied/);
         assert.match(posts[1]?.content ?? "", /runtime permission cache is already applied/);
+        assert.match(posts[1]?.content ?? "", /Do not call permission tools again/);
         assert.doesNotMatch(posts[1]?.content ?? "", /permission_applied/);
         await waitUntil("approval continuation tick", () => ticks.filter((id) => id === mission.id).length >= 2);
         const resumed = await deps.missionStore.get(mission.id);
         assert.equal(resumed?.status, "working");
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("denied approval decisions request a source-backed safe closeout", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator, posts } = buildOrchestrator();
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "Approval denied browser task", desc: "Prepare a local form dry-run submit", mode: "browser" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 201);
+        const mission = getJson() as Mission;
+        await waitUntil("initial mission post", () => posts.length === 1);
+
+        const latest = await deps.missionStore.get(mission.id);
+        assert.ok(latest);
+        await deps.missionStore.putRaw({
+          ...latest,
+          status: "needs_approval",
+          pendingApprovals: 1,
+        });
+        await deps.approvalStore.put({
+          id: "ap.denied-browser-submit",
+          severity: "med",
+          missionId: mission.id,
+          missionTitle: mission.title,
+          agent: "role-lead",
+          action: "browser.form.submit",
+          title: "Dry-run submit",
+          affects: [],
+          risk: "isolated local dry-run",
+          requestedAt: "now",
+          requestedAtMs: clock.now(),
+          requestedAgo: "now",
+          policyHint: "approval",
+        });
+
+        const decisionResponse = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/approvals/ap.denied-browser-submit/decision",
+            body: { decision: "denied", decidedBy: "operator" },
+          }),
+          res: decisionResponse.res,
+          url: new URL("http://127.0.0.1/approvals/ap.denied-browser-submit/decision"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(decisionResponse.getStatus(), 200);
+        await waitUntil("denied approval continuation post", () => posts.length === 2);
+        const content = posts[1]?.content ?? "";
+        assert.match(content, /permission_result/);
+        assert.match(content, /safe closeout/);
+        assert.match(content, /safe fallback or next action/);
+        assert.match(content, /unverified/);
+        assert.match(content, /no browser submission or side effect ran/);
+        assert.match(content, /do not call permission_applied/);
       } finally {
         t.cleanup();
       }

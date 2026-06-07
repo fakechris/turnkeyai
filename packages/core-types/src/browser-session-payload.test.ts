@@ -37,6 +37,26 @@ test("decode browser session payload reads promoted browser recovery metadata", 
   });
 });
 
+test("decode browser session payload prefers recovery metadata when both direct and recovery sessions exist", () => {
+  const decoded = decodeBrowserSessionPayload({
+    sessionId: "session-stale",
+    targetId: "target-stale",
+    resumeMode: "warm",
+    browserRecovery: {
+      sessionId: "session-recovered",
+      targetId: "target-recovered",
+      resumeMode: "cold",
+    },
+  });
+
+  assert.deepEqual(decoded, {
+    sessionId: "session-recovered",
+    targetId: "target-recovered",
+    resumeMode: "cold",
+    source: "browserRecovery",
+  });
+});
+
 test("decode browser session payload rejects missing session ids", () => {
   assert.equal(decodeBrowserSessionPayload({ targetId: "target-1" }), null);
   assert.equal(decodeBrowserSessionPayload(null), null);

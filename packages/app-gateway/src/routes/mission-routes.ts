@@ -38,6 +38,7 @@ import type {
   ContextSource,
   ContextSourceRegistry,
   Mission,
+  MissionMode,
   MissionId,
   MissionStore,
   WorkItemStore,
@@ -85,6 +86,7 @@ export interface MissionOrchestratorDeps {
     title: string;
     desc: string;
     owner: string;
+    mode: MissionMode;
   }): Promise<{ threadId: string; leadRoleId: string; roleIds: string[] }>;
   /** Posts a user message onto the linked thread (delegates to the
    *  coordination engine which wakes the role loop). */
@@ -406,7 +408,7 @@ export async function handleMissionRoutes(input: {
     // half-states becomes more visible (a pending approval pointing
     // at a non-existent mission would be much worse than a stray
     // empty team thread today).
-    const thread = await deps.orchestrator.spawnThread({ title, desc, owner });
+    const thread = await deps.orchestrator.spawnThread({ title, desc, owner, mode });
     let createdOk = false;
     try {
       const agents = Array.isArray(body.agents) && body.agents.every((a) => typeof a === "string")
@@ -1147,9 +1149,13 @@ function buildApprovalDecisionContinuationMessage(input: {
   const outcome =
     input.decision === "approved"
       ? input.permissionApplied
-        ? "The operator approved it and the runtime permission cache is already applied. Continue from the approved point: perform only the approved scoped action now, do not ask for approval again, and verify the result before the final answer."
+        ? "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied. Do not call permission tools again. Continue from the approved point: perform only the approved scoped action now and verify the result before the final answer."
         : "The operator approved it. Continue from the paused approval point: call permission_result for this approval_id, call permission_applied, then perform only the approved scoped action."
-      : "The operator denied it. Continue from the paused approval point: call permission_result for this approval_id, do not perform the denied action, and report the safe fallback.";
+      : [
+          "The operator denied it.",
+          "Continue from the paused approval point: call permission_result for this approval_id exactly once, do not call permission_applied, and do not perform the denied action.",
+          "Write the final safe closeout from permission_result evidence: name the requested action, state the denial, state that no browser submission or side effect ran, keep the unexecuted result unverified, and include a concrete safe fallback or next action for the operator.",
+        ].join(" ");
   return [
     `Operator decision recorded for approval ${input.approvalId}.`,
     `Action: ${input.action}.`,

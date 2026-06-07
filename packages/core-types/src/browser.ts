@@ -330,8 +330,11 @@ export type BrowserPermissionAction =
       origin?: never;
     };
 
+export const DEFAULT_BROWSER_OPEN_TIMEOUT_MS = 20_000;
+export const MAX_BROWSER_OPEN_TIMEOUT_MS = 240_000;
+
 export type BrowserTaskAction =
-  | { kind: "open"; url: string }
+  | { kind: "open"; url: string; timeoutMs?: number }
   | { kind: "snapshot"; note?: string }
   | { kind: "type"; selectors?: string[]; refId?: string; text: string; submit?: boolean }
   | BrowserClickAction

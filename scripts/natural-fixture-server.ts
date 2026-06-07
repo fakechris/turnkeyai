@@ -18,10 +18,20 @@ export interface NaturalFixtureServerManifest {
   kind: "turnkeyai.natural-fixture-server.manifest";
   urls: {
     externalPageUrl?: string;
+    basicUrl: string;
+    alphaUrl: string;
+    betaUrl: string;
+    slowUrl: string;
+    cancelResumeUrl: string;
+    approvalUrl: string;
     complexBrowserUrl: string;
     dashboardUrl: string;
     dynamicUrl: string;
+    orchestrationUrl: string;
+    bridgeUrl: string;
+    productSignalsUrl: string;
   };
+  fixtureContentHashes: Record<string, string>;
   scenarios: Array<{
     scenario: (typeof BROWSER_FOCUSED_SCENARIOS)[number];
     prompt: string;
@@ -90,10 +100,20 @@ export function buildNaturalFixtureServerManifest(fixture: FixtureServer): Natur
     kind: "turnkeyai.natural-fixture-server.manifest",
     urls: {
       ...(fixture.externalPageUrl ? { externalPageUrl: fixture.externalPageUrl } : {}),
+      basicUrl: fixture.basicUrl,
+      alphaUrl: fixture.alphaUrl,
+      betaUrl: fixture.betaUrl,
+      slowUrl: fixture.slowUrl,
+      cancelResumeUrl: fixture.cancelResumeUrl,
+      approvalUrl: fixture.approvalUrl,
       complexBrowserUrl: fixture.complexBrowserUrl,
       dashboardUrl: fixture.dashboardUrl,
       dynamicUrl: fixture.dynamicUrl,
+      orchestrationUrl: fixture.orchestrationUrl,
+      bridgeUrl: fixture.bridgeUrl,
+      productSignalsUrl: fixture.productSignalsUrl,
     },
+    fixtureContentHashes: fixture.fixtureContentHashes,
     scenarios: BROWSER_FOCUSED_SCENARIOS.map((scenario) => ({
       scenario,
       prompt: buildNaturalScenarioSpec(scenario, fixture).desc,
@@ -104,8 +124,16 @@ export function buildNaturalFixtureServerManifest(fixture: FixtureServer): Natur
 export function buildNaturalFixtureEnvFile(manifest: NaturalFixtureServerManifest): string {
   const entries = [
     ["TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL", manifest.urls.complexBrowserUrl],
+    ["TURNKEYAI_NATURAL_ALPHA_URL", manifest.urls.alphaUrl],
+    ["TURNKEYAI_NATURAL_BETA_URL", manifest.urls.betaUrl],
+    ["TURNKEYAI_NATURAL_SLOW_URL", manifest.urls.slowUrl],
+    ["TURNKEYAI_NATURAL_CANCEL_RESUME_URL", manifest.urls.cancelResumeUrl],
+    ["TURNKEYAI_NATURAL_APPROVAL_URL", manifest.urls.approvalUrl],
     ["TURNKEYAI_NATURAL_DASHBOARD_URL", manifest.urls.dashboardUrl],
     ["TURNKEYAI_NATURAL_DYNAMIC_URL", manifest.urls.dynamicUrl],
+    ["TURNKEYAI_NATURAL_ORCHESTRATION_URL", manifest.urls.orchestrationUrl],
+    ["TURNKEYAI_NATURAL_BRIDGE_URL", manifest.urls.bridgeUrl],
+    ["TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL", manifest.urls.productSignalsUrl],
     ...(manifest.urls.externalPageUrl
       ? ([["TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL", manifest.urls.externalPageUrl]] as const)
       : []),

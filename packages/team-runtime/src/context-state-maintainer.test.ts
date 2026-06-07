@@ -214,6 +214,110 @@ test("context state maintainer compacts journal overflow and keeps recent memory
   }
 });
 
+test("context state maintainer invalidates superseded durable memory for the same subject", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "context-state-memory-invalidation-"));
+
+  try {
+    const messages: TeamMessage[] = [
+      {
+        id: "msg-user-1",
+        threadId: "thread-memory-invalidation",
+        role: "user",
+        name: "Chris",
+        content:
+          "Remember the Borealis-23 launch note: launch window is Monday 10:15, owner is Launch Manager, residual risk is staging checklist pending.",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "msg-user-2",
+        threadId: "thread-memory-invalidation",
+        role: "user",
+        name: "Chris",
+        content:
+          "Remember this correction for Borealis-23 going forward: launch window is Thursday 16:45, owner is Ops Captain, residual risk is payment processor signoff pending. The previous Monday 10:15 and Launch Manager note is stale and must not be used.",
+        createdAt: 2,
+        updatedAt: 2,
+      },
+      {
+        id: "msg-role-1",
+        threadId: "thread-memory-invalidation",
+        role: "assistant",
+        roleId: "role-lead",
+        name: "Lead",
+        content: "Confirmed the corrected Borealis-23 launch context for the launch lead.",
+        createdAt: 3,
+        updatedAt: 3,
+      },
+    ];
+    let visibleCount = 0;
+    const teamMessageStore: TeamMessageStore = {
+      async append(message) {
+        messages.push(message);
+        visibleCount = messages.length;
+      },
+      async list(threadId, limit) {
+        const matching = messages.filter((message) => message.threadId === threadId).slice(0, visibleCount);
+        return limit == null ? matching : matching.slice(-limit);
+      },
+      async get(messageId) {
+        return messages.find((message) => message.id === messageId) ?? null;
+      },
+    };
+    const threadSummaryStore = new FileThreadSummaryStore({
+      rootDir: path.join(tempDir, "thread-summaries"),
+    });
+    const threadMemoryStore = new FileThreadMemoryStore({
+      rootDir: path.join(tempDir, "thread-memory"),
+    });
+    const roleScratchpadStore = new FileRoleScratchpadStore({
+      rootDir: path.join(tempDir, "role-scratchpads"),
+    });
+    const progressEvents: Array<{ metadata?: Record<string, unknown> }> = [];
+    const runtimeProgressRecorder: RuntimeProgressRecorder = {
+      async record(event) {
+        progressEvents.push(event);
+      },
+    };
+
+    const maintainer = new DefaultContextStateMaintainer({
+      teamMessageStore,
+      threadSummaryStore,
+      threadMemoryStore,
+      roleScratchpadStore,
+      runtimeProgressRecorder,
+      contextCompressor: new DefaultContextCompressor(),
+      now: () => Date.parse("2026-04-01T08:00:00.000Z"),
+    });
+
+    visibleCount = 1;
+    await maintainer.onUserMessage("thread-memory-invalidation");
+    visibleCount = 2;
+    await maintainer.onUserMessage("thread-memory-invalidation");
+    visibleCount = 3;
+    await maintainer.onRoleReply("thread-memory-invalidation", "role-lead");
+
+    const memory = await threadMemoryStore.get("thread-memory-invalidation");
+    assert.ok(memory);
+    const memoryText = [...memory.preferences, ...memory.constraints, ...memory.longTermNotes].join("\n");
+    assert.match(memoryText, /Borealis-23/);
+    assert.match(memoryText, /Thursday 16:45/);
+    assert.match(memoryText, /Ops Captain/);
+    assert.match(memoryText, /payment processor signoff/);
+    assert.doesNotMatch(memoryText, /Monday 10:15/);
+    assert.doesNotMatch(memoryText, /Launch Manager/);
+    assert.ok(
+      progressEvents.some(
+        (event) =>
+          event.metadata?.["boundaryKind"] === "thread_memory_invalidation" &&
+          event.metadata?.["removedItems"] === 1
+      )
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("context state maintainer carries unresolved summary questions into long-term memory", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "context-state-carry-forward-"));
 

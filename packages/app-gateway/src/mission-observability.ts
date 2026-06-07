@@ -100,6 +100,11 @@ export function buildMissionObservabilitySnapshot(input: {
   const liveness = summarizeRuntimeLiveness(input.progressEvents ?? [], input.nowMs, {
     ...(terminal && finalAnswer ? { terminalLivenessCutoffMs: finalAnswer.tMs + 1_000 } : {}),
   });
+  const failureSummary = summarizeFailureAttention({
+    failureEvents: recoveryEvents.length + toolFailures.length,
+    finalAnswer,
+    staleRuntimeSubjects: liveness.stale,
+  });
   const checks = buildQualityChecks({
     mission: input.mission,
     finalAnswer,
@@ -108,7 +113,7 @@ export function buildMissionObservabilitySnapshot(input: {
     sourceLabels,
     browserProfileFallbacks,
     browserFailureBuckets,
-    failureEvents: recoveryEvents.length + toolFailures.length,
+    failureSummary,
     staleRuntimeSubjects: liveness.stale,
   });
 
@@ -169,7 +174,7 @@ function buildQualityChecks(input: {
   sourceLabels: string[];
   browserProfileFallbacks: BrowserProfileFallbackObservation[];
   browserFailureBuckets: BrowserFailureBucketObservation[];
-  failureEvents: number;
+  failureSummary: FailureAttentionSummary;
   staleRuntimeSubjects: number;
 }): MissionObservabilitySnapshot["qualityGate"]["checks"] {
   const terminal = input.mission.status === "done" || input.mission.status === "blocked";
@@ -285,13 +290,59 @@ function buildQualityChecks(input: {
     },
     {
       name: "failure_free",
-      status: input.failureEvents === 0 ? "pass" : "fail",
-      detail:
-        input.failureEvents === 0
-          ? "No recovery or failed tool-result event is present."
-          : `${input.failureEvents} recovery/failed tool event(s) require attention.`,
+      status:
+        input.failureSummary.total === 0
+          ? "pass"
+          : input.failureSummary.recovered
+            ? "warn"
+            : "fail",
+      detail: failureAttentionDetail(input.failureSummary),
     },
   ];
+}
+
+interface FailureAttentionSummary {
+  total: number;
+  recovered: boolean;
+  reason?: "timeout_closeout";
+}
+
+function summarizeFailureAttention(input: {
+  failureEvents: number;
+  finalAnswer: ActivityEvent | null;
+  staleRuntimeSubjects: number;
+}): FailureAttentionSummary {
+  if (input.failureEvents === 0) {
+    return { total: 0, recovered: false };
+  }
+  if (
+    input.staleRuntimeSubjects === 0 &&
+    ((input.finalAnswer?.runtime?.toolLoopCloseoutReason === "sub_agent_timeout" &&
+      input.finalAnswer.runtime?.["toolLoopCloseout.evidenceAvailable"] === "true") ||
+      mentionsBoundedTimeoutCloseout(input.finalAnswer?.text ?? "")) &&
+    mentionsResidualRisk(input.finalAnswer?.text ?? "")
+  ) {
+    return { total: input.failureEvents, recovered: true, reason: "timeout_closeout" };
+  }
+  return { total: input.failureEvents, recovered: false };
+}
+
+function mentionsBoundedTimeoutCloseout(text: string): boolean {
+  return (
+    /\b(?:timeout|timed out|transport failure|navigation failure|DOMContentLoaded never fired)\b/i.test(text) &&
+    /\bverified\b/i.test(text) &&
+    /\bunverified\b/i.test(text)
+  );
+}
+
+function failureAttentionDetail(summary: FailureAttentionSummary): string {
+  if (summary.total === 0) {
+    return "No recovery or failed tool-result event is present.";
+  }
+  if (summary.recovered && summary.reason === "timeout_closeout") {
+    return `${summary.total} recovery/failed tool event(s) were closed out by a bounded timeout recovery final answer; keep the replay visible for follow-up.`;
+  }
+  return `${summary.total} recovery/failed tool event(s) require attention.`;
 }
 
 function toolLoopCloseoutCheck(
