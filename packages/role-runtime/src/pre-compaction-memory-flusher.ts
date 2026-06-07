@@ -70,19 +70,25 @@ export class DefaultPreCompactionMemoryFlusher implements PreCompactionMemoryFlu
     const existing = await this.threadMemoryStore.get(input.activation.thread.threadId);
     const generated = await this.gateway.generate(this.buildGatewayInput(input, existing));
     const payload = parseMemoryFlushPayload(generated.text);
+    const structured = extractStructuredDurableMemory(input.packet.taskPrompt);
     const preferences = sanitizeMemoryItems(payload.preferences);
-    const constraints = sanitizeMemoryItems(payload.constraints);
-    const longTermNotes = sanitizeMemoryItems(payload.longTermNotes);
+    const constraints = sanitizeMemoryItems([...(asUnknownArray(payload.constraints)), ...structured.constraints]);
+    const longTermNotes = sanitizeMemoryItems([...(asUnknownArray(payload.longTermNotes)), ...structured.longTermNotes]);
     if (preferences.length === 0 && constraints.length === 0 && longTermNotes.length === 0) {
       return { status: "skipped", preferences: [], constraints: [], longTermNotes: [] };
     }
+    const invalidation = buildMemoryInvalidation(
+      [...preferences, ...constraints, ...longTermNotes],
+      input.packet.taskPrompt
+    );
+    const prunedExisting = pruneSupersededMemory(existing, invalidation);
 
     const next: ThreadMemoryRecord = {
       threadId: input.activation.thread.threadId,
       updatedAt: this.now(),
-      preferences: keepRecentUniqueStrings([...(existing?.preferences ?? []), ...preferences], this.maxItemsPerBucket),
-      constraints: keepRecentUniqueStrings([...(existing?.constraints ?? []), ...constraints], this.maxItemsPerBucket),
-      longTermNotes: keepRecentUniqueStrings([...(existing?.longTermNotes ?? []), ...longTermNotes], this.maxItemsPerBucket),
+      preferences: keepRecentUniqueStrings([...prunedExisting.preferences, ...preferences], this.maxItemsPerBucket),
+      constraints: keepRecentUniqueStrings([...prunedExisting.constraints, ...constraints], this.maxItemsPerBucket),
+      longTermNotes: keepRecentUniqueStrings([...prunedExisting.longTermNotes, ...longTermNotes], this.maxItemsPerBucket),
     };
     await this.threadMemoryStore.put(next);
     return {
@@ -104,6 +110,8 @@ export class DefaultPreCompactionMemoryFlusher implements PreCompactionMemoryFlu
     },
     existing: ThreadMemoryRecord | null
   ): GenerateTextInput {
+    const taskPromptBudget = Math.max(1_000, Math.floor(this.maxPromptChars * 0.8));
+    const systemPromptBudget = Math.max(500, this.maxPromptChars - taskPromptBudget);
     return {
       ...(input.modelId ? { modelId: input.modelId } : {}),
       ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
@@ -141,20 +149,12 @@ export class DefaultPreCompactionMemoryFlusher implements PreCompactionMemoryFlu
             `Reason: ${input.reason}`,
             input.diagnostics ? `Overflow keys: ${input.diagnostics.overLimitKeys.join(", ")}` : null,
             existing ? `Existing memory:\n${JSON.stringify(existing)}` : "Existing memory: none",
-            "Prompt excerpt before compaction:",
-            sliceForPrompt(
-              [
-                "System:",
-                input.packet.systemPrompt,
-                "",
-                "Task:",
-                input.packet.taskPrompt,
-                "",
-                "Output contract:",
-                input.packet.outputContract,
-              ].join("\n"),
-              this.maxPromptChars
-            ),
+            "Task excerpt before compaction:",
+            sliceForPrompt(input.packet.taskPrompt, taskPromptBudget),
+            "System excerpt:",
+            sliceForPrompt(input.packet.systemPrompt, systemPromptBudget),
+            "Output contract:",
+            sliceForPrompt(input.packet.outputContract, 1_000),
           ]
             .filter((line): line is string => line != null)
             .join("\n\n"),
@@ -203,7 +203,126 @@ function sanitizeMemoryItems(value: unknown): string[] {
   return value
     .map((item) => (typeof item === "string" ? item.trim() : ""))
     .filter((item) => item.length > 0)
+    .map(cleanSupersededMemoryItem)
+    .filter((item) => item.length > 0)
     .map((item) => sliceForPrompt(item, MAX_MEMORY_ITEM_CHARS));
+}
+
+function asUnknownArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function extractStructuredDurableMemory(taskPrompt: string): { constraints: string[]; longTermNotes: string[] } {
+  const selected = sliceForPrompt(taskPrompt, 12_000)
+    .split(/\r?\n/)
+    .map(normalizeDurableLine)
+    .filter((line) => DURABLE_LINE_RE.test(line))
+    .slice(0, 16);
+  if (selected.length === 0) {
+    return { constraints: [], longTermNotes: [] };
+  }
+  const subject = extractStructuredSubject(selected);
+  const constraints = selected
+    .filter((line) => DURABLE_CONSTRAINT_RE.test(line))
+    .map((line) => addSubjectToStructuredLine(line, subject));
+  return {
+    constraints,
+    longTermNotes: selected.length >= 2 ? [`Structured durable task facts: ${selected.join(" ")}`] : [],
+  };
+}
+
+const DURABLE_LINE_RE =
+  /^(?:project(?:\s+codename)?|codename|launch window|owner|hard constraint|constraint|residual risk|risk|decision|open question|waiting on|blocked by|deadline)\s*:/i;
+const DURABLE_CONSTRAINT_RE = /^(?:hard constraint|constraint|residual risk|risk|waiting on|blocked by)\s*:/i;
+
+function normalizeDurableLine(line: string): string {
+  return line
+    .trim()
+    .replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")
+    .replace(/\s+/g, " ");
+}
+
+function extractStructuredSubject(lines: string[]): string | null {
+  for (const line of lines) {
+    const match = line.match(/^(?:project\s+codename|codename)\s*:\s*([A-Za-z][A-Za-z0-9_-]*)/i);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function addSubjectToStructuredLine(line: string, subject: string | null): string {
+  if (!subject || line.toLowerCase().includes(subject.toLowerCase())) {
+    return line;
+  }
+  return `${subject} ${line.charAt(0).toLowerCase()}${line.slice(1)}`;
+}
+
+interface MemoryInvalidation {
+  subjects: Set<string>;
+}
+
+function buildMemoryInvalidation(incomingItems: string[], taskPrompt: string): MemoryInvalidation {
+  const subjects = new Set<string>();
+  for (const item of [...incomingItems, taskPrompt]) {
+    if (!hasMemorySupersessionSignal(item)) {
+      continue;
+    }
+    for (const subject of extractMemorySubjects(item)) {
+      subjects.add(subject);
+    }
+  }
+  return { subjects };
+}
+
+function pruneSupersededMemory(
+  existingMemory: ThreadMemoryRecord | null,
+  invalidation: MemoryInvalidation
+): Pick<ThreadMemoryRecord, "preferences" | "constraints" | "longTermNotes"> {
+  return {
+    preferences: filterSupersededMemoryItems(existingMemory?.preferences ?? [], invalidation),
+    constraints: filterSupersededMemoryItems(existingMemory?.constraints ?? [], invalidation),
+    longTermNotes: filterSupersededMemoryItems(existingMemory?.longTermNotes ?? [], invalidation),
+  };
+}
+
+function filterSupersededMemoryItems(values: string[], invalidation: MemoryInvalidation): string[] {
+  if (invalidation.subjects.size === 0) {
+    return values;
+  }
+  return values.filter((value) => {
+    const subjects = extractMemorySubjects(value);
+    return subjects.length === 0 || subjects.every((subject) => !invalidation.subjects.has(subject));
+  });
+}
+
+function cleanSupersededMemoryItem(value: string): string {
+  if (!hasMemorySupersessionSignal(value)) {
+    return value;
+  }
+  return value
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !/\b(?:previous|prior|old|stale|no longer|must not be used)\b/i.test(sentence))
+    .join(" ")
+    .trim();
+}
+
+function hasMemorySupersessionSignal(value: string): boolean {
+  return /\b(?:correction|corrected|update|updated|revised|replace|replaces|supersede|supersedes|stale|no longer|going forward|instead)\b/i.test(
+    value
+  );
+}
+
+function extractMemorySubjects(value: string): string[] {
+  const subjects = new Set<string>();
+  for (const match of value.matchAll(/\b[A-Z][A-Za-z0-9]+-\d+\b/g)) {
+    subjects.add(match[0].toLowerCase());
+  }
+  for (const match of value.matchAll(/\b(?:project\s+codename|codename)\s*:\s*([A-Za-z][A-Za-z0-9_-]*)/gi)) {
+    subjects.add(match[1]!.toLowerCase());
+  }
+  return [...subjects];
 }
 
 function keepRecentUniqueStrings(values: string[], limit: number): string[] {

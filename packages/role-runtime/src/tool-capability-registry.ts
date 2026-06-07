@@ -453,11 +453,16 @@ function renderPermissionSection(): string {
 
 function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat"]): string {
   const agentRows = workerKinds.map((kind) => `- ${kind}: ${describeWorkerKind(kind)}`);
+  const hasBrowserWorker = workerKinds.includes("browser");
   return [
     "## Sub-Agent Sessions",
-    "Use sessions_spawn only when delegation materially helps: parallel independent work, context isolation, specialist browser work, or verification.",
+    hasBrowserWorker
+      ? "Use sessions_spawn only when delegation materially helps: parallel independent work, context isolation, specialist browser work, or verification."
+      : "Use sessions_spawn only when delegation materially helps: parallel independent work, context isolation, specialist research, or verification.",
     "Each spawned task must be self-contained. Include exact URLs, paths, scope, output format, stop conditions, and constraints the child will not otherwise know.",
-    "For public source research, comparison, pricing, documentation, or read-only URL extraction, spawn explore first unless the task asks for browser-visible, user-visible, rendered, visual, or interactive page evidence. For localhost, loopback, private-network, internal, authenticated, dashboard, user-session, browser-visible, or rendered/client-side URLs, spawn browser directly; explore is for public fetchable sources and may reject private hosts by policy.",
+    hasBrowserWorker
+      ? "For public source research, comparison, pricing, documentation, or read-only URL extraction, spawn explore first unless the task asks for browser-visible, user-visible, rendered, visual, or interactive page evidence. For localhost, loopback, private-network, internal, authenticated, dashboard, user-session, browser-visible, or rendered/client-side URLs, spawn browser directly; explore is for public fetchable sources and may reject private hosts by policy."
+      : "For public source research, comparison, pricing, documentation, or read-only URL extraction, spawn explore when it is available. If the task requires browser-visible, rendered, visual, interactive, localhost, private-network, internal, authenticated, dashboard, or user-session evidence and no browser worker is listed below, report that browser evidence is unavailable instead of pretending explore can provide it.",
     "Preserve exact user-provided entity names in delegated research. Do not append guessed categories or domains such as smart lock, blockchain, SaaS, or library unless the user supplied that category.",
     "For ambiguous product names without URLs, ask sub-agents to first search the exact name and official website/domain, then mark ambiguity explicitly instead of steering the search toward a guessed meaning.",
     "Keep each spawned task to a manageable size, roughly 10-15 tool calls. If the work is larger, split it into smaller independent sessions.",
@@ -467,6 +472,7 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "Leave timeout_seconds unset for ordinary delegated work so the runtime applies product budgets. Set it only when the user gives an explicit wait bound or the task has a known external latency.",
     "If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable. Do not increase timeout_seconds on a timeout follow-up unless the user explicitly asks to wait longer. Do not treat a timeout as final evidence.",
     "When the user asks to continue, refine, revisit, add a source to, or follow up on prior delegated work, route that request back to the relevant existing session with sessions_send instead of answering only from parent context or spawning a duplicate. Synthesize directly only when the user asks for pure formatting and no session-owned evidence needs to be revisited.",
+    "There is no sessions_update tool. Use sessions_send for any update, resume, revisit, or continuation of existing session-owned work.",
     "For sessions_send follow-ups, preserve the original task's decision criteria, required dimensions, entity names, source labels, and user terminology unless the latest user message explicitly changes scope.",
     "If you need a session key for prior delegated work, use sessions_list or the previous sessions_spawn result before deciding to spawn again.",
     "After a sub-agent returns, first read the sessions_spawn/sessions_send result and final_content. Do not page through session history when that result already contains the evidence you need.",

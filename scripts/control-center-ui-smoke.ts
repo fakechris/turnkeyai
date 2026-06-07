@@ -4,7 +4,7 @@ import net from "node:net";
 import path from "node:path";
 
 import { chromium } from "playwright-core";
-import type { Page } from "playwright-core";
+import type { Browser, BrowserContextOptions, Page } from "playwright-core";
 
 const args = process.argv.slice(2);
 let explicitBrowserPath: string | undefined;
@@ -101,7 +101,7 @@ try {
       headless: !headful,
       args: ["--no-sandbox", "--disable-dev-shm-usage"],
     });
-    const noTokenPage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    const noTokenPage = await newSmokePage(browser, { viewport: { width: 1100, height: 760 } });
     await noTokenPage.goto(`http://127.0.0.1:${port}/app#/missions`, {
       waitUntil: "domcontentloaded",
     });
@@ -151,7 +151,7 @@ try {
     );
     await noTokenPage.close();
 
-    const operatorRuntimePage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    const operatorRuntimePage = await newSmokePage(browser, { viewport: { width: 1100, height: 760 } });
     await operatorRuntimePage.addInitScript(() => {
       sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-operator-token");
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
@@ -214,7 +214,7 @@ try {
     );
     await operatorRuntimePage.close();
 
-    const readMissionPage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    const readMissionPage = await newSmokePage(browser, { viewport: { width: 1100, height: 760 } });
     await readMissionPage.addInitScript(() => {
       sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-read-token");
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "read");
@@ -246,7 +246,7 @@ try {
     );
     await readMissionPage.close();
 
-    const readApprovalsPage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    const readApprovalsPage = await newSmokePage(browser, { viewport: { width: 1100, height: 760 } });
     await readApprovalsPage.addInitScript(() => {
       sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-read-token");
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "read");
@@ -269,7 +269,7 @@ try {
     );
     await readApprovalsPage.close();
 
-    const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
+    const page = await newSmokePage(browser, { viewport: { width: 1440, height: 980 } });
     page.on("console", (message) => {
       if (message.type() === "error") {
         if (isIgnorableConsoleError(message.text())) return;
@@ -898,7 +898,7 @@ try {
     assert(onboardingState.step === "reviewed-runtime", "onboarding PUT should persist the reviewed-runtime step");
     await page.close();
 
-    const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const mobilePage = await newSmokePage(browser, { viewport: { width: 390, height: 844 } });
     mobilePage.on("console", (message) => {
       if (message.type() === "error") {
         if (isIgnorableConsoleError(message.text())) return;
@@ -2008,6 +2008,25 @@ function approvalsFixture() {
   ];
 }
 
+async function newSmokePage(browser: Browser, options: BrowserContextOptions): Promise<Page> {
+  const page = await browser.newPage(options);
+  await page.route(/https:\/\/fonts\.googleapis\.com\/.*/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/css; charset=utf-8",
+      body: "",
+    });
+  });
+  await page.route(/https:\/\/fonts\.gstatic\.com\/.*/, async (route) => {
+    await route.fulfill({
+      status: 204,
+      contentType: "font/woff2",
+      body: "",
+    });
+  });
+  return page;
+}
+
 function workerSessionsFixture() {
   return [
     {
@@ -2675,6 +2694,8 @@ interface MissionLayoutEvidence {
     height: number;
   };
   traceExpanded: boolean;
+  toolProcessCount: number;
+  traceFinalAnswerLinkVisible: boolean;
   finalAnswerVisible: boolean;
   thinkingBeforeFinal: boolean;
   timelineBeforeFinal: boolean;
@@ -2712,6 +2733,8 @@ async function collectMissionLayoutEvidence(page: Page): Promise<MissionLayoutEv
         height: document.documentElement.clientHeight,
       },
       traceExpanded: Boolean(document.querySelector("#thinking-record-timeline")),
+      toolProcessCount: document.querySelectorAll("#thinking-record-timeline .tool-process").length,
+      traceFinalAnswerLinkVisible: Boolean(document.querySelector(".tool-process-answer-link")),
       finalAnswerVisible: Boolean(document.querySelector(".final-answer-card")),
       thinkingBeforeFinal: Boolean(thinking && finalAnswer && thinking.bottom <= finalAnswer.top + 1),
       timelineBeforeFinal: Boolean(timeline && finalAnswer && timeline.bottom <= finalAnswer.top + 1),
@@ -2754,6 +2777,41 @@ async function writeSmokeArtifacts(input: SmokeArtifactInput): Promise<{
           layout: {
             desktop: input.desktopLayoutEvidence,
             mobile: input.mobileLayoutEvidence,
+          },
+          replayThoughtProcessProof: {
+            missionId,
+            surfaces: ["desktop", "mobile"],
+            checks: [
+              "trace-expanded",
+              "tool-process-visible",
+              "thinking-card-before-final-answer",
+              "timeline-before-final-answer",
+              "trace-final-answer-link-visible",
+              "trace-final-answer-non-overlap",
+            ],
+            runtimeStates: [
+              "completed-final-answer",
+              "browser-evidence",
+              "approval-evidence",
+              "active-running-tool-process",
+              "cancellable-tool-call",
+            ],
+            desktopPassed:
+              input.desktopLayoutEvidence.traceExpanded &&
+              input.desktopLayoutEvidence.toolProcessCount > 0 &&
+              input.desktopLayoutEvidence.traceFinalAnswerLinkVisible &&
+              input.desktopLayoutEvidence.finalAnswerVisible &&
+              input.desktopLayoutEvidence.thinkingBeforeFinal &&
+              input.desktopLayoutEvidence.timelineBeforeFinal &&
+              input.desktopLayoutEvidence.traceFinalOverlap === false,
+            mobilePassed:
+              input.mobileLayoutEvidence.traceExpanded &&
+              input.mobileLayoutEvidence.toolProcessCount > 0 &&
+              input.mobileLayoutEvidence.traceFinalAnswerLinkVisible &&
+              input.mobileLayoutEvidence.finalAnswerVisible &&
+              input.mobileLayoutEvidence.thinkingBeforeFinal &&
+              input.mobileLayoutEvidence.timelineBeforeFinal &&
+              input.mobileLayoutEvidence.traceFinalOverlap === false,
           },
         },
         null,
@@ -2812,7 +2870,10 @@ function assert(condition: boolean, message: string): asserts condition {
 }
 
 function isIgnorableConsoleError(text: string): boolean {
-  return text.includes("fonts.gstatic.com/") && text.includes("Failed to load resource:");
+  return (
+    (text.includes("fonts.gstatic.com/") || text.includes("fonts.googleapis.com/")) &&
+    text.includes("Failed to load resource:")
+  );
 }
 
 async function resolveChromePath(explicitPath?: string): Promise<string> {

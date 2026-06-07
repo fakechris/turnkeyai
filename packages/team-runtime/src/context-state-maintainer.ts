@@ -222,26 +222,52 @@ export class DefaultContextStateMaintainer implements ContextStateMaintainer {
     if (memoryStore) {
       const existingMemory = await memoryStore.get(threadId);
       const latestSummary = await this.threadSummaryStore.get(threadId);
-      const persistentSummaryConstraints = selectPersistentSummaryConstraints(latestSummary?.stableFacts ?? []);
-      const persistentSummaryNotes = selectPersistentSummaryNotes(latestSummary?.decisions ?? []);
-      const persistentSummaryCarryForward = selectPersistentSummaryCarryForward(latestSummary?.openQuestions ?? []);
+      const extractedPreferences = extractPreferenceNotes(latestMessage.content);
+      const extractedConstraints = extractConstraintNotes(latestMessage.content);
+      const extractedLongTermNotes = extractLongTermNotes(latestMessage.content);
+      const incomingInvalidation = buildMemoryInvalidation([
+        ...extractedPreferences,
+        ...extractedConstraints,
+        ...extractedLongTermNotes,
+      ]);
+      const carryForwardInvalidation = mergeMemoryInvalidations(
+        incomingInvalidation,
+        buildMemoryInvalidation([
+          ...(existingMemory?.preferences ?? []),
+          ...(existingMemory?.constraints ?? []),
+          ...(existingMemory?.longTermNotes ?? []),
+        ])
+      );
+      const prunedExistingMemory = pruneSupersededMemory(existingMemory, incomingInvalidation);
+      const persistentSummaryConstraints = filterSupersededMemoryItems(
+        selectPersistentSummaryConstraints(latestSummary?.stableFacts ?? []),
+        carryForwardInvalidation
+      );
+      const persistentSummaryNotes = filterSupersededMemoryItems(
+        selectPersistentSummaryNotes(latestSummary?.decisions ?? []),
+        carryForwardInvalidation
+      );
+      const persistentSummaryCarryForward = filterSupersededMemoryItems(
+        selectPersistentSummaryCarryForward(latestSummary?.openQuestions ?? []),
+        carryForwardInvalidation
+      );
       const nextMemory = {
         threadId,
         updatedAt: this.now(),
         preferences: keepRecentUniqueStrings([
-          ...(existingMemory?.preferences ?? []),
-          ...extractPreferenceNotes(latestMessage.content),
+          ...prunedExistingMemory.preferences,
+          ...extractedPreferences,
         ], this.memoryListLimit),
         constraints: keepRecentUniqueStrings([
-          ...(existingMemory?.constraints ?? []),
+          ...prunedExistingMemory.constraints,
           ...persistentSummaryConstraints,
-          ...extractConstraintNotes(latestMessage.content),
+          ...extractedConstraints,
         ], this.memoryListLimit),
         longTermNotes: keepRecentUniqueStrings([
-          ...(existingMemory?.longTermNotes ?? []),
+          ...prunedExistingMemory.longTermNotes,
           ...persistentSummaryNotes,
           ...persistentSummaryCarryForward,
-          ...extractLongTermNotes(latestMessage.content),
+          ...extractedLongTermNotes,
         ], this.memoryListLimit),
       };
 
@@ -251,6 +277,7 @@ export class DefaultContextStateMaintainer implements ContextStateMaintainer {
         nextMemory.longTermNotes.length > 0
       ) {
         await memoryStore.put(nextMemory);
+        await this.recordThreadMemoryInvalidationProgressSafely(threadId, incomingInvalidation, prunedExistingMemory.removedCount);
       }
     }
 
@@ -349,6 +376,49 @@ export class DefaultContextStateMaintainer implements ContextStateMaintainer {
     }
   }
 
+  private async recordThreadMemoryInvalidationProgressSafely(
+    threadId: ThreadId,
+    invalidation: MemoryInvalidation,
+    removedCount: number
+  ): Promise<void> {
+    if (removedCount <= 0) {
+      return;
+    }
+    try {
+      await this.recordThreadMemoryInvalidationProgress(threadId, invalidation, removedCount);
+    } catch (error) {
+      console.error("thread memory invalidation progress recording failed", { threadId, error });
+    }
+  }
+
+  private async recordThreadMemoryInvalidationProgress(
+    threadId: ThreadId,
+    invalidation: MemoryInvalidation,
+    removedCount: number
+  ): Promise<void> {
+    if (!this.runtimeProgressRecorder) {
+      return;
+    }
+    const now = this.now();
+    await this.runtimeProgressRecorder.record({
+      progressId: `progress:thread-memory:${threadId}:invalidation:${now}`,
+      threadId,
+      subjectKind: "role_run",
+      subjectId: `thread-memory:${threadId}`,
+      phase: "completed",
+      progressKind: "boundary",
+      heartbeatSource: "activity_echo",
+      continuityState: "resolved",
+      summary: `Thread memory invalidated ${removedCount} superseded item(s).`,
+      recordedAt: now,
+      metadata: {
+        boundaryKind: "thread_memory_invalidation",
+        removedItems: removedCount,
+        invalidatedSubjects: [...invalidation.subjects],
+      },
+    });
+  }
+
   private async recordSessionMemoryRefreshProgress(
     threadId: ThreadId,
     phase: "scheduled" | "completed",
@@ -424,7 +494,7 @@ function extractPreferenceNotes(content: string): string[] {
   if (!/\b(prefer|default to|avoid|do not use|don't use|always use)\b/i.test(normalized)) {
     return [];
   }
-  return [normalized];
+  return cleanExtractedMemoryItem(normalized);
 }
 
 function extractConstraintNotes(content: string): string[] {
@@ -432,7 +502,7 @@ function extractConstraintNotes(content: string): string[] {
   if (!/\b(must|need to|budget|deadline|under \$|within|cannot|can't)\b/i.test(normalized)) {
     return [];
   }
-  return [normalized];
+  return cleanExtractedMemoryItem(normalized);
 }
 
 function extractLongTermNotes(content: string): string[] {
@@ -440,7 +510,100 @@ function extractLongTermNotes(content: string): string[] {
   if (!/\b(remember|long-term|ongoing preference|keep in mind)\b/i.test(normalized)) {
     return [];
   }
-  return [normalized];
+  return cleanExtractedMemoryItem(normalized);
+}
+
+function cleanExtractedMemoryItem(value: string): string[] {
+  const cleaned = hasMemorySupersessionSignal(value)
+    ? value
+        .split(/(?<=[.!?])\s+/)
+        .filter((sentence) => !/\b(?:previous|prior|old|stale|no longer|must not be used)\b/i.test(sentence))
+        .join(" ")
+        .trim()
+    : value;
+  return cleaned.length > 0 ? [cleaned] : [];
+}
+
+interface MemoryInvalidation {
+  subjects: Set<string>;
+}
+
+interface PrunedMemoryBuckets {
+  preferences: string[];
+  constraints: string[];
+  longTermNotes: string[];
+  removedCount: number;
+}
+
+function buildMemoryInvalidation(incomingItems: string[]): MemoryInvalidation {
+  const subjects = new Set<string>();
+  for (const item of incomingItems) {
+    if (!hasMemorySupersessionSignal(item)) {
+      continue;
+    }
+    for (const subject of extractMemorySubjects(item)) {
+      subjects.add(subject);
+    }
+  }
+  return { subjects };
+}
+
+function mergeMemoryInvalidations(...invalidations: MemoryInvalidation[]): MemoryInvalidation {
+  const subjects = new Set<string>();
+  for (const invalidation of invalidations) {
+    for (const subject of invalidation.subjects) {
+      subjects.add(subject);
+    }
+  }
+  return { subjects };
+}
+
+function pruneSupersededMemory(
+  existingMemory: { preferences: string[]; constraints: string[]; longTermNotes: string[] } | null,
+  invalidation: MemoryInvalidation
+): PrunedMemoryBuckets {
+  const preferences = filterSupersededMemoryItems(existingMemory?.preferences ?? [], invalidation);
+  const constraints = filterSupersededMemoryItems(existingMemory?.constraints ?? [], invalidation);
+  const longTermNotes = filterSupersededMemoryItems(existingMemory?.longTermNotes ?? [], invalidation);
+  return {
+    preferences,
+    constraints,
+    longTermNotes,
+    removedCount:
+      (existingMemory?.preferences.length ?? 0) -
+      preferences.length +
+      (existingMemory?.constraints.length ?? 0) -
+      constraints.length +
+      (existingMemory?.longTermNotes.length ?? 0) -
+      longTermNotes.length,
+  };
+}
+
+function filterSupersededMemoryItems(values: string[], invalidation: MemoryInvalidation): string[] {
+  if (invalidation.subjects.size === 0) {
+    return values;
+  }
+  return values.filter((value) => {
+    const subjects = extractMemorySubjects(value);
+    return subjects.length === 0 || subjects.every((subject) => !invalidation.subjects.has(subject));
+  });
+}
+
+function hasMemorySupersessionSignal(value: string): boolean {
+  return /\b(?:correction|corrected|update|updated|revised|replace|replaces|supersede|supersedes|stale|no longer|going forward|instead)\b/i.test(
+    value
+  );
+}
+
+function extractMemorySubjects(value: string): string[] {
+  const subjects = new Set<string>();
+  for (const match of value.matchAll(/\b[A-Z][A-Za-z0-9]+-\d+\b/g)) {
+    subjects.add(match[0].toLowerCase());
+  }
+  for (const match of value.matchAll(/\b(?:project\s+codename|codename)\s*:\s*([A-Za-z][A-Za-z0-9_-]*)/gi)) {
+    subjects.add(match[1]!.toLowerCase());
+  }
+  return [...subjects];
 }
 
 function uniqueStrings(values: string[]): string[] {

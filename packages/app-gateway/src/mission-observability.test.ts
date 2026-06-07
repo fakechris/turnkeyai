@@ -71,6 +71,97 @@ test("buildMissionObservabilitySnapshot surfaces skipped timeout and missing res
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "residual_risk")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot downgrades recovered timeout failures to attention", () => {
+  const mission = baseMission({ status: "done" });
+  const failed = {
+    ...tool("result-timeout", 3_000, "result", "sessions_send", "call-timeout", "sessions_send timed out."),
+    emph: "danger" as const,
+  };
+  const finalAnswer = event(
+    "final-1",
+    "thought",
+    4_000,
+    "role-lead",
+    [
+      "Verified source-bounded timeout closeout based on gathered tool evidence.",
+      "The answer explains what was confirmed and what was not.",
+      "Residual risk remains because the slow source timed out before a fully clean rerun.",
+    ].join(" ")
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 5_000,
+    events: [
+      tool("call-timeout", 2_800, "call", "sessions_send", "call-timeout", "Calling sessions_send"),
+      failed,
+      {
+        ...finalAnswer,
+        runtime: {
+          ...finalAnswer.runtime,
+          toolLoopCloseout: "true",
+          toolLoopCloseoutReason: "sub_agent_timeout",
+          "toolLoopCloseout.roundCount": "3",
+          "toolLoopCloseout.toolCallCount": "3",
+          "toolLoopCloseout.toolName": "sessions_send",
+          "toolLoopCloseout.evidenceAvailable": "true",
+        },
+      },
+    ],
+  });
+
+  assert.equal(snapshot.tool.failed, 1);
+  assert.equal(snapshot.tool.timeouts, 1);
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.status, "warn");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.detail ?? "",
+    /bounded timeout recovery/
+  );
+});
+
+test("buildMissionObservabilitySnapshot recognizes source-bounded transport timeout finals", () => {
+  const mission = baseMission({ status: "done" });
+  const failed = {
+    ...tool(
+      "result-timeout",
+      3_000,
+      "result",
+      "sessions_spawn",
+      "call-timeout",
+      "Tool sessions_spawn failed: page.goto: Timeout 10000ms exceeded"
+    ),
+    emph: "danger" as const,
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 5_000,
+    events: [
+      tool("call-timeout", 2_800, "call", "sessions_spawn", "call-timeout", "Calling sessions_spawn"),
+      failed,
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "Transport failure observed: page.goto timeout before DOMContentLoaded.",
+          "Verified: no HTTP response, status, body, or screenshot was captured.",
+          "Unverified: final URL, page title, visible text, console errors, and network details.",
+          "Residual risk: continue with a bounded retry before treating the source as healthy.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.tool.failed, 1);
+  assert.equal(snapshot.tool.timeouts, 1);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.status, "warn");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.detail ?? "",
+    /bounded timeout recovery/
+  );
+});
+
 test("buildMissionObservabilitySnapshot keeps active missions running while final answer is pending", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "working" }),

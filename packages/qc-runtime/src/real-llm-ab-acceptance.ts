@@ -1,6 +1,7 @@
 import {
   DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
 } from "./real-llm-acceptance-defaults";
 
 export type RealLlmAbSystemId = "turnkeyai" | "reference";
@@ -29,6 +30,22 @@ export type RealLlmAbRootCauseBucket =
   | "final_answer_quality"
   | "ui_replay_visibility"
   | "acceptance_harness";
+
+export type RealLlmAbComparisonClassification =
+  | "validated_comparison"
+  | "turnkeyai_only_gate"
+  | "reference_env_failed"
+  | "adapter_unproven"
+  | "unfair_prompt_or_fixture";
+
+export interface RealLlmAbReferenceAudit {
+  provenanceStatus: "passed" | "failed";
+  runtimeHealthStatus: "passed" | "failed";
+  adapterStatus: "passed" | "failed";
+  fairnessStatus: "passed" | "failed";
+  missingProvenance: string[];
+  findings: string[];
+}
 
 export interface RealLlmAbScenarioRun {
   system: RealLlmAbSystemId;
@@ -96,6 +113,8 @@ export interface RealLlmAbScenarioPair {
   requiresApproval?: boolean;
   requiresContinuation?: boolean;
   requiresTimeoutCloseout?: boolean;
+  comparisonClassification?: RealLlmAbComparisonClassification;
+  referenceAudit?: RealLlmAbReferenceAudit;
   turnkeyai: RealLlmAbScenarioRun;
   reference: RealLlmAbScenarioRun;
 }
@@ -149,7 +168,7 @@ export interface RealLlmAbAcceptanceValidation {
   summary: RealLlmAbAcceptanceSummary | null;
 }
 
-export type RealLlmAbRequiredSuite = "core" | "browser-focused" | "browser-reliability";
+export type RealLlmAbRequiredSuite = "core" | "browser-focused" | "browser-reliability" | "full-natural";
 
 export interface RealLlmAbAcceptanceValidationOptions {
   requiredSuite?: RealLlmAbRequiredSuite;
@@ -237,6 +256,16 @@ export const REAL_LLM_AB_BROWSER_RELIABILITY_SUITE_REQUIREMENTS =
     key: string;
     acceptedScenarioIds: readonly string[];
   }[];
+
+export const REAL_LLM_AB_FULL_NATURAL_SUITE_REQUIREMENTS = DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS.map(
+  (scenarioId) => ({
+    key: scenarioId.replace(/^natural-/, ""),
+    acceptedScenarioIds: [scenarioId],
+  })
+) as readonly {
+  key: string;
+  acceptedScenarioIds: readonly string[];
+}[];
 
 const CORE_LOSS_DIMENSIONS = new Set<RealLlmAbDimensionKey>([
   "taskCompletion",
@@ -373,6 +402,27 @@ export function validateRealLlmAbAcceptanceReport(
         failures.push(`${scenario.scenarioId}/${system.system}: missing run artifact, mission id, validation id, or transcript`);
       }
     }
+    if (scenario.comparisonClassification !== "validated_comparison") {
+      failures.push(
+        `${scenario.scenarioId}: comparison is not validated (${scenario.comparisonClassification ?? "missing classification"})`
+      );
+    }
+    if (scenario.referenceAudit) {
+      if (scenario.referenceAudit.provenanceStatus !== "passed") {
+        failures.push(
+          `${scenario.scenarioId}/reference: provenance gate failed (${scenario.referenceAudit.missingProvenance.join(", ")})`
+        );
+      }
+      if (scenario.referenceAudit.runtimeHealthStatus !== "passed") {
+        failures.push(`${scenario.scenarioId}/reference: runtime health gate failed`);
+      }
+      if (scenario.referenceAudit.adapterStatus !== "passed") {
+        failures.push(`${scenario.scenarioId}/reference: adapter mapping gate failed`);
+      }
+      if (scenario.referenceAudit.fairnessStatus !== "passed") {
+        failures.push(`${scenario.scenarioId}/reference: same-scenario fairness gate failed`);
+      }
+    }
     if (scenario.requiresBrowser && !scenario.turnkeyai.browserEvidence?.used) {
       failures.push(`${scenario.scenarioId}: TurnkeyAI did not record browser evidence for a browser-required scenario`);
     }
@@ -480,6 +530,13 @@ export function buildRealLlmAbMarkdownReport(
     `- TurnkeyAI wins/ties/losses: ${summary.turnkeyaiWins}/${summary.turnkeyaiTies}/${summary.turnkeyaiLosses}`,
     `- Root-cause review required: ${summary.rootCauseRequiredScenarios}`,
     "",
+    "## Comparison Classification",
+    "",
+    ...comparisons.map((comparison) => {
+      const scenario = report.scenarios.find((item) => item.scenarioId === comparison.scenarioId);
+      return `- ${comparison.scenarioId}: ${scenario?.comparisonClassification ?? "missing classification"}`;
+    }),
+    "",
     "## Where TurnkeyAI Lost Or Needs Review",
     "",
     ...(losingComparisons.length === 0
@@ -537,7 +594,10 @@ function compareScenarioPair(scenario: RealLlmAbScenarioPair): RealLlmAbScenario
     ...deriveRootCauseBuckets(scenario, mergeStringSet([...lossDimensions, ...zeroDimensions]) as RealLlmAbDimensionKey[]),
     ...(scenario.turnkeyai.rootCauseBuckets ?? []),
   ]);
-  const comparable = hasRunEvidence(scenario.turnkeyai) && hasRunEvidence(scenario.reference);
+  const comparable =
+    hasRunEvidence(scenario.turnkeyai) &&
+    hasRunEvidence(scenario.reference) &&
+    scenario.comparisonClassification === "validated_comparison";
   const rootCauseRequired =
     !comparable ||
     scenario.turnkeyai.stuckOrLoop === true ||
@@ -768,6 +828,8 @@ function requiredSuiteRequirements(suite: RealLlmAbRequiredSuite): readonly {
       return REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS;
     case "browser-reliability":
       return REAL_LLM_AB_BROWSER_RELIABILITY_SUITE_REQUIREMENTS;
+    case "full-natural":
+      return REAL_LLM_AB_FULL_NATURAL_SUITE_REQUIREMENTS;
     default: {
       const exhaustive: never = suite;
       return exhaustive;

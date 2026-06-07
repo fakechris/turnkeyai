@@ -153,8 +153,50 @@ test("session tool result protocol lifts browser recovery buckets into evidence 
 
   assert.match(result.evidence_summary ?? "", /Browser failure buckets: session_not_found=1/);
   assert.match(result.evidence_summary ?? "", /Recovered dashboard queue depth 11/);
+  assert.deepEqual(result.browser_session, {
+    session_id: "browser-session-new",
+    resume_mode: "cold",
+    source: "browserRecovery",
+  });
   const parsed = parseSessionToolResult(serializeSessionToolResult(result));
   assert.match(parsed?.evidence_summary ?? "", /session_not_found=1/);
+  assert.deepEqual(parsed?.browser_session, result.browser_session);
+});
+
+test("session tool result protocol exposes recovered browser session over stale direct session", () => {
+  const result = buildSessionToolResult({
+    taskId: "task-1",
+    sessionKey: "worker:browser:task-1",
+    agentId: "browser",
+    missingResultMessage: "missing",
+    result: {
+      workerType: "browser",
+      status: "completed",
+      summary: "Browser sub-agent recovered after the original browser session closed.",
+      payload: {
+        mode: "llm_sub_agent",
+        workerType: "browser",
+        sessionId: "browser-session-old",
+        targetId: "target-old",
+        resumeMode: "warm",
+        browserRecovery: {
+          resumeMode: "cold",
+          sessionId: "browser-session-new",
+          targetId: "target-new",
+        },
+        content: "Recovered dashboard evidence from the recreated session.",
+      },
+    },
+  });
+
+  assert.deepEqual(result.browser_session, {
+    session_id: "browser-session-new",
+    target_id: "target-new",
+    resume_mode: "cold",
+    source: "browserRecovery",
+  });
+  const parsed = parseSessionToolResult(serializeSessionToolResult(result));
+  assert.deepEqual(parsed?.browser_session, result.browser_session);
 });
 
 test("session tool result protocol lifts nested browser tool observations into evidence summary", () => {

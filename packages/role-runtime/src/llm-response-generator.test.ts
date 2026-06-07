@@ -1,19 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RoleActivationInput, TeamMessage, TeamMessageSummary } from "@turnkeyai/core-types/team";
-import type { GenerateTextInput, GenerateTextResult, LLMToolCall } from "@turnkeyai/llm-adapter/index";
+import type {
+  RoleActivationInput,
+  TeamMessage,
+  TeamMessageSummary,
+} from "@turnkeyai/core-types/team";
+import type {
+  GenerateTextInput,
+  GenerateTextResult,
+  LLMToolCall,
+} from "@turnkeyai/llm-adapter/index";
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
 import type { PreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
-import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor } from "./tool-use";
+import type {
+  RoleToolExecutionInput,
+  RoleToolExecutionResult,
+  RoleToolExecutor,
+} from "./tool-use";
 
 test("llm role response generator retries with a smaller request envelope after overflow", async () => {
   const inputs: Array<{ prompt: string; artifactIds: string[] }> = [];
-  const progressEvents: Array<{ summary: string; metadata?: Record<string, unknown> }> = [];
+  const progressEvents: Array<{
+    summary: string;
+    metadata?: Record<string, unknown>;
+  }> = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     inputs.push({
@@ -98,19 +113,37 @@ test("llm role response generator retries with a smaller request envelope after 
   assert.ok(inputs[1]!.prompt.includes("Request envelope reduction:"));
   assert.ok(inputs[2]!.prompt.includes("Reduction level: minimal"));
   assert.ok(inputs[3]!.prompt.includes("Reduction level: reference-only"));
-  assert.deepEqual(inputs[1]!.artifactIds, ["artifact-1", "artifact-2", "artifact-3", "artifact-4", "artifact-5", "artifact-6", "artifact-7", "artifact-8"]);
-  assert.deepEqual(inputs[2]!.artifactIds, ["artifact-1", "artifact-2", "artifact-3"]);
+  assert.deepEqual(inputs[1]!.artifactIds, [
+    "artifact-1",
+    "artifact-2",
+    "artifact-3",
+    "artifact-4",
+    "artifact-5",
+    "artifact-6",
+    "artifact-7",
+    "artifact-8",
+  ]);
+  assert.deepEqual(inputs[2]!.artifactIds, [
+    "artifact-1",
+    "artifact-2",
+    "artifact-3",
+  ]);
   assert.deepEqual(inputs[3]!.artifactIds, []);
-  assert.deepEqual(
-    result.metadata?.requestEnvelopeReduction,
-    {
-      level: "reference-only",
-      omittedSections: ["recent-turns", "role-scratchpad", "retrieved-memory", "worker-evidence"],
-    }
-  );
+  assert.deepEqual(result.metadata?.requestEnvelopeReduction, {
+    level: "reference-only",
+    omittedSections: [
+      "recent-turns",
+      "role-scratchpad",
+      "retrieved-memory",
+      "worker-evidence",
+    ],
+  });
   assert.equal(progressEvents.length, 1);
   assert.match(progressEvents[0]?.summary ?? "", /reduced to reference-only/i);
-  assert.equal(progressEvents[0]?.metadata?.["boundaryKind"], "request_envelope_reduction");
+  assert.equal(
+    progressEvents[0]?.metadata?.["boundaryKind"],
+    "request_envelope_reduction",
+  );
   assert.equal(progressEvents[0]?.metadata?.["modelId"], "claude-test");
   assert.deepEqual(progressEvents[0]?.metadata?.["omittedSections"], [
     "recent-turns",
@@ -121,11 +154,21 @@ test("llm role response generator retries with a smaller request envelope after 
   assert.equal(progressEvents[0]?.metadata?.["assemblyFingerprint"], "fp");
   assert.deepEqual(progressEvents[0]?.metadata?.["usedArtifacts"], []);
   assert.equal(
-    ((progressEvents[0]?.metadata?.["contextDiagnostics"] as { continuity?: { carriesPendingWork?: boolean } } | undefined)
-      ?.continuity?.carriesPendingWork),
-    true
+    (
+      progressEvents[0]?.metadata?.["contextDiagnostics"] as
+        | { continuity?: { carriesPendingWork?: boolean } }
+        | undefined
+    )?.continuity?.carriesPendingWork,
+    true,
   );
-  assert.equal((progressEvents[0]?.metadata?.["envelopeHint"] as { toolResultCount?: number } | undefined)?.toolResultCount, 0);
+  assert.equal(
+    (
+      progressEvents[0]?.metadata?.["envelopeHint"] as
+        | { toolResultCount?: number }
+        | undefined
+    )?.toolResultCount,
+    0,
+  );
 });
 
 test("llm role response generator flushes memory once before request-envelope reduction", async () => {
@@ -156,7 +199,9 @@ test("llm role response generator flushes memory once before request-envelope re
         status: "written",
         preferences: [],
         constraints: ["Keep direct provider APIs before browser fallback."],
-        longTermNotes: ["Open item: confirm browser fallback only when APIs are blocked."],
+        longTermNotes: [
+          "Open item: confirm browser fallback only when APIs are blocked.",
+        ],
       };
     },
   };
@@ -175,16 +220,20 @@ test("llm role response generator flushes memory once before request-envelope re
   assert.equal(flushCalls[0]?.modelId, "claude-test");
   assert.match(flushCalls[0]?.taskPrompt ?? "", /Recent turns:/);
   assert.ok(
-    gatewayInputs[1]?.messages.some((message) =>
-      typeof message.content === "string" && message.content.includes("Request envelope reduction:")
-    )
+    gatewayInputs[1]?.messages.some(
+      (message) =>
+        typeof message.content === "string" &&
+        message.content.includes("Request envelope reduction:"),
+    ),
   );
   assert.deepEqual(result.metadata?.preCompactionMemoryFlushes, [
     {
       status: "written",
       preferences: [],
       constraints: ["Keep direct provider APIs before browser fallback."],
-      longTermNotes: ["Open item: confirm browser fallback only when APIs are blocked."],
+      longTermNotes: [
+        "Open item: confirm browser fallback only when APIs are blocked.",
+      ],
     },
   ]);
 });
@@ -192,7 +241,9 @@ test("llm role response generator flushes memory once before request-envelope re
 test("llm role response generator passes AbortSignal to gateway requests", async () => {
   const inputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
-  gateway.generate = async (input: GenerateTextInput): Promise<GenerateTextResult> => {
+  gateway.generate = async (
+    input: GenerateTextInput,
+  ): Promise<GenerateTextResult> => {
     inputs.push(input);
     return {
       text: "ok",
@@ -234,10 +285,13 @@ test("llm role response generator forwards model chain and model ref routing", a
   const generator = new LLMRoleResponseGenerator({ gateway });
 
   await generator.generate({
-    activation: buildActivation({
-      modelRef: "gpt-5",
-      modelChain: "reasoning_primary",
-    }, { omitLegacyModel: true }),
+    activation: buildActivation(
+      {
+        modelRef: "gpt-5",
+        modelChain: "reasoning_primary",
+      },
+      { omitLegacyModel: true },
+    ),
     packet: buildPacket(),
   });
 
@@ -247,7 +301,10 @@ test("llm role response generator forwards model chain and model ref routing", a
 });
 
 test("llm role response generator emits a boundary event when prompt assembly is already compacted", async () => {
-  const progressEvents: Array<{ summary: string; metadata?: Record<string, unknown> }> = [];
+  const progressEvents: Array<{
+    summary: string;
+    metadata?: Record<string, unknown>;
+  }> = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async () => ({
     text: "ok",
@@ -282,14 +339,23 @@ test("llm role response generator emits a boundary event when prompt assembly is
 
   assert.equal(progressEvents.length, 1);
   assert.match(progressEvents[0]?.summary ?? "", /compact boundary/i);
-  assert.equal(progressEvents[0]?.metadata?.["boundaryKind"], "prompt_compaction");
+  assert.equal(
+    progressEvents[0]?.metadata?.["boundaryKind"],
+    "prompt_compaction",
+  );
   assert.equal(progressEvents[0]?.metadata?.["modelId"], "claude-test");
   assert.equal(progressEvents[0]?.metadata?.["assemblyFingerprint"], "fp");
-  assert.deepEqual(progressEvents[0]?.metadata?.["compactedSegments"], ["recent-turns", "worker-evidence"]);
+  assert.deepEqual(progressEvents[0]?.metadata?.["compactedSegments"], [
+    "recent-turns",
+    "worker-evidence",
+  ]);
   assert.equal(
-    ((progressEvents[0]?.metadata?.["contextDiagnostics"] as { retrievedMemory?: { packedCount?: number } } | undefined)
-      ?.retrievedMemory?.packedCount),
-    2
+    (
+      progressEvents[0]?.metadata?.["contextDiagnostics"] as
+        | { retrievedMemory?: { packedCount?: number } }
+        | undefined
+    )?.retrievedMemory?.packedCount,
+    2,
   );
 });
 
@@ -328,7 +394,10 @@ test("llm role response generator ignores boundary recorder failures", async () 
 
 test("llm role response generator runs native tool-use loop and feeds tool results back", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
-  const progressEvents: Array<{ summary: string; metadata?: Record<string, unknown> }> = [];
+  const progressEvents: Array<{
+    summary: string;
+    metadata?: Record<string, unknown>;
+  }> = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
@@ -374,7 +443,10 @@ test("llm role response generator runs native tool-use loop and feeds tool resul
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -383,7 +455,11 @@ test("llm role response generator runs native tool-use loop and feeds tool resul
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
-        content: JSON.stringify({ task_id: "task-1", status: "completed", result: "Example Domain" }),
+        content: JSON.stringify({
+          task_id: "task-1",
+          status: "completed",
+          result: "Example Domain",
+        }),
         progress: [
           {
             phase: "completed",
@@ -419,9 +495,61 @@ test("llm role response generator runs native tool-use loop and feeds tool resul
   assert.equal(gatewayInputs[1]?.messages.at(-2)?.role, "assistant");
   assert.equal(gatewayInputs[1]?.messages.at(-1)?.role, "tool");
   assert.equal(gatewayInputs[1]?.messages.at(-1)?.toolCallId, "toolu-1");
-  assert.equal((result.metadata?.toolUse as { toolCallCount?: number } | undefined)?.toolCallCount, 1);
-  assert.ok(progressEvents.some((event) => event.summary.includes("Tool call started: sessions_spawn")));
-  assert.ok(progressEvents.some((event) => event.summary.includes("sessions_spawn completed")));
+  assert.equal(
+    (result.metadata?.toolUse as { toolCallCount?: number } | undefined)
+      ?.toolCallCount,
+    1,
+  );
+  const modelUse = result.metadata?.modelUse as
+    | {
+        callCount?: number;
+        source?: string;
+        calls?: Array<{
+          phase?: string;
+          round?: number;
+          modelId?: string;
+          toolCallsReturned?: number;
+        }>;
+      }
+    | undefined;
+  assert.equal(modelUse?.source, "turnkeyai-role-runtime");
+  assert.equal(modelUse?.callCount, 2);
+  assert.equal(modelUse?.calls?.[0]?.phase, "tool_round");
+  assert.equal(modelUse?.calls?.[0]?.round, 0);
+  assert.equal(modelUse?.calls?.[0]?.toolCallsReturned, 1);
+  assert.equal(modelUse?.calls?.[1]?.phase, "tool_round");
+  assert.equal(modelUse?.calls?.[1]?.round, 1);
+  assert.equal(modelUse?.calls?.[1]?.modelId, "claude-test");
+  assert.ok(
+    progressEvents.some((event) =>
+      event.summary.includes("Tool call started: sessions_spawn"),
+    ),
+  );
+  assert.ok(
+    progressEvents.some((event) =>
+      event.summary.includes("sessions_spawn completed"),
+    ),
+  );
+  const protocolEvent = progressEvents.find(
+    (event) =>
+      event.metadata?.["boundaryKind"] === "provider_tool_protocol_round",
+  );
+  assert.ok(protocolEvent);
+  assert.equal(protocolEvent.metadata?.["providerToolCallsReturned"], 1);
+  assert.equal(protocolEvent.metadata?.["assistantToolUseBlockCount"], 1);
+  assert.equal(protocolEvent.metadata?.["roleToolResultMessageCount"], 1);
+  assert.equal(protocolEvent.metadata?.["toolResultBlockCount"], 1);
+  assert.equal(protocolEvent.metadata?.["assistantBeforeToolResults"], true);
+  assert.equal(
+    protocolEvent.metadata?.["allToolResultsMatchAssistantToolCalls"],
+    true,
+  );
+  assert.equal(
+    protocolEvent.metadata?.["nextProviderRequestWillIncludeToolResults"],
+    true,
+  );
+  assert.deepEqual(protocolEvent.metadata?.["toolCallIds"], ["toolu-1"]);
+  assert.deepEqual(protocolEvent.metadata?.["toolResultIds"], ["toolu-1"]);
 });
 
 test("llm role response generator repairs approval-gated answers that skipped native tools", async () => {
@@ -441,18 +569,34 @@ test("llm role response generator repairs approval-gated answers that skipped na
       };
     }
     if (gatewayInputs.length === 2) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "permission_query" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval-gated browser action/);
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /without native approval\/tool evidence/);
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /permission_query/);
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /action=browser\.form\.submit/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "permission_query",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /approval-gated browser action/,
+      );
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /without native approval\/tool evidence/,
+      );
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /permission_query/,
+      );
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /action=browser\.form\.submit/,
+      );
       return toolCallResult("toolu-query", "permission_query", {
         action: "browser.form.submit",
         title: "Approve local dry-run form submit",
         risk: "Submit isolated local dry-run form data.",
         level: "approval",
         scope: "mutate",
-        rationale: "The user asked to carry the dry-run form submission through an approval gate.",
+        rationale:
+          "The user asked to carry the dry-run form submission through an approval gate.",
         worker_kind: "browser",
         payload: { url: "http://127.0.0.1/approval-form", submit: "dry-run" },
       });
@@ -461,8 +605,16 @@ test("llm role response generator repairs approval-gated answers that skipped na
       return {
         text: "Apply the approved permission.",
         toolCalls: [
-          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
-          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+          {
+            id: "toolu-result",
+            name: "permission_result",
+            input: { approval_id: "ap-1" },
+          },
+          {
+            id: "toolu-applied",
+            name: "permission_applied",
+            input: { approval_id: "ap-1" },
+          },
         ],
         modelId: "claude-test",
         providerId: "anthropic",
@@ -493,22 +645,37 @@ test("llm role response generator repairs approval-gated answers that skipped na
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
         {
           name: "permission_result",
           description: "Read approval",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "permission_applied",
           description: "Mark approval applied",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -546,11 +713,13 @@ test("llm role response generator repairs approval-gated answers that skipped na
           status: "completed",
           tool_chain: ["browser"],
           result: "Approved dry-run submit completed.",
-          final_content: "Approved dry-run submit completed. Browser verified the submitted status.",
+          final_content:
+            "Approved dry-run submit completed. Browser verified the submitted status.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "browser",
-            content: "Approved dry-run submit completed. Browser verified the submitted status.",
+            content:
+              "Approved dry-run submit completed. Browser verified the submitted status.",
           },
         }),
       };
@@ -573,14 +742,25 @@ test("llm role response generator repairs approval-gated answers that skipped na
     },
   });
 
-  assert.equal(result.content, "The approved browser dry-run was submitted and verified.");
+  assert.equal(
+    result.content,
+    "The approved browser dry-run was submitted and verified.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["permission_query", "permission_result", "permission_applied", "sessions_spawn"]
+    [
+      "permission_query",
+      "permission_result",
+      "permission_applied",
+      "sessions_spawn",
+    ],
   );
   assert.equal(executedCalls[0]?.input.action, "browser.form.submit");
   assert.equal(executedCalls[3]?.input.agent_id, "browser");
-  assert.match(String(executedCalls[3]?.input.task), /submit the approved dry-run/i);
+  assert.match(
+    String(executedCalls[3]?.input.task),
+    /submit the approved dry-run/i,
+  );
   assert.equal(gatewayInputs.length, 5);
 });
 
@@ -590,7 +770,9 @@ test("llm role response generator does not repair read-only tasks that explicitl
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
     if (gatewayInputs.length > 1) {
-      throw new Error("read-only source check should not trigger approval repair");
+      throw new Error(
+        "read-only source check should not trigger approval repair",
+      );
     }
     return {
       text: "Verified source facts: Release Captain owns the handoff. Residual risk: cancelled evidence lowers confidence.",
@@ -607,7 +789,10 @@ test("llm role response generator does not repair read-only tasks that explicitl
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
       ];
     },
@@ -651,16 +836,23 @@ test("llm role response generator keeps tools enabled when approval-gated browse
       });
     }
     if (gatewayInputs.length === 2) {
-      assert.equal(input.toolChoice, "auto");
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "permission_query",
+      });
       assert.ok(input.tools?.some((tool) => tool.name === "permission_query"));
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval-gated browser action/);
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /approval-gated browser action/,
+      );
       return toolCallResult("toolu-query", "permission_query", {
         action: "browser.form.submit",
         title: "Approve local dry-run form submit",
         risk: "Submit isolated local dry-run form data.",
         level: "approval",
         scope: "mutate",
-        rationale: "The browser worker found the form; parent runtime must request approval before submission.",
+        rationale:
+          "The browser worker found the form; parent runtime must request approval before submission.",
         worker_kind: "browser",
         payload: { url: "http://127.0.0.1/approval-form", form: { note: "" } },
       });
@@ -683,12 +875,21 @@ test("llm role response generator keeps tools enabled when approval-gated browse
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -711,17 +912,19 @@ test("llm role response generator keeps tools enabled when approval-gated browse
           agent_id: "browser",
           status: "completed",
           tool_chain: ["browser"],
-          result: "Browser inspected the form and reported that submission requires parent approval.",
+          result:
+            "Browser inspected the form and reported that submission requires parent approval.",
           final_content: [
             "Verified local approval form.",
-            "Form field: input[name=\"note\"] is empty.",
+            'Form field: input[name="note"] is empty.',
             "Submit button is visible.",
             "I do not have access to permission_query; the parent agent must request browser.form.submit approval.",
           ].join("\n"),
           payload: {
             mode: "llm_sub_agent",
             workerType: "browser",
-            content: "Verified form. Parent approval is required before browser.form.submit.",
+            content:
+              "Verified form. Parent approval is required before browser.form.submit.",
           },
         }),
       };
@@ -747,13 +950,330 @@ test("llm role response generator keeps tools enabled when approval-gated browse
   assert.match(result.content, /pending operator decision/);
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_spawn", "permission_query"]
+    ["sessions_spawn", "permission_query"],
   );
   assert.equal(executedCalls[1]?.input.action, "browser.form.submit");
   assert.equal(gatewayInputs.length, 3);
-  assert.equal(gatewayInputs[1]?.toolChoice, "auto");
+  assert.deepEqual(gatewayInputs[1]?.toolChoice, {
+    type: "tool",
+    name: "permission_query",
+  });
   assert.notEqual(gatewayInputs[1]?.toolChoice, "none");
   assert.equal(result.metadata?.toolLoopCloseout, undefined);
+});
+
+test("llm role response generator continues timed-out approved browser action before final", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-submit", "sessions_spawn", {
+        agent_id: "browser",
+        label: "approved dry-run submit",
+        task: [
+          "Navigate to http://127.0.0.1:4101/approval-form.",
+          "Perform the already-approved dry-run browser.form.submit action.",
+          "Verify the post-submit page state.",
+        ].join("\n"),
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_send",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /approved browser action timed out before verification/,
+      );
+      return toolCallResult("toolu-continue", "sessions_send", {
+        session_key: "worker:browser:approved-submit:toolu-submit",
+        message:
+          "Continue the approved browser.form.submit action and verify the post-submit page state.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return textResult(
+      "Approved browser.form.submit completed. Post-submit evidence: TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally.",
+    );
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              agent_id: { type: "string" },
+              task: { type: "string" },
+            },
+          },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_send") {
+        assert.equal(
+          input.call.input.session_key,
+          "worker:browser:approved-submit:toolu-submit",
+        );
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-approved-submit",
+            session_key: "worker:browser:approved-submit:toolu-submit",
+            agent_id: "browser",
+            status: "completed",
+            tool_chain: ["browser_snapshot", "browser_act", "browser_snapshot"],
+            result: "Approved dry-run submit completed.",
+            final_content:
+              "Approved browser.form.submit completed. TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "browser",
+              content:
+                "Approved browser.form.submit completed. TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally.",
+            },
+          }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        isError: true,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-approved-submit",
+          session_key: "worker:browser:approved-submit:toolu-submit",
+          agent_id: "browser",
+          status: "timeout",
+          timeout_seconds: 45,
+          evidence_available: true,
+          evidence_summary:
+            "Execution paused before completion. Reason: sessions_spawn timed out after 45s.",
+          result:
+            "Sub-agent session timed out after 45s before post-submit verification.",
+          final_content: null,
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Operator decision recorded for approval ap-1.",
+        "Action: browser.form.submit.",
+        "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied.",
+        "Do not call permission tools again. Continue from the approved point: perform only the approved scoped action now and verify the result before the final answer.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /Approved browser\.form\.submit completed/);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_spawn", "sessions_send"],
+  );
+  assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator checks permission_result before approval wait-timeout closeout", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-query", "permission_query", {
+        action: "browser.form.submit",
+        worker_kind: "browser",
+        scope: "local dry-run form",
+        risk: "low",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      return {
+        text: "The permission request is pending operator decision. I will wait for approval before proceeding.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 3) {
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "permission_result",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /approval decision has not arrived/,
+      );
+      return toolCallResult("toolu-result", "permission_result", {
+        approval_id: "ap-1",
+      });
+    }
+    if (gatewayInputs.length === 4) {
+      return {
+        text: [
+          "Flow closeout: approval wait-timeout reached.",
+          "No browser form submission or side effect ran.",
+          "The thread remains open pending operator decision.",
+        ].join("\n"),
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.match(
+      readToolContent(input.messages.at(-1)?.content ?? ""),
+      /approval wait-timeout evidence is available/,
+    );
+    return {
+      text: [
+        "Wait-timeout closeout: the operator decision for browser.form.submit is still pending.",
+        "No browser form submission or side effect ran.",
+        "Residual risk: the unexecuted result is not verified while approval remains pending.",
+        "Safe fallback: keep the dry-run unsubmitted. Next action: ask the operator to approve a new request or rerun when ready.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "permission_query",
+          description: "Request approval",
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
+        },
+        {
+          name: "permission_result",
+          description: "Read approval",
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
+        },
+      ];
+    },
+    async execute(input) {
+      executedCalls.push(input.call);
+      if (input.call.name === "permission_query") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            event_type: "permission.query",
+            status: "pending",
+            approvalId: "ap-1",
+            action: "browser.form.submit",
+          }),
+          progress: [
+            {
+              phase: "progress",
+              toolName: input.call.name,
+              summary: "Permission requested.",
+              detail: {
+                eventType: "permission.query",
+                status: "pending",
+                approval_id: "ap-1",
+              },
+            },
+          ],
+        };
+      }
+      if (input.call.name === "permission_result") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            event_type: "permission.result",
+            status: "pending",
+            approvalId: input.call.input.approval_id,
+            action: "browser.form.submit",
+            message: "Permission request is still pending.",
+          }),
+          progress: [
+            {
+              phase: "progress",
+              toolName: input.call.name,
+              summary: "Permission request is still pending.",
+              detail: {
+                eventType: "permission.result",
+                status: "pending",
+                approval_id: input.call.input.approval_id,
+              },
+            },
+          ],
+          isError: true,
+        };
+      }
+      throw new Error(`unexpected tool ${input.call.name}`);
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Open the local approval form and start a safe dry-run browser form submission attempt for operator review.",
+        "If the operator decision does not arrive during this attempt, stop without submitting the form and close out with what remains pending, what did not run, and the safest next action.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /Wait-timeout closeout/);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["permission_query", "permission_result"],
+  );
+  assert.deepEqual(gatewayInputs[2]?.toolChoice, {
+    type: "tool",
+    name: "permission_result",
+  });
+  assert.equal(gatewayInputs.length, 5);
 });
 
 test("llm role response generator repairs stale pending answers after approval is applied", async () => {
@@ -774,8 +1294,16 @@ test("llm role response generator repairs stale pending answers after approval i
       return {
         text: "Apply the approved permission.",
         toolCalls: [
-          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
-          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+          {
+            id: "toolu-result",
+            name: "permission_result",
+            input: { approval_id: "ap-1" },
+          },
+          {
+            id: "toolu-applied",
+            name: "permission_applied",
+            input: { approval_id: "ap-1" },
+          },
         ],
         modelId: "claude-test",
         providerId: "anthropic",
@@ -795,8 +1323,14 @@ test("llm role response generator repairs stale pending answers after approval i
       };
     }
     if (gatewayInputs.length === 4) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval already applied/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /approval already applied/,
+      );
       return toolCallResult("toolu-browser-approved", "sessions_spawn", {
         agent_id: "browser",
         task: "Submit the approved local dry-run form and verify the submitted status.",
@@ -818,22 +1352,37 @@ test("llm role response generator repairs stale pending answers after approval i
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
         {
           name: "permission_result",
           description: "Read approval",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "permission_applied",
           description: "Mark approval applied",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -871,11 +1420,13 @@ test("llm role response generator repairs stale pending answers after approval i
           status: "completed",
           tool_chain: ["browser"],
           result: "Approved dry-run submit completed.",
-          final_content: "Approved dry-run submit completed. Browser verified the submitted status.",
+          final_content:
+            "Approved dry-run submit completed. Browser verified the submitted status.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "browser",
-            content: "Approved dry-run submit completed. Browser verified the submitted status.",
+            content:
+              "Approved dry-run submit completed. Browser verified the submitted status.",
           },
         }),
       };
@@ -898,10 +1449,18 @@ test("llm role response generator repairs stale pending answers after approval i
     },
   });
 
-  assert.equal(result.content, "The approved browser dry-run was submitted and verified.");
+  assert.equal(
+    result.content,
+    "The approved browser dry-run was submitted and verified.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["permission_query", "permission_result", "permission_applied", "sessions_spawn"]
+    [
+      "permission_query",
+      "permission_result",
+      "permission_applied",
+      "sessions_spawn",
+    ],
   );
   assert.equal(gatewayInputs.length, 5);
 });
@@ -923,8 +1482,14 @@ test("llm role response generator repairs incomplete approved browser action whe
       };
     }
     if (gatewayInputs.length === 2) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approved browser action has not executed/i);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /approved browser action has not executed/i,
+      );
       return toolCallResult("toolu-browser-approved", "sessions_spawn", {
         agent_id: "browser",
         task: "Submit the approved local dry-run form and verify completion.",
@@ -946,7 +1511,13 @@ test("llm role response generator repairs incomplete approved browser action whe
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -963,7 +1534,8 @@ test("llm role response generator repairs incomplete approved browser action whe
           status: "completed",
           tool_chain: ["browser"],
           result: "Approved local dry-run form submission completed.",
-          final_content: "Approved action: browser.form.submit. Evidence observed: local dry-run fixture reported submitted.",
+          final_content:
+            "Approved action: browser.form.submit. Evidence observed: local dry-run fixture reported submitted.",
         }),
       };
     },
@@ -985,10 +1557,13 @@ test("llm role response generator repairs incomplete approved browser action whe
     },
   });
 
-  assert.equal(result.content, "The approved browser action completed with verified local dry-run evidence.");
+  assert.equal(
+    result.content,
+    "The approved browser action completed with verified local dry-run evidence.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_spawn"]
+    ["sessions_spawn"],
   );
   assert.equal(gatewayInputs.length, 3);
 });
@@ -1010,8 +1585,14 @@ test("llm role response generator repairs stale pending answers after daemon-app
       };
     }
     if (gatewayInputs.length === 2) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval already applied/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /approval already applied/,
+      );
       return toolCallResult("toolu-browser-approved", "sessions_spawn", {
         agent_id: "browser",
         task: "Submit the approved local dry-run form and verify the submitted status.",
@@ -1033,7 +1614,13 @@ test("llm role response generator repairs stale pending answers after daemon-app
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -1050,11 +1637,13 @@ test("llm role response generator repairs stale pending answers after daemon-app
           status: "completed",
           tool_chain: ["browser"],
           result: "Approved dry-run submit completed.",
-          final_content: "Approved dry-run submit completed. Browser verified the submitted status.",
+          final_content:
+            "Approved dry-run submit completed. Browser verified the submitted status.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "browser",
-            content: "Approved dry-run submit completed. Browser verified the submitted status.",
+            content:
+              "Approved dry-run submit completed. Browser verified the submitted status.",
           },
         }),
       };
@@ -1078,10 +1667,13 @@ test("llm role response generator repairs stale pending answers after daemon-app
     },
   });
 
-  assert.match(result.content, /approved browser dry-run was submitted and verified/i);
+  assert.match(
+    result.content,
+    /approved browser dry-run was submitted and verified/i,
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_spawn"]
+    ["sessions_spawn"],
   );
   assert.equal(gatewayInputs.length, 3);
 });
@@ -1096,9 +1688,21 @@ test("llm role response generator repairs approved browser actions that claim to
       return {
         text: "I will request and apply approval.",
         toolCalls: [
-          { id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit" } },
-          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
-          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+          {
+            id: "toolu-query",
+            name: "permission_query",
+            input: { action: "browser.form.submit" },
+          },
+          {
+            id: "toolu-result",
+            name: "permission_result",
+            input: { approval_id: "ap-1" },
+          },
+          {
+            id: "toolu-applied",
+            name: "permission_applied",
+            input: { approval_id: "ap-1" },
+          },
         ],
         modelId: "claude-test",
         providerId: "anthropic",
@@ -1118,8 +1722,14 @@ test("llm role response generator repairs approved browser actions that claim to
       };
     }
     if (gatewayInputs.length === 3) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approved browser action has not executed/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /approved browser action has not executed/,
+      );
       return toolCallResult("toolu-browser-approved", "sessions_spawn", {
         agent_id: "browser",
         task: "Submit the approved local dry-run form and verify the submitted status.",
@@ -1141,22 +1751,37 @@ test("llm role response generator repairs approved browser actions that claim to
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
         {
           name: "permission_result",
           description: "Read approval",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "permission_applied",
           description: "Mark approval applied",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -1194,7 +1819,8 @@ test("llm role response generator repairs approved browser actions that claim to
           status: "completed",
           tool_chain: ["browser"],
           result: "Approved dry-run submit completed.",
-          final_content: "Approved dry-run submit completed. Browser verified the submitted status.",
+          final_content:
+            "Approved dry-run submit completed. Browser verified the submitted status.",
         }),
       };
     },
@@ -1216,10 +1842,18 @@ test("llm role response generator repairs approved browser actions that claim to
     },
   });
 
-  assert.equal(result.content, "The approved browser dry-run was submitted and verified.");
+  assert.equal(
+    result.content,
+    "The approved browser dry-run was submitted and verified.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["permission_query", "permission_result", "permission_applied", "sessions_spawn"]
+    [
+      "permission_query",
+      "permission_result",
+      "permission_applied",
+      "sessions_spawn",
+    ],
   );
   assert.equal(gatewayInputs.length, 4);
 });
@@ -1227,7 +1861,8 @@ test("llm role response generator repairs approved browser actions that claim to
 test("llm role response generator continues the same browser session when an approved action is incomplete", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
-  const browserSessionKey = "worker:browser:task-approval:toolu-browser-approved";
+  const browserSessionKey =
+    "worker:browser:task-approval:toolu-browser-approved";
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
@@ -1235,9 +1870,21 @@ test("llm role response generator continues the same browser session when an app
       return {
         text: "I will request approval and run the browser session.",
         toolCalls: [
-          { id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit" } },
-          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
-          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+          {
+            id: "toolu-query",
+            name: "permission_query",
+            input: { action: "browser.form.submit" },
+          },
+          {
+            id: "toolu-result",
+            name: "permission_result",
+            input: { approval_id: "ap-1" },
+          },
+          {
+            id: "toolu-applied",
+            name: "permission_applied",
+            input: { approval_id: "ap-1" },
+          },
           {
             id: "toolu-browser-approved",
             name: "sessions_spawn",
@@ -1255,10 +1902,21 @@ test("llm role response generator continues the same browser session when an app
       };
     }
     if (gatewayInputs.length === 2) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_send" });
-      const repairPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
-      assert.match(repairPrompt, /approved browser action is incomplete inside an existing browser session/);
-      assert.match(repairPrompt, new RegExp(browserSessionKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_send",
+      });
+      const repairPrompt = readToolContent(
+        input.messages.at(-1)?.content ?? "",
+      );
+      assert.match(
+        repairPrompt,
+        /approved browser action is incomplete inside an existing browser session/,
+      );
+      assert.match(
+        repairPrompt,
+        new RegExp(browserSessionKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      );
       assert.match(repairPrompt, /submit=true/);
       return {
         text: "I will continue the existing browser session.",
@@ -1268,7 +1926,8 @@ test("llm role response generator continues the same browser session when an app
             name: "sessions_send",
             input: {
               session_key: browserSessionKey,
-              message: "Perform the approved browser.form.submit action now and verify the post-submit state.",
+              message:
+                "Perform the approved browser.form.submit action now and verify the post-submit state.",
             },
           },
         ],
@@ -1295,27 +1954,48 @@ test("llm role response generator continues the same browser session when an app
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
         {
           name: "permission_result",
           description: "Read approval",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "permission_applied",
           description: "Mark approval applied",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a browser sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -1355,8 +2035,13 @@ test("llm role response generator continues the same browser session when an app
             status: "completed",
             tool_chain: ["browser"],
             result: "Approved dry-run submit completed.",
-            final_content: "Approved dry-run submit completed. Browser verified the submitted status.",
-            payload: { mode: "llm_sub_agent", workerType: "browser", content: "Approved dry-run submit completed." },
+            final_content:
+              "Approved dry-run submit completed. Browser verified the submitted status.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "browser",
+              content: "Approved dry-run submit completed.",
+            },
           }),
         };
       }
@@ -1370,7 +2055,8 @@ test("llm role response generator continues the same browser session when an app
           agent_id: "browser",
           status: "completed",
           tool_chain: ["browser"],
-          result: "Form inspection completed. Field ref-1 filled. Button ref-2 present, ready.",
+          result:
+            "Form inspection completed. Field ref-1 filled. Button ref-2 present, ready.",
           final_content:
             "Form inspection completed. Field ref-1 filled. Button ref-2 present, ready. Next step needed: dry-run form submission can now be completed by re-delegating to the same browser session.",
           payload: {
@@ -1400,10 +2086,19 @@ test("llm role response generator continues the same browser session when an app
     },
   });
 
-  assert.equal(result.content, "The approved browser dry-run was submitted and verified.");
+  assert.equal(
+    result.content,
+    "The approved browser dry-run was submitted and verified.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["permission_query", "permission_result", "permission_applied", "sessions_spawn", "sessions_send"]
+    [
+      "permission_query",
+      "permission_result",
+      "permission_applied",
+      "sessions_spawn",
+      "sessions_send",
+    ],
   );
   assert.equal(gatewayInputs.length, 3);
 });
@@ -1418,8 +2113,16 @@ test("llm role response generator repairs stale pending answers after approval i
       return {
         text: "I will request approval.",
         toolCalls: [
-          { id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit" } },
-          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
+          {
+            id: "toolu-query",
+            name: "permission_query",
+            input: { action: "browser.form.submit" },
+          },
+          {
+            id: "toolu-result",
+            name: "permission_result",
+            input: { approval_id: "ap-1" },
+          },
         ],
         modelId: "claude-test",
         providerId: "anthropic",
@@ -1439,7 +2142,10 @@ test("llm role response generator repairs stale pending answers after approval i
       };
     }
     assert.equal(input.toolChoice, "none");
-    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval was denied/);
+    assert.match(
+      readToolContent(input.messages.at(-1)?.content ?? ""),
+      /approval was denied/,
+    );
     return {
       text: "Approval denied - task closed safely. No form submission was or will be performed. The safe fallback is to keep the local dry-run unsubmitted.",
       modelId: "claude-test",
@@ -1455,12 +2161,18 @@ test("llm role response generator repairs stale pending answers after approval i
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
         {
           name: "permission_result",
           description: "Read approval",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
       ];
     },
@@ -1470,7 +2182,11 @@ test("llm role response generator repairs stale pending answers after approval i
         return {
           toolCallId: input.call.id,
           toolName: input.call.name,
-          content: JSON.stringify({ event_type: "permission.query", status: "pending", approval_id: "ap-1" }),
+          content: JSON.stringify({
+            event_type: "permission.query",
+            status: "pending",
+            approval_id: "ap-1",
+          }),
           progress: [
             {
               phase: "progress",
@@ -1485,7 +2201,11 @@ test("llm role response generator repairs stale pending answers after approval i
         toolCallId: input.call.id,
         toolName: input.call.name,
         isError: true,
-        content: JSON.stringify({ event_type: "permission.result", status: "denied", approval_id: "ap-1" }),
+        content: JSON.stringify({
+          event_type: "permission.result",
+          status: "denied",
+          approval_id: "ap-1",
+        }),
         progress: [
           {
             phase: "progress",
@@ -1517,9 +2237,146 @@ test("llm role response generator repairs stale pending answers after approval i
   assert.match(result.content, /Approval denied/);
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["permission_query", "permission_result"]
+    ["permission_query", "permission_result"],
   );
   assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator suppresses tools for setup-only awaiting-context turns", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executeCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-memory", "memory_search", {
+        query: "Helios-47 launch planning mission context",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.match(
+      readToolContent(input.messages.at(-1)?.content ?? ""),
+      /setup-only/,
+    );
+    assert.match(
+      readToolContent(input.messages.at(-1)?.content ?? ""),
+      /no research or action is needed/i,
+    );
+    return {
+      text: "Helios-47 launch-planning thread is ready. No research is queued; the mission can continue when launch context is provided.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "memory_search",
+          description: "Search durable memory",
+          inputSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+          },
+        },
+      ];
+    },
+    async execute() {
+      executeCalled = true;
+      throw new Error("setup-only turn must not execute tools");
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Start a launch-planning thread for Helios-47.",
+        "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(executeCalled, false);
+  assert.equal(gatewayInputs.length, 2);
+  assert.match(result.content, /No research is queued/);
+});
+
+test("llm role response generator does not suppress memory tools for follow-up recall turns", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: string[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-memory", "memory_search", {
+        query: "Helios-47 launch window owner residual risk",
+      });
+    }
+    return {
+      text: "Durable memory recalled: Helios-47 launches Tuesday 09:30 with Release Captain ownership and residual risk around launch readiness.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "memory_search",
+          description: "Search durable memory",
+          inputSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call.name);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          memories: [{ memory_id: "mem-1", title: "Helios-47" }],
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Start a launch-planning thread for Helios-47.",
+        "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+        "",
+        "Continue from the launch-planning context in this mission.",
+        "The team previously captured durable launch coordination notes for the Helios-47 codename.",
+        "Please check durable memory for Helios-47 specifically, recover the launch window, owner, and residual risk if they are available, and inspect any candidate memory entry before relying on it.",
+      ].join("\n"),
+    },
+  });
+
+  assert.deepEqual(executedCalls, ["memory_search"]);
+  assert.equal(gatewayInputs[0]?.toolChoice, "auto");
+  assert.match(result.content, /Tuesday 09:30/);
 });
 
 test("llm role response generator serializes order-dependent tool batches", async () => {
@@ -1567,12 +2424,18 @@ test("llm role response generator serializes order-dependent tool batches", asyn
         {
           name: "memory_search",
           description: "Search memory",
-          inputSchema: { type: "object", properties: { query: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+          },
         },
         {
           name: "memory_get",
           description: "Read memory",
-          inputSchema: { type: "object", properties: { memory_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { memory_id: { type: "string" } },
+          },
         },
       ];
     },
@@ -1719,7 +2582,10 @@ test("llm role response generator persists native tool progress while the tool i
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -1766,16 +2632,28 @@ test("llm role response generator persists native tool progress while the tool i
   assert.equal(pendingAssistant?.toolStatus, "pending");
   assert.equal(pendingAssistant?.toolCalls?.[0]?.name, "sessions_spawn");
   assert.equal(pendingAssistant?.toolProgress?.[0]?.phase, "started");
-  assert.equal(storedMessages.has("task-1:tool-round:1:result:toolu-live"), false);
+  assert.equal(
+    storedMessages.has("task-1:tool-round:1:result:toolu-live"),
+    false,
+  );
 
   resolveTool();
   const result = await resultPromise;
 
   assert.equal(result.content, "Done.");
-  const completedAssistant = storedMessages.get("task-1:tool-round:1:assistant");
-  const toolMessage = storedMessages.get("task-1:tool-round:1:result:toolu-live");
+  const completedAssistant = storedMessages.get(
+    "task-1:tool-round:1:assistant",
+  );
+  const toolMessage = storedMessages.get(
+    "task-1:tool-round:1:result:toolu-live",
+  );
   assert.equal(completedAssistant?.toolStatus, "completed");
-  assert.equal(completedAssistant?.toolProgress?.some((event) => event.summary === "Browser snapshot captured"), true);
+  assert.equal(
+    completedAssistant?.toolProgress?.some(
+      (event) => event.summary === "Browser snapshot captured",
+    ),
+    true,
+  );
   assert.equal(completedAssistant?.toolProgress?.at(-1)?.phase, "completed");
   assert.equal(completedAssistant?.timeCost, 4);
   assert.equal(toolMessage?.role, "tool");
@@ -1826,7 +2704,10 @@ test("llm role response generator preserves tool history when envelope retry red
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -1834,7 +2715,10 @@ test("llm role response generator preserves tool history when envelope retry red
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
-        content: JSON.stringify({ status: "completed", result: "Page inspected" }),
+        content: JSON.stringify({
+          status: "completed",
+          result: "Page inspected",
+        }),
       };
     },
   };
@@ -1858,6 +2742,10 @@ test("llm role response generator preserves tool history when envelope retry red
 
 test("llm role response generator prunes older oversized tool results before later rounds", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
+  const progressEvents: Array<{
+    summary: string;
+    metadata?: Record<string, unknown>;
+  }> = [];
   const largeA = "A".repeat(20_000);
   const largeB = "B".repeat(20_000);
   const largeC = "C".repeat(20_000);
@@ -1865,13 +2753,22 @@ test("llm role response generator prunes older oversized tool results before lat
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
     if (gatewayInputs.length === 1) {
-      return toolCallResult("toolu-a", "sessions_spawn", { agent_id: "browser", task: "First large result" });
+      return toolCallResult("toolu-a", "sessions_spawn", {
+        agent_id: "browser",
+        task: "First large result",
+      });
     }
     if (gatewayInputs.length === 2) {
-      return toolCallResult("toolu-b", "sessions_spawn", { agent_id: "browser", task: "Second large result" });
+      return toolCallResult("toolu-b", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Second large result",
+      });
     }
     if (gatewayInputs.length === 3) {
-      return toolCallResult("toolu-c", "sessions_spawn", { agent_id: "browser", task: "Third large result" });
+      return toolCallResult("toolu-c", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Third large result",
+      });
     }
     return {
       text: "Done after pruning.",
@@ -1888,12 +2785,20 @@ test("llm role response generator prunes older oversized tool results before lat
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
     async execute(input: RoleToolExecutionInput) {
-      const content = input.call.id === "toolu-a" ? largeA : input.call.id === "toolu-b" ? largeB : largeC;
+      const content =
+        input.call.id === "toolu-a"
+          ? largeA
+          : input.call.id === "toolu-b"
+            ? largeB
+            : largeC;
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -1903,6 +2808,14 @@ test("llm role response generator prunes older oversized tool results before lat
   };
   const generator = new LLMRoleResponseGenerator({
     gateway,
+    runtimeProgressRecorder: {
+      async record(event) {
+        progressEvents.push({
+          summary: event.summary,
+          ...(event.metadata ? { metadata: event.metadata } : {}),
+        });
+      },
+    },
     toolLoop: { executor, maxRounds: 4 },
   });
 
@@ -1918,12 +2831,35 @@ test("llm role response generator prunes older oversized tool results before lat
     .map((message) => readToolContent(message.content));
   assert.equal(fourthToolContents?.length, 3);
   assert.match(fourthToolContents?.[0] ?? "", /"tool_result_pruned": true/);
-  assert.match(fourthToolContents?.[0] ?? "", /"reason": "older_than_recent_window"/);
+  assert.match(
+    fourthToolContents?.[0] ?? "",
+    /"reason": "older_than_recent_window"/,
+  );
   assert.doesNotMatch(fourthToolContents?.[0] ?? "", /^A{20000}$/);
-  assert.match(fourthToolContents?.[1] ?? "", /"reason": "aggregate_tool_result_budget_recent_window"/);
+  assert.match(
+    fourthToolContents?.[1] ?? "",
+    /"reason": "aggregate_tool_result_budget_recent_window"/,
+  );
   assert.equal(fourthToolContents?.[2], largeC);
   assert.equal(gatewayInputs[3]?.envelope?.toolResultCount, 3);
   assert.ok((gatewayInputs[3]?.envelope?.toolResultBytes ?? 0) <= 32 * 1024);
+  const pruningEvent = [...progressEvents]
+    .reverse()
+    .find(
+      (event) => event.metadata?.["boundaryKind"] === "tool_result_pruning",
+    );
+  assert.ok(pruningEvent, "expected a tool-result pruning boundary event");
+  assert.match(pruningEvent.summary, /Tool result history pruned/i);
+  assert.equal(pruningEvent.metadata?.["prunedToolResults"], 2);
+  assert.deepEqual(pruningEvent.metadata?.["pruningReasons"], [
+    "older_than_recent_window",
+    "aggregate_tool_result_budget_recent_window",
+  ]);
+  assert.equal(pruningEvent.metadata?.["toolResultCountBefore"], 3);
+  assert.equal(pruningEvent.metadata?.["toolResultCountAfter"], 3);
+  assert.ok(
+    (pruningEvent.metadata?.["toolResultBytesAfter"] as number) <= 32 * 1024,
+  );
 });
 
 test("llm role response generator does not finalize multi-stream delegation after one session", async () => {
@@ -1940,20 +2876,34 @@ test("llm role response generator does not finalize multi-stream delegation afte
       });
     }
     if (gatewayInputs.length === 2) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /multiple independent evidence streams/,
+      );
       return {
         text: "Calling remaining focused tools.",
         toolCalls: [
           {
             id: "toolu-two",
             name: "sessions_spawn",
-            input: { agent_id: "explore", task: "Check orchestration source only.", label: "orchestration" },
+            input: {
+              agent_id: "explore",
+              task: "Check orchestration source only.",
+              label: "orchestration",
+            },
           },
           {
             id: "toolu-three",
             name: "sessions_spawn",
-            input: { agent_id: "browser", task: "Check live dashboard source only.", label: "signals" },
+            input: {
+              agent_id: "browser",
+              task: "Check live dashboard source only.",
+              label: "signals",
+            },
           },
         ],
         modelId: "claude-test",
@@ -1978,7 +2928,10 @@ test("llm role response generator does not finalize multi-stream delegation afte
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2026,7 +2979,7 @@ test("llm role response generator does not finalize multi-stream delegation afte
   assert.equal(result.content, "Final answer from three independent streams.");
   assert.deepEqual(
     executedCalls.map((call) => call.id),
-    ["toolu-one", "toolu-two", "toolu-three"]
+    ["toolu-one", "toolu-two", "toolu-three"],
   );
   assert.equal(gatewayInputs.length, 3);
 });
@@ -2045,8 +2998,14 @@ test("llm role response generator keeps correcting multi-stream delegation until
       });
     }
     if (gatewayInputs.length === 2) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /multiple independent evidence streams/,
+      );
       return toolCallResult("toolu-two", "sessions_spawn", {
         agent_id: "explore",
         task: "Check source two.",
@@ -2054,8 +3013,14 @@ test("llm role response generator keeps correcting multi-stream delegation until
       });
     }
     if (gatewayInputs.length === 3) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /multiple independent evidence streams/,
+      );
       return toolCallResult("toolu-three", "sessions_spawn", {
         agent_id: "browser",
         task: "Check source three.",
@@ -2077,7 +3042,10 @@ test("llm role response generator keeps correcting multi-stream delegation until
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2094,7 +3062,10 @@ test("llm role response generator keeps correcting multi-stream delegation until
           status: "completed",
           result: `${input.call.input.label} evidence complete.`,
           final_content: `${input.call.input.label} verified evidence.`,
-          payload: { mode: "llm_sub_agent", content: `${input.call.input.label} verified evidence.` },
+          payload: {
+            mode: "llm_sub_agent",
+            content: `${input.call.input.label} verified evidence.`,
+          },
         }),
       };
     },
@@ -2121,12 +3092,15 @@ test("llm role response generator keeps correcting multi-stream delegation until
   assert.equal(result.content, "Final answer after three unique streams.");
   assert.deepEqual(
     executedCalls.map((call) => call.id),
-    ["toolu-one", "toolu-two", "toolu-three"]
+    ["toolu-one", "toolu-two", "toolu-three"],
   );
   assert.equal(
-    gatewayInputs.filter((input) => readToolContent(input.messages.at(-1)?.content ?? "").includes("multiple independent evidence streams"))
-      .length,
-    2
+    gatewayInputs.filter((input) =>
+      readToolContent(input.messages.at(-1)?.content ?? "").includes(
+        "multiple independent evidence streams",
+      ),
+    ).length,
+    2,
   );
   assert.equal(gatewayInputs.length, 4);
 });
@@ -2145,20 +3119,33 @@ test("llm role response generator does not count a continued session as a new in
       });
     }
     if (gatewayInputs.length === 2) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /multiple independent evidence streams/,
+      );
       return {
         text: "Continuing one session and starting another.",
         toolCalls: [
           {
             id: "toolu-one-continue",
             name: "sessions_send",
-            input: { session_key: "worker:explore:task-toolu-one", message: "Add one more detail for source one." },
+            input: {
+              session_key: "worker:explore:task-toolu-one",
+              message: "Add one more detail for source one.",
+            },
           },
           {
             id: "toolu-two",
             name: "sessions_spawn",
-            input: { agent_id: "explore", task: "Check source two.", label: "source-two" },
+            input: {
+              agent_id: "explore",
+              task: "Check source two.",
+              label: "source-two",
+            },
           },
         ],
         modelId: "claude-test",
@@ -2169,8 +3156,14 @@ test("llm role response generator does not count a continued session as a new in
       };
     }
     if (gatewayInputs.length === 3) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
-      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      assert.match(
+        readToolContent(input.messages.at(-1)?.content ?? ""),
+        /multiple independent evidence streams/,
+      );
       return toolCallResult("toolu-three", "sessions_spawn", {
         agent_id: "browser",
         task: "Check source three.",
@@ -2192,12 +3185,21 @@ test("llm role response generator does not count a continued session as a new in
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -2207,7 +3209,10 @@ test("llm role response generator does not count a continued session as a new in
         input.call.name === "sessions_send"
           ? String(input.call.input.session_key)
           : `worker:${input.call.input.agent_id}:task-${input.call.id}`;
-      const label = input.call.name === "sessions_send" ? "source-one continued" : input.call.input.label;
+      const label =
+        input.call.name === "sessions_send"
+          ? "source-one continued"
+          : input.call.input.label;
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -2219,7 +3224,10 @@ test("llm role response generator does not count a continued session as a new in
           status: "completed",
           result: `${label} evidence complete.`,
           final_content: `${label} verified evidence.`,
-          payload: { mode: "llm_sub_agent", content: `${label} verified evidence.` },
+          payload: {
+            mode: "llm_sub_agent",
+            content: `${label} verified evidence.`,
+          },
         }),
       };
     },
@@ -2246,7 +3254,7 @@ test("llm role response generator does not count a continued session as a new in
   assert.equal(result.content, "Final answer after deduped session evidence.");
   assert.deepEqual(
     executedCalls.map((call) => call.id),
-    ["toolu-one", "toolu-one-continue", "toolu-two", "toolu-three"]
+    ["toolu-one", "toolu-one-continue", "toolu-two", "toolu-three"],
   );
   assert.equal(gatewayInputs.length, 4);
 });
@@ -2262,19 +3270,34 @@ test("llm role response generator prunes aggregate tool result budget before fin
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
     if (gatewayInputs.length === 1) {
-      return toolCallResult("toolu-a", "sessions_spawn", { agent_id: "explore", task: "A" });
+      return toolCallResult("toolu-a", "sessions_spawn", {
+        agent_id: "explore",
+        task: "A",
+      });
     }
     if (gatewayInputs.length === 2) {
-      return toolCallResult("toolu-b", "sessions_spawn", { agent_id: "explore", task: "B" });
+      return toolCallResult("toolu-b", "sessions_spawn", {
+        agent_id: "explore",
+        task: "B",
+      });
     }
     if (gatewayInputs.length === 3) {
-      return toolCallResult("toolu-c", "sessions_spawn", { agent_id: "explore", task: "C" });
+      return toolCallResult("toolu-c", "sessions_spawn", {
+        agent_id: "explore",
+        task: "C",
+      });
     }
     if (gatewayInputs.length === 4) {
-      return toolCallResult("toolu-d", "sessions_spawn", { agent_id: "explore", task: "D" });
+      return toolCallResult("toolu-d", "sessions_spawn", {
+        agent_id: "explore",
+        task: "D",
+      });
     }
     if (gatewayInputs.length === 5) {
-      return toolCallResult("toolu-e", "sessions_spawn", { agent_id: "explore", task: "E" });
+      return toolCallResult("toolu-e", "sessions_spawn", {
+        agent_id: "explore",
+        task: "E",
+      });
     }
     return {
       text: "Final synthesis after aggregate pruning.",
@@ -2291,7 +3314,10 @@ test("llm role response generator prunes aggregate tool result budget before fin
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2326,7 +3352,10 @@ test("llm role response generator prunes aggregate tool result budget before fin
   const finalToolContents = gatewayInputs[5]?.messages
     .filter((message) => message.role === "tool")
     .map((message) => readToolContent(message.content));
-  assert.match(finalToolContents?.[0] ?? "", /"reason": "aggregate_tool_result_budget"/);
+  assert.match(
+    finalToolContents?.[0] ?? "",
+    /"reason": "aggregate_tool_result_budget"/,
+  );
   assert.equal(finalToolContents?.at(-2), largeD);
   assert.equal(finalToolContents?.at(-1), largeE);
 });
@@ -2358,7 +3387,10 @@ test("llm role response generator prunes a newest tool result that alone exceeds
         {
           name: "sessions_history",
           description: "Read session history",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { session_key: { type: "string" } },
+          },
         },
       ];
     },
@@ -2387,7 +3419,10 @@ test("llm role response generator prunes a newest tool result that alone exceeds
     .filter((message) => message.role === "tool")
     .map((message) => readToolContent(message.content));
   assert.match(finalToolContents?.[0] ?? "", /"tool_result_pruned": true/);
-  assert.match(finalToolContents?.[0] ?? "", /"reason": "single_tool_result_exceeds_aggregate_budget"/);
+  assert.match(
+    finalToolContents?.[0] ?? "",
+    /"reason": "single_tool_result_exceeds_aggregate_budget"/,
+  );
   assert.doesNotMatch(finalToolContents?.[0] ?? "", /^Z{50000}$/);
 });
 
@@ -2417,7 +3452,10 @@ test("llm role response generator compacts older tool history before message-cou
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2425,7 +3463,10 @@ test("llm role response generator compacts older tool history before message-cou
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
-        content: JSON.stringify({ status: "completed", source: input.call.input.task }),
+        content: JSON.stringify({
+          status: "completed",
+          source: input.call.input.task,
+        }),
       };
     },
   };
@@ -2443,9 +3484,15 @@ test("llm role response generator compacts older tool history before message-cou
   assert.equal(gatewayInputs.length, 9);
   assert.ok(gatewayInputs[8]!.messages.length <= 16);
   assert.equal(gatewayInputs[8]!.messages[2]?.role, "user");
-  assert.match(readToolContent(gatewayInputs[8]!.messages[2]!.content), /Earlier tool history compacted/);
+  assert.match(
+    readToolContent(gatewayInputs[8]!.messages[2]!.content),
+    /Earlier tool history compacted/,
+  );
   assert.equal(gatewayInputs[8]!.messages.at(-1)?.role, "user");
-  assert.match(readToolContent(gatewayInputs[8]!.messages.at(-1)!.content), /final allowed tool-use round \(9\)/);
+  assert.match(
+    readToolContent(gatewayInputs[8]!.messages.at(-1)!.content),
+    /final allowed tool-use round \(9\)/,
+  );
   assert.equal(gatewayInputs[8]!.messages.at(-2)?.role, "tool");
   assert.equal(gatewayInputs[8]!.messages.at(-2)?.toolCallId, "toolu-8");
 });
@@ -2477,7 +3524,10 @@ test("llm role response generator synthesizes instead of falling back when tool 
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2486,7 +3536,10 @@ test("llm role response generator synthesizes instead of falling back when tool 
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
-        content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+        content: JSON.stringify({
+          status: "completed",
+          result: input.call.input.task,
+        }),
       };
     },
   };
@@ -2503,21 +3556,43 @@ test("llm role response generator synthesizes instead of falling back when tool 
   assert.equal(result.content, "Final answer after bounded tool use.");
   assert.equal(executedTools, 2);
   assert.equal(gatewayInputs.length, 4);
-  assert.doesNotMatch(readToolContent(gatewayInputs[0]!.messages.at(-1)!.content), /final allowed tool-use round/);
-  assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /final allowed tool-use round \(2\)/);
+  assert.doesNotMatch(
+    readToolContent(gatewayInputs[0]!.messages.at(-1)!.content),
+    /final allowed tool-use round/,
+  );
+  assert.match(
+    readToolContent(gatewayInputs[1]!.messages.at(-1)!.content),
+    /final allowed tool-use round \(2\)/,
+  );
   assert.equal(gatewayInputs[3]?.toolChoice, "none");
   assert.equal(gatewayInputs[3]?.tools, undefined);
   assert.ok(
     gatewayInputs[3]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("Tool-use round limit reached (2)")
-    )
+        readToolContent(message.content).includes(
+          "Tool-use round limit reached (2)",
+        ),
+    ),
   );
-  assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("Do not collapse requested bullets into a paragraph"));
-  assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("Evidence synthesis contract"));
-  assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("unverified scope or residual risk"));
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.ok(
+    finalSynthesisPrompt(gatewayInputs[3])?.includes(
+      "Do not collapse requested bullets into a paragraph",
+    ),
+  );
+  assert.ok(
+    finalSynthesisPrompt(gatewayInputs[3])?.includes(
+      "Evidence synthesis contract",
+    ),
+  );
+  assert.ok(
+    finalSynthesisPrompt(gatewayInputs[3])?.includes(
+      "unverified scope or residual risk",
+    ),
+  );
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "round_limit");
   assert.equal(closeout?.maxRounds, 2);
   assert.equal(closeout?.toolCallCount, 2);
@@ -2554,7 +3629,10 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2564,7 +3642,10 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
-        content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+        content: JSON.stringify({
+          status: "completed",
+          result: input.call.input.task,
+        }),
       };
     },
   };
@@ -2588,17 +3669,199 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
     gatewayInputs[2]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("Tool-use wall-clock budget reached")
-    )
+        readToolContent(message.content).includes(
+          "Tool-use wall-clock budget reached",
+        ),
+    ),
   );
-  assert.ok(finalSynthesisPrompt(gatewayInputs[2])?.includes("Final synthesis format contract"));
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.ok(
+    finalSynthesisPrompt(gatewayInputs[2])?.includes(
+      "Final synthesis format contract",
+    ),
+  );
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "wall_clock_budget");
   assert.equal(closeout?.maxWallClockMs, 100);
   assert.equal(closeout?.toolCallCount, 1);
   assert.equal(closeout?.roundCount, 1);
   assert.equal(closeout?.pendingToolCallCount, 1);
   assert.equal(closeout?.evidenceAvailable, true);
+});
+
+test("llm role response generator repairs wall-clock closeout that omits completed browser evidence dimensions", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executedTools = 0;
+  let now = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "Gathering required sibling evidence streams.",
+        toolCalls: [
+          {
+            id: "toolu-signals",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              task: "Inspect the product signal dashboard.",
+            },
+          },
+          {
+            id: "toolu-timeout",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              task: "Inspect the orchestration dashboard.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      return toolCallResult("toolu-send-timeout", "sessions_send", {
+        session_key: "worker:browser:task-timeout",
+        message: "Continue the missing source check.",
+      });
+    }
+    if (gatewayInputs.length === 3) {
+      assert.equal(input.toolChoice, "none");
+      return {
+        text: "The product signal dashboard closeout only has a high-level browser note and residual risk from the local fixture.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Product signal dashboard evidence: Stuck missions: 6 and Weak answer rate: 24%. Mission Control should be the default entry. Residual risk: local fixture only.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedTools += 1;
+      now = 200;
+      if (input.call.id === "toolu-timeout") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-timeout",
+            session_key: "worker:browser:task-timeout",
+            agent_id: "browser",
+            status: "timeout",
+            evidence_summary: "The orchestration dashboard session timed out.",
+            tool_chain: ["browser"],
+            result: "Timed out before orchestration evidence completed.",
+            final_content: null,
+            payload: null,
+            timeout_seconds: 45,
+            evidence_available: true,
+          }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-signals",
+          session_key: "worker:browser:task-signals",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result:
+            "TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK. Product signals dashboard rendered in browser. Stuck missions: 6. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry.",
+          evidence_summary:
+            "Browser-visible product signal dashboard evidence with Stuck missions: 6 and Weak answer rate: 24%.",
+          final_content: null,
+          payload: null,
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128, maxWallClockMs: 100 },
+    clock: { now: () => now },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt:
+        [
+          "Do not finalize until all three source checks complete.",
+          "Source coverage must include the product signal dashboard, bridge source, and orchestration source.",
+          "Open the product signal dashboard and report the rendered Stuck missions, Weak answer rate, recommendation, and residual risk.",
+          "Sources: http://127.0.0.1:61930/product-signals http://127.0.0.1:61930/product-bridge http://127.0.0.1:61930/product-orchestration.",
+        ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /Stuck missions: 6/);
+  assert.match(result.content, /Weak answer rate: 24%/);
+  assert.equal(executedTools, 2);
+  assert.equal(gatewayInputs.length, 4);
+  assert.equal(gatewayInputs[3]?.toolChoice, "none");
+  const repairPrompt = readToolContent(
+    gatewayInputs[3]?.messages.at(-1)?.content ?? "",
+  );
+  assert.match(
+    repairPrompt,
+    /final answer omitted requested browser evidence dimensions/,
+  );
+  assert.match(repairPrompt, /product signal dashboard counters/);
+  assert.match(repairPrompt, /Stuck missions: 6/);
+  assert.match(repairPrompt, /Weak answer rate: 24%/);
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(closeout?.reason, "wall_clock_budget");
+  assert.equal(closeout?.toolCallCount, 2);
+  assert.equal(closeout?.pendingToolCallCount, 1);
 });
 
 test("llm role response generator aborts active tool execution when the wall-clock budget expires", async () => {
@@ -2628,7 +3891,10 @@ test("llm role response generator aborts active tool execution when the wall-clo
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2637,7 +3903,10 @@ test("llm role response generator aborts active tool execution when the wall-clo
         input.signal?.addEventListener(
           "abort",
           () => {
-            observedAbortReason = typeof input.signal?.reason === "string" ? input.signal.reason : "aborted";
+            observedAbortReason =
+              typeof input.signal?.reason === "string"
+                ? input.signal.reason
+                : "aborted";
             resolve({
               toolCallId: input.call.id,
               toolName: input.call.name,
@@ -2645,7 +3914,7 @@ test("llm role response generator aborts active tool execution when the wall-clo
               isError: true,
             });
           },
-          { once: true }
+          { once: true },
         );
       });
     },
@@ -2663,12 +3932,90 @@ test("llm role response generator aborts active tool execution when the wall-clo
   assert.match(observedAbortReason ?? "", /Tool-use wall-clock budget reached/);
   assert.ok(
     result.content === "Final answer from wall-clock closeout." ||
-      /Tool-use wall-clock budget reached/.test(result.content)
+      /Tool-use wall-clock budget reached/.test(result.content),
   );
   assert.ok(gatewayInputs.length >= 2);
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
-  assert.ok(closeout?.reason === "wall_clock_budget" || closeout?.reason === "tool_evidence_fallback");
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  assert.ok(
+    closeout?.reason === "wall_clock_budget" ||
+      closeout?.reason === "tool_evidence_fallback",
+  );
   assert.equal(closeout?.evidenceAvailable, false);
+});
+
+test("llm role response generator extends wall-clock for slow loopback browser session tools", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let observedAbort = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-slow-loopback", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Inspect http://127.0.0.1:61930/slow-fixture as a bounded slow-source browser check.",
+        timeout_seconds: 0.001,
+      });
+    }
+    return {
+      text: "Final answer after slow loopback browser evidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      input.signal?.addEventListener(
+        "abort",
+        () => {
+          observedAbort = true;
+        },
+        { once: true },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          status: "completed",
+          result: "slow loopback browser result",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128, maxWallClockMs: 5 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(observedAbort, false);
+  assert.equal(
+    result.content,
+    "Final answer after slow loopback browser evidence.",
+  );
+  assert.equal(gatewayInputs.length, 2);
+  assert.equal(result.metadata?.toolLoopCloseout, undefined);
 });
 
 test("llm role response generator does not report closeout evidence for failed-only tool rounds", async () => {
@@ -2697,7 +4044,10 @@ test("llm role response generator does not report closeout evidence for failed-o
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2720,7 +4070,9 @@ test("llm role response generator does not report closeout evidence for failed-o
     packet: buildPacket(),
   });
 
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "round_limit");
   assert.equal(closeout?.toolCallCount, 1);
   assert.equal(closeout?.roundCount, 1);
@@ -2758,7 +4110,10 @@ test("llm role response generator closes out repeated failing tool calls before 
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2768,7 +4123,10 @@ test("llm role response generator closes out repeated failing tool calls before 
         toolCallId: input.call.id,
         toolName: input.call.name,
         isError: true,
-        content: JSON.stringify({ status: "failed", result: "network failed before collecting evidence" }),
+        content: JSON.stringify({
+          status: "failed",
+          result: "network failed before collecting evidence",
+        }),
       };
     },
   };
@@ -2782,17 +4140,24 @@ test("llm role response generator closes out repeated failing tool calls before 
     packet: buildPacket(),
   });
 
-  assert.equal(result.content, "Verification did not complete after repeated source failures.");
+  assert.equal(
+    result.content,
+    "Verification did not complete after repeated source failures.",
+  );
   assert.equal(executedTools, 2);
   assert.equal(gatewayInputs.length, 4);
   assert.ok(
     gatewayInputs[3]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("Repeated failing tool call detected: sessions_spawn failed 2 times")
-    )
+        readToolContent(message.content).includes(
+          "Repeated failing tool call detected: sessions_spawn failed 2 times",
+        ),
+    ),
   );
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "repeated_tool_failure");
   assert.equal(closeout?.toolName, "sessions_spawn");
   assert.equal(closeout?.toolCallCount, 2);
@@ -2830,7 +4195,10 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -2873,7 +4241,7 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
       "Verification did not complete within the tool budget.",
       "",
       "Continuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.",
-    ].join("\n")
+    ].join("\n"),
   );
   assert.equal(executedTools, 1);
   assert.equal(gatewayInputs.length, 2);
@@ -2881,14 +4249,34 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
     gatewayInputs[1]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("No usable evidence was gathered before the timeout")
-    )
+        readToolContent(message.content).includes(
+          "No usable evidence was gathered before the timeout",
+        ),
+    ),
   );
-  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("If the task specifies a heading, bullet count"));
-  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("bare http:// / https:// URLs"));
-  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("Do not copy internal fetch URLs"));
-  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("continue the same source check"));
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.ok(
+    finalSynthesisPrompt(gatewayInputs[1])?.includes(
+      "If the task specifies a heading, bullet count",
+    ),
+  );
+  assert.ok(
+    finalSynthesisPrompt(gatewayInputs[1])?.includes(
+      "bare http:// / https:// URLs",
+    ),
+  );
+  assert.ok(
+    finalSynthesisPrompt(gatewayInputs[1])?.includes(
+      "Do not copy internal fetch URLs",
+    ),
+  );
+  assert.ok(
+    finalSynthesisPrompt(gatewayInputs[1])?.includes(
+      "continue the same source check",
+    ),
+  );
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "sub_agent_timeout");
   assert.equal(closeout?.toolName, "sessions_spawn");
   assert.equal(closeout?.timeoutSeconds, 120);
@@ -2927,20 +4315,35 @@ test("llm role response generator routes continuation follow-up to timed-out ses
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
     async execute(input: RoleToolExecutionInput) {
       executedCalls.push(input.call);
       assert.equal(input.call.name, "sessions_send");
-      assert.equal(input.call.input.session_key, "worker:explore:task-1:toolu-timeout");
-      assert.match(String(input.call.input.message), /Resume the slow source check/);
+      assert.equal(
+        input.call.input.session_key,
+        "worker:explore:task-1:toolu-timeout",
+      );
+      assert.match(
+        String(input.call.input.message),
+        /Resume the slow source check/,
+      );
       assert.equal(input.call.input.timeout_seconds, undefined);
       return {
         toolCallId: input.call.id,
@@ -2952,11 +4355,13 @@ test("llm role response generator routes continuation follow-up to timed-out ses
           agent_id: "explore",
           status: "completed",
           result: "Resumed session evidence.",
-          final_content: "Verified resumed source evidence. Unverified freshness remains.",
+          final_content:
+            "Verified resumed source evidence. Unverified freshness remains.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "explore",
-            content: "Verified resumed source evidence. Unverified freshness remains.",
+            content:
+              "Verified resumed source evidence. Unverified freshness remains.",
           },
         }),
       };
@@ -2989,11 +4394,17 @@ test("llm role response generator routes continuation follow-up to timed-out ses
       "Final answer from resumed session evidence.",
       "",
       "Continuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.",
-    ].join("\n")
+    ].join("\n"),
   );
   assert.equal(executedCalls[0]?.name, "sessions_send");
-  assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /Runtime session continuation directive/);
-  assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /worker:explore:task-1:toolu-timeout/);
+  assert.match(
+    readToolContent(gatewayInputs[0]!.messages[1]!.content),
+    /Runtime session continuation directive/,
+  );
+  assert.match(
+    readToolContent(gatewayInputs[0]!.messages[1]!.content),
+    /worker:explore:task-1:toolu-timeout/,
+  );
 });
 
 test("llm role response generator prefers resumable timeout session over later completed session on follow-up", async () => {
@@ -3023,15 +4434,27 @@ test("llm role response generator prefers resumable timeout session over later c
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
     async execute(input: RoleToolExecutionInput) {
       executedCalls.push(input.call);
       assert.equal(input.call.name, "sessions_send");
-      assert.equal(input.call.input.session_key, "worker:explore:task-1:toolu-timeout");
-      assert.match(String(input.call.input.message), /Continue from the slow-source attempt/);
+      assert.equal(
+        input.call.input.session_key,
+        "worker:explore:task-1:toolu-timeout",
+      );
+      assert.match(
+        String(input.call.input.message),
+        /Continue from the slow-source attempt/,
+      );
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -3042,11 +4465,13 @@ test("llm role response generator prefers resumable timeout session over later c
           agent_id: "explore",
           status: "completed",
           result: "Resumed slow-source evidence.",
-          final_content: "Verified resumed slow-source evidence. Earlier timeout no longer limits the conclusion.",
+          final_content:
+            "Verified resumed slow-source evidence. Earlier timeout no longer limits the conclusion.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "explore",
-            content: "Verified resumed slow-source evidence. Earlier timeout no longer limits the conclusion.",
+            content:
+              "Verified resumed slow-source evidence. Earlier timeout no longer limits the conclusion.",
           },
         }),
       };
@@ -3076,7 +4501,102 @@ test("llm role response generator prefers resumable timeout session over later c
   assert.match(result.content, /resumed slow-source evidence/);
   assert.deepEqual(
     executedCalls.map((call) => call.input.session_key),
-    ["worker:explore:task-1:toolu-timeout"]
+    ["worker:explore:task-1:toolu-timeout"],
+  );
+});
+
+test("llm role response generator prefers timeout source session over later resumable browser sibling", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async () => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-continue-browser", "sessions_send", {
+        session_key: "worker:browser:task-1:toolu-browser",
+        message: "Continue the browser sibling.",
+      });
+    }
+    return {
+      text: "Final answer from the resumed source-check evidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(
+        input.call.input.session_key,
+        "worker:explore:task-1:toolu-timeout",
+      );
+      assert.match(String(input.call.input.message), /slow-source attempt/);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-timeout",
+          agent_id: "explore",
+          status: "completed",
+          result: "Source-check continuation completed.",
+          final_content:
+            "Verified source-check evidence after continuing the timed-out source.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content:
+              "Verified source-check evidence after continuing the timed-out source.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission and finish the release-risk note.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the slow-source attempt in this mission and finish the release-risk note.",
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"timeout","session_key":"worker:explore:task-1:toolu-timeout","agent_id":"explore","result":"WORKER_TIMEOUT","resumable":true}',
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"cancelled","session_key":"worker:browser:task-1:toolu-browser","agent_id":"browser","result":"Browser session cancelled.","resumable":true}',
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /resumed source-check evidence/);
+  assert.deepEqual(
+    executedCalls.map((call) => call.input.session_key),
+    ["worker:explore:task-1:toolu-timeout"],
   );
 });
 
@@ -3089,7 +4609,8 @@ test("llm role response generator does not append recovered timeout closeout wit
     if (gatewayInputs.length === 1) {
       return toolCallResult("toolu-continue", "sessions_send", {
         session_key: "worker:explore:task-1:toolu-timeout",
-        message: "Resume the slow source check and return the release-risk note.",
+        message:
+          "Resume the slow source check and return the release-risk note.",
       });
     }
     assert.equal(input.toolChoice, "none");
@@ -3108,7 +4629,13 @@ test("llm role response generator does not append recovered timeout closeout wit
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -3130,7 +4657,8 @@ test("llm role response generator does not append recovered timeout closeout wit
           payload: {
             mode: "llm_sub_agent",
             workerType: "explore",
-            content: "Verified resumed source evidence. The earlier timeout no longer limits the release-risk conclusion.",
+            content:
+              "Verified resumed source evidence. The earlier timeout no longer limits the release-risk conclusion.",
           },
         }),
       };
@@ -3156,12 +4684,12 @@ test("llm role response generator does not append recovered timeout closeout wit
 
   assert.equal(
     result.content,
-    "The resumed source verified the fixture and the earlier timeout no longer limits the release-risk conclusion."
+    "The resumed source verified the fixture and the earlier timeout no longer limits the release-risk conclusion.",
   );
   assert.equal(gatewayInputs.length, 2);
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_send"]
+    ["sessions_send"],
   );
 });
 
@@ -3174,7 +4702,8 @@ test("llm role response generator preserves timeout closeout when resumed eviden
     if (gatewayInputs.length === 1) {
       return toolCallResult("toolu-continue", "sessions_send", {
         session_key: "worker:explore:task-1:toolu-timeout",
-        message: "Resume the slow source check and turn the outcome into a release-risk note.",
+        message:
+          "Resume the slow source check and turn the outcome into a release-risk note.",
       });
     }
     assert.equal(input.toolChoice, "none");
@@ -3198,7 +4727,13 @@ test("llm role response generator preserves timeout closeout when resumed eviden
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -3219,7 +4754,8 @@ test("llm role response generator preserves timeout closeout when resumed eviden
           payload: {
             mode: "llm_sub_agent",
             workerType: "explore",
-            content: "Verified resumed source evidence. The earlier timeout no longer limits the release-risk conclusion.",
+            content:
+              "Verified resumed source evidence. The earlier timeout no longer limits the release-risk conclusion.",
           },
         }),
       };
@@ -3251,11 +4787,17 @@ test("llm role response generator preserves timeout closeout when resumed eviden
     },
   });
 
-  assert.match(result.content, /earlier 30-second timeout does not limit the conclusion/);
-  assert.match(result.content, /Timeout closeout: the resumed source produced usable evidence/);
+  assert.match(
+    result.content,
+    /earlier 30-second timeout does not limit the conclusion/,
+  );
+  assert.match(
+    result.content,
+    /Timeout closeout: the resumed source produced usable evidence/,
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_send"]
+    ["sessions_send"],
   );
   assert.equal(gatewayInputs.length, 2);
 });
@@ -3289,19 +4831,31 @@ test("llm role response generator forces sessions_send for explicit continuation
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
     async execute(input: RoleToolExecutionInput) {
       executedCalls.push(input.call);
       assert.equal(input.call.name, "sessions_send");
-      assert.equal(input.call.input.session_key, "worker:explore:task-1:toolu-timeout");
+      assert.equal(
+        input.call.input.session_key,
+        "worker:explore:task-1:toolu-timeout",
+      );
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -3342,11 +4896,14 @@ test("llm role response generator forces sessions_send for explicit continuation
       "Final answer after forced session continuation.",
       "",
       "Continuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.",
-    ].join("\n")
+    ].join("\n"),
   );
   assert.equal(executedCalls.length, 1);
   assert.equal(executedCalls[0]?.name, "sessions_send");
-  assert.match(String(executedCalls[0]?.input.message), /Continuation context from the original task/);
+  assert.match(
+    String(executedCalls[0]?.input.message),
+    /Continuation context from the original task/,
+  );
   assert.match(String(executedCalls[0]?.input.message), /release-risk note/);
   assert.match(String(executedCalls[0]?.input.message), /decision criteria/);
 });
@@ -3380,12 +4937,21 @@ test("llm role response generator routes continuation follow-up to cancelled ses
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -3425,16 +4991,33 @@ test("llm role response generator routes continuation follow-up to cancelled ses
     },
   });
 
-  assert.equal(result.content, "Final answer from cancelled-session continuation.");
+  assert.equal(
+    result.content,
+    "Final answer from cancelled-session continuation.",
+  );
   assert.equal(executedCalls[0]?.name, "sessions_send");
-  assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task-1:toolu-cancelled");
+  assert.equal(
+    executedCalls[0]?.input.session_key,
+    "worker:explore:task-1:toolu-cancelled",
+  );
   assert.equal(executedCalls[0]?.input.timeout_seconds, undefined);
   assert.equal(executedCalls.length, 1);
   assert.equal(gatewayInputs.length, 2);
-  assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /completed delegated session evidence/i);
-  assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /cover every source/i);
-  assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /Cancelled session resumed with source evidence/);
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.match(
+    readToolContent(gatewayInputs[1]!.messages.at(-1)!.content),
+    /completed delegated session evidence/i,
+  );
+  assert.match(
+    readToolContent(gatewayInputs[1]!.messages.at(-1)!.content),
+    /cover every source/i,
+  );
+  assert.match(
+    readToolContent(gatewayInputs[1]!.messages.at(-1)!.content),
+    /Cancelled session resumed with source evidence/,
+  );
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "completed_sub_agent_final");
   assert.equal(closeout?.toolName, "sessions_send");
   assert.equal(closeout?.toolCallCount, 1);
@@ -3469,12 +5052,21 @@ test("llm role response generator routes explicit follow-up to completed session
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -3514,13 +5106,28 @@ test("llm role response generator routes explicit follow-up to completed session
     },
   });
 
-  assert.equal(result.content, "Final answer from completed-session continuation.");
+  assert.equal(
+    result.content,
+    "Final answer from completed-session continuation.",
+  );
   assert.equal(executedCalls[0]?.name, "sessions_send");
-  assert.equal(executedCalls[0]?.input.session_key, "worker:browser:task-dashboard:toolu-browser");
-  assert.match(String(executedCalls[0]?.input.message), /Continuation context from the original task/);
-  assert.match(String(executedCalls[0]?.input.message), /operations dashboard review/);
+  assert.equal(
+    executedCalls[0]?.input.session_key,
+    "worker:browser:task-dashboard:toolu-browser",
+  );
+  assert.match(
+    String(executedCalls[0]?.input.message),
+    /Continuation context from the original task/,
+  );
+  assert.match(
+    String(executedCalls[0]?.input.message),
+    /operations dashboard review/,
+  );
   assert.match(String(executedCalls[0]?.input.message), /decision criteria/);
-  assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /Runtime session continuation directive/);
+  assert.match(
+    readToolContent(gatewayInputs[0]!.messages[1]!.content),
+    /Runtime session continuation directive/,
+  );
 });
 
 test("llm role response generator lists sessions before spawning on explicit follow-up without a session key", async () => {
@@ -3556,17 +5163,32 @@ test("llm role response generator lists sessions before spawning on explicit fol
         {
           name: "sessions_list",
           description: "List sessions",
-          inputSchema: { type: "object", properties: { kinds: { type: "array" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              kinds: { type: "array" },
+              agent_id: { type: "string" },
+            },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -3591,8 +5213,14 @@ test("llm role response generator lists sessions before spawning on explicit fol
         };
       }
       assert.equal(input.call.name, "sessions_send");
-      assert.equal(input.call.input.session_key, "worker:browser:task-dashboard:toolu-browser");
-      assert.match(String(input.call.input.message), /Re-check the operations dashboard/);
+      assert.equal(
+        input.call.input.session_key,
+        "worker:browser:task-dashboard:toolu-browser",
+      );
+      assert.match(
+        String(input.call.input.message),
+        /Re-check the operations dashboard/,
+      );
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -3626,10 +5254,13 @@ test("llm role response generator lists sessions before spawning on explicit fol
     },
   });
 
-  assert.equal(result.content, "Final answer from looked-up browser continuation.");
+  assert.equal(
+    result.content,
+    "Final answer from looked-up browser continuation.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_list", "sessions_send"]
+    ["sessions_list", "sessions_send"],
   );
 });
 
@@ -3680,12 +5311,21 @@ test("llm role response generator drops same-round duplicate spawn when sending 
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -3728,7 +5368,7 @@ test("llm role response generator drops same-round duplicate spawn when sending 
   assert.equal(result.content, "Final answer after send only.");
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_send"]
+    ["sessions_send"],
   );
 });
 
@@ -3737,10 +5377,14 @@ test("llm role response generator allows a new spawn after an empty continuation
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     if (executedCalls.length < 2 && input.toolChoice !== "none") {
-      return toolCallResult(`toolu-${executedCalls.length + 1}`, "sessions_spawn", {
-        agent_id: "browser",
-        task: "Start a fresh dashboard check because no existing session is available.",
-      });
+      return toolCallResult(
+        `toolu-${executedCalls.length + 1}`,
+        "sessions_spawn",
+        {
+          agent_id: "browser",
+          task: "Start a fresh dashboard check because no existing session is available.",
+        },
+      );
     }
     return {
       text: "Final answer after fresh browser session.",
@@ -3757,12 +5401,21 @@ test("llm role response generator allows a new spawn after an empty continuation
         {
           name: "sessions_list",
           description: "List sessions",
-          inputSchema: { type: "object", properties: { kinds: { type: "array" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              kinds: { type: "array" },
+              agent_id: { type: "string" },
+            },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -3812,7 +5465,7 @@ test("llm role response generator allows a new spawn after an empty continuation
   assert.equal(result.content, "Final answer after fresh browser session.");
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_list", "sessions_spawn"]
+    ["sessions_list", "sessions_spawn"],
   );
 });
 
@@ -3829,7 +5482,11 @@ test("llm role response generator drops same-round duplicate spawn when listing 
         adapterName: "test",
         raw: {},
         toolCalls: [
-          { id: "toolu-list", name: "sessions_list", input: { agent_id: "browser" } },
+          {
+            id: "toolu-list",
+            name: "sessions_list",
+            input: { agent_id: "browser" },
+          },
           {
             id: "toolu-duplicate",
             name: "sessions_spawn",
@@ -3856,12 +5513,18 @@ test("llm role response generator drops same-round duplicate spawn when listing 
         {
           name: "sessions_list",
           description: "List sessions",
-          inputSchema: { type: "object", properties: { agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { agent_id: { type: "string" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -3897,7 +5560,7 @@ test("llm role response generator drops same-round duplicate spawn when listing 
   assert.equal(result.content, "Final answer after list only.");
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_list"]
+    ["sessions_list"],
   );
 });
 
@@ -3933,17 +5596,29 @@ test("llm role response generator routes follow-up through sessions_list result 
         {
           name: "sessions_list",
           description: "List sessions",
-          inputSchema: { type: "object", properties: { kinds: { type: "array" } } },
+          inputSchema: {
+            type: "object",
+            properties: { kinds: { type: "array" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -3966,7 +5641,10 @@ test("llm role response generator routes follow-up through sessions_list result 
         };
       }
       assert.equal(input.call.name, "sessions_send");
-      assert.equal(input.call.input.session_key, "worker:browser:task-dashboard:toolu-browser");
+      assert.equal(
+        input.call.input.session_key,
+        "worker:browser:task-dashboard:toolu-browser",
+      );
       assert.match(String(input.call.input.message), /Recover and re-render/);
       return {
         toolCallId: input.call.id,
@@ -4001,17 +5679,113 @@ test("llm role response generator routes follow-up through sessions_list result 
     },
   });
 
-  assert.equal(result.content, "Final answer from listed-session continuation.");
+  assert.equal(
+    result.content,
+    "Final answer from listed-session continuation.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_list", "sessions_send"]
+    ["sessions_list", "sessions_send"],
+  );
+});
+
+test("llm role response generator normalizes session update aliases into sessions_send", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const sessionKey = "worker:explore:task:TASK-1:call_function_vendor_alpha_1";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-update", "sessions_update", {
+        update:
+          "Revisit the Vendor Alpha notes and turn them into a product decision note.",
+      });
+    }
+    return {
+      text: "Final answer from normalized session update continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, sessionKey);
+      assert.match(String(input.call.input.message), /Vendor Alpha notes/);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "TASK-1",
+          session_key: sessionKey,
+          agent_id: "explore",
+          status: "completed",
+          result: "Vendor Alpha decision note completed.",
+          final_content: "Vendor Alpha decision note completed.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "TASK-1",
+          session_key: sessionKey,
+          agent_id: "explore",
+          status: "completed",
+          result: "Vendor Alpha research completed.",
+          final_content: "Pricing, strength, and risk evidence collected.",
+        }),
+        "[user]: Continue from the previous Vendor Alpha research thread.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(
+    result.content,
+    "Final answer from normalized session update continuation.",
+  );
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_send"],
   );
 });
 
 test("llm role response generator lists sessions before trusting model-provided continuation keys without a directive", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
-  const timeoutSessionKey = "worker:explore:task:TASK-1:call_function_timeout_1";
-  const browserSessionKey = "worker:browser:task:TASK-1:call_function_browser_1";
+  const timeoutSessionKey =
+    "worker:explore:task:TASK-1:call_function_timeout_1";
+  const browserSessionKey =
+    "worker:browser:task:TASK-1:call_function_browser_1";
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     if (executedCalls.length === 0 && input.toolChoice !== "none") {
@@ -4041,12 +5815,21 @@ test("llm role response generator lists sessions before trusting model-provided 
         {
           name: "sessions_list",
           description: "List sessions",
-          inputSchema: { type: "object", properties: { limit: { type: "number" } } },
+          inputSchema: {
+            type: "object",
+            properties: { limit: { type: "number" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -4077,7 +5860,10 @@ test("llm role response generator lists sessions before trusting model-provided 
       }
       assert.equal(input.call.name, "sessions_send");
       assert.equal(input.call.input.session_key, timeoutSessionKey);
-      assert.match(String(input.call.input.message), /Continue the browser sibling after listing/);
+      assert.match(
+        String(input.call.input.message),
+        /Continue the browser sibling after listing/,
+      );
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -4112,17 +5898,22 @@ test("llm role response generator lists sessions before trusting model-provided 
     },
   });
 
-  assert.equal(result.content, "Final answer from corrected timeout continuation.");
+  assert.equal(
+    result.content,
+    "Final answer from corrected timeout continuation.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_list", "sessions_send"]
+    ["sessions_list", "sessions_send"],
   );
 });
 
 test("llm role response generator does not continue completed sibling when timeout-like follow-up lacks timeout result JSON", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
-  const timeoutSessionKey = "worker:explore:task:TASK-2:call_function_timeout_1";
-  const browserSessionKey = "worker:browser:task:TASK-2:call_function_browser_1";
+  const timeoutSessionKey =
+    "worker:explore:task:TASK-2:call_function_timeout_1";
+  const browserSessionKey =
+    "worker:browser:task:TASK-2:call_function_browser_1";
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     if (executedCalls.length === 0 && input.toolChoice !== "none") {
@@ -4152,12 +5943,21 @@ test("llm role response generator does not continue completed sibling when timeo
         {
           name: "sessions_list",
           description: "List sessions",
-          inputSchema: { type: "object", properties: { limit: { type: "number" } } },
+          inputSchema: {
+            type: "object",
+            properties: { limit: { type: "number" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -4188,7 +5988,10 @@ test("llm role response generator does not continue completed sibling when timeo
       }
       assert.equal(input.call.name, "sessions_send");
       assert.equal(input.call.input.session_key, timeoutSessionKey);
-      assert.match(String(input.call.input.message), /slow-source release-risk note/);
+      assert.match(
+        String(input.call.input.message),
+        /slow-source release-risk note/,
+      );
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -4231,17 +6034,852 @@ test("llm role response generator does not continue completed sibling when timeo
     },
   });
 
-  assert.equal(result.content, "Final answer from timeout source continuation.");
+  assert.equal(
+    result.content,
+    "Final answer from timeout source continuation.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_list", "sessions_send"]
+    ["sessions_list", "sessions_send"],
+  );
+});
+
+test("llm role response generator prefers explicit timeout closeout session over stale listed sibling", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const timeoutSessionKey =
+    "worker:explore:task:TASK-3:call_function_timeout_1";
+  const browserSessionKey =
+    "worker:browser:task:TASK-3:call_function_browser_1";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-stale-browser-send", "sessions_send", {
+        session_key: browserSessionKey,
+        message: "Continue the stale browser sibling.",
+      });
+    }
+    return {
+      text: "Final answer from explicit timeout source continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, timeoutSessionKey);
+      assert.match(String(input.call.input.message), /stale browser sibling/);
+      assert.match(
+        String(input.call.input.message),
+        /Runtime continuity guard/,
+      );
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-timeout",
+          session_key: timeoutSessionKey,
+          agent_id: "explore",
+          status: "completed",
+          result: "Explicit timeout session continued.",
+          final_content: "Explicit timeout session continued.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "<relay_brief>",
+        "[sessions_list]: {",
+        '"sessions": [',
+        "{",
+        `"session_key": "${browserSessionKey}",`,
+        '"agent_id": "browser",',
+        '"status": "resumable",',
+        '"label": "slow-fixture-release-risk"',
+        "}",
+        "]",
+        "}",
+        "[Lead]:",
+        "[sessions_spawn]: {",
+        '"status": "timeout",',
+        '"agent_id": "explore",',
+        '"label": "slow-fixture-fetch",',
+        '"session_key": "worker:explore:task:TASK-3:call_function_timeout_…"',
+        "}",
+        `[Lead]: **Release-Risk Note:** Bounded attempt result: Timeout after 15 seconds. Mission can continue: Resume the same source-check session (\`slow-fixture-fetch\`, \`${timeoutSessionKey}\`) if the evidence is still worth waiting for.`,
+        "[user]: Continue from the slow-source attempt in this mission.",
+        "</relay_brief>",
+        "Thread summary:",
+        "Goal: Continue from the slow-source attempt in this mission.",
+        "Resume the existing source-check context if possible, let it finish with the evidence it can collect, and turn the outcome into a release-risk note.",
+        "Separate verified facts from unverified items, describe residual risk, and explain whether the earlier timeout still limits the conclusion.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(
+    result.content,
+    "Final answer from explicit timeout source continuation.",
+  );
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_send"],
+  );
+});
+
+test("llm role response generator adds a browser probe after content-poor resumed loopback timeout evidence", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gatewayInputs: GenerateTextInput[] = [];
+  const timeoutSessionKey =
+    "worker:explore:task:TASK-slow:call_function_timeout_1";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (input.toolChoice !== "none" && executedCalls.length === 0) {
+      return toolCallResult("toolu-resume-timeout", "sessions_send", {
+        session_key: timeoutSessionKey,
+        message:
+          "Continue the existing slow-source release-risk check for http://127.0.0.1:49152/slow-fixture.",
+      });
+    }
+    if (input.toolChoice !== "none" && executedCalls.length === 1) {
+      assert.match(
+        readMessageContentTextForTest(input.messages.at(-1)?.content ?? ""),
+        /content-poor/i,
+      );
+      return toolCallResult("toolu-browser-probe", "sessions_spawn", {
+        agent_id: "browser",
+        label: "supplemental local slow-source probe",
+        task: [
+          "Use the browser worker for browser-visible/local runtime evidence.",
+          "Open http://127.0.0.1:49152/slow-fixture as an operator would see it and return observed status/title/visible marker evidence.",
+        ].join("\n"),
+      });
+    }
+    return {
+      text: "Final release-risk note: browser probe verified TURNKEYAI_MISSION_FIXTURE_OK; earlier timeout no longer blocks the source-bounded conclusion.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string", enum: ["browser", "explore"] },
+              label: { type: "string" },
+            },
+          },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_send") {
+        assert.equal(input.call.input.session_key, timeoutSessionKey);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-timeout",
+            session_key: timeoutSessionKey,
+            agent_id: "explore",
+            status: "completed",
+            tool_chain: ["explore"],
+            result: "The resumed slow-source attempt timed out again.",
+            final_content: [
+              "Source: http://127.0.0.1:49152/slow-fixture.",
+              "Verified facts: the bounded resumed attempt timed out.",
+              "No HTTP status code was obtained.",
+              "No response headers were retrieved.",
+              "No response body was retrieved.",
+              "Unverified items: release-risk content remains unavailable.",
+            ].join(" "),
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "explore",
+              content: [
+                "Source: http://127.0.0.1:49152/slow-fixture.",
+                "Verified facts: the bounded resumed attempt timed out.",
+                "No HTTP status code was obtained.",
+                "No response headers were retrieved.",
+                "No response body was retrieved.",
+                "Unverified items: release-risk content remains unavailable.",
+              ].join(" "),
+            },
+          }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_spawn");
+      assert.equal(input.call.input.agent_id, "browser");
+      assert.equal(input.call.input.timeout_seconds, 90);
+      assert.match(
+        String(input.call.input.task),
+        /browser-visible\/local runtime evidence/i,
+      );
+      assert.match(
+        String(input.call.input.task),
+        /browser_open with timeout_ms 10000/i,
+      );
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-browser-probe",
+          session_key: "worker:browser:task-browser-probe:toolu-browser-probe",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Browser local probe reached the fixture.",
+          evidence_summary:
+            "Final URL http://127.0.0.1:49152/slow-fixture; page title TurnkeyAI Slow Mission E2E Fixture; visible marker TURNKEYAI_MISSION_FIXTURE_OK; no console errors observed.",
+          final_content:
+            "Browser local probe verified page title TurnkeyAI Slow Mission E2E Fixture and visible marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content:
+              "Browser local probe verified page title TurnkeyAI Slow Mission E2E Fixture and visible marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission.",
+        "Resume the existing source-check context if possible, let it finish with the evidence it can collect, and turn the outcome into a release-risk note.",
+        "Separate verified facts from unverified items, describe residual risk, and explain whether the earlier timeout still limits the conclusion.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.deepEqual(
+    executedCalls.map((call) => [
+      call.name,
+      call.input.agent_id ?? call.input.session_key,
+    ]),
+    [
+      ["sessions_send", timeoutSessionKey],
+      ["sessions_spawn", "browser"],
+    ],
+  );
+  assert.ok(
+    gatewayInputs.some((input) =>
+      readMessageContentTextForTest(
+        input.messages.at(-1)?.content ?? "",
+      ).includes(
+        "Runtime correction: resumed timeout evidence is still content-poor.",
+      ),
+    ),
+  );
+});
+
+test("llm role response generator adds a browser probe when resumed loopback session times out again", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const timeoutSessionKey =
+    "worker:explore:task:TASK-slow-again:call_function_timeout_1";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (input.toolChoice !== "none" && executedCalls.length === 0) {
+      return toolCallResult("toolu-resume-timeout-again", "sessions_send", {
+        session_key: timeoutSessionKey,
+        message:
+          "Resume the slow-source check on http://127.0.0.1:49152/slow-fixture.",
+      });
+    }
+    if (input.toolChoice !== "none" && executedCalls.length === 1) {
+      assert.match(
+        readMessageContentTextForTest(input.messages.at(-1)?.content ?? ""),
+        /content-poor/i,
+      );
+      return toolCallResult("toolu-wrong-send-timeout-again", "sessions_send", {
+        session_key: timeoutSessionKey,
+        message:
+          "Navigate to http://127.0.0.1:49152/slow-fixture in a browser and report visible evidence. Do not retry.",
+      });
+    }
+    return {
+      text: "Final release-risk note: supplemental browser probe verified visible marker TURNKEYAI_MISSION_FIXTURE_OK after the resumed timeout.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string", enum: ["browser", "explore"] },
+              label: { type: "string" },
+            },
+          },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_send") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          isError: true,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-timeout-again",
+            session_key: timeoutSessionKey,
+            agent_id: "explore",
+            status: "timeout",
+            resumable: true,
+            timeout_seconds: 20,
+            evidence_available: true,
+            evidence_summary:
+              "Execution paused before completion. Reason: sessions_send timed out after 20s.",
+            tool_chain: [],
+            result:
+              "Sub-agent session timed out after 20s. Current evidence summary: Execution paused before completion. Reason: sessions_send timed out after 20s.",
+            final_content: null,
+            payload: null,
+          }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_spawn");
+      assert.equal(input.call.input.agent_id, "browser");
+      assert.equal(input.call.input.timeout_seconds, 90);
+      assert.doesNotMatch(
+        String(input.call.input.task),
+        /Spawn exactly one focused browser session now/i,
+      );
+      assert.match(
+        String(input.call.input.task),
+        /browser_open with timeout_ms 10000/i,
+      );
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-browser-probe-timeout-again",
+          session_key:
+            "worker:browser:task-browser-probe-timeout-again:toolu-browser-probe",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Browser local probe reached the fixture.",
+          evidence_summary:
+            "Final URL http://127.0.0.1:49152/slow-fixture; page title TurnkeyAI Slow Mission E2E Fixture; visible marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          final_content:
+            "Browser local probe verified page title TurnkeyAI Slow Mission E2E Fixture and visible marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content:
+              "Browser local probe verified page title TurnkeyAI Slow Mission E2E Fixture and visible marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission.",
+        "Slow source: http://127.0.0.1:49152/slow-fixture",
+        "Resume the existing source-check context if possible, let it finish with the evidence it can collect, and turn the outcome into a release-risk note.",
+        "Separate verified facts from unverified items, describe residual risk, and explain whether the earlier timeout still limits the conclusion.",
+        "",
+        "Recent tool context:",
+        `[tool] ${JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "timeout",
+          session_key: timeoutSessionKey,
+          agent_id: "explore",
+          result: "WORKER_TIMEOUT",
+          resumable: true,
+          evidence_summary:
+            "No usable evidence was gathered before the timeout.",
+        })}`,
+        "[user]: Continue from the slow-source attempt in this mission.",
+      ].join("\n"),
+      capabilityInspection: {
+        availableWorkers: ["explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    },
+  });
+
+  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.deepEqual(
+    executedCalls.map((call) => [
+      call.name,
+      call.input.agent_id ?? call.input.session_key,
+    ]),
+    [
+      ["sessions_send", timeoutSessionKey],
+      ["sessions_spawn", "browser"],
+    ],
+  );
+});
+
+test("llm role response generator probes browser after runtime-forced continuation times out", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const timeoutSessionKey =
+    "worker:explore:task:TASK-runtime-forced:call_function_timeout_1";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (input.toolChoice !== "none" && executedCalls.length === 0) {
+      return toolCallResult("toolu-list-runtime-forced", "sessions_list", {
+        agent_id: "explore",
+      });
+    }
+    if (input.toolChoice !== "none" && executedCalls.length === 1) {
+      return {
+        text: "I found a resumable session and will answer from the session list.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (input.toolChoice !== "none" && executedCalls.length === 2) {
+      assert.match(
+        readMessageContentTextForTest(input.messages.at(-1)?.content ?? ""),
+        /content-poor/i,
+      );
+      return toolCallResult(
+        "toolu-wrong-send-after-runtime-forced-timeout",
+        "sessions_send",
+        {
+          session_key: timeoutSessionKey,
+          message:
+            "Open http://127.0.0.1:49152/slow-fixture in a browser and report visible evidence. Do not retry.",
+        },
+      );
+    }
+    return {
+      text: "Final release-risk note: supplemental browser probe verified visible marker TURNKEYAI_MISSION_FIXTURE_OK after the runtime-forced continuation timeout.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_list",
+          description: "List sub-agent sessions",
+          inputSchema: {
+            type: "object",
+            properties: { agent_id: { type: "string" } },
+          },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string", enum: ["browser", "explore"] },
+              label: { type: "string" },
+            },
+          },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_list") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            sessions: [
+              {
+                session_key: timeoutSessionKey,
+                agent_id: "explore",
+                status: "resumable",
+                label: "slow-fixture-release-risk",
+              },
+            ],
+          }),
+        };
+      }
+      if (input.call.name === "sessions_send") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          isError: true,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-runtime-forced-timeout",
+            session_key: timeoutSessionKey,
+            agent_id: "explore",
+            status: "timeout",
+            resumable: true,
+            timeout_seconds: 45,
+            evidence_available: true,
+            evidence_summary:
+              "Execution paused before completion. Reason: sessions_send timed out after 45s.",
+            tool_chain: [],
+            result:
+              "Sub-agent session timed out after 45s. Current evidence summary: Execution paused before completion. Reason: sessions_send timed out after 45s.",
+            final_content: null,
+            payload: null,
+          }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_spawn");
+      assert.equal(input.call.input.agent_id, "browser");
+      assert.equal(input.call.input.timeout_seconds, 90);
+      assert.match(
+        String(input.call.input.task),
+        /browser-visible\/local runtime evidence/i,
+      );
+      assert.match(
+        String(input.call.input.task),
+        /browser_open with timeout_ms 10000/i,
+      );
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-runtime-forced-browser-probe",
+          session_key:
+            "worker:browser:task-runtime-forced-browser-probe:toolu-browser-probe",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Browser local probe reached the fixture.",
+          evidence_summary:
+            "Final URL http://127.0.0.1:49152/slow-fixture; page title TurnkeyAI Slow Mission E2E Fixture; visible marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          final_content:
+            "Browser local probe verified page title TurnkeyAI Slow Mission E2E Fixture and visible marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content:
+              "Browser local probe verified page title TurnkeyAI Slow Mission E2E Fixture and visible marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission.",
+        "Slow source: http://127.0.0.1:49152/slow-fixture",
+        "Resume the existing source-check context if possible, let it finish with the evidence it can collect, and turn the outcome into a release-risk note.",
+        "[user]: Continue from the slow-source attempt in this mission.",
+      ].join("\n"),
+      capabilityInspection: {
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    },
+  });
+
+  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.deepEqual(
+    executedCalls.map((call) => [
+      call.name,
+      call.input.agent_id ?? call.input.session_key,
+    ]),
+    [
+      ["sessions_list", "explore"],
+      ["sessions_send", timeoutSessionKey],
+      ["sessions_spawn", "browser"],
+    ],
+  );
+});
+
+test("llm role response generator refreshes stale session list when timeout follow-up only has truncated source key", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const timeoutSessionKey =
+    "worker:explore:task:TASK-4:call_function_timeout_1";
+  const browserSessionKey =
+    "worker:browser:task:TASK-4:call_function_browser_1";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-stale-browser-send-first", "sessions_send", {
+        session_key: browserSessionKey,
+        message: "Continue the stale browser sibling.",
+      });
+    }
+    if (executedCalls.length === 1 && input.toolChoice !== "none") {
+      return toolCallResult(
+        "toolu-stale-browser-send-second",
+        "sessions_send",
+        {
+          session_key: browserSessionKey,
+          message: "Continue after refreshing the session list.",
+        },
+      );
+    }
+    return {
+      text: "Final answer from refreshed timeout source continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: {
+            type: "object",
+            properties: {
+              limit: { type: "number" },
+              reason: { type: "string" },
+            },
+          },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_list") {
+        assert.match(String(input.call.input.reason), /continuation lookup/);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            sessions: [
+              {
+                session_key: browserSessionKey,
+                agent_id: "browser",
+                status: "resumable",
+                label: "slow-fixture-release-risk",
+                last_active_at: 100,
+              },
+              {
+                session_key: timeoutSessionKey,
+                agent_id: "explore",
+                status: "resumable",
+                label: "slow-fixture-fetch",
+                last_active_at: 200,
+              },
+            ],
+          }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, timeoutSessionKey);
+      assert.match(
+        String(input.call.input.message),
+        /refreshing the session list/,
+      );
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-timeout",
+          session_key: timeoutSessionKey,
+          agent_id: "explore",
+          status: "completed",
+          result: "Refreshed timeout source completed.",
+          final_content: "Refreshed timeout source completed.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "<relay_brief>",
+        "[sessions_list]: {",
+        '"sessions": [',
+        "{",
+        `"session_key": "${browserSessionKey}",`,
+        '"agent_id": "browser",',
+        '"status": "resumable",',
+        '"label": "slow-fixture-release-risk"',
+        "}",
+        "]",
+        "}",
+        "[Lead]:",
+        "[sessions_spawn]: {",
+        '"status": "timeout",',
+        '"agent_id": "explore",',
+        '"label": "slow-fixture-fetch",',
+        '"session_key": "worker:explore:task:TASK-4:call_function_timeout_…"',
+        "}",
+        "[Lead]: **Release-Risk Note:** Bounded attempt result: Timeout after 15 seconds. Evidence: the explore worker did not receive a response. Mission can continue by resuming the same source-check session if the evidence is still worth waiting for.",
+        "[user]: Continue from the slow-source attempt in this mission.",
+        "</relay_brief>",
+        "Thread summary:",
+        "Goal: Continue from the slow-source attempt in this mission.",
+        "Resume the existing source-check context if possible, let it finish with the evidence it can collect, and turn the outcome into a release-risk note.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(
+    result.content,
+    "Final answer from refreshed timeout source continuation.",
+  );
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_list", "sessions_send"],
   );
 });
 
 test("llm role response generator forces continuation after list resolves a truncated timeout key", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
-  const fullSessionKey = "worker:browser:task:TASK-1:call_function_bezmwfxl30as_1";
-  const truncatedSessionKey = "worker:browser:task:TASK-1:call_function_bezmwfxl";
+  const fullSessionKey =
+    "worker:browser:task:TASK-1:call_function_bezmwfxl30as_1";
+  const truncatedSessionKey =
+    "worker:browser:task:TASK-1:call_function_bezmwfxl";
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     if (executedCalls.length === 0 && input.toolChoice !== "none") {
@@ -4281,17 +6919,29 @@ test("llm role response generator forces continuation after list resolves a trun
         {
           name: "sessions_history",
           description: "Read session history",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { session_key: { type: "string" } },
+          },
         },
         {
           name: "sessions_list",
           description: "List sessions",
-          inputSchema: { type: "object", properties: { limit: { type: "number" } } },
+          inputSchema: {
+            type: "object",
+            properties: { limit: { type: "number" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -4370,11 +7020,11 @@ test("llm role response generator forces continuation after list resolves a trun
       "Final answer from recovered timeout continuation.",
       "",
       "Timeout closeout: the resumed source produced usable evidence, but future release-gated checks should keep a bounded retry path before treating missing evidence as verified.",
-    ].join("\n")
+    ].join("\n"),
   );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_history", "sessions_list", "sessions_send"]
+    ["sessions_history", "sessions_list", "sessions_send"],
   );
 });
 
@@ -4383,10 +7033,14 @@ test("llm role response generator ignores nested completed status when session r
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     if (executedCalls.length < 2 && input.toolChoice !== "none") {
-      return toolCallResult(`toolu-new-${executedCalls.length + 1}`, "sessions_spawn", {
-        agent_id: "browser",
-        task: "Start a fresh dashboard check.",
-      });
+      return toolCallResult(
+        `toolu-new-${executedCalls.length + 1}`,
+        "sessions_spawn",
+        {
+          agent_id: "browser",
+          task: "Start a fresh dashboard check.",
+        },
+      );
     }
     return {
       text: "Final answer after fresh dashboard check.",
@@ -4403,17 +7057,32 @@ test("llm role response generator ignores nested completed status when session r
         {
           name: "sessions_list",
           description: "List sessions",
-          inputSchema: { type: "object", properties: { kinds: { type: "array" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              kinds: { type: "array" },
+              agent_id: { type: "string" },
+            },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -4456,9 +7125,12 @@ test("llm role response generator ignores nested completed status when session r
 
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_list", "sessions_spawn"]
+    ["sessions_list", "sessions_spawn"],
   );
-  assert.equal(executedCalls.some((call) => call.name === "sessions_send"), false);
+  assert.equal(
+    executedCalls.some((call) => call.name === "sessions_send"),
+    false,
+  );
 });
 
 test("llm role response generator routes follow-up when completed session result is wrapped in tool trace content", async () => {
@@ -4486,12 +7158,21 @@ test("llm role response generator routes follow-up when completed session result
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -4526,7 +7207,8 @@ test("llm role response generator routes follow-up when completed session result
             status: "completed",
             session_key: "worker:browser:task-dashboard:toolu-wrapped",
             agent_id: "browser",
-            result: "Queue depth: 11; SLA breaches: 3; owner: Incident Commander",
+            result:
+              "Queue depth: 11; SLA breaches: 3; owner: Incident Commander",
           }),
         }),
       ].join("\n"),
@@ -4534,7 +7216,10 @@ test("llm role response generator routes follow-up when completed session result
   });
 
   assert.equal(executedCalls[0]?.name, "sessions_send");
-  assert.equal(executedCalls[0]?.input.session_key, "worker:browser:task-dashboard:toolu-wrapped");
+  assert.equal(
+    executedCalls[0]?.input.session_key,
+    "worker:browser:task-dashboard:toolu-wrapped",
+  );
 });
 
 test("llm role response generator closes out cancelled sessions without a user follow-up", async () => {
@@ -4562,12 +7247,21 @@ test("llm role response generator closes out cancelled sessions without a user f
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -4608,7 +7302,10 @@ test("llm role response generator closes out cancelled sessions without a user f
     },
   });
 
-  assert.equal(result.content, "Final answer after passive cancellation closeout.");
+  assert.equal(
+    result.content,
+    "Final answer after passive cancellation closeout.",
+  );
   assert.deepEqual(executedCalls, []);
 });
 
@@ -4618,7 +7315,8 @@ test("llm role response generator normalizes noisy session_key inputs before exe
   gateway.generate = async (input: GenerateTextInput) => {
     if (executedCalls.length === 0 && input.toolChoice !== "none") {
       return toolCallResult("toolu-noisy-send", "sessions_send", {
-        session_key: "worker:explore:task-1:toolu-cancelled | Natural cancellation follow-up\nOpen questions: {}",
+        session_key:
+          "worker:explore:task-1:toolu-cancelled | Natural cancellation follow-up\nOpen questions: {}",
         message: "Continue the cancelled source check.",
       });
     }
@@ -4637,13 +7335,22 @@ test("llm role response generator normalizes noisy session_key inputs before exe
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
     async execute(input: RoleToolExecutionInput) {
       executedCalls.push(input.call);
-      assert.equal(input.call.input.session_key, "worker:explore:task-1:toolu-cancelled");
+      assert.equal(
+        input.call.input.session_key,
+        "worker:explore:task-1:toolu-cancelled",
+      );
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -4669,7 +7376,10 @@ test("llm role response generator normalizes noisy session_key inputs before exe
   });
 
   assert.equal(result.content, "Final answer from normalized continuation.");
-  assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task-1:toolu-cancelled");
+  assert.equal(
+    executedCalls[0]?.input.session_key,
+    "worker:explore:task-1:toolu-cancelled",
+  );
 });
 
 test("llm role response generator canonicalizes abbreviated continuation session keys from context", async () => {
@@ -4697,13 +7407,22 @@ test("llm role response generator canonicalizes abbreviated continuation session
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
     async execute(input: RoleToolExecutionInput) {
       executedCalls.push(input.call);
-      assert.equal(input.call.input.session_key, "worker:explore:task:TASK-1:call_function_abc123_1");
+      assert.equal(
+        input.call.input.session_key,
+        "worker:explore:task:TASK-1:call_function_abc123_1",
+      );
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -4739,7 +7458,10 @@ test("llm role response generator canonicalizes abbreviated continuation session
   });
 
   assert.equal(result.content, "Final answer from canonical continuation.");
-  assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task:TASK-1:call_function_abc123_1");
+  assert.equal(
+    executedCalls[0]?.input.session_key,
+    "worker:explore:task:TASK-1:call_function_abc123_1",
+  );
 });
 
 test("llm role response generator canonicalizes ellipsized continuation session keys from context", async () => {
@@ -4767,13 +7489,22 @@ test("llm role response generator canonicalizes ellipsized continuation session 
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
     async execute(input: RoleToolExecutionInput) {
       executedCalls.push(input.call);
-      assert.equal(input.call.input.session_key, "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1");
+      assert.equal(
+        input.call.input.session_key,
+        "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1",
+      );
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -4808,14 +7539,20 @@ test("llm role response generator canonicalizes ellipsized continuation session 
     },
   });
 
-  assert.equal(result.content, "Final answer from ellipsized-key continuation.");
-  assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1");
+  assert.equal(
+    result.content,
+    "Final answer from ellipsized-key continuation.",
+  );
+  assert.equal(
+    executedCalls[0]?.input.session_key,
+    "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1",
+  );
   const trace = result.metadata?.toolUse as
     | { rounds?: Array<{ calls?: Array<{ input?: Record<string, unknown> }> }> }
     | undefined;
   assert.equal(
     trace?.rounds?.[0]?.calls?.[0]?.input?.session_key,
-    "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1"
+    "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1",
   );
 });
 
@@ -4848,12 +7585,18 @@ test("llm role response generator synthesizes immediately after completed sub-ag
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
         {
           name: "sessions_history",
           description: "Read a sub-agent session",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { session_key: { type: "string" } },
+          },
         },
       ];
     },
@@ -4891,28 +7634,41 @@ test("llm role response generator synthesizes immediately after completed sub-ag
     packet: buildPacket(),
   });
 
-  assert.equal(result.content, "Final synthesized answer from sub-agent evidence.");
+  assert.equal(
+    result.content,
+    "Final synthesized answer from sub-agent evidence.",
+  );
   assert.equal(executedTools, 1);
   assert.equal(gatewayInputs.length, 2);
   assert.ok(
     gatewayInputs[1]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("Do not call sessions_history or sessions_list")
-    )
+        readToolContent(message.content).includes(
+          "Do not call sessions_history or sessions_list",
+        ),
+    ),
   );
   assert.ok(
     gatewayInputs[1]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("Source 1 evidence")
-    )
+        readToolContent(message.content).includes("Source 1 evidence"),
+    ),
   );
   const synthesisPrompt = finalSynthesisPrompt(gatewayInputs[1]) ?? "";
-  assert.ok(synthesisPrompt.includes("Do not add extra sections, summaries, notes"));
+  assert.ok(
+    synthesisPrompt.includes("Do not add extra sections, summaries, notes"),
+  );
   assert.ok(synthesisPrompt.includes("line must start with a literal prefix"));
-  assert.ok(synthesisPrompt.includes("Do not write a preamble before a requested final shape"));
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.ok(
+    synthesisPrompt.includes(
+      "Do not write a preamble before a requested final shape",
+    ),
+  );
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "completed_sub_agent_final");
   assert.equal(closeout?.toolName, "sessions_spawn");
   assert.equal(closeout?.finalContentCount, 1);
@@ -4938,7 +7694,10 @@ test("llm role response generator synthesizes immediately after completed browse
     const finalPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
     assert.match(finalPrompt, /completed delegated session evidence/);
     assert.match(finalPrompt, /approved action/i);
-    assert.match(finalPrompt, /residual risk or no-external-side-effect boundary/i);
+    assert.match(
+      finalPrompt,
+      /residual risk or no-external-side-effect boundary/i,
+    );
     assert.match(finalPrompt, /TURNKEYAI_APPROVAL_FIXTURE_OK/);
     return {
       text: "Final synthesized answer from browser evidence.",
@@ -4955,7 +7714,13 @@ test("llm role response generator synthesizes immediately after completed browse
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -4980,7 +7745,8 @@ test("llm role response generator synthesizes immediately after completed browse
             page: {
               finalUrl: "http://127.0.0.1/approval-form",
               title: "Local approval fixture",
-              textExcerpt: "TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
+              textExcerpt:
+                "TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
             },
           },
         }),
@@ -4997,10 +7763,15 @@ test("llm role response generator synthesizes immediately after completed browse
     packet: buildPacket(),
   });
 
-  assert.equal(result.content, "Final synthesized answer from browser evidence.");
+  assert.equal(
+    result.content,
+    "Final synthesized answer from browser evidence.",
+  );
   assert.equal(executedTools, 1);
   assert.equal(gatewayInputs.length, 2);
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "completed_sub_agent_final");
   assert.equal(closeout?.toolName, "sessions_spawn");
   assert.equal(closeout?.finalContentCount, 1);
@@ -5025,7 +7796,9 @@ test("llm role response generator preserves browser evidence summary when child 
     assert.match(finalPrompt, /Weak answer rate: 24%/);
     assert.ok(
       finalPrompt.indexOf("Stuck missions: 6") <
-        finalPrompt.indexOf("The dashboard rendered client-side; exact counters were not verified.")
+        finalPrompt.indexOf(
+          "The dashboard rendered client-side; exact counters were not verified.",
+        ),
     );
     return {
       text: "Final brief uses rendered dashboard evidence: Stuck missions: 6 and Weak answer rate: 24%.",
@@ -5042,7 +7815,13 @@ test("llm role response generator preserves browser evidence summary when child 
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5063,16 +7842,19 @@ test("llm role response generator preserves browser evidence summary when child 
             "Rendered counters: Stuck missions: 6. Weak answer rate: 24%.",
             "Recommended next action: make Mission Control the default entry.",
           ].join("\n"),
-          final_content: "The dashboard rendered client-side; exact counters were not verified.",
+          final_content:
+            "The dashboard rendered client-side; exact counters were not verified.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "browser",
-            content: "The dashboard rendered client-side; exact counters were not verified.",
+            content:
+              "The dashboard rendered client-side; exact counters were not verified.",
             sessionId: "brw-signals",
             page: {
               finalUrl: "http://127.0.0.1/product-signals",
               title: "Workbench product signals",
-              textExcerpt: "Stuck missions: 6. Weak answer rate: 24%. Mission Control default entry.",
+              textExcerpt:
+                "Stuck missions: 6. Weak answer rate: 24%. Mission Control default entry.",
             },
           },
         }),
@@ -5091,7 +7873,7 @@ test("llm role response generator preserves browser evidence summary when child 
 
   assert.equal(
     result.content,
-    "Final brief uses rendered dashboard evidence: Stuck missions: 6 and Weak answer rate: 24%."
+    "Final brief uses rendered dashboard evidence: Stuck missions: 6 and Weak answer rate: 24%.",
   );
   assert.equal(gatewayInputs.length, 2);
 });
@@ -5119,7 +7901,10 @@ test("llm role response generator repairs completed session synthesis that omits
       };
     }
     assert.equal(input.toolChoice, "none");
-    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /requested next action is missing/);
+    assert.match(
+      readToolContent(input.messages.at(-1)?.content ?? ""),
+      /requested next action is missing/,
+    );
     return {
       text: "Browser experienced CDP command timeouts. Verified queue depth 11. Unverified: ticket-level detail. Next action: retry browser capture after CDP recovers and keep escalation active meanwhile.",
       modelId: "claude-test",
@@ -5135,7 +7920,13 @@ test("llm role response generator repairs completed session synthesis that omits
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5150,8 +7941,10 @@ test("llm role response generator repairs completed session synthesis that omits
           agent_id: "browser",
           status: "completed",
           tool_chain: ["browser"],
-          result: "Browser experienced CDP command timeouts. Verified queue depth 11. Unverified: ticket-level detail.",
-          final_content: "Browser experienced CDP command timeouts. Verified queue depth 11. Unverified: ticket-level detail.",
+          result:
+            "Browser experienced CDP command timeouts. Verified queue depth 11. Unverified: ticket-level detail.",
+          final_content:
+            "Browser experienced CDP command timeouts. Verified queue depth 11. Unverified: ticket-level detail.",
         }),
       };
     },
@@ -5197,7 +7990,10 @@ test("llm role response generator repairs weak uncertainty in completed session 
       };
     }
     assert.equal(input.toolChoice, "none");
-    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /final answer weakens verified evidence/);
+    assert.match(
+      readToolContent(input.messages.at(-1)?.content ?? ""),
+      /final answer weakens verified evidence/,
+    );
     return {
       text: "Vendor Alpha has an observed $19/seat price point. Verified strength: browser automation with traceable screenshots. Verified risk: the API integration catalog is limited. Not verified: plan tiers, enterprise support, and user scale. Residual risk: do not treat missing tiers as absent; treat them as not verified.",
       modelId: "claude-test",
@@ -5213,7 +8009,13 @@ test("llm role response generator repairs weak uncertainty in completed session 
         {
           name: "sessions_spawn",
           description: "Spawn an explore sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5228,7 +8030,8 @@ test("llm role response generator repairs weak uncertainty in completed session 
           agent_id: "explore",
           status: "completed",
           tool_chain: ["explore"],
-          result: "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
+          result:
+            "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
           final_content:
             "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
         }),
@@ -5244,12 +8047,16 @@ test("llm role response generator repairs weak uncertainty in completed session 
     activation: buildActivation(),
     packet: {
       ...buildPacket(),
-      taskPrompt: "Start a source-backed review of Vendor Alpha for a product lead. Focus on pricing, strength, and risk.",
+      taskPrompt:
+        "Start a source-backed review of Vendor Alpha for a product lead. Focus on pricing, strength, and risk.",
     },
   });
 
   assert.match(result.content, /observed \$19\/seat price point/);
-  assert.doesNotMatch(result.content, /\b(?:estimate|probably|maybe|TBD|to be confirmed|pending confirmation)\b/i);
+  assert.doesNotMatch(
+    result.content,
+    /\b(?:estimate|probably|maybe|TBD|to be confirmed|pending confirmation)\b/i,
+  );
   assert.equal(gatewayInputs.length, 3);
 });
 
@@ -5265,17 +8072,29 @@ test("llm role response generator repairs completed session synthesis that false
           {
             id: "toolu-orchestration",
             name: "sessions_spawn",
-            input: { agent_id: "explore", label: "Orchestration research", task: "Fetch orchestration evidence." },
+            input: {
+              agent_id: "explore",
+              label: "Orchestration research",
+              task: "Fetch orchestration evidence.",
+            },
           },
           {
             id: "toolu-bridge",
             name: "sessions_spawn",
-            input: { agent_id: "explore", label: "Bridge capability research", task: "Fetch bridge evidence." },
+            input: {
+              agent_id: "explore",
+              label: "Bridge capability research",
+              task: "Fetch bridge evidence.",
+            },
           },
           {
             id: "toolu-signals",
             name: "sessions_spawn",
-            input: { agent_id: "browser", label: "Product signals dashboard", task: "Inspect rendered dashboard evidence." },
+            input: {
+              agent_id: "browser",
+              label: "Product signals dashboard",
+              task: "Inspect rendered dashboard evidence.",
+            },
           },
         ],
         modelId: "claude-test",
@@ -5305,7 +8124,6 @@ test("llm role response generator repairs completed session synthesis that false
         raw: {},
       };
     }
-    assert.equal(input.toolChoice, "none");
     const repairPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
     assert.match(repairPrompt, /falsely marks completed evidence/);
     assert.match(repairPrompt, /Source 1 completed evidence/);
@@ -5334,7 +8152,13 @@ test("llm role response generator repairs completed session synthesis that false
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5359,7 +8183,11 @@ test("llm role response generator repairs completed session synthesis that false
           tool_chain: [input.call.input.agent_id],
           result: evidence,
           final_content: evidence,
-          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: evidence },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: evidence,
+          },
         }),
       };
     },
@@ -5384,8 +8212,189 @@ test("llm role response generator repairs completed session synthesis that false
 
   assert.match(result.content, /TURNKEYAI_PRODUCT_ORCHESTRATION_OK/);
   assert.match(result.content, /durable sub-session history/);
-  assert.doesNotMatch(result.content, /truncated|not accessible|inaccessible|content was partially/i);
+  assert.doesNotMatch(
+    result.content,
+    /truncated|not accessible|inaccessible|content was partially/i,
+  );
   assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator repairs shell-only product signal dashboard evidence with focused browser spawn", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "Gathering product evidence.",
+        toolCalls: [
+          {
+            id: "toolu-orchestration",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "explore",
+              label: "product-orchestration",
+              task: "Fetch product orchestration evidence.",
+            },
+          },
+          {
+            id: "toolu-bridge",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "explore",
+              label: "product-bridge",
+              task: "Fetch browser bridge evidence.",
+            },
+          },
+          {
+            id: "toolu-signals-shell",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              label: "product-signals",
+              task: "Inspect http://127.0.0.1:61930/product-signals live signal dashboard.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      assert.equal(input.toolChoice, "none");
+      return {
+        text: [
+          "All three sources are SPAs; explore workers returned server HTML shells with partial text.",
+          "Browser rendering was not confirmed, so Stuck missions and Weak answer rate remain unverified.",
+        ].join("\n"),
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 3) {
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      const repairPrompt = readToolContent(
+        input.messages.at(-1)?.content ?? "",
+      );
+      assert.match(
+        repairPrompt,
+        /live product signal dashboard evidence is still incomplete/,
+      );
+      assert.match(
+        repairPrompt,
+        /http:\/\/127\.0\.0\.1:61930\/product-signals/,
+      );
+      return toolCallResult("toolu-signals-focused", "sessions_spawn", {
+        agent_id: "browser",
+        label: "product-signals-focused",
+        task: "Open http://127.0.0.1:61930/product-signals and return rendered counters.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    const finalPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+    assert.match(finalPrompt, /Stuck missions: 6/);
+    assert.match(finalPrompt, /Weak answer rate: 24%/);
+    return {
+      text: "Final brief uses rendered product signals: Stuck missions: 6; Weak answer rate: 24%; Mission Control should be the default entry.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executedCalls: LLMToolCall[] = [];
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      const label = String(input.call.input.label ?? "");
+      const evidence =
+        label === "product-orchestration"
+          ? "TURNKEYAI_PRODUCT_ORCHESTRATION_OK. Product orchestration evidence verified."
+          : label === "product-bridge"
+            ? "TURNKEYAI_PRODUCT_BRIDGE_OK. Browser bridge evidence verified."
+            : label === "product-signals-focused"
+              ? "TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK. Stuck missions: 6. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry. Evidence came from browser-rendered JavaScript."
+              : "Server HTML shell loaded for product-signals. Browser rendering was not confirmed.";
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: `task-${input.call.id}`,
+          session_key: `worker:${input.call.input.agent_id}:task-${input.call.id}`,
+          agent_id: input.call.input.agent_id,
+          label,
+          status: "completed",
+          tool_chain: [input.call.input.agent_id],
+          result: evidence,
+          final_content: evidence,
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: evidence,
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Prepare a product-ready brief about the next agent workbench release.",
+        "Research source: http://127.0.0.1:61930/product-orchestration",
+        "Capability source: http://127.0.0.1:61930/product-bridge",
+        "Live signal dashboard: http://127.0.0.1:61930/product-signals",
+        "These are three independent evidence streams. Use browser-visible evidence for the live signal dashboard.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /Stuck missions: 6/);
+  assert.match(result.content, /Weak answer rate: 24%/);
+  assert.deepEqual(
+    executedCalls.map(
+      (call) => `${call.name}:${String(call.input.label ?? "")}`,
+    ),
+    [
+      "sessions_spawn:product-orchestration",
+      "sessions_spawn:product-bridge",
+      "sessions_spawn:product-signals",
+      "sessions_spawn:product-signals-focused",
+    ],
+  );
+  assert.equal(gatewayInputs.length, 4);
 });
 
 test("llm role response generator repairs completed session synthesis that drops requested risk dimension", async () => {
@@ -5439,7 +8448,13 @@ test("llm role response generator repairs completed session synthesis that drops
         {
           name: "sessions_spawn",
           description: "Spawn an explore sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5454,7 +8469,8 @@ test("llm role response generator repairs completed session synthesis that drops
           agent_id: "explore",
           status: "completed",
           tool_chain: ["explore"],
-          result: "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
+          result:
+            "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
           final_content:
             "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
         }),
@@ -5470,11 +8486,15 @@ test("llm role response generator repairs completed session synthesis that drops
     activation: buildActivation(),
     packet: {
       ...buildPacket(),
-      taskPrompt: "Start a source-backed review of Vendor Alpha for a product lead. Focus on pricing, strength, and risk.",
+      taskPrompt:
+        "Start a source-backed review of Vendor Alpha for a product lead. Focus on pricing, strength, and risk.",
     },
   });
 
-  assert.match(result.content, /Verified risk: the API integration catalog is still limited/);
+  assert.match(
+    result.content,
+    /Verified risk: the API integration catalog is still limited/,
+  );
   assert.equal(gatewayInputs.length, 3);
 });
 
@@ -5505,7 +8525,13 @@ test("llm role response generator allows estimates when the user asks for estima
         {
           name: "sessions_spawn",
           description: "Spawn an explore sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5519,8 +8545,10 @@ test("llm role response generator allows estimates when the user asks for estima
           session_key: "worker:explore:task-estimate:toolu-explore",
           agent_id: "explore",
           status: "completed",
-          result: "Observed package count: 4. Integration points: auth and browser bridge.",
-          final_content: "Observed package count: 4. Integration points: auth and browser bridge.",
+          result:
+            "Observed package count: 4. Integration points: auth and browser bridge.",
+          final_content:
+            "Observed package count: 4. Integration points: auth and browser bridge.",
         }),
       };
     },
@@ -5534,11 +8562,15 @@ test("llm role response generator allows estimates when the user asks for estima
     activation: buildActivation(),
     packet: {
       ...buildPacket(),
-      taskPrompt: "Estimate the migration effort from the available notes and give a practical range.",
+      taskPrompt:
+        "Estimate the migration effort from the available notes and give a practical range.",
     },
   });
 
-  assert.match(result.content, /Estimated migration effort is 3-5 engineer-days/);
+  assert.match(
+    result.content,
+    /Estimated migration effort is 3-5 engineer-days/,
+  );
   assert.equal(gatewayInputs.length, 2);
 });
 
@@ -5555,10 +8587,21 @@ test("llm role response generator executes one approval-gated browser spawn from
           {
             id: "toolu-query",
             name: "permission_query",
-            input: { action: "browser.form.submit", scope: "local dry-run form" },
+            input: {
+              action: "browser.form.submit",
+              scope: "local dry-run form",
+            },
           },
-          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
-          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+          {
+            id: "toolu-result",
+            name: "permission_result",
+            input: { approval_id: "ap-1" },
+          },
+          {
+            id: "toolu-applied",
+            name: "permission_applied",
+            input: { approval_id: "ap-1" },
+          },
           ...["a", "b", "c", "d"].map((id) => ({
             id: `toolu-${id}`,
             name: "sessions_spawn",
@@ -5577,7 +8620,10 @@ test("llm role response generator executes one approval-gated browser spawn from
     }
     assert.equal(input.toolChoice, "none");
     assert.equal(input.tools, undefined);
-    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /TURNKEYAI_APPROVAL_FIXTURE_OK/);
+    assert.match(
+      readToolContent(input.messages.at(-1)?.content ?? ""),
+      /TURNKEYAI_APPROVAL_FIXTURE_OK/,
+    );
     return {
       text: "The approved dry-run was submitted once and verified.",
       modelId: "claude-test",
@@ -5593,22 +8639,37 @@ test("llm role response generator executes one approval-gated browser spawn from
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
         {
           name: "permission_result",
           description: "Read approval",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "permission_applied",
           description: "Mark approval applied",
-          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { approval_id: { type: "string" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5676,14 +8737,24 @@ test("llm role response generator executes one approval-gated browser spawn from
     },
   });
 
-  assert.equal(result.content, "The approved dry-run was submitted once and verified.");
+  assert.equal(
+    result.content,
+    "The approved dry-run was submitted once and verified.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["permission_query", "permission_result", "permission_applied", "sessions_spawn"]
+    [
+      "permission_query",
+      "permission_result",
+      "permission_applied",
+      "sessions_spawn",
+    ],
   );
   assert.equal(executedCalls[3]?.id, "toolu-a");
   assert.equal(gatewayInputs.length, 2);
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "completed_sub_agent_final");
   assert.equal(closeout?.toolCallCount, 4);
 });
@@ -5698,7 +8769,14 @@ test("llm role response generator preserves distinct approval-gated browser spaw
       return {
         text: "I will run two distinct approved browser checks.",
         toolCalls: [
-          { id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit", scope: "local dry-run form" } },
+          {
+            id: "toolu-query",
+            name: "permission_query",
+            input: {
+              action: "browser.form.submit",
+              scope: "local dry-run form",
+            },
+          },
           {
             id: "toolu-alpha",
             name: "sessions_spawn",
@@ -5742,12 +8820,21 @@ test("llm role response generator preserves distinct approval-gated browser spaw
         {
           name: "permission_query",
           description: "Request approval",
-          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { action: { type: "string" } },
+          },
         },
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5786,16 +8873,22 @@ test("llm role response generator preserves distinct approval-gated browser spaw
     activation: buildActivation(),
     packet: {
       ...buildPacket(),
-      taskPrompt: "Run approved browser.form.submit checks for two distinct local dry-run forms.",
+      taskPrompt:
+        "Run approved browser.form.submit checks for two distinct local dry-run forms.",
     },
   });
 
-  assert.equal(result.content, "Both distinct approved browser checks were preserved.");
+  assert.equal(
+    result.content,
+    "Both distinct approved browser checks were preserved.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.id),
-    ["toolu-query", "toolu-alpha", "toolu-beta"]
+    ["toolu-query", "toolu-alpha", "toolu-beta"],
   );
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.finalContentCount, 2);
 });
 
@@ -5814,7 +8907,10 @@ test("llm role response generator treats runtime-gated browser permission progre
     assert.equal(input.toolChoice, "none");
     const finalPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
     assert.match(finalPrompt, /completed delegated session evidence/);
-    assert.doesNotMatch(finalPrompt, /Runtime correction: approval-gated browser action/);
+    assert.doesNotMatch(
+      finalPrompt,
+      /Runtime correction: approval-gated browser action/,
+    );
     return {
       text: "Final approval-gated browser evidence answer.",
       modelId: "claude-test",
@@ -5830,7 +8926,13 @@ test("llm role response generator treats runtime-gated browser permission progre
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -5866,14 +8968,16 @@ test("llm role response generator treats runtime-gated browser permission progre
           agent_id: "browser",
           status: "completed",
           tool_chain: ["browser"],
-          result: "TURNKEYAI_APPROVAL_FIXTURE_OK verified after runtime approval gate.",
+          result:
+            "TURNKEYAI_APPROVAL_FIXTURE_OK verified after runtime approval gate.",
           final_content: null,
           payload: {
             sessionId: "brw-approval",
             page: {
               finalUrl: "http://127.0.0.1/approval-form",
               title: "Local approval fixture",
-              textExcerpt: "TURNKEYAI_APPROVAL_FIXTURE_OK verified after runtime approval gate.",
+              textExcerpt:
+                "TURNKEYAI_APPROVAL_FIXTURE_OK verified after runtime approval gate.",
             },
           },
         }),
@@ -5901,10 +9005,12 @@ test("llm role response generator treats runtime-gated browser permission progre
   assert.equal(result.content, "Final approval-gated browser evidence answer.");
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_spawn"]
+    ["sessions_spawn"],
   );
   assert.equal(gatewayInputs.length, 2);
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "completed_sub_agent_final");
   assert.equal(closeout?.toolCallCount, 1);
 });
@@ -5929,7 +9035,10 @@ test("llm role response generator keeps completed tool evidence when final synth
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { session_key: { type: "string" } },
+          },
         },
       ];
     },
@@ -5963,7 +9072,8 @@ test("llm role response generator keeps completed tool evidence when final synth
   });
   const activation = buildActivation();
   activation.handoff.payload.intent = {
-    relayBrief: activation.handoff.payload.intent?.relayBrief ?? "Handle the task.",
+    relayBrief:
+      activation.handoff.payload.intent?.relayBrief ?? "Handle the task.",
     instructions: activation.handoff.payload.intent?.instructions ?? "",
     recentMessages: [
       {
@@ -6028,7 +9138,13 @@ test("llm role response generator uses completed browser evidence when final syn
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -6052,7 +9168,8 @@ test("llm role response generator uses completed browser evidence when final syn
             page: {
               finalUrl: "http://127.0.0.1/approval-form",
               title: "Local approval fixture",
-              textExcerpt: "TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
+              textExcerpt:
+                "TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
             },
           },
         }),
@@ -6091,7 +9208,9 @@ test("llm role response generator preserves generic tool evidence when follow-up
     }
     assert.equal(input.toolChoice, "none");
     assert.deepEqual(input.tools ?? [], []);
-    throw new Error("llm_request_timeout: model did not respond within 120000ms");
+    throw new Error(
+      "llm_request_timeout: model did not respond within 120000ms",
+    );
   };
   const executor: RoleToolExecutor = {
     definitions() {
@@ -6099,7 +9218,10 @@ test("llm role response generator preserves generic tool evidence when follow-up
         {
           name: "explore_run",
           description: "Fetch one source",
-          inputSchema: { type: "object", properties: { instruction: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { instruction: { type: "string" } },
+          },
         },
       ];
     },
@@ -6136,7 +9258,9 @@ test("llm role response generator preserves generic tool evidence when follow-up
   assert.match(result.content, /\bVerified:/);
   assert.match(result.content, /\bRisk:/);
   assert.equal(result.metadata?.adapterName, "local-evidence-closeout");
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "tool_evidence_fallback");
   assert.equal(closeout?.evidenceAvailable, true);
 });
@@ -6160,7 +9284,10 @@ test("llm role response generator does not use local evidence closeout for exact
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -6199,7 +9326,7 @@ test("llm role response generator does not use local evidence closeout for exact
         activation: buildActivation(),
         packet,
       }),
-    /final synthesis provider unavailable/
+    /final synthesis provider unavailable/,
   );
 });
 
@@ -6213,7 +9340,9 @@ test("llm role response generator does not use skipped generic tool output as lo
         instruction: "Fetch the orchestration source.",
       });
     }
-    throw new Error("llm_request_timeout: model did not respond within 120000ms");
+    throw new Error(
+      "llm_request_timeout: model did not respond within 120000ms",
+    );
   };
   const executor: RoleToolExecutor = {
     definitions() {
@@ -6221,7 +9350,10 @@ test("llm role response generator does not use skipped generic tool output as lo
         {
           name: "explore_run",
           description: "Fetch one source",
-          inputSchema: { type: "object", properties: { instruction: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { instruction: { type: "string" } },
+          },
         },
       ];
     },
@@ -6246,8 +9378,84 @@ test("llm role response generator does not use skipped generic tool output as lo
         activation: buildActivation(),
         packet: buildPacket(),
       }),
-    /llm_request_timeout/
+    /llm_request_timeout/,
   );
+});
+
+test("llm role response generator does not use sessions_list control output as local evidence", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async () => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-list", "sessions_list", {
+        agent_id: "browser",
+        kinds: ["browser"],
+      });
+    }
+    if (gatewayCalls === 2) {
+      return toolCallResult("toolu-send", "sessions_send", {
+        session_key: "worker:explore:task:TASK-1:call_function_old_1",
+        message: "Continue the slow source check.",
+      });
+    }
+    throw new Error("final synthesis provider unavailable");
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: {
+            type: "object",
+            properties: { agent_id: { type: "string" } },
+          },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a session",
+          inputSchema: {
+            type: "object",
+            properties: { session_key: { type: "string" } },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      if (input.call.name === "sessions_list") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            sessions: [],
+            inspection_guidance:
+              "Use sessions_list only to choose a session key. Do not treat this control-plane lookup as source evidence.",
+          }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: "sessions_send timed out after 45s",
+        isError: true,
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  await assert.rejects(
+    () =>
+      generator.generate({
+        activation: buildActivation(),
+        packet: buildPacket(),
+      }),
+    /final synthesis provider unavailable/,
+  );
+  assert.equal(gatewayCalls, 3);
 });
 
 test("llm role response generator rethrows abort errors instead of local evidence closeout", async () => {
@@ -6270,7 +9478,10 @@ test("llm role response generator rethrows abort errors instead of local evidenc
         {
           name: "explore_run",
           description: "Fetch one source",
-          inputSchema: { type: "object", properties: { instruction: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { instruction: { type: "string" } },
+          },
         },
       ];
     },
@@ -6297,7 +9508,7 @@ test("llm role response generator rethrows abort errors instead of local evidenc
         activation: buildActivation(),
         packet: buildPacket(),
       }),
-    (error: unknown) => error instanceof Error && error.name === "AbortError"
+    (error: unknown) => error instanceof Error && error.name === "AbortError",
   );
 });
 
@@ -6328,7 +9539,10 @@ test("llm role response generator stores evidence-first trace content for oversi
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -6356,7 +9570,10 @@ test("llm role response generator stores evidence-first trace content for oversi
               "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
               "Browser screenshot and DOM evidence detail. ".repeat(250),
             ].join(" "),
-            artifactIds: ["artifact-browser-snapshot", "artifact-browser-screenshot"],
+            artifactIds: [
+              "artifact-browser-snapshot",
+              "artifact-browser-screenshot",
+            ],
             screenshotPaths: ["/tmp/browser-artifacts/final.png"],
             rawHtml: "<html>".repeat(5000),
           },
@@ -6375,12 +9592,23 @@ test("llm role response generator stores evidence-first trace content for oversi
   });
 
   const trace = result.metadata?.toolUse as
-    | { rounds?: Array<{ results?: Array<{ content?: string; contentTruncated?: boolean; contentBytes?: number }> }> }
+    | {
+        rounds?: Array<{
+          results?: Array<{
+            content?: string;
+            contentTruncated?: boolean;
+            contentBytes?: number;
+          }>;
+        }>;
+      }
     | undefined;
   const traceResult = trace?.rounds?.[0]?.results?.[0];
   assert.ok(traceResult?.content);
   assert.equal(traceResult.contentTruncated, true);
-  assert.ok((traceResult.contentBytes ?? 0) > Buffer.byteLength(traceResult.content, "utf8"));
+  assert.ok(
+    (traceResult.contentBytes ?? 0) >
+      Buffer.byteLength(traceResult.content, "utf8"),
+  );
   assert.ok(Buffer.byteLength(traceResult.content, "utf8") <= 8 * 1024);
   assert.match(traceResult.content, /final_content/);
   assert.match(traceResult.content, /Release Captain/);
@@ -6392,8 +9620,13 @@ test("llm role response generator stores evidence-first trace content for oversi
   };
   assert.match(compacted.evidence_excerpt ?? "", /Release Captain/);
   assert.match(compacted.evidence_excerpt ?? "", /runbook gap/);
-  assert.deepEqual(compacted.payload?.artifactIds, ["artifact-browser-snapshot", "artifact-browser-screenshot"]);
-  assert.deepEqual(compacted.payload?.screenshotPaths, ["/tmp/browser-artifacts/final.png"]);
+  assert.deepEqual(compacted.payload?.artifactIds, [
+    "artifact-browser-snapshot",
+    "artifact-browser-screenshot",
+  ]);
+  assert.deepEqual(compacted.payload?.screenshotPaths, [
+    "/tmp/browser-artifacts/final.png",
+  ]);
   assert.doesNotMatch(traceResult.content, /<html><html>/);
 });
 
@@ -6424,7 +9657,10 @@ test("llm role response generator accepts short completed sub-agent final conten
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -6441,7 +9677,11 @@ test("llm role response generator accepts short completed sub-agent final conten
           tool_chain: ["explore"],
           result: "Verified: yes.",
           final_content: "Verified: yes.",
-          payload: { mode: "llm_sub_agent", workerType: "explore", content: "Verified: yes." },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: "Verified: yes.",
+          },
         }),
       };
     },
@@ -6460,8 +9700,10 @@ test("llm role response generator accepts short completed sub-agent final conten
   assert.equal(gatewayInputs.length, 2);
   assert.ok(
     gatewayInputs[1]?.messages.some(
-      (message) => message.role === "user" && readToolContent(message.content).includes("Verified: yes.")
-    )
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("Verified: yes."),
+    ),
   );
 });
 
@@ -6492,7 +9734,10 @@ test("llm role response generator redacts forbidden local URLs after completed s
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -6507,11 +9752,13 @@ test("llm role response generator redacts forbidden local URLs after completed s
           agent_id: "explore",
           status: "completed",
           result: "Verified local fixture evidence.",
-          final_content: "Vendor Alpha came from http://127.0.0.1:50433/vendor-alpha.",
+          final_content:
+            "Vendor Alpha came from http://127.0.0.1:50433/vendor-alpha.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "explore",
-            content: "Vendor Alpha came from http://127.0.0.1:50433/vendor-alpha.",
+            content:
+              "Vendor Alpha came from http://127.0.0.1:50433/vendor-alpha.",
           },
         }),
       };
@@ -6526,20 +9773,21 @@ test("llm role response generator redacts forbidden local URLs after completed s
     activation: buildActivation(),
     packet: {
       ...buildPacket(),
-      taskPrompt: "Return source names only. Do not include source URLs in the final answer.",
+      taskPrompt:
+        "Return source names only. Do not include source URLs in the final answer.",
       outputContract: "Do not use tables, links, code fences, or bold markup.",
     },
   });
 
   assert.equal(
     result.content,
-    "residual risk: pricing remains source-bounded to local fixture source and localhost."
+    "residual risk: pricing remains source-bounded to local fixture source and localhost.",
   );
   assert.doesNotMatch(result.content, /https?:\/\//i);
   assert.ok(
     finalSynthesisPrompt(gatewayInputs[1])?.includes(
-      "Preserve source URLs only when the original user did not forbid links or source URLs"
-    )
+      "Preserve source URLs only when the original user did not forbid links or source URLs",
+    ),
   );
 });
 
@@ -6551,7 +9799,8 @@ test("llm role response generator keeps browser recovery visible after completed
     if (gatewayInputs.length === 1) {
       return toolCallResult("toolu-browser", "sessions_send", {
         session_key: "worker:browser:task-1:toolu-browser",
-        message: "Continue the dashboard review after the prior browser session was unavailable.",
+        message:
+          "Continue the dashboard review after the prior browser session was unavailable.",
       });
     }
     assert.equal(input.toolChoice, "none");
@@ -6570,7 +9819,13 @@ test("llm role response generator keeps browser recovery visible after completed
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -6587,16 +9842,19 @@ test("llm role response generator keeps browser recovery visible after completed
           tool_chain: ["browser"],
           result:
             "Browser recovery metadata: Resume mode: warm. Session ID: browser-session-recovered. Queue depth: 11.",
-          final_content: "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+          final_content:
+            "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "browser",
             browserRecovery: {
               resumeMode: "warm",
               sessionId: "browser-session-recovered",
-              summary: "Browser recovery metadata: Resume mode: warm. Session ID: browser-session-recovered.",
+              summary:
+                "Browser recovery metadata: Resume mode: warm. Session ID: browser-session-recovered.",
             },
-            content: "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+            content:
+              "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
           },
         }),
       };
@@ -6620,7 +9878,10 @@ test("llm role response generator keeps browser recovery visible after completed
   });
 
   assert.match(result.content, /Queue depth is 11/);
-  assert.match(result.content, /Browser continuity: browser context was recovered/i);
+  assert.match(
+    result.content,
+    /Browser continuity: browser context was recovered/i,
+  );
   assert.match(result.content, /resume mode: warm/i);
   const synthesisPrompt = finalSynthesisPrompt(gatewayInputs[1]) ?? "";
   assert.match(synthesisPrompt, /browser continuity metadata/i);
@@ -6654,7 +9915,13 @@ test("llm role response generator keeps browser timeout recovery visible after c
         {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -6669,13 +9936,15 @@ test("llm role response generator keeps browser timeout recovery visible after c
           agent_id: "browser",
           status: "completed",
           tool_chain: ["browser"],
-          result: "cdp_command_timeout: browser snapshot CDP command timed out while capturing rendered page evidence. Queue depth: 11.",
+          result:
+            "cdp_command_timeout: browser snapshot CDP command timed out while capturing rendered page evidence. Queue depth: 11.",
           final_content: "Queue depth: 11.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "browser",
             browserRecovery: {
-              summary: "cdp_command_timeout: browser snapshot CDP command timed out while capturing rendered page evidence.",
+              summary:
+                "cdp_command_timeout: browser snapshot CDP command timed out while capturing rendered page evidence.",
             },
           },
         }),
@@ -6700,6 +9969,200 @@ test("llm role response generator keeps browser timeout recovery visible after c
   assert.match(result.content, /timed out/);
 });
 
+test("llm role response generator appends bounded browser limitation when completed evidence carries a CDP timeout bucket", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-browser", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Review the dashboard and close out if CDP capture times out.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: [
+        "Operations dashboard verified queue depth 11 and SLA breaches 3.",
+        "Recommended owner: Incident Commander.",
+        "Next action: confirm live production data before treating the fixture as authoritative.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-timeout",
+          session_key: "worker:browser:task-timeout:toolu-browser",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          evidence_summary:
+            "Browser failure buckets: attach_failed=1, cdp_command_timeout=1.",
+          result:
+            "Browser observed Operations Dashboard Fixture. Browser failure buckets: attach_failed=1, cdp_command_timeout=1.",
+          final_content:
+            "Operations dashboard verified queue depth 11, SLA breaches 3, and recommended owner Incident Commander.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            failureBuckets: [
+              { bucket: "attach_failed", count: 1 },
+              { bucket: "cdp_command_timeout", count: 1 },
+            ],
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt:
+        "Review this operations dashboard as a user would see it in the browser. If the browser times out while capturing rendered page evidence, close out with what was verified and what remains unverified.",
+    },
+  });
+
+  assert.match(result.content, /cdp_command_timeout/);
+  assert.match(result.content, /attach_failed/);
+  assert.match(result.content, /bounded to recovered browser evidence/);
+  assert.match(result.content, /longer timeout/);
+});
+
+test("llm role response generator surfaces browser bucket visibility from raw session payload metadata", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-browser", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Review the dashboard and close out if CDP capture times out.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: [
+        "Verified queue depth 11 and SLA breaches 3.",
+        "Recommended owner: Incident Commander.",
+        "Next action: inspect additional panels if those details matter.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-timeout",
+          session_key: "worker:browser:task-timeout:toolu-browser",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Browser observed Operations Dashboard Fixture.",
+          final_content:
+            "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            metadata: {
+              toolUse: {
+                rounds: [
+                  {
+                    round: 1,
+                    progress: [
+                      {
+                        toolName: "browser_snapshot",
+                        toolCallId: "browser-tool-1",
+                        phase: "failed",
+                        summary: "CDP capture timed out.",
+                        detail: {
+                          failureBuckets: [
+                            { bucket: "cdp_command_timeout", count: 1 },
+                          ],
+                        },
+                      },
+                    ],
+                    results: [],
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt:
+        "Review this operations dashboard as a user would see it in the browser. If browser CDP capture times out, keep the limitation visible.",
+    },
+  });
+
+  assert.match(result.content, /cdp_command_timeout/);
+  assert.match(result.content, /bounded to recovered browser evidence/);
+});
+
 test("llm role response generator prefers completed sub-agent finals over sibling timeouts", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -6709,8 +10172,16 @@ test("llm role response generator prefers completed sub-agent finals over siblin
       return {
         text: "Calling parallel sub-agents.",
         toolCalls: [
-          { id: "toolu-done", name: "sessions_spawn", input: { agent_id: "explore", task: "Return evidence." } },
-          { id: "toolu-timeout", name: "sessions_spawn", input: { agent_id: "browser", task: "Slow browser work." } },
+          {
+            id: "toolu-done",
+            name: "sessions_spawn",
+            input: { agent_id: "explore", task: "Return evidence." },
+          },
+          {
+            id: "toolu-timeout",
+            name: "sessions_spawn",
+            input: { agent_id: "browser", task: "Slow browser work." },
+          },
         ],
         modelId: "claude-test",
         providerId: "anthropic",
@@ -6735,7 +10206,10 @@ test("llm role response generator prefers completed sub-agent finals over siblin
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -6772,7 +10246,11 @@ test("llm role response generator prefers completed sub-agent finals over siblin
           tool_chain: ["explore"],
           result: "Completed source-backed answer.",
           final_content: "Completed source-backed answer.",
-          payload: { mode: "llm_sub_agent", workerType: "explore", content: "Completed source-backed answer." },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: "Completed source-backed answer.",
+          },
         }),
       };
     },
@@ -6792,13 +10270,19 @@ test("llm role response generator prefers completed sub-agent finals over siblin
     gatewayInputs[1]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("completed delegated session evidence")
-    )
+        readToolContent(message.content).includes(
+          "completed delegated session evidence",
+        ),
+    ),
   );
   assert.ok(
     !gatewayInputs[1]?.messages.some(
-      (message) => message.role === "user" && readToolContent(message.content).includes("No usable evidence was gathered before the timeout")
-    )
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes(
+          "No usable evidence was gathered before the timeout",
+        ),
+    ),
   );
 });
 
@@ -6842,7 +10326,13 @@ test("llm role response generator reroutes private URL research spawns to browse
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -6858,9 +10348,14 @@ test("llm role response generator reroutes private URL research spawns to browse
           agent_id: input.call.input.agent_id,
           status: "completed",
           tool_chain: [input.call.input.agent_id],
-          result: "Browser rendered evidence: Vendor Alpha pricing is $19 per seat.",
+          result:
+            "Browser rendered evidence: Vendor Alpha pricing is $19 per seat.",
           final_content: "Vendor Alpha pricing is $19 per seat.",
-          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Vendor Alpha pricing is $19 per seat." },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Vendor Alpha pricing is $19 per seat.",
+          },
         }),
       };
     },
@@ -6887,8 +10382,14 @@ test("llm role response generator reroutes private URL research spawns to browse
   });
 
   assert.equal(executedCalls[0]?.input.agent_id, "browser");
-  assert.match(String(executedCalls[0]?.input.task ?? ""), /127\.0\.0\.1:49152\/vendor-alpha/);
-  assert.match(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /127\.0\.0\.1:49152\/vendor-alpha/,
+  );
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /local\/private URL source/i,
+  );
   assert.match(result.content, /\$19 per seat/);
 });
 
@@ -6920,7 +10421,13 @@ test("llm role response generator allows loopback explore only for isolated E2E 
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -6937,7 +10444,11 @@ test("llm role response generator allows loopback explore only for isolated E2E 
           status: "completed",
           result: "Explore fetched local fixture evidence.",
           final_content: "Explore fetched local fixture evidence.",
-          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Explore fetched local fixture evidence." },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Explore fetched local fixture evidence.",
+          },
         }),
       };
     },
@@ -6972,7 +10483,361 @@ test("llm role response generator allows loopback explore only for isolated E2E 
   }
 
   assert.equal(executedCalls[0]?.input.agent_id, "explore");
-  assert.doesNotMatch(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+  assert.doesNotMatch(
+    String(executedCalls[0]?.input.task ?? ""),
+    /local\/private URL source/i,
+  );
+});
+
+test("llm role response generator collapses duplicate bounded timeout source spawns", async () => {
+  const previous = process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+  process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = "1";
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return {
+        text: "Starting a bounded slow-source probe.",
+        toolCalls: [
+          {
+            id: "toolu-slow-explore",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "explore",
+              label: "slow source",
+              task: "Fetch http://127.0.0.1:49152/slow-fixture for a release-risk note with a bounded attempt.",
+            },
+          },
+          {
+            id: "toolu-slow-browser",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              label: "slow source",
+              task: "Open http://127.0.0.1:49152/slow-fixture for the same release-risk note with a bounded attempt.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "The slow source timed out; verified facts are bounded and residual risk remains.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-slow-source",
+          session_key: "worker:explore:task-slow-source:toolu-slow-explore",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: "The slow source timed out; no body was verified.",
+          final_content: "The slow source timed out; no body was verified.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "No body was verified.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  try {
+    await generator.generate({
+      activation: buildActivation(),
+      packet: {
+        ...buildPacket(),
+        taskPrompt: [
+          "Evaluate this slow source for a release-risk note.",
+          "Slow source: http://127.0.0.1:49152/slow-fixture",
+          "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available.",
+        ].join("\n"),
+        capabilityInspection: {
+          availableWorkers: ["browser", "explore"],
+          connectorStates: [],
+          apiStates: [],
+          skillStates: [],
+          transportPreferences: [],
+          unavailableCapabilities: [],
+          generatedAt: 1,
+        },
+      },
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+    } else {
+      process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = previous;
+    }
+  }
+
+  assert.equal(executedCalls.length, 1);
+  assert.equal(executedCalls[0]?.input.agent_id, "explore");
+  assert.match(String(executedCalls[0]?.input.task ?? ""), /slow-fixture/);
+});
+
+test("llm role response generator reroutes non-browser bounded timeout source spawns to explore", async () => {
+  const previous = process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+  process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = "1";
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return toolCallResult("toolu-slow-browser", "sessions_spawn", {
+        agent_id: "browser",
+        label: "Slow source risk assessment",
+        timeout_seconds: 0.001,
+        task: "Evaluate http://127.0.0.1:49152/slow-fixture for a release-risk note. Use a bounded attempt.",
+      });
+    }
+    return {
+      text: "The slow source timed out; verified facts are bounded and residual risk remains.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-slow-source",
+          session_key: "worker:explore:task-slow-source:toolu-slow-browser",
+          agent_id: input.call.input.agent_id,
+          status: "timeout",
+          result: "The slow source timed out.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Timeout.",
+          },
+        }),
+        isError: true,
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  try {
+    await generator.generate({
+      activation: buildActivation(),
+      packet: {
+        ...buildPacket(),
+        taskPrompt: [
+          "Evaluate this slow source for a release-risk note.",
+          "Slow source: http://127.0.0.1:49152/slow-fixture",
+          "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available.",
+        ].join("\n"),
+        capabilityInspection: {
+          availableWorkers: ["browser", "explore"],
+          connectorStates: [],
+          apiStates: [],
+          skillStates: [],
+          transportPreferences: [],
+          unavailableCapabilities: [],
+          generatedAt: 1,
+        },
+      },
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+    } else {
+      process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = previous;
+    }
+  }
+
+  assert.equal(executedCalls.length, 1);
+  assert.equal(executedCalls[0]?.input.agent_id, "explore");
+  assert.equal(executedCalls[0]?.input.timeout_seconds, 0.001);
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /bounded source-check/,
+  );
+});
+
+test("llm role response generator keeps browser duplicate for bounded browser-visible timeout source", async () => {
+  const previous = process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+  process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = "1";
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return {
+        text: "Starting a bounded browser-visible slow page probe.",
+        toolCalls: [
+          {
+            id: "toolu-slow-explore",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "explore",
+              label: "slow rendered page",
+              task: "Fetch http://127.0.0.1:49152/slow-fixture as an operator would see it.",
+            },
+          },
+          {
+            id: "toolu-slow-browser",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              label: "slow rendered page",
+              task: "Open http://127.0.0.1:49152/slow-fixture as an operator would see it.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "The browser-visible source timed out; rendered evidence remains unverified.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-slow-browser",
+          session_key: "worker:browser:task-slow-browser:toolu-slow-browser",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: "The browser-visible source timed out.",
+          final_content: "The browser-visible source timed out.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Rendered evidence remains unverified.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  try {
+    await generator.generate({
+      activation: buildActivation(),
+      packet: {
+        ...buildPacket(),
+        taskPrompt: [
+          "Evaluate this slow browser-visible source for a release-risk note.",
+          "Slow source: http://127.0.0.1:49152/slow-fixture",
+          "Use a bounded attempt first and inspect the rendered page as an operator would see it.",
+        ].join("\n"),
+        capabilityInspection: {
+          availableWorkers: ["browser", "explore"],
+          connectorStates: [],
+          apiStates: [],
+          skillStates: [],
+          transportPreferences: [],
+          unavailableCapabilities: [],
+          generatedAt: 1,
+        },
+      },
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+    } else {
+      process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = previous;
+    }
+  }
+
+  assert.equal(executedCalls.length, 1);
+  assert.equal(executedCalls[0]?.input.agent_id, "browser");
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /browser-visible URL source|operator would see/i,
+  );
 });
 
 test("llm role response generator keeps browser-visible loopback tasks on the browser path in fixture mode", async () => {
@@ -7003,7 +10868,13 @@ test("llm role response generator keeps browser-visible loopback tasks on the br
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -7018,13 +10889,15 @@ test("llm role response generator keeps browser-visible loopback tasks on the br
           session_key: "worker:browser:task-complex-page:toolu-complex-page",
           agent_id: input.call.input.agent_id,
           status: "completed",
-          result: "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+          result:
+            "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
           final_content:
             "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
           payload: {
             mode: "llm_sub_agent",
             workerType: input.call.input.agent_id,
-            content: "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+            content:
+              "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
           },
         }),
       };
@@ -7057,7 +10930,10 @@ test("llm role response generator keeps browser-visible loopback tasks on the br
       },
     });
     assert.equal(executedCalls[0]?.input.agent_id, "browser");
-    assert.match(String(executedCalls[0]?.input.task ?? ""), /browser-visible URL source/i);
+    assert.match(
+      String(executedCalls[0]?.input.task ?? ""),
+      /browser-visible URL source/i,
+    );
     assert.match(result.content, /frame, shadow component, and popup/i);
   } finally {
     if (previous === undefined) {
@@ -7096,7 +10972,13 @@ test("llm role response generator does not reroute explicitly static loopback fi
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -7113,7 +10995,11 @@ test("llm role response generator does not reroute explicitly static loopback fi
           status: "completed",
           result: "Explore fetched static fixture evidence.",
           final_content: "Explore fetched static fixture evidence.",
-          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Explore fetched static fixture evidence." },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Explore fetched static fixture evidence.",
+          },
         }),
       };
     },
@@ -7153,7 +11039,10 @@ test("llm role response generator does not reroute explicitly static loopback fi
   }
 
   assert.equal(executedCalls[0]?.input.agent_id, "explore");
-  assert.doesNotMatch(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+  assert.doesNotMatch(
+    String(executedCalls[0]?.input.task ?? ""),
+    /local\/private URL source/i,
+  );
 });
 
 test("llm role response generator repairs browser-visible final answers that skip browser evidence", async () => {
@@ -7162,8 +11051,14 @@ test("llm role response generator repairs browser-visible final answers that ski
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
-    const latestMessageText = readToolContent(input.messages.at(-1)?.content ?? "");
-    if (latestMessageText.includes("Runtime correction: browser-visible evidence is missing")) {
+    const latestMessageText = readToolContent(
+      input.messages.at(-1)?.content ?? "",
+    );
+    if (
+      latestMessageText.includes(
+        "Runtime correction: browser-visible evidence is missing",
+      )
+    ) {
       return toolCallResult("toolu-browser-evidence", "sessions_spawn", {
         agent_id: "browser",
         label: "Complex browser page",
@@ -7195,7 +11090,13 @@ test("llm role response generator repairs browser-visible final answers that ski
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -7207,7 +11108,8 @@ test("llm role response generator repairs browser-visible final answers that ski
         content: JSON.stringify({
           protocol: "turnkeyai.session_tool_result.v1",
           task_id: "task-browser-evidence",
-          session_key: "worker:browser:task-browser-evidence:toolu-browser-evidence",
+          session_key:
+            "worker:browser:task-browser-evidence:toolu-browser-evidence",
           agent_id: input.call.input.agent_id,
           status: "completed",
           evidence_summary:
@@ -7254,13 +11156,424 @@ test("llm role response generator repairs browser-visible final answers that ski
   });
 
   assert.equal(executedCalls[0]?.input.agent_id, "browser");
-  assert.match(String(executedCalls[0]?.input.task ?? ""), /rendered frame, shadow component, and popup state/i);
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /rendered frame, shadow component, and popup state/i,
+  );
   assert.ok(
-    gatewayInputs.some((input) => input.toolChoice && JSON.stringify(input.toolChoice).includes("sessions_spawn")),
-    "browser-evidence repair should force sessions_spawn"
+    gatewayInputs.some(
+      (input) =>
+        input.toolChoice &&
+        JSON.stringify(input.toolChoice).includes("sessions_spawn"),
+    ),
+    "browser-evidence repair should force sessions_spawn",
   );
   assert.match(result.content, /Frame panel shows backlog 7/i);
-  assert.doesNotMatch(result.content, /raw HTTP fetch because the browser tools are unavailable/i);
+  assert.doesNotMatch(
+    result.content,
+    /raw HTTP fetch because the browser tools are unavailable/i,
+  );
+});
+
+test("llm role response generator bounds browser-evidence repair for slow loopback timeout follow-up", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const latestMessageText = readToolContent(
+      input.messages.at(-1)?.content ?? "",
+    );
+    if (
+      latestMessageText.includes(
+        "Runtime correction: browser-visible evidence is missing",
+      )
+    ) {
+      assert.match(
+        latestMessageText,
+        /resumed timeout evidence is still content-poor/i,
+      );
+      assert.match(latestMessageText, /browser_open with timeout_ms 10000/i);
+      return toolCallResult("toolu-browser-timeout-repair", "sessions_spawn", {
+        agent_id: "browser",
+        label: "Browser probe of slow-fixture",
+        task: "Open http://127.0.0.1:49152/slow-fixture and report whether rendered evidence appears.",
+      });
+    }
+    if (input.messages.some((message) => message.role === "tool")) {
+      return {
+        text: "Browser probe returned bounded negative evidence: page.goto timed out before domcontentloaded; status, headers, body, and rendered marker remain unverified.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "The rendered DOM and browser page state were not verified because the browser worker failed at the runtime limit.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string", enum: ["browser", "explore"] },
+              label: { type: "string" },
+              timeout_seconds: { type: "number" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.input.agent_id, "browser");
+      assert.equal(input.call.input.timeout_seconds, 90);
+      assert.match(
+        String(input.call.input.task),
+        /Supplemental local timeout probe mode/i,
+      );
+      assert.match(
+        String(input.call.input.task),
+        /browser_open with timeout_ms 10000/i,
+      );
+      assert.match(
+        String(input.call.input.task),
+        /http:\/\/127\.0\.0\.1:49152\/slow-fixture/,
+      );
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-browser-timeout-repair",
+          session_key:
+            "worker:browser:task-browser-timeout-repair:toolu-browser-timeout-repair",
+          agent_id: "browser",
+          status: "completed",
+          evidence_summary:
+            "Final URL http://127.0.0.1:49152/slow-fixture; transport_failure page.goto Timeout 10000ms exceeded before domcontentloaded.",
+          result: "Browser bounded negative evidence.",
+          final_content:
+            "Browser bounded negative evidence: page.goto Timeout 10000ms exceeded before domcontentloaded; status, headers, body, and rendered marker remain unverified.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content:
+              "Browser bounded negative evidence: page.goto Timeout 10000ms exceeded before domcontentloaded; status, headers, body, and rendered marker remain unverified.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Evaluate this slow browser-visible source for a release-risk note.",
+        "Slow source: http://127.0.0.1:49152/slow-fixture",
+        "Use a bounded timeout attempt first. If the source does not return in time, close out with evidence that is available.",
+        "If a follow-up resumes the same source-check context and evidence remains content-poor, inspect the rendered page as an operator would see it.",
+      ].join("\n"),
+      capabilityInspection: {
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    },
+  });
+
+  assert.equal(executedCalls.length, 1);
+  assert.match(result.content, /bounded negative evidence/i);
+  assert.ok(
+    gatewayInputs.some(
+      (input) =>
+        input.toolChoice &&
+        JSON.stringify(input.toolChoice).includes("sessions_spawn"),
+    ),
+    "browser-evidence repair should still force sessions_spawn",
+  );
+});
+
+test("llm role response generator repairs browser final synthesis that drops requested frame and shadow evidence", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let repairPrompt = "";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-complex-page", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Open http://127.0.0.1:49152/complex-browser and inspect the rendered frame, shadow component, and popup state.",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      return {
+        text: [
+          "Operational state: popup opened; packet P-42 active in drill workflow.",
+          "Owner: Frame Captain.",
+          "Approval requirement: manager acknowledgement required for packet P-42.",
+          "Residual risk: local complex browser fixture only.",
+          "Not verified: frame source URL and audit trail.",
+        ].join("\n"),
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    repairPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+    return {
+      text: [
+        "Operational state: popup opened; packet P-42 is active in the drill workflow.",
+        "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain.",
+        "Shadow review component: risk desk approval required.",
+        "Details popup: packet P-42 requires manager acknowledgement.",
+        "Residual risk: local complex browser fixture only; audit trail and external exposure remain not verified.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-complex-browser",
+          session_key: "worker:browser:task-complex-browser:toolu-complex-page",
+          agent_id: "browser",
+          status: "completed",
+          result: [
+            "Frame panel: backlog 7, owner Frame Captain.",
+            "Shadow review: risk desk approval required.",
+            "Popup drill opened: packet P-42 requires manager acknowledgement.",
+          ].join("\n"),
+          evidence_summary: [
+            "Frame panel: backlog 7, owner Frame Captain.",
+            "Shadow review: risk desk approval required.",
+            "Popup drill opened: packet P-42 requires manager acknowledgement.",
+          ].join("\n"),
+          final_content: [
+            "Frame panel: backlog 7, owner Frame Captain.",
+            "Shadow review: risk desk approval required.",
+            "Popup drill opened: packet P-42 requires manager acknowledgement.",
+          ].join("\n"),
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content: [
+              "Frame panel: backlog 7, owner Frame Captain.",
+              "Shadow review: risk desk approval required.",
+              "Popup drill opened: packet P-42 requires manager acknowledgement.",
+            ].join("\n"),
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Review this complex browser page as an operator would see it.",
+        "Page: http://127.0.0.1:49152/complex-browser",
+        "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+        "Open the details popup, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(repairPrompt, /omitted requested browser evidence dimensions/);
+  assert.match(repairPrompt, /embedded frame source state/);
+  assert.match(repairPrompt, /shadow review state/);
+  assert.match(repairPrompt, /Frame panel: backlog 7, owner Frame Captain/);
+  assert.match(repairPrompt, /Shadow review: risk desk approval required/);
+  assert.match(
+    result.content,
+    /Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain/,
+  );
+  assert.match(
+    result.content,
+    /Shadow review component: risk desk approval required/,
+  );
+  assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator repairs completed static fetch synthesis when browser-visible evidence is still missing", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-static", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Fetch http://127.0.0.1:49152/complex-browser.",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      return {
+        text: [
+          "The page has an embedded source frame, shadow component wrapper, and Open details popup trigger.",
+          "The explore worker uses static HTTP fetch and cannot execute JavaScript interactions, access shadow DOM content, or resolve iframe content.",
+          "A live browser session is needed to verify the operational state, owner, approval requirement, and residual risk.",
+        ].join("\n"),
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 3) {
+      const repairPrompt = readToolContent(
+        input.messages.at(-1)?.content ?? "",
+      );
+      assert.match(repairPrompt, /browser-visible evidence is missing/);
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_spawn",
+      });
+      return toolCallResult("toolu-browser", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Open http://127.0.0.1:49152/complex-browser and inspect the rendered frame, shadow component, and popup state.",
+      });
+    }
+    return {
+      text: [
+        "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain.",
+        "Shadow review component: risk desk approval required.",
+        "Details popup: packet P-42 requires manager acknowledgement.",
+        "Residual risk: local complex browser fixture only; external exposure remains not verified.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      const isBrowser = input.call.input.agent_id === "browser";
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: `task-${input.call.id}`,
+          session_key: `worker:${input.call.input.agent_id}:task-${input.call.id}`,
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: isBrowser
+            ? "Frame panel: backlog 7, owner Frame Captain.\nShadow review: risk desk approval required.\nPopup drill opened: packet P-42 requires manager acknowledgement."
+            : "Static HTML shows an embedded source frame, shadow component wrapper, and Open details popup trigger.",
+          final_content: isBrowser
+            ? "Frame panel: backlog 7, owner Frame Captain.\nShadow review: risk desk approval required.\nPopup drill opened: packet P-42 requires manager acknowledgement."
+            : "Static HTML shows an embedded source frame, shadow component wrapper, and Open details popup trigger.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: isBrowser
+              ? "Frame panel: backlog 7, owner Frame Captain.\nShadow review: risk desk approval required.\nPopup drill opened: packet P-42 requires manager acknowledgement."
+              : "Static HTML shows an embedded source frame, shadow component wrapper, and Open details popup trigger.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Review this complex browser page as an operator would see it.",
+        "Page: http://127.0.0.1:49152/complex-browser",
+        "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+        "Open the details popup, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(executedCalls[0]?.input.agent_id, "explore");
+  assert.equal(executedCalls[1]?.input.agent_id, "browser");
+  assert.match(
+    result.content,
+    /Shadow review component: risk desk approval required/,
+  );
+  assert.equal(gatewayInputs.length, 4);
 });
 
 test("llm role response generator reroutes browser-visible public URL spawns to browser", async () => {
@@ -7289,7 +11602,13 @@ test("llm role response generator reroutes browser-visible public URL spawns to 
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -7301,7 +11620,8 @@ test("llm role response generator reroutes browser-visible public URL spawns to 
         content: JSON.stringify({
           protocol: "turnkeyai.session_tool_result.v1",
           task_id: "task-public-browser-page",
-          session_key: "worker:browser:task-public-browser-page:toolu-public-browser-page",
+          session_key:
+            "worker:browser:task-public-browser-page:toolu-public-browser-page",
           agent_id: input.call.input.agent_id,
           status: "completed",
           result: "Browser-visible Hacker News evidence captured.",
@@ -7342,8 +11662,14 @@ test("llm role response generator reroutes browser-visible public URL spawns to 
   });
 
   assert.equal(executedCalls[0]?.input.agent_id, "browser");
-  assert.match(String(executedCalls[0]?.input.task ?? ""), /browser-visible URL source/i);
-  assert.match(String(executedCalls[0]?.input.task ?? ""), /news\.ycombinator\.com/);
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /browser-visible URL source/i,
+  );
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /news\.ycombinator\.com/,
+  );
   assert.match(result.content, /Browser-visible Hacker News evidence/);
 });
 
@@ -7375,7 +11701,13 @@ test("llm role response generator keeps private non-loopback URLs on the browser
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -7392,7 +11724,11 @@ test("llm role response generator keeps private non-loopback URLs on the browser
           status: "completed",
           result: "Browser inspected mixed private URL source safely.",
           final_content: "Browser inspected mixed private URL source safely.",
-          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Browser inspected mixed private URL source safely." },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Browser inspected mixed private URL source safely.",
+          },
         }),
       };
     },
@@ -7427,7 +11763,10 @@ test("llm role response generator keeps private non-loopback URLs on the browser
   }
 
   assert.equal(executedCalls[0]?.input.agent_id, "browser");
-  assert.match(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /local\/private URL source/i,
+  );
 });
 
 test("llm role response generator reroutes link-local and wildcard URL research spawns to browser", async () => {
@@ -7497,7 +11836,13 @@ test("llm role response generator reroutes link-local and wildcard URL research 
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -7515,7 +11860,11 @@ test("llm role response generator reroutes link-local and wildcard URL research 
           tool_chain: [input.call.input.agent_id],
           result: "Browser evidence complete.",
           final_content: "Browser evidence complete.",
-          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Browser evidence complete." },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Browser evidence complete.",
+          },
         }),
       };
     },
@@ -7543,12 +11892,18 @@ test("llm role response generator reroutes link-local and wildcard URL research 
 
   assert.deepEqual(
     executedCalls.map((call) => call.input.agent_id),
-    ["browser", "browser", "browser", "browser"]
+    ["browser", "browser", "browser", "browser"],
   );
-  assert.match(String(executedCalls[0]?.input.task ?? ""), /169\.254\.169\.254/);
+  assert.match(
+    String(executedCalls[0]?.input.task ?? ""),
+    /169\.254\.169\.254/,
+  );
   assert.match(String(executedCalls[1]?.input.task ?? ""), /0\.0\.0\.0:49152/);
   assert.match(String(executedCalls[2]?.input.task ?? ""), /\[fe90::1\]/);
-  assert.match(String(executedCalls[3]?.input.task ?? ""), /printer\.local\/status/);
+  assert.match(
+    String(executedCalls[3]?.input.task ?? ""),
+    /printer\.local\/status/,
+  );
 });
 
 test("llm role response generator keeps public URL research spawns on explore", async () => {
@@ -7591,7 +11946,13 @@ test("llm role response generator keeps public URL research spawns on explore", 
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: { type: "string" },
+              agent_id: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -7609,7 +11970,11 @@ test("llm role response generator keeps public URL research spawns on explore", 
           tool_chain: [input.call.input.agent_id],
           result: "Explore evidence complete.",
           final_content: "Explore evidence complete.",
-          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Explore evidence complete." },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Explore evidence complete.",
+          },
         }),
       };
     },
@@ -7650,17 +12015,29 @@ test("llm role response generator continues timed-out sibling before final synth
           {
             id: "toolu-orchestration",
             name: "sessions_spawn",
-            input: { agent_id: "explore", label: "orchestration", task: "Fetch orchestration evidence." },
+            input: {
+              agent_id: "explore",
+              label: "orchestration",
+              task: "Fetch orchestration evidence.",
+            },
           },
           {
             id: "toolu-bridge",
             name: "sessions_spawn",
-            input: { agent_id: "explore", label: "bridge", task: "Fetch bridge evidence." },
+            input: {
+              agent_id: "explore",
+              label: "bridge",
+              task: "Fetch bridge evidence.",
+            },
           },
           {
             id: "toolu-signals",
             name: "sessions_spawn",
-            input: { agent_id: "browser", label: "signals", task: "Inspect rendered signal dashboard." },
+            input: {
+              agent_id: "browser",
+              label: "signals",
+              task: "Inspect rendered signal dashboard.",
+            },
           },
         ],
         modelId: "claude-test",
@@ -7671,13 +12048,18 @@ test("llm role response generator continues timed-out sibling before final synth
       };
     }
     if (gatewayInputs.length === 2) {
-      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_send" });
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_send",
+      });
       assert.ok(
         input.messages.some(
           (message) =>
             message.role === "user" &&
-            readToolContent(message.content).includes("required delegated evidence stream timed out")
-        )
+            readToolContent(message.content).includes(
+              "required delegated evidence stream timed out",
+            ),
+        ),
       );
       return {
         text: "Continuing the missing source.",
@@ -7715,12 +12097,21 @@ test("llm role response generator continues timed-out sibling before final synth
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" }, label: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" }, label: { type: "string" } },
+          },
         },
         {
           name: "sessions_send",
           description: "Continue a sub-agent",
-          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       ];
     },
@@ -7747,7 +12138,10 @@ test("llm role response generator continues timed-out sibling before final synth
         };
       }
       if (input.call.name === "sessions_send") {
-        assert.equal(input.call.input.session_key, "worker:browser:task-1:toolu-signals");
+        assert.equal(
+          input.call.input.session_key,
+          "worker:browser:task-1:toolu-signals",
+        );
         return {
           toolCallId: input.call.id,
           toolName: input.call.name,
@@ -7759,8 +12153,13 @@ test("llm role response generator continues timed-out sibling before final synth
             status: "completed",
             tool_chain: ["browser"],
             result: "Rendered dashboard verified.",
-            final_content: "PRODUCT_SIGNAL_OK. Stuck missions: 6. Weak answer rate: 24%.",
-            payload: { mode: "llm_sub_agent", workerType: "browser", content: "PRODUCT_SIGNAL_OK" },
+            final_content:
+              "PRODUCT_SIGNAL_OK. Stuck missions: 6. Weak answer rate: 24%.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "browser",
+              content: "PRODUCT_SIGNAL_OK",
+            },
           }),
         };
       }
@@ -7776,7 +12175,11 @@ test("llm role response generator continues timed-out sibling before final synth
           tool_chain: ["explore"],
           result: `${input.call.input.label} evidence complete.`,
           final_content: `${input.call.input.label} evidence complete.`,
-          payload: { mode: "llm_sub_agent", workerType: "explore", content: `${input.call.input.label} evidence complete.` },
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: `${input.call.input.label} evidence complete.`,
+          },
         }),
       };
     },
@@ -7800,12 +12203,196 @@ test("llm role response generator continues timed-out sibling before final synth
     },
   });
 
-  assert.equal(result.content, "Final brief with orchestration, bridge, and Stuck missions: 6; Weak answer rate: 24%.");
+  assert.equal(
+    result.content,
+    "Final brief with orchestration, bridge, and Stuck missions: 6; Weak answer rate: 24%.",
+  );
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_spawn", "sessions_spawn", "sessions_spawn", "sessions_send"]
+    ["sessions_spawn", "sessions_spawn", "sessions_spawn", "sessions_send"],
   );
   assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator continues a lone timed-out coverage-critical session before final synthesis", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "Delegating product brief evidence collection.",
+        toolCalls: [
+          {
+            id: "toolu-product-brief",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              label: "agent-workbench-product-brief",
+              task: [
+                "Research source: http://127.0.0.1:61930/product-orchestration",
+                "Capability source: http://127.0.0.1:61930/product-bridge",
+                "Live signal dashboard: http://127.0.0.1:61930/product-signals",
+              ].join("\n"),
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "sessions_send",
+      });
+      assert.ok(
+        input.messages.some(
+          (message) =>
+            message.role === "user" &&
+            readToolContent(message.content).includes(
+              "required delegated evidence stream timed out",
+            ),
+        ),
+      );
+      return {
+        text: "Continuing the resumable browser session.",
+        toolCalls: [
+          {
+            id: "toolu-continue-product-brief",
+            name: "sessions_send",
+            input: {
+              session_key: "worker:browser:task-product:toolu-product-brief",
+              message:
+                "Return the missing source evidence for the final product brief.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "Final brief covers orchestration, browser bridge, and product signals.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executedCalls: LLMToolCall[] = [];
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" }, label: { type: "string" } },
+          },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_key: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_send") {
+        assert.equal(
+          input.call.input.session_key,
+          "worker:browser:task-product:toolu-product-brief",
+        );
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-product",
+            session_key: "worker:browser:task-product:toolu-product-brief",
+            agent_id: "browser",
+            status: "completed",
+            tool_chain: ["browser_open", "browser_snapshot"],
+            result: "All three product sources verified.",
+            final_content: "ORCHESTRATION_OK. BRIDGE_OK. PRODUCT_SIGNAL_OK.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "browser",
+              content: "PRODUCT_SIGNAL_OK",
+            },
+          }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        isError: true,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-product",
+          session_key: "worker:browser:task-product:toolu-product-brief",
+          agent_id: "browser",
+          status: "timeout",
+          timeout_seconds: 45,
+          evidence_available: true,
+          tool_chain: ["browser_open", "browser_snapshot"],
+          result:
+            "Browser worker timed out before returning all source evidence.",
+          final_content: null,
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            continuationDigest: { reason: "timeout_summary" },
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Prepare a product-ready brief about the next agent workbench release.",
+        "Research source: http://127.0.0.1:61930/product-orchestration",
+        "Capability source: http://127.0.0.1:61930/product-bridge",
+        "Live signal dashboard: http://127.0.0.1:61930/product-signals",
+        "These are three independent evidence streams. Use specialist work where it helps, and use browser-visible evidence for the live signal dashboard.",
+        "The final brief should tell a product leader what to build next, why it matters, what not to over-emphasize, and what risk remains.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /ORCHESTRATION_OK/);
+  assert.match(result.content, /BRIDGE_OK/);
+  assert.match(result.content, /PRODUCT_SIGNAL_OK/);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_spawn", "sessions_send"],
+  );
+  assert.ok(gatewayInputs.length >= 2);
 });
 
 test("llm role response generator repairs textual tool-call markup during final synthesis", async () => {
@@ -7846,7 +12433,10 @@ test("llm role response generator repairs textual tool-call markup during final 
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -7888,10 +12478,12 @@ test("llm role response generator repairs textual tool-call markup during final 
     gatewayInputs[2]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("pseudo tool-call markup")
-    )
+        readToolContent(message.content).includes("pseudo tool-call markup"),
+    ),
   );
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "completed_sub_agent_final");
   assert.equal(closeout?.toolCallCount, 1);
   assert.equal(closeout?.roundCount, 1);
@@ -7926,7 +12518,10 @@ test("llm role response generator uses local evidence closeout when final repair
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -7974,10 +12569,12 @@ test("llm role response generator uses local evidence closeout when final repair
     gatewayInputs[2]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("pseudo tool-call markup")
-    )
+        readToolContent(message.content).includes("pseudo tool-call markup"),
+    ),
   );
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "completed_sub_agent_final");
   assert.equal(closeout?.toolCallCount, 1);
   assert.equal(closeout?.roundCount, 1);
@@ -8022,7 +12619,10 @@ test("llm role response generator repairs textual tool-call markup after a norma
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -8044,16 +12644,23 @@ test("llm role response generator repairs textual tool-call markup after a norma
     packet: buildPacket(),
   });
 
-  assert.equal(result.content, "Final answer from existing tool evidence only.");
+  assert.equal(
+    result.content,
+    "Final answer from existing tool evidence only.",
+  );
   assert.equal(gatewayInputs.length, 3);
   assert.ok(
     gatewayInputs[2]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("pseudo tool-call markup without a native tool call")
-    )
+        readToolContent(message.content).includes(
+          "pseudo tool-call markup without a native tool call",
+        ),
+    ),
   );
-  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  const closeout = result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(closeout?.reason, "pseudo_tool_call");
   assert.equal(closeout?.toolCallCount, 1);
   assert.equal(closeout?.roundCount, 1);
@@ -8067,7 +12674,10 @@ test("llm role response generator caps parallel tool execution fan-out", async (
   let maxActiveTools = 0;
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async () => {
-    gatewayInputs.push({ messages: [], modelId: "unused" } as unknown as GenerateTextInput);
+    gatewayInputs.push({
+      messages: [],
+      modelId: "unused",
+    } as unknown as GenerateTextInput);
     if (gatewayInputs.length === 1) {
       return {
         text: "I will fan out.",
@@ -8098,7 +12708,10 @@ test("llm role response generator caps parallel tool execution fan-out", async (
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -8116,7 +12729,10 @@ test("llm role response generator caps parallel tool execution fan-out", async (
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
-        content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+        content: JSON.stringify({
+          status: "completed",
+          result: input.call.input.task,
+        }),
       };
     },
   };
@@ -8176,7 +12792,10 @@ test("llm role response generator skips per-turn tool calls above the execution 
         {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
-          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { task: { type: "string" } },
+          },
         },
       ];
     },
@@ -8185,13 +12804,21 @@ test("llm role response generator skips per-turn tool calls above the execution 
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
-        content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+        content: JSON.stringify({
+          status: "completed",
+          result: input.call.input.task,
+        }),
       };
     },
   };
   const generator = new LLMRoleResponseGenerator({
     gateway,
-    toolLoop: { executor, maxRounds: 4, maxParallelToolCalls: 2, maxToolCallsPerRound: 2 },
+    toolLoop: {
+      executor,
+      maxRounds: 4,
+      maxParallelToolCalls: 2,
+      maxToolCallsPerRound: 2,
+    },
   });
 
   const result = await generator.generate({
@@ -8203,21 +12830,35 @@ test("llm role response generator skips per-turn tool calls above the execution 
   assert.deepEqual(executedCallIds, ["toolu-a", "toolu-b"]);
   const secondRoundToolResults = gatewayInputs[1]?.messages
     .filter((message) => message.role === "tool")
-    .map((message) => ({ toolCallId: message.toolCallId, content: readToolContent(message.content) }));
+    .map((message) => ({
+      toolCallId: message.toolCallId,
+      content: readToolContent(message.content),
+    }));
   assert.deepEqual(
     secondRoundToolResults?.map((message) => message.toolCallId),
-    ["toolu-a", "toolu-b", "toolu-c"]
+    ["toolu-a", "toolu-b", "toolu-c"],
   );
-  assert.match(secondRoundToolResults?.[2]?.content ?? "", /tool_call_limit_exceeded/);
+  assert.match(
+    secondRoundToolResults?.[2]?.content ?? "",
+    /tool_call_limit_exceeded/,
+  );
   const trace = result.metadata?.toolUse as
-    | { rounds?: Array<{ results?: Array<{ toolCallId?: string; skipped?: boolean }> }> }
+    | {
+        rounds?: Array<{
+          results?: Array<{ toolCallId?: string; skipped?: boolean }>;
+        }>;
+      }
     | undefined;
-  assert.equal(trace?.rounds?.[0]?.results?.find((item) => item.toolCallId === "toolu-c")?.skipped, true);
+  assert.equal(
+    trace?.rounds?.[0]?.results?.find((item) => item.toolCallId === "toolu-c")
+      ?.skipped,
+    true,
+  );
 });
 
 function buildActivation(
   roleOverrides?: Partial<RoleActivationInput["thread"]["roles"][number]>,
-  options?: { omitLegacyModel?: boolean }
+  options?: { omitLegacyModel?: boolean },
 ): RoleActivationInput {
   return {
     thread: {
@@ -8294,7 +12935,11 @@ function buildActivation(
   };
 }
 
-function toolCallResult(id: string, name: string, input: Record<string, unknown>): GenerateTextResult {
+function toolCallResult(
+  id: string,
+  name: string,
+  input: Record<string, unknown>,
+): GenerateTextResult {
   return {
     text: "Calling a tool.",
     toolCalls: [{ id, name, input }],
@@ -8306,7 +12951,21 @@ function toolCallResult(id: string, name: string, input: Record<string, unknown>
   };
 }
 
-function readToolContent(content: GenerateTextInput["messages"][number]["content"]): string {
+function textResult(text: string): GenerateTextResult {
+  return {
+    text,
+    toolCalls: [],
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible",
+    adapterName: "test",
+    raw: {},
+  };
+}
+
+function readToolContent(
+  content: GenerateTextInput["messages"][number]["content"],
+): string {
   if (typeof content === "string") {
     return content;
   }
@@ -8320,13 +12979,17 @@ function readToolContent(content: GenerateTextInput["messages"][number]["content
     .join("\n");
 }
 
-function finalSynthesisPrompt(input: GenerateTextInput | undefined): string | undefined {
+function finalSynthesisPrompt(
+  input: GenerateTextInput | undefined,
+): string | undefined {
   const messages = input?.messages ?? [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
     if (
       message.role === "user" &&
-      readToolContent(message.content).includes("Final synthesis format contract")
+      readToolContent(message.content).includes(
+        "Final synthesis format contract",
+      )
     ) {
       return readToolContent(message.content);
     }
@@ -8366,8 +13029,36 @@ function makeOverflowError(): RequestEnvelopeOverflowError {
   });
 }
 
+function readMessageContentTextForTest(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        if (
+          part &&
+          typeof part === "object" &&
+          "text" in part &&
+          typeof part.text === "string"
+        ) {
+          return part.text;
+        }
+        return JSON.stringify(part);
+      })
+      .join("\n");
+  }
+  return JSON.stringify(content ?? "");
+}
+
 function buildPacket(): RolePromptPacket {
-  const artifactIds = Array.from({ length: 12 }, (_, index) => `artifact-${index + 1}`);
+  const artifactIds = Array.from(
+    { length: 12 },
+    (_, index) => `artifact-${index + 1}`,
+  );
   return {
     roleId: "role-lead",
     roleName: "Lead",
@@ -8391,8 +13082,20 @@ function buildPacket(): RolePromptPacket {
         overBudget: false,
       },
       omittedSegments: [],
-      includedSegments: ["task-brief", "recent-turns", "role-scratchpad", "retrieved-memory", "worker-evidence"],
-      sectionOrder: ["task-brief", "recent-turns", "role-scratchpad", "retrieved-memory", "worker-evidence"],
+      includedSegments: [
+        "task-brief",
+        "recent-turns",
+        "role-scratchpad",
+        "retrieved-memory",
+        "worker-evidence",
+      ],
+      sectionOrder: [
+        "task-brief",
+        "recent-turns",
+        "role-scratchpad",
+        "retrieved-memory",
+        "worker-evidence",
+      ],
       compactedSegments: [],
       assemblyFingerprint: "fp",
       usedArtifacts: artifactIds,

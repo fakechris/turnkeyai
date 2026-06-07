@@ -116,6 +116,26 @@ test("natural mission weak answer gate allows synthesized answers that mention d
   assert.ok(!signals.includes("delegation-only closeout"));
 });
 
+test("natural mission weak answer gate allows source-bounded inability to estimate", () => {
+  const signals = findWeakAnswerSignals(
+    [
+      "Verified facts: Vendor Alpha lists $19 per seat and browser automation with traceable screenshots.",
+      "Unknowns: minimum seats and billing cycle are absent from the checked source, so we can't estimate entry cost.",
+      "Residual risk: treat missing SLA and support details as unverified rather than absent.",
+    ].join("\n")
+  );
+
+  assert.ok(!signals.includes("placeholder uncertainty"));
+});
+
+test("natural mission weak answer gate still rejects unsupported estimate language", () => {
+  const signals = findWeakAnswerSignals(
+    "Vendor Alpha pricing is a lower-bound estimate at $19/seat. It probably fits teams that value browser automation."
+  );
+
+  assert.ok(signals.includes("placeholder uncertainty"));
+});
+
 test("natural mission weak evidence gate ignores business-scope unverified fields near screenshot terms", () => {
   const signals = findWeakEvidenceSignals(
     [

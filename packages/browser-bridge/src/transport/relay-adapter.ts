@@ -176,7 +176,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
   async openTarget(
     browserSessionId: string,
     url: string,
-    owner?: { ownerType?: BrowserSession["ownerType"]; ownerId?: string }
+    owner?: { ownerType?: BrowserSession["ownerType"]; ownerId?: string; timeoutMs?: number }
   ): Promise<BrowserTarget> {
     const result = await this.executeTask(
       "send",
@@ -185,7 +185,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
         threadId: owner?.ownerId ?? browserSessionId,
         instructions: `Open ${url}`,
         actions: [
-          { kind: "open", url },
+          { kind: "open", url, ...(owner?.timeoutMs ? { timeoutMs: owner.timeoutMs } : {}) },
           { kind: "snapshot", note: "open-target" },
         ],
         browserSessionId,

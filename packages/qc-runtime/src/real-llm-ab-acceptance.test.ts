@@ -7,6 +7,7 @@ import {
   REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS,
   REAL_LLM_AB_BROWSER_RELIABILITY_SUITE_REQUIREMENTS,
   REAL_LLM_AB_CORE_SUITE_REQUIREMENTS,
+  REAL_LLM_AB_FULL_NATURAL_SUITE_REQUIREMENTS,
   summarizeRealLlmAbAcceptanceReport,
   validateRealLlmAbAcceptanceReport,
   type RealLlmAbAcceptanceReport,
@@ -108,6 +109,17 @@ test("real LLM A/B acceptance validates the browser-reliability suite without cl
   assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: comparison-research/);
 });
 
+test("real LLM A/B acceptance validates the full natural suite", () => {
+  const report = buildFullNaturalSuiteReport();
+
+  const fullValidation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "full-natural" });
+  const coreValidation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "core" });
+
+  assert.equal(fullValidation.status, "passed");
+  assert.equal(fullValidation.summary?.scenarioCount, REAL_LLM_AB_FULL_NATURAL_SUITE_REQUIREMENTS.length);
+  assert.equal(coreValidation.status, "passed");
+});
+
 test("real LLM A/B acceptance requires every browser-focused scenario when requested", () => {
   const report = buildBrowserFocusedSuiteReport({
     scenarios: ["natural-browser-external-page-review"],
@@ -134,6 +146,19 @@ test("real LLM A/B acceptance requires every browser-reliability scenario when r
     validation.failures.join("\n"),
     /browser-reliability suite missing required scenario: browser-cdp-timeout-closeout/
   );
+});
+
+test("real LLM A/B acceptance requires every full natural scenario when requested", () => {
+  const report = buildFullNaturalSuiteReport({
+    scenarios: REAL_LLM_AB_FULL_NATURAL_SUITE_REQUIREMENTS.map((requirement) => requirement.acceptedScenarioIds[0]!).filter(
+      (scenario) => scenario !== "natural-cancel-followup-continuation"
+    ),
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "full-natural" });
+
+  assert.equal(validation.status, "failed");
+  assert.match(validation.failures.join("\n"), /full-natural suite missing required scenario: cancel-followup-continuation/);
 });
 
 test("real LLM A/B markdown conclusion downgrades unvalidated capability claims", () => {
@@ -449,6 +474,8 @@ function buildReport(
           noExactAnswerShape: true,
         },
         requiresBrowser: true,
+        comparisonClassification: "validated_comparison",
+        referenceAudit: passingReferenceAudit(),
         turnkeyai: overrides.weakenRun?.turnkeyai?.(turnkeyaiRun) ?? turnkeyaiRun,
         reference: overrides.weakenRun?.reference?.(referenceRun) ?? referenceRun,
       },
@@ -497,6 +524,8 @@ function buildCoreSuiteReport(input: {
         ...(requiresApproval ? { requiresApproval: true } : {}),
         ...(requiresContinuation ? { requiresContinuation: true } : {}),
         ...(requiresTimeoutCloseout ? { requiresTimeoutCloseout: true } : {}),
+        comparisonClassification: "validated_comparison",
+        referenceAudit: passingReferenceAudit(),
         turnkeyai: input.weaken?.[scenarioId]?.(turnkeyai) ?? turnkeyai,
         reference: buildRun({
           system: "reference",
@@ -535,6 +564,8 @@ function buildBrowserFocusedSuiteReport(input: { scenarios?: readonly string[] }
           noExactAnswerShape: true,
         },
         requiresBrowser: true,
+        comparisonClassification: "validated_comparison",
+        referenceAudit: passingReferenceAudit(),
         turnkeyai: buildRun({
           system: "turnkeyai",
           artifactPath: `artifacts/evals/run/turnkeyai/${scenarioId}.json`,
@@ -557,6 +588,76 @@ function buildBrowserFocusedSuiteReport(input: { scenarios?: readonly string[] }
   };
 }
 
+function buildFullNaturalSuiteReport(input: { scenarios?: readonly string[] } = {}): RealLlmAbAcceptanceReport {
+  const scenarios =
+    input.scenarios ?? REAL_LLM_AB_FULL_NATURAL_SUITE_REQUIREMENTS.map((requirement) => requirement.acceptedScenarioIds[0]!);
+  return {
+    kind: "turnkeyai.real-llm-ab-acceptance.report",
+    status: "passed",
+    capabilityClaim: "capability proven",
+    stabilityClaim: "stable",
+    generatedAtMs: 1,
+    scenarios: scenarios.map((scenarioId) => {
+      const prompt = `请完成 ${scenarioId} 自然场景，给出结论、证据和风险。`;
+      const requiresBrowser = scenarioId.startsWith("natural-browser-") || scenarioId === "natural-long-delegation";
+      const requiresApproval = scenarioId.includes("approval");
+      const requiresContinuation = scenarioId.includes("followup") || scenarioId.includes("continuation");
+      const requiresTimeoutCloseout = scenarioId.includes("timeout") && scenarioId !== "natural-approval-wait-timeout-closeout";
+      const turnkeyai = buildRun({
+        system: "turnkeyai",
+        artifactPath: `artifacts/evals/run/turnkeyai/${scenarioId}.json`,
+        missionId: `msn.${scenarioId}.1`,
+        dimensionScores: FULL_SCORES,
+        requiresBrowser,
+        requiresApproval,
+        requiresContinuation,
+        requiresTimeoutCloseout,
+        scenarioId,
+        prompt,
+      });
+      return {
+        scenarioId,
+        prompt,
+        promptPolicy: {
+          naturalPrompt: true,
+          noForcedToolCall: true,
+          noFixedMarkerGate: true,
+          noExactAnswerShape: true,
+        },
+        ...(requiresBrowser ? { requiresBrowser: true } : {}),
+        ...(requiresApproval ? { requiresApproval: true } : {}),
+        ...(requiresContinuation ? { requiresContinuation: true } : {}),
+        ...(requiresTimeoutCloseout ? { requiresTimeoutCloseout: true } : {}),
+        comparisonClassification: "validated_comparison",
+        referenceAudit: passingReferenceAudit(),
+        turnkeyai,
+        reference: buildRun({
+          system: "reference",
+          artifactPath: `artifacts/evals/run/reference/${scenarioId}.json`,
+          dimensionScores: FULL_SCORES,
+          requiresBrowser,
+          requiresApproval,
+          requiresContinuation,
+          requiresTimeoutCloseout,
+          scenarioId,
+          prompt,
+        }),
+      };
+    }),
+  };
+}
+
+function passingReferenceAudit(): NonNullable<RealLlmAbAcceptanceReport["scenarios"][number]["referenceAudit"]> {
+  return {
+    provenanceStatus: "passed",
+    runtimeHealthStatus: "passed",
+    adapterStatus: "passed",
+    fairnessStatus: "passed",
+    missingProvenance: [],
+    findings: [],
+  };
+}
+
 function buildRun(input: {
   system: RealLlmAbScenarioRun["system"];
   artifactPath?: string | undefined;
@@ -571,10 +672,10 @@ function buildRun(input: {
   prompt: string;
 }): RealLlmAbScenarioRun {
   const scenarioId = input.scenarioId ?? "browser-dynamic-page";
-  const subAgentCount = scenarioId === "long-delegation" ? 2 : 1;
+  const subAgentCount = scenarioId === "long-delegation" || scenarioId === "natural-long-delegation" ? 2 : 1;
   const completedSubAgentCount = subAgentCount;
   const toolSequence =
-    scenarioId === "memory-recall"
+    scenarioId === "memory-recall" || scenarioId === "natural-memory-recall"
       ? ["memory_search", "memory_get"]
       : input.requiresContinuation
         ? ["sessions_send"]

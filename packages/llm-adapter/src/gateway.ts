@@ -1,16 +1,24 @@
 import type { GenerateTextInput, GenerateTextResult, ProtocolClient } from "./types";
 import { assertRequestEnvelopeWithinLimits } from "./request-envelope-guard";
+import type { RequestEnvelopeLimits } from "./request-envelope-guard";
 import { ModelRegistry } from "./registry";
 
 export class LLMGateway {
   private readonly registry: ModelRegistry;
   private readonly clients: ProtocolClient[];
   private readonly requestTimeoutMs: number;
+  private readonly requestEnvelopeLimits: Partial<RequestEnvelopeLimits> | undefined;
 
-  constructor(options: { registry: ModelRegistry; clients: ProtocolClient[]; requestTimeoutMs?: number }) {
+  constructor(options: {
+    registry: ModelRegistry;
+    clients: ProtocolClient[];
+    requestTimeoutMs?: number;
+    requestEnvelopeLimits?: Partial<RequestEnvelopeLimits>;
+  }) {
     this.registry = options.registry;
     this.clients = options.clients;
     this.requestTimeoutMs = resolveRequestTimeoutMs(options.requestTimeoutMs);
+    this.requestEnvelopeLimits = options.requestEnvelopeLimits;
   }
 
   async listModels() {
@@ -43,7 +51,7 @@ export class LLMGateway {
             ...input,
             modelId,
           },
-          undefined,
+          this.requestEnvelopeLimits,
           model
         );
         const client = this.clients.find((item) => item.supports(model.protocol));

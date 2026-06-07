@@ -106,6 +106,36 @@ describe("MissionCompletionEvaluator", () => {
     });
   });
 
+  it("completes pending approval wait-timeout closeouts without performing the side effect", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, status: "needs_approval", pendingApprovals: 1 },
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Submit the local form only after approval.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "## Wait-timeout closeout",
+            "The operator decision for browser.form.submit did not arrive during this attempt cycle and the approval remains pending.",
+            "No form submission or browser side effect was performed.",
+            "Safe fallback: keep the dry-run unsubmitted. Next action: ask the operator to approve a new request or rerun the submission attempt when ready.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1, pendingApprovals: 0 },
+    });
+  });
+
   it("blocks stale pending-approval final answers after approvals clear", () => {
     const decision = evaluateMissionCompletion({
       mission: { ...mission, pendingApprovals: 0 },
@@ -206,6 +236,57 @@ describe("MissionCompletionEvaluator", () => {
       roleRuns: [],
     });
     assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("treats literal mention placeholders in a complete closeout as final text", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Summarize the browser evidence.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content:
+            "Evidence is complete, residual uncertainty is noted, and no further browser work is required. @{<role_id>}",
+        },
+      ],
+      roleRuns: [],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("does not mark a real delegation mention as a final answer", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, agents: ["role-lead", "role-browser"] },
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Inspect the browser page.",
+        },
+        {
+          ...message("a-handoff", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Please inspect the page. @{role-browser}",
+        },
+      ],
+      roleRuns: [],
+    });
+
+    assert.notDeepEqual(decision, {
       action: "update",
       reason: "final_answer",
       patch: { status: "done", progress: 1 },
@@ -429,6 +510,258 @@ describe("MissionCompletionEvaluator", () => {
     }
   });
 
+  it("accepts awaiting-context setup closeouts even when the provider reports max tokens", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        desc: [
+          "Start a launch-planning thread for Helios-47.",
+          "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          metadata: { stopReason: "max_tokens" },
+          content:
+            "Helios-47 launch-planning thread is initiated and ready. Mission can resume when launch context is provided; no research is required at this stage. FLOW-1 is closed.",
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("accepts concise awaiting-context setup acknowledgements", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        desc: [
+          "Start a launch-planning thread for Helios-47.",
+          "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          metadata: { stopReason: "max_tokens" },
+          content:
+            "Helios-47 launch-planning thread opened. Status: awaiting launch context; the mission is ready once target date, payload specs, and priorities are available.",
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("clears an existing blocker after a complete browser-unavailable closeout requested by the mission", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        status: "blocked",
+        blockers: 1,
+        desc: [
+          "Review this operations dashboard as a user would see it in the browser.",
+          "If the browser cannot be reached, close out with what was verified, what remains unverified, and the next action an operator should take.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "**Browser Unavailable - CDP Connection Refused**",
+            "The browser automation layer could not establish a Chrome DevTools Protocol connection; attempts returned ECONNREFUSED.",
+            "What was verified: the target dashboard URL is reachable on the local network.",
+            "What remains unverified: rendered dashboard content, metrics, alerts, and operational data are not verified.",
+            "Next action for operator: restart the browser automation server or open the dashboard manually and share a screenshot.",
+            "Flow closed; no further automated work is possible until browser automation is restored.",
+            "Browser failure buckets: browser_cdp_unavailable=4.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1, blockers: 0 },
+    });
+  });
+
+  it("keeps an existing blocker when browser-unavailable wording lacks a mission-authorized closeout", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        status: "blocked",
+        blockers: 1,
+        desc: "Review the operations dashboard as a user would see it in the browser.",
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Browser automation was unavailable.",
+            "The dashboard content is not verified.",
+            "Next action: operator should restart CDP.",
+            "Flow closed because browser_cdp_unavailable occurred.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, { action: "none", reason: "existing_blocker" });
+  });
+
+  it("keeps an existing blocker when browser-unavailable closeout has no verified scope", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        status: "blocked",
+        blockers: 1,
+        desc: [
+          "Review this operations dashboard as a user would see it in the browser.",
+          "If the browser cannot be reached, close out with what was verified, what remains unverified, and the next action an operator should take.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Browser automation was unavailable due to ECONNREFUSED.",
+            "The dashboard content is not verified.",
+            "Next action: operator should restart CDP.",
+            "Flow closed.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, { action: "none", reason: "existing_blocker" });
+  });
+
+  it("clears an existing blocker after a complete browser-timeout closeout requested by the mission", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        status: "blocked",
+        blockers: 1,
+        desc: [
+          "Review this operations dashboard as a user would see it in the browser.",
+          "If the browser times out while capturing the rendered page, close out with what was verified, what remains unverified, and the next action an operator should take.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Natural Browser CDP Timeout Closeout",
+            "What was verified: Page rendered with title Operations Dashboard Fixture, screenshots captured, queue depth 11, SLA breaches 3, escalation threshold, and Incident Commander ownership.",
+            "What remains unverified: DOM structure beyond the visible excerpt, interactive controls, live data polling, and below-the-fold content because CDP snapshot and scroll commands timed out.",
+            "Next action for operator: treat the evidence as source-bounded to the local fixture and retry with a longer CDP timeout if full DOM structure is required.",
+            "The fixture scope is limited and cannot validate real-world queue depths.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1, blockers: 0 },
+    });
+  });
+
+  it("clears an existing blocker after a browser-runtime root-cause closeout", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        status: "blocked",
+        blockers: 1,
+        desc: [
+          "Review this operations dashboard as a user would see it in the browser.",
+          "If the browser cannot be reached, close out with what was verified, what remains unverified, and the next action an operator should take.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Natural Browser Unavailable Closeout",
+            "What was verified: Target URL was reached by the browser worker three times; root cause identified as browser runtime infrastructure issue with ECONNREFUSED from the browser internal CDP server.",
+            "The target application is not the source of the failure.",
+            "What remains unverified: dashboard metrics, status indicators, rendered panels, loading states, authentication requirements, and any browser-visible content.",
+            "Next action for operator: restart or repair the browser runtime, verify the dashboard server is reachable, then re-submit the review task once browser runtime is healthy.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1, blockers: 0 },
+    });
+  });
+
+  it("keeps an existing blocker when a timeout closeout omits the unverified scope", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        status: "blocked",
+        blockers: 1,
+        desc: [
+          "Review this operations dashboard as a user would see it in the browser.",
+          "If the browser times out while capturing the rendered page, close out with what was verified, what remains unverified, and the next action an operator should take.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "CDP timeout occurred while capturing the dashboard.",
+            "What was verified: queue depth 11.",
+            "Next action for operator: retry with a longer timeout.",
+            "The fixture scope is limited.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, { action: "none", reason: "existing_blocker" });
+  });
+
   it("accepts complete denied approval safe closeout even when the provider reports max tokens", () => {
     const decision = evaluateMissionCompletion({
       mission,
@@ -447,6 +780,36 @@ describe("MissionCompletionEvaluator", () => {
             "Safe fallback: No form submission was or will be performed.",
             "The dry-run submission is cancelled.",
             "No further browser work is queued. Flow FLOW-1 is complete.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("accepts denied approval safe fallback closeouts that use natural no-action wording under max tokens", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Prepare the local dry-run form submission, but do not apply it if approval is denied.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          metadata: { stopReason: "max_tokens" },
+          content: [
+            "**Approval denied.** The browser form submission has been cancelled. No action was performed.",
+            "**Safe fallback:** The approval workflow halts cleanly. The dry-run form was never submitted.",
+            "If the operator wants to proceed, the safe next action is to re-initiate with a revised action or a different scope for re-review.",
           ].join("\n"),
         },
       ],

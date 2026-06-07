@@ -270,6 +270,20 @@ describe("mission tool-use e2e report", () => {
       },
     ];
     result.final = result.timeline.at(-1)!;
+    result.runtimeEvidence = {
+      providerToolProtocol: {
+        rounds: 1,
+        providerToolCallsReturned: 3,
+        assistantToolUseBlockCount: 3,
+        roleToolResultMessageCount: 3,
+        toolResultBlockCount: 3,
+        matchingToolCallIds: 3,
+        assistantBeforeToolResults: true,
+        allToolResultsMatchAssistantToolCalls: true,
+        nextProviderRequestIncludesToolResults: true,
+        toolNames: ["sessions_spawn"],
+      },
+    };
 
     const quality = evaluateNaturalMissionQuality({
       spec,
@@ -457,6 +471,76 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(alternateQuality.failures, []);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
+        "**Approval denied.** The browser form submission has been cancelled. No action was performed.",
+        "**Safe fallback:** The approval workflow halts cleanly. The dry-run form at `http://127.0.0.1/approval-form` was never submitted.",
+        "If the operator wants to proceed, the safe next action is to re-initiate with a revised action or a different scope for re-review.",
+      ].join("\n"),
+      tMs: 2200,
+    };
+    result.final = result.timeline.at(-1)!;
+    const cancelledSubmissionQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(cancelledSubmissionQuality.failures, []);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
+        "**Safe Closeout**",
+        "**Requested action:** `browser.form.submit` - dry-run form submission to `http://127.0.0.1/approval-form`",
+        "**What ran:** Nothing. Permission was denied; no browser action or side effect was applied.",
+        "**Safe next action:** Await re-request from the operator if they wish to approve the action with different scope or context.",
+        "Flow closed. No state mutated.",
+      ].join("\n\n"),
+      tMs: 2300,
+    };
+    result.final = result.timeline.at(-1)!;
+    const noStateMutatedQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(noStateMutatedQuality.failures, []);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
+        "**Approval denied - safe closeout confirmed.**",
+        "| Field | Value |",
+        "|---|---|",
+        "| **Action** | `browser.form.submit` |",
+        "| **Decision** | **Denied** by natural-mission-e2e |",
+        "| **Form submission attempted?** | **No** - blocked at approval gate |",
+        "**Safe fallback:**",
+        "- No browser mutation was applied.",
+        "- The approval form at `http://127.0.0.1/approval-form` was never touched.",
+        "- The operator is free to inspect the page manually, resubmit with adjusted parameters, or dismiss the workflow entirely.",
+        "**Flow closed.** No further action will be taken on this thread until a new request is issued.",
+      ].join("\n"),
+      tMs: 2400,
+    };
+    result.final = result.timeline.at(-1)!;
+    const naturalTableCloseoutQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(naturalTableCloseoutQuality.failures, []);
   });
 
   it("accepts approved dry-run submission evidence without treating permission safety text as blocked browser evidence", () => {
@@ -551,6 +635,57 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(quality.failures, []);
     assert.equal(quality.approvalExercised, true);
     assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+
+    result.timeline[4]!.runtime = {
+      ...result.timeline[4]!.runtime,
+      resultContent: [
+        "Approval gate blocked the browser form submit side-effect before operator approval.",
+        "Approval decision/application: permission.result approved the request and permission.applied cached it.",
+        'Browser fixture evidence: pre-submit state was "Dry-run has not been submitted" and post-submit state was "Dry-run submitted locally after approval; no external mutation was performed."',
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Dry-run form submission - complete.",
+      "Approval: browser.form.submit was operator approved and runtime cache applied.",
+      'Verified post-submit evidence: status changed from "Dry-run has not been submitted" to "Dry-run submitted locally after approval; no external mutation was performed."',
+      "Residual risk / no-external-side-effect boundary: no external network call or downstream system mutation was performed or verified. External-side-effect scope: not verified.",
+    ].join("\n");
+    const broadPermissionGateQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(broadPermissionGateQuality.failures, []);
+    assert.equal(broadPermissionGateQuality.weakAnswerSignals.includes("browser evidence blocked"), false);
+
+    result.timeline[4]!.runtime = {
+      ...result.timeline[4]!.runtime,
+      resultContent: [
+        "Approval gate blocked browser.form.submit before approval.",
+        "The browser sub-agent later reused the warm page after permission.applied.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Approval ID: ap.thread.call",
+      "Action approved: browser.form.submit",
+      "Result: SUCCESS",
+      "The dry-run form submission was executed on the warm browser session.",
+      "Post-submit verified: Dry-run submitted locally after approval; no external mutation was performed.",
+      "URL unchanged on the loopback approval-form page.",
+      "Residual risk: Confirmed local-only - no external side effects.",
+    ].join("\n");
+    const successStyleQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(successStyleQuality.failures, []);
   });
 
   it("accepts pending approval as a natural paused state without decision or permission application", () => {
@@ -1213,12 +1348,28 @@ describe("mission tool-use e2e report", () => {
       startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
       completedAt: Date.UTC(2026, 4, 30, 12, 0, 5),
       results: [fakeNaturalResult()],
+      modelProvenance: {
+        modelCatalogPath: "/tmp/models.local.json",
+        provider: "minimax",
+        modelId: "MiniMax-Text-01",
+        modelEntryId: "minimax-text",
+      },
+      scenarioTimeoutMs: 180_000,
+      fixtureContentHashes: {
+        "http://<loopback-host>:<loopback-port>/ops-dashboard": "sha256:dashboard",
+      },
     });
 
     assert.equal(report.kind, "turnkeyai.natural-mission-e2e.report");
     assert.equal(report.evidenceMode, "natural-real-llm");
     assert.equal(report.progressClaim, "natural-evidence");
     assert.equal(report.capabilityClaim, "unproven-without-comparative-evidence");
+    assert.equal(report.provider, "minimax");
+    assert.equal(report.modelId, "MiniMax-Text-01");
+    assert.equal(report.modelEntryId, "minimax-text");
+    assert.equal(report.modelCatalogPath, "/tmp/models.local.json");
+    assert.equal(report.timeoutPolicy?.scenarioTimeoutMs, 180_000);
+    assert.equal(report.fixtureContentHashes?.["http://<loopback-host>:<loopback-port>/ops-dashboard"], "sha256:dashboard");
     assert.equal(report.promptPolicy.forbidsContractGateLanguage, true);
     assert.ok(report.promptPolicy.forbiddenPatterns.some((pattern) => pattern.includes("exactly once")));
     assert.ok(report.requiredQualitySignals.includes("source-backed-evidence"));
@@ -1544,6 +1695,7 @@ describe("mission tool-use e2e report", () => {
       "Hacker News is a live external page with visible story listings and navigation cues.",
       "Visible items include navigation links such as new, past, comments, ask, show, jobs, submit, and login.",
       "Visible page evidence also includes comment and point cues on story rows, so the page purpose is user-ranked discussion rather than a static article.",
+      "No blocking, captchas, or forced auth; page fully rendered.",
       "Verification status: Site blocked access | No - fully loaded; Redirected to another domain | No.",
       "Next action: treat this as a current browser-visible snapshot for triage or browsing context, not as durable research evidence.",
       "Residual risk: live external content can change; login behavior, vote actions, deeper scroll content, and interaction outcomes remain unverified.",
@@ -1561,6 +1713,259 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
     assert.deepEqual(quality.failures, []);
     assert.equal(quality.status, "passed");
+  });
+
+  it("counts concrete external-page items as visible answer evidence", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-external-page-review", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+      externalPageUrl: "https://news.ycombinator.com/",
+    });
+    result.scenario = "natural-browser-external-page-review";
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent:
+        "Hacker News browser evidence: top stories, points, comments, and navigation links were captured.",
+    };
+    result.final.text = [
+      "Page purpose: Hacker News is a technology and startup news aggregator with ranked discussion links.",
+      "Verified concrete items: top stories include Gemma 4 and Elixir v1.20 with points and comments, so this is a live listing surface rather than a static article.",
+      "Navigation links: new, past, comments, ask, show, jobs, submit, and login were present in the captured page state.",
+      "Decision-useful takeaway: treat the result as a current browser-visible snapshot for browsing context or source discovery, not as durable historical evidence.",
+      "Residual risk: page content is live and changing, lower scroll depth was not verified, and login-only actions or voting behavior were not tested.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.sourceCoverage.answerTerms, { covered: 3, total: 3, missing: [] });
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
+  it("accepts structured browser blocker fields when they carry falsey values", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Hacker News loaded with visible story listings, points, comments, and navigation links.",
+        "Blocked elements: none.",
+        "Captcha: false.",
+        "Redirect: 0.",
+        '{"blocked": false, "captcha": false, "redirect": false, "block_detected": false, "captchaDetected": false}',
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Hacker News loaded with visible story listings, comment cues, points, and navigation links.",
+      "The browser status fields reported blocked elements: none, captcha: false, and redirect: 0.",
+      "Residual risk: live external content can change and login-only actions remain unverified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
+  it("accepts natural not-blocked browser status wording", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Hacker News loaded with visible story listings, points, comments, and navigation links.",
+        "Site was not blocked and page was not redirected.",
+        "blocked status: false; captcha observed: not present; challenge state: none.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Hacker News loaded with visible story listings, comment cues, points, and navigation links.",
+      "The browser result reports the site was not blocked, not redirected, and did not show a captcha challenge.",
+      "Residual risk: live external content can change and login-only actions remain unverified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
+  it("accepts browser evidence when metrics retain a recovered successful timeout", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.metrics.tool.requested = 1;
+    result.metrics.tool.results = 1;
+    result.metrics.tool.failed = 0;
+    result.metrics.tool.timeouts = 1;
+    result.metrics.recovery.events = 0;
+    result.metrics.qualityGate.status = "passed";
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.metrics.qualityGate.checks = [
+      { name: "tool_loop_closeout", status: "pass", detail: "Final answer synthesized from completed sub-agent final content." },
+      { name: "failure_free", status: "pass", detail: "No recovery or failed tool-result event is present." },
+    ];
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Hacker News loaded in the browser with visible story listings.",
+        "Visible items include 265 points and 76 comments on one story, plus navigation links for new, past, comments, ask, show, jobs, submit, and login.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Hacker News is a live external page with visible story listings and navigation cues.",
+      "Visible items include one story with 265 points and 76 comments, plus navigation links such as new, past, comments, ask, show, jobs, submit, and login.",
+      "Next action: use this as a current browser-visible snapshot, not a durable source of historical facts.",
+      "Residual risk: live external content can change and login-only actions remain unverified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.status, "passed");
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.dimensionScores.timeoutCloseoutQuality, 2);
+  });
+
+  it("rejects retained timeout metrics when successful browser evidence is not clean", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.metrics.tool.requested = 1;
+    result.metrics.tool.results = 1;
+    result.metrics.tool.failed = 0;
+    result.metrics.tool.timeouts = 1;
+    result.metrics.qualityGate.status = "blocked";
+    result.metrics.qualityGate.evidenceEvents = 0;
+    result.metrics.qualityGate.checks = [
+      { name: "tool_loop_closeout", status: "warn", detail: "Timeout remains visible without recovered evidence." },
+      { name: "failure_free", status: "fail", detail: "Timed-out tool result needs operator attention." },
+    ];
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: "The browser timed out before collecting page evidence.",
+    };
+    result.final.text = "The browser timed out. Residual risk remains because Hacker News was not verified.";
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.status, "failed");
+    assert.ok(quality.failures.includes("scenario had timed-out tool results"));
   });
 
   it("does not treat browser-block wording in tool call input as evidence", () => {
@@ -1677,6 +2082,102 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.status, "passed");
   });
 
+  it("does not join browser evidence lines with unrelated blocked wording", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Browser observed Hacker News page with story listings, points, comments, and navigation links.",
+        "A separate safety note says a hypothetical submit action would be blocked before side effects.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Hacker News loaded with visible story listings, comment cues, points, and navigation links.",
+      "The current browser result did not report a page blocker, captcha, or redirect.",
+      "Residual risk: live external content can change and login-only actions remain unverified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
+  it("accepts recovered transport failure when final answer keeps the browser limitation visible", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-external-page-review", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+      externalPageUrl: "https://news.ycombinator.com/",
+    });
+    result.scenario = "natural-browser-external-page-review";
+    result.metrics.browser = {
+      ...result.metrics.browser,
+      failureBuckets: [{ bucket: "transport_failure", count: 1, latestAtMs: 2_000 }],
+    };
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent:
+        "Hacker News rendered with story listings, points, comments, and navigation links after a recoverable transport_failure.",
+    };
+    result.final.text = [
+      "Page purpose: Hacker News is a ranked link aggregator and discussion board.",
+      "Concrete visible items: navigation links new, past, comments, ask, show, jobs, submit, login; story rows include points and comment links.",
+      "Residual risk: live external rankings can change and only partial scroll depth was inspected.",
+      "Browser limitation: transport_failure occurred during browser work. Treat the final answer as bounded to the evidence that was recovered, and retry or continue the browser task if the missing evidence matters.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser transport degraded"), true);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
   it("keeps positive blocker evidence when the same line also negates another blocker", () => {
     const result = fakeNaturalResult();
     const spec = {
@@ -1755,9 +2256,10 @@ describe("mission tool-use e2e report", () => {
       ].join("\n"),
     };
     result.final.text = [
-      "Visible operational state: the embedded source frame shows a backlog count of 7 and owner Frame Captain.",
-      "Approval requirement: the shadow review component says risk desk approval required.",
-      "Popup workflow: opening the popup exposes packet P-42 and manager acknowledgement.",
+      "Operational State: the page renders with an embedded source frame showing backlog data (7 items), a shadow DOM review component, and a popup workflow.",
+      "Owner: Frame Captain.",
+      "Approval Requirement: Risk desk approval is required for the shadow review component.",
+      "Popup workflow: the popup opened and displayed packet P-42 requires manager acknowledgement.",
       "Residual risk: local complex browser fixture only; external production impact remains not verified.",
     ].join(" ");
 
@@ -1858,6 +2360,56 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.sourceCoverage.residualRiskVisible, true);
     assert.equal(quality.weakAnswerSignals.includes("browser evidence not verified"), false);
     assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
+  it("does not join a not-verified section heading with later browser screenshot facts", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-comparison-research", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.timeline[0]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "call",
+      callInput: JSON.stringify({ agent_id: "explore", task: "compare vendor sources" }),
+    };
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Vendor Alpha: browser automation and traceable screenshots.",
+        "Vendor Beta: approval workflow and team handoff history.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "### Recommendation",
+      "Choose Vendor Alpha for lower cost and bundled browser automation.",
+      "",
+      "### Not Verified",
+      "Agent workbench-specific integration depth was not disclosed by either vendor.",
+      "",
+      "Source Ledger:",
+      "- Vendor Alpha: verified; browser automation and traceable screenshots.",
+      "- Vendor Beta: verified; approval workflow and team handoff history.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence not verified"), false);
   });
 
   it("does not treat product residual-risk wording as failed browser execution evidence", () => {
@@ -2344,6 +2896,74 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(notVerifiedHeadingQuality.failures, []);
+
+    result.final.text = [
+      "Browser continuity note: 3 cdp_command_timeout failures occurred during snapshot/screenshot attempts; the session recovered and produced two screenshots and a console probe using fallback capture paths.",
+      "What was verified: page title Operations Dashboard Fixture, queue depth 11, SLA breaches 3, and Incident Commander ownership.",
+      "What remains unverified: additional panels and interactive elements not captured in the text excerpt.",
+      "Next action: confirm whether this dashboard reflects live production data before assigning incident ownership.",
+    ].join("\n");
+    const recoveredBucketTokenQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(recoveredBucketTokenQuality.failures, []);
+
+    result.final.text = [
+      "Dashboard Review - Timeout Closeout",
+      "What was verified: Page rendered with title Operations Dashboard Fixture, triage status TURNKEYAI_DASHBOARD_TRIAGE_OK, queue depth 11, SLA breaches 3, escalation threshold, recommended owner Incident Commander, and a screenshot captured while CDP timeout bucket count was 4.",
+      "What remains unverified: DOM structure beyond visible text excerpt, interactive controls, live data behavior, and below-the-fold content because snapshot and scroll commands timed out.",
+      "Next action for operator: engage Incident Commander for the active queue/SLA stress, then retry with a longer CDP timeout if full DOM structure is needed.",
+    ].join("\n");
+    const renderedCdpEvidenceQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(renderedCdpEvidenceQuality.sourceCoverage.answerTerms, {
+      covered: 3,
+      total: 3,
+      missing: [],
+    });
+    assert.deepEqual(renderedCdpEvidenceQuality.failures, []);
+
+    result.final.text = [
+      "Operations Dashboard Review - Closeout",
+      "Source type: Browser-rendered page.",
+      "Verified Facts: page title Operations Dashboard Fixture, queue depth 11, SLA breaches 3, escalation threshold, and Incident Commander ownership.",
+      "Unverified / Not Captured: full DOM snapshot - 4 CDP command timeouts blocked traversal; interactive controls and charts were not confirmed.",
+      "Residual Risk: local fixture data only.",
+      "Next Action for Operator: confirm whether production traffic should use this dashboard before treating the values as live incident evidence.",
+    ].join("\n");
+    const blockedTraversalQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(blockedTraversalQuality.failures, []);
+
+    result.final.text = [
+      "Verified: Page loaded at the operations dashboard URL with title Operations Dashboard Fixture.",
+      "Dashboard displayed triage status TURNKEYAI_DASHBOARD_TRIAGE_OK, queue depth 11, SLA breaches 3, and recommended owner Incident Commander.",
+      "Not verified: interactive controls, additional below-fold sections, whether metrics are live or hardcoded test data.",
+      "What happened: Five CDP command timeouts occurred during the session, but browser_screenshot and browser_console probes succeeded, so the visible page content is confirmed.",
+      "Next action for operator: escalate to Incident Commander per dashboard recommendation, and rerun CDP capture with a longer timeout if interactive controls or below-fold evidence matter.",
+    ].join("\n");
+    const pluralTimeoutsRecoveredProbeQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(pluralTimeoutsRecoveredProbeQuality.failures, []);
   });
 
   it("requires browser detached-target natural closeout to carry the detached bucket", () => {
@@ -2369,7 +2989,7 @@ describe("mission tool-use e2e report", () => {
       "The browser target detached, so the rendered dashboard review could not complete.",
       "Verified: the requested source was the operations dashboard URL and the browser attempt reached the rendered-page capture stage.",
       "Unverified: rendered queue depth, SLA breach count, owner, escalation trigger, and any client-side dashboard state.",
-      "Next action: reopen the dashboard in a stable browser session before making an operational decision.",
+      "Next operator action: reopen the dashboard in a stable browser session before making an operational decision.",
     ].join(" ");
 
     const missingBucketQuality = evaluateNaturalMissionQuality({
@@ -2470,6 +3090,8 @@ describe("mission tool-use e2e report", () => {
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
     });
+    result.mission.status = "blocked";
+    result.metrics.status = "blocked";
     result.metrics.tool.failed = 1;
     result.metrics.browser = {
       ...result.metrics.browser,
@@ -2610,6 +3232,54 @@ describe("mission tool-use e2e report", () => {
     });
 
     assert.deepEqual(quality.failures, []);
+  });
+
+  it("accepts natural dashboard risk-remaining wording when rendered evidence is complete", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-dashboard-task", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-browser-dashboard-task";
+    result.metrics.tool.requested = 1;
+    result.metrics.tool.results = 1;
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Browser-rendered dashboard evidence: Queue depth: 11.",
+        "SLA breaches: 3.",
+        "Escalation threshold: queue depth above 5 or SLA breaches above 0.",
+        "Recommended owner: Incident Commander.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Queue depth is 11 and SLA breaches are 3, so the escalation policy is triggered.",
+      "The next action owner should be the Incident Commander, who should page the on-call and work down the queue.",
+      "Recommended action: treat this as an active operator escalation, keep the queue triage visible, and avoid claiming ticket-level root cause until the dashboard exposes per-ticket detail.",
+      "Risk remaining after this check: local fixture data, stale timestamps, per-ticket causality, and the downstream paging workflow are still unverified, so the browser-rendered dashboard should be treated as current triage evidence rather than a complete incident report.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
   });
 
   it("requires natural browser follow-up to continue the existing browser session", () => {
@@ -3210,6 +3880,7 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
+    assert.deepEqual(summarizeNaturalMissionScenarioResult(result).runtimeEvidence, result.runtimeEvidence);
 
     result.timeline[2]!.runtime = {
       ...result.timeline[2]!.runtime,
@@ -3307,6 +3978,22 @@ describe("mission tool-use e2e report", () => {
     result.metrics.sessions.spawned = 0;
     result.metrics.qualityGate.evidenceEvents = 2;
     result.final = result.timeline.at(-1)!;
+    result.runtimeEvidence = {
+      pressureMode: "request-envelope-limit-override",
+      requestEnvelopeReduction: {
+        progressId: "progress:prompt-reduction:task-1:compact:1",
+        reductionLevel: "compact",
+        omittedSections: ["retrieved-memory", "recent-turns"],
+        compactedSegments: ["retrieved-memory"],
+      },
+      flushedMemory: {
+        source: "thread-memory",
+        preferences: 0,
+        constraints: 1,
+        longTermNotes: 1,
+        requiredFactsPresent: true,
+      },
+    };
 
     const quality = evaluateNaturalMissionQuality({
       spec,
@@ -3316,6 +4003,362 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
+  });
+
+  it("passes natural memory pressure flush only with memory tool evidence from the flushed handoff", () => {
+    const spec = buildNaturalScenarioSpec("natural-memory-pressure-flush", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-memory-pressure-flush";
+    result.timeline = [
+      { kind: "tool", text: "memory_search call", tMs: 1000, runtime: { toolName: "memory_search", toolPhase: "call" } },
+      { kind: "tool", text: "memory_search result", tMs: 1200, runtime: { toolName: "memory_search", toolPhase: "result" } },
+      { kind: "tool", text: "memory_get call", tMs: 1400, runtime: { toolName: "memory_get", toolPhase: "call" } },
+      {
+        kind: "tool",
+        text: "memory_get result",
+        tMs: 1600,
+        runtime: {
+          toolName: "memory_get",
+          toolPhase: "result",
+          resultContent:
+            "Aurora-19 launch window is Friday 14:15. Owner is Field Ops Lead. Constraint: wait for Legal Review on the data-processing addendum. Residual risk: vendor dry-run unverified.",
+        },
+      },
+      {
+        kind: "thought",
+        text: "Durable memory shows Aurora-19 launches Friday 14:15 with Field Ops Lead as owner. Legal Review must confirm the data-processing addendum before the external announcement is treated as cleared. Residual risk: the vendor dry-run remains unverified, so the next action is to keep external commitments conditional until that evidence lands. Recommendation: use this as the internal planning baseline, but do not treat it as externally verified launch clearance.",
+        tMs: 2000,
+      },
+    ];
+    result.metrics.tool.results = 2;
+    result.metrics.sessions.spawned = 0;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+    assert.deepEqual(summarizeNaturalMissionScenarioResult(result).runtimeEvidence, result.runtimeEvidence);
+
+    result.timeline[3]!.runtime = {
+      ...result.timeline[3]!.runtime,
+      resultContent: "Aurora-19 launch window is Friday 14:15. Owner is Field Ops Lead.",
+    };
+    const missingConstraintQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.match(missingConstraintQuality.failures.join("\n"), /missing evidence pressure-flushed constraint/);
+  });
+
+  it("passes natural memory correction pressure flush only with corrected memory evidence and no stale facts", () => {
+    const spec = buildNaturalScenarioSpec("natural-memory-correction-pressure-flush", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-memory-correction-pressure-flush";
+    result.timeline = [
+      { kind: "tool", text: "memory_search call", tMs: 1000, runtime: { toolName: "memory_search", toolPhase: "call" } },
+      { kind: "tool", text: "memory_search result", tMs: 1200, runtime: { toolName: "memory_search", toolPhase: "result" } },
+      { kind: "tool", text: "memory_get call", tMs: 1400, runtime: { toolName: "memory_get", toolPhase: "call" } },
+      {
+        kind: "tool",
+        text: "memory_get result",
+        tMs: 1600,
+        runtime: {
+          toolName: "memory_get",
+          toolPhase: "result",
+          resultContent:
+            "Borealis-23 launch window is Thursday 16:45. Owner is Ops Captain. Constraint: wait for Legal Review on the data-processing addendum. Residual risk: payment processor signoff pending.",
+        },
+      },
+      {
+        kind: "thought",
+        text: "Durable memory verifies the corrected Borealis-23 launch baseline. Launch window: Thursday 16:45. Owner: Ops Captain. Hard constraint: Legal Review still needs to confirm the data-processing addendum before external announcement clearance. Residual risk: payment processor signoff is pending. Recommendation: use this corrected handoff as the current launch-lead planning baseline, keep external communications conditional, and ask Payments for the signoff status before treating the launch as externally cleared.",
+        tMs: 2000,
+      },
+    ];
+    result.metrics.tool.results = 2;
+    result.metrics.sessions.spawned = 0;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.runtimeEvidence = {
+      pressureMode: "request-envelope-limit-override",
+      requestEnvelopeReduction: {
+        progressId: "progress:prompt-reduction:task-1:compact:1",
+        reductionLevel: "compact",
+        omittedSections: ["recent-turns"],
+        compactedSegments: ["task-prompt"],
+      },
+      flushedMemory: {
+        source: "thread-memory",
+        preferences: 0,
+        constraints: 1,
+        longTermNotes: 1,
+        requiredFactsPresent: true,
+      },
+      invalidatedMemory: {
+        source: "thread-memory",
+        removedItems: 1,
+        requiredFactsPresent: true,
+        staleFactsAbsent: true,
+      },
+      providerToolProtocol: {
+        rounds: 2,
+        providerToolCallsReturned: 2,
+        assistantToolUseBlockCount: 2,
+        roleToolResultMessageCount: 2,
+        toolResultBlockCount: 2,
+        matchingToolCallIds: 2,
+        assistantBeforeToolResults: true,
+        allToolResultsMatchAssistantToolCalls: true,
+        nextProviderRequestIncludesToolResults: true,
+        toolNames: ["memory_get", "memory_search"],
+      },
+    };
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+    assert.deepEqual(summarizeNaturalMissionScenarioResult(result).runtimeEvidence, result.runtimeEvidence);
+
+    result.final.text =
+      "Durable memory says Borealis-23 still uses Monday 10:15 with Launch Manager. Residual risk is staging checklist pending.";
+    const staleQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.match(staleQuality.failures.join("\n"), /forbidden stale launch window/);
+  });
+
+  it("passes natural memory invalidation only with corrected memory facts and no stale launch detail", () => {
+    const spec = buildNaturalScenarioSpec("natural-memory-invalidation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-memory-invalidation";
+    result.timeline = [
+      { kind: "tool", text: "memory_search call", tMs: 1000, runtime: { toolName: "memory_search", toolPhase: "call" } },
+      { kind: "tool", text: "memory_search result", tMs: 1200, runtime: { toolName: "memory_search", toolPhase: "result" } },
+      { kind: "tool", text: "memory_get call", tMs: 1400, runtime: { toolName: "memory_get", toolPhase: "call" } },
+      {
+        kind: "tool",
+        text: "memory_get result",
+        tMs: 1600,
+        runtime: {
+          toolName: "memory_get",
+          toolPhase: "result",
+          resultContent:
+            "Borealis-23 current launch window is Thursday 16:45. Owner is Ops Captain. Residual risk: payment processor signoff pending.",
+        },
+      },
+      {
+        kind: "thought",
+        text: "Durable memory verifies Borealis-23 is now scheduled for Thursday 16:45 with Ops Captain as owner. Residual risk: payment processor signoff is still pending, so the launch lead should continue with that as the current baseline and avoid using superseded details. Recommended next action: keep internal coordination on the corrected Thursday plan, ask Payments for the signoff status, and keep any superseded launch context out of the operator brief.",
+        tMs: 2000,
+      },
+    ];
+    result.metrics.tool.results = 2;
+    result.metrics.sessions.spawned = 0;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.runtimeEvidence = {
+      invalidatedMemory: {
+        source: "thread-memory",
+        removedItems: 1,
+        requiredFactsPresent: true,
+        staleFactsAbsent: true,
+      },
+      providerToolProtocol: {
+        rounds: 2,
+        providerToolCallsReturned: 2,
+        assistantToolUseBlockCount: 2,
+        roleToolResultMessageCount: 2,
+        toolResultBlockCount: 2,
+        matchingToolCallIds: 2,
+        assistantBeforeToolResults: true,
+        allToolResultsMatchAssistantToolCalls: true,
+        nextProviderRequestIncludesToolResults: true,
+        toolNames: ["memory_get", "memory_search"],
+      },
+    };
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+    assert.deepEqual(summarizeNaturalMissionScenarioResult(result).runtimeEvidence, result.runtimeEvidence);
+
+    result.final.text =
+      "Durable memory says Borealis-23 uses the old Monday 10:15 launch plan with Launch Manager. Residual risk is staging checklist pending.";
+    const staleQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.match(staleQuality.failures.join("\n"), /forbidden stale launch window/);
+  });
+
+  it("passes natural tool-result pruning when delegated source facts survive the pruned history", () => {
+    const spec = buildNaturalScenarioSpec("natural-tool-result-pruning", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-tool-result-pruning";
+    result.timeline = [
+      { kind: "tool", text: "sessions_spawn orchestration call", tMs: 1000, runtime: { toolName: "sessions_spawn", toolPhase: "call" } },
+      {
+        kind: "tool",
+        text: "sessions_spawn orchestration result",
+        tMs: 1200,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          workerType: "explore",
+          resultContent: "Research source: multi-agent decomposition with durable sub-session history and follow-up.",
+        },
+      },
+      { kind: "tool", text: "sessions_spawn bridge call", tMs: 1400, runtime: { toolName: "sessions_spawn", toolPhase: "call" } },
+      {
+        kind: "tool",
+        text: "sessions_spawn bridge result",
+        tMs: 1600,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          workerType: "explore",
+          resultContent:
+            "Bridge capability evidence: browser bridge controls inspect DOM, screenshots, artifacts; boundary is command-line setup and provider configuration.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn product signals call",
+        tMs: 1800,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "review product signals dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn product signals result",
+        tMs: 2200,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          workerType: "browser",
+          resultContent: "Browser evidence: Stuck missions: 6. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry.",
+        },
+      },
+      {
+        kind: "thought",
+        text: "Recommendation: build Mission Control as the default entry for the next agent workbench release. Why: the browser-visible dashboard shows Stuck missions at 6 and Weak answer rate at 24%, while the research stream shows multi-agent decomposition with durable sub-session history. The bridge stream supports this because browser work can inspect DOM, screenshots, and artifacts, but it is only a means to mission completion. What not to over-emphasize: do not sell the browser bridge itself as the product; focus on the mission-control workflow that turns specialist evidence into a decision. Next action: prioritize the Mission Control entry, keep browser evidence visible, and use the weak-answer signal as a quality gate. Residual risk: local fixture evidence, so verify against live production telemetry before launch.",
+        tMs: 2600,
+      },
+    ];
+    result.metrics.tool.requested = 3;
+    result.metrics.tool.results = 3;
+    result.metrics.sessions.spawned = 3;
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.final = result.timeline.at(-1)!;
+    result.runtimeEvidence = {
+      pressureMode: "tool-result-prune-limit-override",
+      toolResultPruning: {
+        progressId: "progress:tool-result-pruning:task-1:1",
+        prunedToolResults: 2,
+        pruningReasons: ["older_than_recent_window", "aggregate_tool_result_budget_recent_window"],
+        compactedHistory: false,
+        toolResultBytesBefore: 4800,
+        toolResultBytesAfter: 1800,
+        toolResultCountBefore: 3,
+        toolResultCountAfter: 3,
+      },
+    };
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+    assert.deepEqual(summarizeNaturalMissionScenarioResult(result).runtimeEvidence, result.runtimeEvidence);
+
+    result.timeline[5]!.runtime = {
+      ...result.timeline[5]!.runtime,
+      resultContent: "Browser evidence: Stuck missions: 6.",
+    };
+    const missingPrunedFactQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.match(missingPrunedFactQuality.failures.join("\n"), /missing evidence product signals weak answer rate/);
   });
 
   it("requires cancellation evidence for natural cancellation", () => {
@@ -3481,6 +4524,50 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.ok(missingContinuation.failures.some((failure) => failure.includes("tool use was outside")));
+  });
+
+  it("accepts retry guidance as continuation for natural timeout partial closeout", () => {
+    const spec = buildNaturalScenarioSpec("natural-timeout-partial-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    const result = fakeNaturalResult();
+    result.scenario = "natural-timeout-partial-closeout";
+    result.metrics.tool.failed = 1;
+    result.metrics.tool.timeouts = 1;
+    result.metrics.sessions.spawned = 1;
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent:
+        "timeout: slow source did not respond within the bounded window; evidence summary records the source URL and timeout.",
+    };
+    result.final.text = [
+      "Bounded Timeout Closeout - slow-fixture",
+      "Verified facts: Source http://127.0.0.1/slow-fixture did not respond within the 15-second bounded window.",
+      "Unverified items: actual content or response data from the endpoint, whether it is slow by design, down, or unreachable, and any release-risk-relevant details.",
+      "Residual risk: cannot assess release-risk notes without endpoint content.",
+      "Continuation guidance: retry with a longer timeout if the endpoint content is still needed for the release-risk evaluation.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.sourceCoverage.answerTerms, { covered: 3, total: 3, missing: [] });
+    assert.deepEqual(quality.failures, []);
   });
 
   it("requires timeout evidence and continuation for natural timeout follow-up", () => {

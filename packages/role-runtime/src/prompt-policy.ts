@@ -130,6 +130,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
 
     const outputContract = buildOutputContract(currentRole, profile);
     const preferredWorkerKinds = inferPreferredWorkerKindsFromActivation(input, currentRole);
+    const promptVisibleWorkerKinds = inferPromptVisibleWorkerKinds(input, currentRole);
     const continuityMode = inferContinuityMode(input);
     const continuationContext = getContinuationContext(input.handoff.payload);
     const mergeContext = getMergeContext(input.handoff.payload);
@@ -207,7 +208,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       systemPrompt: [
         this.buildCachedSystemPrompt(currentRole, profile.styleHints, input.thread.roles),
         "",
-        this.buildToolHarnessSection(currentRole),
+        this.buildToolHarnessSection(currentRole, promptVisibleWorkerKinds),
         "",
         assembly.systemPrompt,
       ]
@@ -306,10 +307,11 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
     return built;
   }
 
-  private buildToolHarnessSection(role: RoleSlot): string {
+  private buildToolHarnessSection(role: RoleSlot, availableWorkerKinds: WorkerKind[]): string {
     return (
       this.toolCapabilityRegistry?.renderPromptHarness({
         seat: role.seat,
+        availableWorkerKinds,
       }) ?? ""
     );
   }
@@ -671,7 +673,7 @@ function inferContextWindow(modelName?: string): number {
     return 1_000_000;
   }
 
-  if (/kimi|minimax/i.test(modelName)) {
+  if (/minimax/i.test(modelName)) {
     return 256_000;
   }
 
@@ -776,6 +778,26 @@ function inferPreferredWorkerKindsFromActivation(input: RoleActivationInput, rol
   return inferPreferredWorkerKinds(role);
 }
 
+function inferPromptVisibleWorkerKinds(input: RoleActivationInput, role: RoleSlot): WorkerKind[] {
+  const preferredWorkerKinds = getPreferredWorkerKinds(input.handoff.payload);
+  if (preferredWorkerKinds.length) {
+    return preferredWorkerKinds;
+  }
+
+  const explicit = extractExplicitWorkerPreference(getInstructions(input.handoff.payload));
+  if (explicit.length > 0) {
+    return explicit;
+  }
+
+  if (role.seat !== "lead") {
+    return inferPreferredWorkerKinds(role);
+  }
+
+  return normalizeWorkerKindOrder(
+    input.thread.roles.flatMap((threadRole) => inferPreferredWorkerKinds(threadRole))
+  );
+}
+
 function extractExplicitWorkerPreference(instructions?: string): WorkerKind[] {
   if (!instructions) {
     return [];
@@ -787,4 +809,9 @@ function extractExplicitWorkerPreference(instructions?: string): WorkerKind[] {
   }
 
   return [match[1].toLowerCase() as WorkerKind];
+}
+
+function normalizeWorkerKindOrder(workerKinds: WorkerKind[]): WorkerKind[] {
+  const available = new Set(workerKinds);
+  return (["browser", "coder", "finance", "explore", "harness"] as const).filter((kind) => available.has(kind));
 }

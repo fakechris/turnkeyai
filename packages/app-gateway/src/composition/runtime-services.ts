@@ -25,6 +25,7 @@ import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { AnthropicCompatibleClient } from "@turnkeyai/llm-adapter/anthropic-compatible-client";
 import { FileModelCatalogSource } from "@turnkeyai/llm-adapter/file-model-catalog";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
+import type { RequestEnvelopeLimits } from "@turnkeyai/llm-adapter/index";
 import { OpenAICompatibleClient } from "@turnkeyai/llm-adapter/openai-compatible-client";
 import { ModelRegistry } from "@turnkeyai/llm-adapter/registry";
 import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
@@ -67,7 +68,7 @@ import { reconcileWorkerBindingsOnStartup } from "../worker-binding-startup-reco
 import type { DaemonFoundations } from "./foundations";
 
 const DEFAULT_AGENT_TOOL_MAX_ROUNDS = 128;
-const DEFAULT_AGENT_TOOL_TIMEOUT_MS = readPositiveIntegerEnv("TURNKEYAI_AGENT_TOOL_TIMEOUT_MS", 45_000);
+const DEFAULT_AGENT_TOOL_TIMEOUT_MS = readPositiveIntegerEnv("TURNKEYAI_AGENT_TOOL_TIMEOUT_MS", 120_000);
 const DEFAULT_AGENT_TOOL_WALL_CLOCK_MS = readPositiveIntegerEnv("TURNKEYAI_AGENT_TOOL_WALL_CLOCK_MS", 120_000);
 const DEFAULT_AGENT_TOOL_HARD_TIMEOUT_GRACE_MS = readPositiveIntegerEnv(
   "TURNKEYAI_AGENT_TOOL_HARD_TIMEOUT_GRACE_MS",
@@ -87,6 +88,42 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const REQUEST_ENVELOPE_LIMIT_ENV_KEYS = {
+  maxMessages: "TURNKEYAI_REQUEST_ENVELOPE_MAX_MESSAGES",
+  maxPromptChars: "TURNKEYAI_REQUEST_ENVELOPE_MAX_PROMPT_CHARS",
+  maxPromptBytes: "TURNKEYAI_REQUEST_ENVELOPE_MAX_PROMPT_BYTES",
+  maxMetadataBytes: "TURNKEYAI_REQUEST_ENVELOPE_MAX_METADATA_BYTES",
+  maxArtifactCount: "TURNKEYAI_REQUEST_ENVELOPE_MAX_ARTIFACT_COUNT",
+  maxToolCount: "TURNKEYAI_REQUEST_ENVELOPE_MAX_TOOL_COUNT",
+  maxToolSchemaBytes: "TURNKEYAI_REQUEST_ENVELOPE_MAX_TOOL_SCHEMA_BYTES",
+  maxToolResultCount: "TURNKEYAI_REQUEST_ENVELOPE_MAX_TOOL_RESULT_COUNT",
+  maxToolResultBytes: "TURNKEYAI_REQUEST_ENVELOPE_MAX_TOOL_RESULT_BYTES",
+  maxInlineAttachmentBytes: "TURNKEYAI_REQUEST_ENVELOPE_MAX_INLINE_ATTACHMENT_BYTES",
+  maxInlineImageCount: "TURNKEYAI_REQUEST_ENVELOPE_MAX_INLINE_IMAGE_COUNT",
+  maxInlineImageBytes: "TURNKEYAI_REQUEST_ENVELOPE_MAX_INLINE_IMAGE_BYTES",
+  maxInlinePdfCount: "TURNKEYAI_REQUEST_ENVELOPE_MAX_INLINE_PDF_COUNT",
+  maxInlinePdfBytes: "TURNKEYAI_REQUEST_ENVELOPE_MAX_INLINE_PDF_BYTES",
+  maxMultimodalPartCount: "TURNKEYAI_REQUEST_ENVELOPE_MAX_MULTIMODAL_PART_COUNT",
+  maxSerializedBytes: "TURNKEYAI_REQUEST_ENVELOPE_MAX_SERIALIZED_BYTES",
+} satisfies Record<keyof RequestEnvelopeLimits, string>;
+
+export function resolveRequestEnvelopeLimitOverridesFromEnv(
+  env: Record<string, string | undefined> = process.env
+): Partial<RequestEnvelopeLimits> | undefined {
+  const overrides: Partial<RequestEnvelopeLimits> = {};
+  for (const [key, envName] of Object.entries(REQUEST_ENVELOPE_LIMIT_ENV_KEYS) as Array<
+    [keyof RequestEnvelopeLimits, string]
+  >) {
+    const raw = env[envName]?.trim();
+    if (!raw) continue;
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      overrides[key] = parsed;
+    }
+  }
+  return Object.keys(overrides).length > 0 ? overrides : undefined;
 }
 
 export interface DaemonRuntimeLimits {
@@ -220,10 +257,12 @@ export async function composeDaemonRuntimeServices(
   const modelRegistry = modelCatalogPath
     ? new ModelRegistry(new FileModelCatalogSource(modelCatalogPath))
     : null;
+  const requestEnvelopeLimits = resolveRequestEnvelopeLimitOverridesFromEnv();
   const llmGateway = modelRegistry
     ? new LLMGateway({
         registry: modelRegistry,
         clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
+        ...(requestEnvelopeLimits ? { requestEnvelopeLimits } : {}),
       })
     : null;
   if (llmGateway) {

@@ -6,11 +6,13 @@ import {
   getRelayBrief,
 } from "@turnkeyai/core-types/team";
 import type { BrowserTaskAction, BrowserTaskRequest, WorkerInvocationInput } from "@turnkeyai/core-types/team";
+import { MAX_BROWSER_OPEN_TIMEOUT_MS } from "@turnkeyai/core-types/team";
 
 interface BrowserTaskIntent {
   url?: string;
   searchQuery?: string;
   clickText?: string;
+  openTimeoutMs?: number;
   wantsScroll: boolean;
   wantsConsoleProbe: boolean;
   wantsScreenshot: boolean;
@@ -110,6 +112,7 @@ function deriveIntent(content: string, options: { allowCurrentTargetReuse: boole
     ...(url ? { url } : {}),
     ...(searchQuery ? { searchQuery } : {}),
     ...(clickText ? { clickText } : {}),
+    ...(url ? resolveSlowLocalOpenTimeoutMs(content, url) : {}),
     wantsScroll: /(scroll|滚动|向下)/i.test(content),
     wantsConsoleProbe:
       /(console|extract|提取|读取|统计|metadata|interactive|标题|链接|元素)/i.test(content) ||
@@ -120,7 +123,14 @@ function deriveIntent(content: string, options: { allowCurrentTargetReuse: boole
 
 function buildActionPlan(intent: BrowserTaskIntent, searchEngineUrlTemplate: string): BrowserTaskAction[] {
   const plan: BrowserTaskAction[] = intent.url
-    ? [{ kind: "open", url: intent.url }, { kind: "snapshot", note: "after-open" }]
+    ? [
+        {
+          kind: "open",
+          url: intent.url,
+          ...(intent.openTimeoutMs ? { timeoutMs: intent.openTimeoutMs } : {}),
+        },
+        { kind: "snapshot", note: "after-open" },
+      ]
     : intent.searchQuery
       ? [{ kind: "open", url: buildSearchUrl(intent.searchQuery, searchEngineUrlTemplate) }, { kind: "snapshot", note: "after-search-open" }]
       : [{ kind: "snapshot", note: "reuse-current-target" }];
@@ -178,6 +188,29 @@ function extractUrl(content: string): string | null {
     return url.toString();
   } catch {
     return null;
+  }
+}
+
+function resolveSlowLocalOpenTimeoutMs(content: string, url: string): { openTimeoutMs: number } | null {
+  if (!isLoopbackUrl(url)) {
+    return null;
+  }
+  if (!isSlowDiagnosticText(content) && !isSlowDiagnosticText(url)) {
+    return null;
+  }
+  return { openTimeoutMs: MAX_BROWSER_OPEN_TIMEOUT_MS };
+}
+
+function isSlowDiagnosticText(value: string): boolean {
+  return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(value);
+}
+
+function isLoopbackUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1";
+  } catch {
+    return false;
   }
 }
 

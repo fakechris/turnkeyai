@@ -6,6 +6,7 @@ import { REAL_LLM_AB_CORE_SUITE_REQUIREMENTS } from "@turnkeyai/qc-runtime/real-
 import {
   DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
 } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
 
 import type { RealLlmAbReportBuildSpec } from "./real-llm-ab-report-build";
@@ -18,7 +19,7 @@ export interface RealLlmAbSpecBuildOptions {
   missingManifestOutPath?: string;
 }
 
-export type RealLlmAbSpecBuildSuite = "core" | "browser-focused" | "browser-reliability";
+export type RealLlmAbSpecBuildSuite = "core" | "browser-focused" | "browser-reliability" | "full-natural";
 
 interface NaturalMissionReportShape {
   kind?: unknown;
@@ -100,7 +101,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
       if (!isRealLlmAbSpecBuildSuite(value)) {
-        throw new Error("--suite must be one of: core, browser-focused, browser-reliability");
+        throw new Error("--suite must be one of: core, browser-focused, browser-reliability, full-natural");
       }
       requiredSuite = value;
       index += 1;
@@ -155,6 +156,16 @@ export async function runRealLlmAbSpecBuildCli(args: string[]): Promise<void> {
   const resolvedOutPath = path.resolve(options.outPath);
   mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
   writeFileSync(resolvedOutPath, `${JSON.stringify(spec, null, 2)}\n`);
+  if (options.missingManifestOutPath) {
+    writeMissingEvidenceManifest({
+      manifestOutPath: options.missingManifestOutPath,
+      generatedAtMs: spec.generatedAtMs ?? Date.now(),
+      suite: options.requiredSuite,
+      naturalReportPath: path.resolve(options.naturalReportPath),
+      referenceDir: path.resolve(options.referenceDir),
+      missingEvidence: [],
+    });
+  }
   console.log(`real LLM A/B build spec written: ${resolvedOutPath}`);
 }
 
@@ -163,11 +174,12 @@ export function buildRealLlmAbSpecBuildHelpText(): string {
     "TurnkeyAI real LLM A/B build-spec generator",
     "",
     "Usage:",
-    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability> --out <path> [--missing-manifest-out <path>]",
+    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability|full-natural> --out <path> [--missing-manifest-out <path>]",
     "",
     "The generator selects natural same-scenario runs for the requested A/B suite.",
     "core covers the full P0 natural runtime gate; browser-focused covers external and complex browser gates.",
     "browser-reliability covers browser failure/recovery gates such as profile fallback, target/session recovery, and CDP failure closeout.",
+    "full-natural covers the complete default natural mission matrix, including cancellation, approval variants, memory pressure/invalidation, and pruning.",
     "Reference artifacts must be named <natural-scenario-id>.json in --reference-dir.",
     "--missing-manifest-out writes a reference collection manifest when required evidence is incomplete, then the command still fails.",
   ].join("\n");
@@ -276,6 +288,7 @@ function buildRealLlmAbSpecForRequirements(input: {
       },
       ...scenarioRequirementFlags(scenarioId),
       referenceArtifactPath: toRelativePath(outDir, referenceArtifactPath),
+      modelComparison: readReferenceModelComparison(referenceArtifactPath),
     };
   });
   return {
@@ -286,6 +299,22 @@ function buildRealLlmAbSpecForRequirements(input: {
   };
 }
 
+function readReferenceModelComparison(referenceArtifactPath: string): {
+  referenceProvider?: string;
+  referenceModelId?: string;
+  differenceNote: string;
+} {
+  const artifact = readJsonFile<{ provenance?: { provider?: unknown; modelId?: unknown } }>(referenceArtifactPath);
+  const referenceProvider = readString(artifact.provenance?.provider);
+  const referenceModelId = readString(artifact.provenance?.modelId);
+  return {
+    ...(referenceProvider ? { referenceProvider } : {}),
+    ...(referenceModelId ? { referenceModelId } : {}),
+    differenceNote:
+      "Reference model provenance is recorded explicitly; TurnkeyAI natural report model provenance may be absent in historical artifacts, so same-scenario claims rely on prompt, fixture, runtime, and artifact provenance rather than assuming hidden model equivalence.",
+  };
+}
+
 interface RealLlmAbSpecRequirement {
   key: string;
   acceptedScenarioIds: readonly string[];
@@ -293,6 +322,12 @@ interface RealLlmAbSpecRequirement {
 
 function suiteRequirements(suite: RealLlmAbSpecBuildSuite): readonly RealLlmAbSpecRequirement[] {
   if (suite === "core") return REAL_LLM_AB_CORE_SUITE_REQUIREMENTS;
+  if (suite === "full-natural") {
+    return DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS.map((scenarioId) => ({
+      key: scenarioId.replace(/^natural-/, ""),
+      acceptedScenarioIds: [scenarioId],
+    }));
+  }
   if (suite === "browser-reliability") {
     return DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS.map((scenarioId) => ({
       key: scenarioId.replace(/^natural-/, ""),
@@ -328,7 +363,9 @@ function scenarioRequirementFlags(scenarioId: string): {
     ...(requiresBrowser(scenarioId) ? { requiresBrowser: true } : {}),
     ...(scenarioId.includes("approval") ? { requiresApproval: true } : {}),
     ...(scenarioId.includes("followup") || scenarioId.includes("continuation") ? { requiresContinuation: true } : {}),
-    ...(scenarioId.includes("timeout") ? { requiresTimeoutCloseout: true } : {}),
+    ...(scenarioId.includes("timeout") && scenarioId !== "natural-approval-wait-timeout-closeout"
+      ? { requiresTimeoutCloseout: true }
+      : {}),
   };
 }
 
@@ -351,7 +388,7 @@ function requiresBrowser(scenarioId: string): boolean {
 }
 
 function isRealLlmAbSpecBuildSuite(value: string): value is RealLlmAbSpecBuildSuite {
-  return value === "core" || value === "browser-focused" || value === "browser-reliability";
+  return value === "core" || value === "browser-focused" || value === "browser-reliability" || value === "full-natural";
 }
 
 function isNaturalScenario(value: unknown): value is NaturalMissionScenarioShape {

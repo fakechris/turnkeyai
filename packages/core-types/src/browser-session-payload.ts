@@ -14,20 +14,20 @@ export function decodeBrowserSessionPayload(payload: unknown): DecodedBrowserSes
 
   const record = payload as Record<string, unknown>;
   const browserRecovery = isRecord(record.browserRecovery) ? record.browserRecovery : null;
-  const directSessionId = readString(record.sessionId);
   const recoverySessionId = readString(browserRecovery?.sessionId);
-  const sessionId = directSessionId ?? recoverySessionId;
+  const directSessionId = readString(record.sessionId);
+  const sessionId = recoverySessionId ?? directSessionId;
   if (!sessionId) {
     return null;
   }
-  const targetId = readString(record.targetId) ?? readString(browserRecovery?.targetId);
-  const resumeMode = readResumeMode(record.resumeMode) ?? readResumeMode(browserRecovery?.resumeMode);
+  const targetId = readString(browserRecovery?.targetId) ?? readString(record.targetId);
+  const resumeMode = readResumeMode(browserRecovery?.resumeMode) ?? readResumeMode(record.resumeMode);
 
   return {
     sessionId,
     ...(targetId ? { targetId } : {}),
     ...(resumeMode ? { resumeMode } : {}),
-    source: directSessionId ? "direct" : "browserRecovery",
+    source: recoverySessionId ? "browserRecovery" : "direct",
   };
 }
 

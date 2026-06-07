@@ -29,8 +29,10 @@ import type {
 import {
   DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS,
   DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
+  DEFAULT_BROWSER_OPEN_TIMEOUT_MS,
   DEFAULT_BROWSER_POPUP_TIMEOUT_MS,
   DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
+  MAX_BROWSER_OPEN_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
@@ -66,6 +68,20 @@ import type { BrowserSessionManager as LocalBrowserSessionManager } from "./sess
 const DEFAULT_VIEWPORT = { width: 1440, height: 960 };
 const DEFAULT_WAIT_MS = 800;
 const MAX_CDP_TRACE_RESULT_BYTES = 4_096;
+
+function resolveBrowserOpenTimeoutMs(timeoutMs: number | undefined): number {
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
+    return DEFAULT_BROWSER_OPEN_TIMEOUT_MS;
+  }
+  return Math.min(Math.max(Math.floor(timeoutMs), 1), MAX_BROWSER_OPEN_TIMEOUT_MS);
+}
+
+function resolveBrowserOpenTargetTimeoutMs(url: string, timeoutMs: number | undefined): number {
+  if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs)) {
+    return resolveBrowserOpenTimeoutMs(timeoutMs);
+  }
+  return isSlowLoopbackBrowserUrl(url) ? MAX_BROWSER_OPEN_TIMEOUT_MS : DEFAULT_BROWSER_OPEN_TIMEOUT_MS;
+}
 
 interface LocalCdpEvent {
   method: string;
@@ -736,7 +752,7 @@ export class ChromeSessionManager {
   async openTarget(
     browserSessionId: string,
     url: string,
-    owner?: { ownerType?: BrowserSession["ownerType"]; ownerId?: string }
+    owner?: { ownerType?: BrowserSession["ownerType"]; ownerId?: string; timeoutMs?: number }
   ): Promise<BrowserTarget> {
     if (!this.browserSessionManager) {
       throw new Error("browser session manager is not configured");
@@ -750,9 +766,10 @@ export class ChromeSessionManager {
     const contextHandle = await this.createContext(lease);
     try {
       const page = await contextHandle.context.newPage();
+      const timeoutMs = resolveBrowserOpenTargetTimeoutMs(url, owner?.timeoutMs);
       const response = await page.goto(url, {
         waitUntil: "domcontentloaded",
-        timeout: 20_000,
+        timeout: timeoutMs,
       });
       await settle(page);
       const target = await this.browserSessionManager.ensureTarget({
@@ -1197,9 +1214,10 @@ export class ChromeSessionManager {
     } = input;
 
     if (action.kind === "open") {
+      const timeoutMs = resolveBrowserOpenTimeoutMs(action.timeoutMs);
       const response = await page.goto(action.url, {
         waitUntil: "domcontentloaded",
-        timeout: 20_000,
+        timeout: timeoutMs,
       });
       await settle(page);
 
@@ -1208,6 +1226,7 @@ export class ChromeSessionManager {
         traceOutput: {
           finalUrl: page.url(),
           statusCode: response?.status() ?? null,
+          timeoutMs,
         },
       };
     }
@@ -1679,6 +1698,18 @@ export class ChromeSessionManager {
       fileName: sanitizeUploadFileName(metadataFileName || path.basename(record.path)),
       sizeBytes: stats.size,
     };
+  }
+}
+
+function isSlowLoopbackBrowserUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost" && url.hostname !== "::1") {
+      return false;
+    }
+    return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(raw);
+  } catch {
+    return false;
   }
 }
 

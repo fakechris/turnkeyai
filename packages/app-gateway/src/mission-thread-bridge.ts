@@ -943,6 +943,7 @@ function buildPlainEvent(input: BuildPlainEventInput): ActivityEvent {
   };
   if (input.message.source?.route) runtime.route = input.message.source.route;
   Object.assign(runtime, toolLoopCloseoutRuntime(input.message.metadata));
+  Object.assign(runtime, modelUseRuntime(input.message.metadata));
   return {
     id: input.newEventId(),
     missionId: input.missionId,
@@ -953,6 +954,24 @@ function buildPlainEvent(input: BuildPlainEventInput): ActivityEvent {
     tags: input.tags,
     runtime,
   };
+}
+
+function modelUseRuntime(metadata: Record<string, unknown> | undefined): Record<string, string> {
+  const modelUse = readRecordMetadata(metadata, "modelUse");
+  if (!modelUse) return {};
+  const calls = Array.isArray(modelUse.calls) ? modelUse.calls : [];
+  const runtime: Record<string, string> = {
+    modelCallSource: "turnkeyai-role-runtime",
+    modelCallCount: String(readNumber(modelUse, "callCount") ?? calls.length),
+  };
+  const totalInputTokens = readNumber(modelUse, "totalInputTokens");
+  const totalOutputTokens = readNumber(modelUse, "totalOutputTokens");
+  if (totalInputTokens !== null) runtime.modelInputTokens = String(totalInputTokens);
+  if (totalOutputTokens !== null) runtime.modelOutputTokens = String(totalOutputTokens);
+  if (calls.length > 0) {
+    runtime.modelCallBoundaries = JSON.stringify(calls);
+  }
+  return runtime;
 }
 
 interface BuildToolCallEventInput {

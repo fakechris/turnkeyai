@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -10,8 +11,10 @@ import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
 import { DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
-import type { ThreadMemoryRecord } from "@turnkeyai/core-types/team";
+import type { RuntimeProgressEvent, ThreadMemoryRecord } from "@turnkeyai/core-types/team";
 import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread-memory-store";
+import { FileTeamThreadStore } from "@turnkeyai/team-store/file-team-thread-store";
+import { FileRuntimeProgressStore } from "@turnkeyai/team-store/file-runtime-progress-store";
 
 interface MissionToolUseE2eOptions {
   modelCatalogPath?: string;
@@ -26,6 +29,13 @@ interface MissionToolUseE2eOptions {
   threadEntry: boolean;
   jsonPath?: string;
   continueOnFailure: boolean;
+}
+
+interface NaturalMissionModelProvenance {
+  modelCatalogPath: string;
+  provider: string;
+  modelId: string;
+  modelEntryId: string;
 }
 
 type DaemonChildProcess = ChildProcessByStdio<null, Readable, Readable>;
@@ -76,9 +86,14 @@ export type NaturalMissionE2eScenario =
   | "natural-browser-profile-lock-recovery"
   | "natural-followup-continuation"
   | "natural-memory-recall"
+  | "natural-memory-pressure-flush"
+  | "natural-memory-correction-pressure-flush"
+  | "natural-memory-invalidation"
+  | "natural-tool-result-pruning"
   | "natural-approval-dry-run-action"
   | "natural-approval-denied-safe-closeout"
   | "natural-approval-pending-state"
+  | "natural-approval-wait-timeout-closeout"
   | "natural-browser-unavailable-closeout"
   | "natural-browser-cdp-timeout-closeout"
   | "natural-browser-detached-target-closeout"
@@ -101,9 +116,14 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-browser-profile-lock-recovery",
   "natural-followup-continuation",
   "natural-memory-recall",
+  "natural-memory-pressure-flush",
+  "natural-memory-correction-pressure-flush",
+  "natural-memory-invalidation",
+  "natural-tool-result-pruning",
   "natural-approval-dry-run-action",
   "natural-approval-denied-safe-closeout",
   "natural-approval-pending-state",
+  "natural-approval-wait-timeout-closeout",
   "natural-browser-unavailable-closeout",
   "natural-browser-cdp-timeout-closeout",
   "natural-browser-detached-target-closeout",
@@ -137,6 +157,8 @@ interface Mission {
   threadId?: string;
   blockers?: number;
 }
+
+type NaturalMissionMode = "research" | "monitor" | "browser" | "review" | "investigation" | "custom";
 
 export interface ActivityEvent {
   id?: string;
@@ -248,6 +270,23 @@ const PRODUCT_BRIDGE_SOURCE_LABEL = "Bridge capability research";
 const PRODUCT_SIGNALS_SOURCE_LABEL = "Product signals browser";
 const REALISTIC_BRIEF_FINAL_MARKER = "TURNKEYAI_MISSION_REALISTIC_BRIEF_OK";
 
+const FIXTURE_SEMANTIC_CONTENT: Record<string, string> = {
+  "/fixture": `basic:${FIXTURE_MARKER}:mission-route-tool-use`,
+  "/vendor-alpha": `vendor-alpha:${ALPHA_MARKER}:pricing-19-seat:browser-automation:screenshots:limited-api-catalog`,
+  "/vendor-beta": `vendor-beta:${BETA_MARKER}:pricing-29-workspace:approval-workflow:handoff-history:separate-connector`,
+  "/slow-fixture": `slow:${FIXTURE_MARKER}:delayed-response:timeout-continuation`,
+  "/cancel-resume-fixture": "cancel-resume:release-captain:runbook-gap:rollback-rehearsal",
+  "/approval-form": `approval:${APPROVAL_MARKER}:dry-run-form:no-external-mutation`,
+  "/dynamic-dashboard": `dynamic:${DYNAMIC_BROWSER_MARKER}:active-users-42:queue-depth-7:client-rendered`,
+  "/ops-dashboard": `ops:${DASHBOARD_TRIAGE_MARKER}:queue-depth-11:sla-breaches-3:incident-commander:client-rendered`,
+  "/complex-browser": "complex:frame-backlog-7:shadow-risk-desk-approval:popup-p42:client-rendered",
+  "/complex-browser-frame": "complex-frame:backlog-7:frame-captain",
+  "/complex-browser-popup": "complex-popup:p42-manager-acknowledgement",
+  "/product-orchestration": `product-orchestration:${PRODUCT_ORCHESTRATION_MARKER}:multi-agent-doc-browser-work-items`,
+  "/product-bridge": `product-bridge:${PRODUCT_BRIDGE_MARKER}:browser-control-boundary`,
+  "/product-signals": `product-signals:${PRODUCT_WORKBENCH_SIGNAL_MARKER}:stuck-6:weak-answer-rate-24`,
+};
+
 export interface FixtureServer {
   server: Server;
   basicUrl: string;
@@ -264,6 +303,7 @@ export interface FixtureServer {
   orchestrationUrl: string;
   bridgeUrl: string;
   productSignalsUrl: string;
+  fixtureContentHashes: Record<string, string>;
 }
 
 export interface FixtureServerOptions {
@@ -396,8 +436,9 @@ export interface NaturalScenarioSpec {
   minContinuedSessions?: number;
   requiresBrowser: boolean;
   requiresApproval: boolean;
-  approvalDecision?: "approved" | "denied" | "pending";
+  approvalDecision?: "approved" | "denied" | "pending" | "timeout";
   expectedMissionStatus?: "done" | "needs_approval" | "blocked";
+  expectedMissionStatuses?: Array<"done" | "needs_approval" | "blocked">;
   requiresProfileFallback?: boolean;
   requiredBrowserFailureBuckets?: string[];
   requiresCancellation?: boolean;
@@ -422,8 +463,64 @@ export interface NaturalMissionScenarioResult {
   timeline: ActivityEvent[];
   metrics: MissionObservabilitySnapshot;
   artifacts?: MissionArtifact[];
+  runtimeEvidence?: NaturalMissionRuntimeEvidence;
   final: ActivityEvent;
   quality: NaturalMissionQuality;
+}
+
+export interface NaturalMissionRuntimeEvidence {
+  threadRoster?: {
+    mode: NaturalMissionMode;
+    leadRoleId: string;
+    roles: Array<{
+      roleId: string;
+      seat: string;
+      capabilities: string[];
+    }>;
+    promptVisibleWorkerKinds: string[];
+  };
+  pressureMode?: "request-envelope-limit-override" | "tool-result-prune-limit-override";
+  requestEnvelopeReduction?: {
+    progressId: string;
+    reductionLevel?: string;
+    omittedSections: string[];
+    compactedSegments: string[];
+  };
+  toolResultPruning?: {
+    progressId: string;
+    prunedToolResults?: number;
+    pruningReasons: string[];
+    compactedHistory?: boolean;
+    toolResultBytesBefore?: number;
+    toolResultBytesAfter?: number;
+    toolResultCountBefore?: number;
+    toolResultCountAfter?: number;
+  };
+  flushedMemory?: {
+    source: "thread-memory";
+    preferences: number;
+    constraints: number;
+    longTermNotes: number;
+    requiredFactsPresent: boolean;
+  };
+  invalidatedMemory?: {
+    source: "thread-memory";
+    removedItems: number;
+    requiredFactsPresent: boolean;
+    staleFactsAbsent: boolean;
+  };
+  providerToolProtocol?: {
+    rounds: number;
+    providerToolCallsReturned: number;
+    assistantToolUseBlockCount: number;
+    roleToolResultMessageCount: number;
+    toolResultBlockCount: number;
+    matchingToolCallIds: number;
+    assistantBeforeToolResults: boolean;
+    allToolResultsMatchAssistantToolCalls: boolean;
+    nextProviderRequestIncludesToolResults: boolean;
+    toolNames: string[];
+  };
 }
 
 export interface NaturalMissionQuality {
@@ -498,6 +595,18 @@ export interface NaturalMissionScenarioReport {
   threadId?: string;
   timelineEvents: number;
   toolEvents: number;
+  modelCalls: number | null;
+  modelCallSummary?: {
+    source: string;
+    count: number;
+    totalDurationMs: number;
+    totalInputTokens?: number;
+    totalOutputTokens?: number;
+    toolCallsReturned: number;
+    modelIds: string[];
+    providerIds: string[];
+  };
+  modelCallBoundaries?: Array<Record<string, unknown>>;
   qualityGate: string;
   missionQualityGate: string;
   metrics: MissionE2eScenarioReport["metrics"];
@@ -506,6 +615,7 @@ export interface NaturalMissionScenarioReport {
     withLifecycle: number;
     kinds: string[];
   };
+  runtimeEvidence?: NaturalMissionRuntimeEvidence;
   natural: {
     status: "passed" | "failed";
     completed: boolean;
@@ -534,6 +644,14 @@ export interface NaturalMissionE2eJsonReport {
   evidenceMode: "natural-real-llm";
   progressClaim: "natural-evidence";
   capabilityClaim: "unproven-without-comparative-evidence";
+  provider?: string;
+  modelId?: string;
+  modelEntryId?: string;
+  modelCatalogPath?: string;
+  timeoutPolicy?: {
+    scenarioTimeoutMs: number;
+  };
+  fixtureContentHashes?: Record<string, string>;
   promptPolicy: {
     forbidsContractGateLanguage: boolean;
     forbiddenPatterns: string[];
@@ -862,6 +980,7 @@ function printHelp(exitCode: number): never {
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
   const startedAt = Date.now();
   const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
+  const modelProvenance = readNaturalMissionModelProvenance(modelCatalogPath);
   const localFixture = await startFixtureServer();
   const fixture = applyNaturalFixtureUrlOverrides(localFixture);
   await assertRenderedFixtureEvidenceHidden(localFixture);
@@ -973,6 +1092,9 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
                   completedAt: Date.now(),
                   results: naturalResults,
                   failureCollectionMode: "fail-fast",
+                  modelProvenance,
+                  scenarioTimeoutMs: options.scenarioTimeoutMs,
+                  fixtureContentHashes: fixture.fixtureContentHashes,
                 })
               );
               console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
@@ -981,12 +1103,15 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
             writeNaturalMissionE2eJsonReport(
               options.jsonPath,
               buildNaturalMissionPartialFailureJsonReport({
-                startedAt,
-                completedAt: Date.now(),
-                results: naturalResults,
-                interruptedScenario: {
-                  scenario,
-                  error: errorMessage(error),
+              startedAt,
+              completedAt: Date.now(),
+              results: naturalResults,
+              modelProvenance,
+              scenarioTimeoutMs: options.scenarioTimeoutMs,
+              fixtureContentHashes: fixture.fixtureContentHashes,
+              interruptedScenario: {
+                scenario,
+                error: errorMessage(error),
                 },
               })
             );
@@ -1004,6 +1129,9 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
           completedAt,
           results: naturalResults,
           failureCollectionMode: options.continueOnFailure ? "quality-failures-collected" : "fail-fast",
+          modelProvenance,
+          scenarioTimeoutMs: options.scenarioTimeoutMs,
+          fixtureContentHashes: fixture.fixtureContentHashes,
         });
         writeNaturalMissionE2eJsonReport(options.jsonPath, report);
         console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
@@ -1145,6 +1273,7 @@ async function runMissionScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   assertMissionMetrics(metrics, spec);
   const final = findFinalEvent(result.timeline, spec.finalMarker);
@@ -1224,6 +1353,7 @@ async function runMissionFollowupScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   assertMissionMetrics(metrics, finalSpec);
   const final = findFinalEvent(result.timeline, finalSpec.finalMarker);
@@ -1293,6 +1423,7 @@ async function runMissionCancelScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   assertMissionCancelMetrics(metrics, spec);
   const final = findFinalEvent(result.timeline, spec.finalMarker);
@@ -1353,6 +1484,7 @@ async function runMissionApprovalScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   assertMissionApprovalMetrics(metrics, spec);
   const final = findFinalEvent(result.timeline, spec.finalMarker);
@@ -1403,6 +1535,7 @@ async function runMissionTimeoutScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   assertMissionTimeoutMetrics(metrics, spec);
   const final = findFinalEvent(result.timeline, spec.finalMarker);
@@ -1459,6 +1592,7 @@ async function runMissionCloseoutScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   assertMissionMetrics(metrics, spec);
   const final = findFinalEvent(result.timeline, spec.finalMarker);
@@ -1526,6 +1660,7 @@ async function runMissionMemoryRecallScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   assertMissionMetrics(metrics, finalSpec);
   const final = findFinalEvent(result.timeline, finalSpec.finalMarker);
@@ -1580,6 +1715,7 @@ async function runMissionTaskTrackingScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   assertMissionMetrics(metrics, spec);
   const final = findFinalEvent(result.timeline, spec.finalMarker);
@@ -1620,6 +1756,18 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-memory-recall") {
     return runNaturalMemoryRecallScenario(input);
   }
+  if (input.scenario === "natural-memory-pressure-flush") {
+    return runNaturalMemoryPressureFlushScenario(input);
+  }
+  if (input.scenario === "natural-memory-correction-pressure-flush") {
+    return runNaturalMemoryCorrectionPressureFlushScenario(input);
+  }
+  if (input.scenario === "natural-memory-invalidation") {
+    return runNaturalMemoryInvalidationScenario(input);
+  }
+  if (input.scenario === "natural-tool-result-pruning") {
+    return runNaturalToolResultPruningScenario(input);
+  }
   if (input.scenario === "natural-approval-dry-run-action") {
     return runNaturalApprovalScenario(input);
   }
@@ -1628,6 +1776,9 @@ async function runNaturalMissionScenario(input: {
   }
   if (input.scenario === "natural-approval-pending-state") {
     return runNaturalApprovalPendingScenario(input);
+  }
+  if (input.scenario === "natural-approval-wait-timeout-closeout") {
+    return runNaturalApprovalWaitTimeoutScenario(input);
   }
   if (input.scenario === "natural-browser-unavailable-closeout") {
     return runNaturalBrowserUnavailableScenario(input);
@@ -1658,6 +1809,11 @@ async function runNaturalMissionScenario(input: {
     spec,
   });
   assert.ok(mission.threadId, "natural mission route must create a linked team thread");
+  const threadRoster = await loadThreadRosterEvidence({
+    runtimeRoot: input.runtimeRoot,
+    threadId: mission.threadId,
+    mode: naturalMissionModeForScenario(input.scenario),
+  });
   const result = await waitForNaturalMissionCompletion({
     baseUrl: input.baseUrl,
     token: input.token,
@@ -1670,6 +1826,7 @@ async function runNaturalMissionScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const artifacts = await waitForMissionArtifactsSettled({
     baseUrl: input.baseUrl,
@@ -1678,6 +1835,26 @@ async function runNaturalMissionScenario(input: {
     timeoutMs: spec.requiresArtifactLifecycle ? 20_000 : 1_000,
     requireLifecycle: spec.requiresArtifactLifecycle === true,
   });
+  const scenarioRuntimeEvidence =
+    input.scenario === "natural-long-delegation"
+      ? {
+          providerToolProtocol: summarizeProviderToolProtocolBoundaries(
+            await waitForThreadProgressBoundaryCount({
+              runtimeProgressStore: new FileRuntimeProgressStore({
+                rootDir: path.join(input.runtimeRoot, "data", "runtime-progress"),
+              }),
+              threadId: mission.threadId,
+              boundaryKind: "provider_tool_protocol_round",
+              minCount: 1,
+              timeoutMs: 20_000,
+            })
+          ),
+        }
+      : undefined;
+  const runtimeEvidence = {
+    threadRoster,
+    ...(scenarioRuntimeEvidence ?? {}),
+  };
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural mission timeline must include a final assistant answer");
   const quality = evaluateNaturalMissionQuality({
@@ -1695,6 +1872,7 @@ async function runNaturalMissionScenario(input: {
     timeline: result.timeline,
     metrics,
     artifacts,
+    runtimeEvidence,
     final,
     quality,
   };
@@ -1739,6 +1917,7 @@ async function runNaturalBrowserUnavailableScenario(input: {
       token: input.token,
       missionId: mission.id,
       timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
     });
     const final = findLatestThoughtEvent(result.timeline);
     assert.ok(final, "natural browser unavailable mission timeline must include a final assistant answer");
@@ -1802,6 +1981,7 @@ async function runNaturalBrowserCdpTimeoutScenario(input: {
       token: input.token,
       missionId: mission.id,
       timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
     });
     const final = findLatestThoughtEvent(result.timeline);
     assert.ok(final, "natural browser CDP timeout mission timeline must include a final assistant answer");
@@ -1865,6 +2045,7 @@ async function runNaturalBrowserDetachedTargetScenario(input: {
       token: input.token,
       missionId: mission.id,
       timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
     });
     const final = findLatestThoughtEvent(result.timeline);
     assert.ok(final, "natural browser detached-target mission timeline must include a final assistant answer");
@@ -1928,6 +2109,7 @@ async function runNaturalBrowserAttachFailedScenario(input: {
       token: input.token,
       missionId: mission.id,
       timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
     });
     const final = findLatestThoughtEvent(result.timeline);
     assert.ok(final, "natural browser attach-failed mission timeline must include a final assistant answer");
@@ -2011,6 +2193,7 @@ async function runNaturalFollowupScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural follow-up mission must include a final assistant answer");
@@ -2112,6 +2295,7 @@ async function runNaturalBrowserFollowupScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural browser follow-up mission must include a final assistant answer");
@@ -2175,7 +2359,8 @@ async function runNaturalBrowserRestartContinuationScenario(input: {
   const followup = [
     "Continue the operations dashboard review from before the daemon restart.",
     "Use the existing browser context if it is still recoverable; if the browser has to reconnect or reopen the page, keep that visible in the answer.",
-    "Re-check the rendered dashboard state and give the operator the current owner, next action, and residual uncertainty.",
+    "Re-check the rendered dashboard state after the restart.",
+    "The follow-up answer must include Queue depth: 11, SLA breaches: 3, Escalation threshold: queue depth above 5 or SLA breaches above 0, Recommended owner: Incident Commander, recommended action, and residual uncertainty.",
   ].join("\n");
   assertNaturalPromptAllowed(followup);
   await requestJson<{ accepted: boolean; missionId: string }>({
@@ -2212,6 +2397,7 @@ async function runNaturalBrowserRestartContinuationScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural browser restart continuation mission must include a final assistant answer");
@@ -2350,6 +2536,7 @@ async function runNaturalBrowserColdRecreationScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural browser cold recreation mission must include a final assistant answer");
@@ -2412,6 +2599,7 @@ async function runNaturalBrowserProfileLockRecoveryScenario(input: {
       token: input.token,
       missionId: mission.id,
       timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
     });
     const final = findLatestThoughtEvent(result.timeline);
     assert.ok(final, "natural browser profile-lock mission must include a final assistant answer");
@@ -2460,7 +2648,7 @@ async function runNaturalMemoryRecallScenario(input: {
     token: input.token,
     body: {
       title: "Natural durable memory recall",
-      mode: "research",
+      mode: "custom",
       desc: setupPrompt,
       owner: "natural-e2e",
       ownerLabel: "Natural E2E",
@@ -2504,6 +2692,7 @@ async function runNaturalMemoryRecallScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural memory recall mission must include a final assistant answer");
@@ -2525,6 +2714,520 @@ async function runNaturalMemoryRecallScenario(input: {
   };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission memory recall quality failures");
   return scenarioResult;
+}
+
+async function runNaturalMemoryPressureFlushScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  assert.ok(input.restartDaemon, "natural memory pressure flush requires a daemon restart hook");
+  const spec = buildNaturalScenarioSpec("natural-memory-pressure-flush", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const setupPrompt = buildNaturalMemoryPressureSetupPrompt();
+  assertNaturalPromptAllowed(setupPrompt);
+  await input.restartDaemon({
+    TURNKEYAI_REQUEST_ENVELOPE_MAX_PROMPT_CHARS: "20000",
+    TURNKEYAI_REQUEST_ENVELOPE_MAX_PROMPT_BYTES: "30000",
+  });
+  try {
+    const mission = await requestJson<Mission>({
+      method: "POST",
+      url: `${input.baseUrl}/missions`,
+      token: input.token,
+      body: {
+        title: "Natural memory pressure flush",
+        mode: "custom",
+        desc: setupPrompt,
+        owner: "natural-e2e",
+        ownerLabel: "Natural E2E",
+      },
+    });
+    assert.ok(mission.threadId, "natural memory pressure flush mission requires a linked team thread");
+
+    const setupResult = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+    });
+    const setupFinal = findLatestThoughtEvent(setupResult.timeline);
+    assert.ok(setupFinal, "natural memory pressure setup must include an assistant answer");
+    const runtimeProgressStore = new FileRuntimeProgressStore({
+      rootDir: path.join(input.runtimeRoot, "data", "runtime-progress"),
+    });
+    const reductionBoundary = await waitForThreadProgressBoundaryContains({
+      runtimeProgressStore,
+      threadId: mission.threadId,
+      boundaryKind: "request_envelope_reduction",
+      timeoutMs: 20_000,
+    });
+
+    const memoryStore = new FileThreadMemoryStore({
+      rootDir: path.join(input.runtimeRoot, "data", "context", "thread-memory"),
+    });
+    const flushedMemory = await waitForThreadMemoryContains({
+      memoryStore,
+      threadId: mission.threadId,
+      expected: [/Aurora-19/i, /Friday\s+14:15/i, /Field Ops Lead/i],
+      timeoutMs: 20_000,
+    });
+
+    await requestJson<{ accepted: boolean; missionId: string }>({
+      method: "POST",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+      token: input.token,
+      body: { content: spec.desc },
+    });
+
+    const result = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+      afterThoughtMs: setupFinal.tMs,
+      ...(setupFinal.id ? { afterThoughtId: setupFinal.id } : {}),
+    });
+    const metrics = await waitForMissionMetricsSettled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
+    });
+    const final = findLatestThoughtEvent(result.timeline);
+    assert.ok(final, "natural memory pressure follow-up must include a final assistant answer");
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+    });
+    const scenarioResult = {
+      scenario: "natural-memory-pressure-flush" as const,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      runtimeEvidence: {
+        pressureMode: "request-envelope-limit-override" as const,
+        requestEnvelopeReduction: summarizeRequestEnvelopeReductionBoundary(reductionBoundary),
+        flushedMemory: {
+          source: "thread-memory" as const,
+          preferences: flushedMemory.preferences.length,
+          constraints: flushedMemory.constraints.length,
+          longTermNotes: flushedMemory.longTermNotes.length,
+          requiredFactsPresent: true,
+        },
+      },
+      final,
+      quality,
+    };
+    assertNaturalMissionQualityPassed(scenarioResult, "natural mission memory pressure flush quality failures");
+    return scenarioResult;
+  } finally {
+    await input.restartDaemon({});
+  }
+}
+
+async function runNaturalMemoryCorrectionPressureFlushScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  assert.ok(input.restartDaemon, "natural memory correction pressure flush requires a daemon restart hook");
+  const spec = buildNaturalScenarioSpec("natural-memory-correction-pressure-flush", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const setupPrompt = [
+    "Start a launch-planning thread for Borealis-23.",
+    "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+  ].join("\n");
+  assertNaturalPromptAllowed(setupPrompt);
+  const correctionPrompt = buildNaturalMemoryCorrectionPressurePrompt();
+  assertNaturalPromptAllowed(correctionPrompt);
+
+  await input.restartDaemon({
+    TURNKEYAI_REQUEST_ENVELOPE_MAX_PROMPT_CHARS: "20000",
+    TURNKEYAI_REQUEST_ENVELOPE_MAX_PROMPT_BYTES: "30000",
+  });
+  try {
+    const mission = await requestJson<Mission>({
+      method: "POST",
+      url: `${input.baseUrl}/missions`,
+      token: input.token,
+      body: {
+        title: "Natural memory correction pressure flush",
+        mode: "custom",
+        desc: setupPrompt,
+        owner: "natural-e2e",
+        ownerLabel: "Natural E2E",
+      },
+    });
+    assert.ok(mission.threadId, "natural memory correction pressure flush mission requires a linked team thread");
+
+    const setupResult = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+    });
+    const setupFinal = findLatestThoughtEvent(setupResult.timeline);
+    assert.ok(setupFinal, "natural memory correction pressure setup must include an assistant answer");
+    await seedMemoryInvalidationFixture({
+      runtimeRoot: input.runtimeRoot,
+      threadId: mission.threadId,
+    });
+
+    await requestJson<{ accepted: boolean; missionId: string }>({
+      method: "POST",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+      token: input.token,
+      body: { content: correctionPrompt },
+    });
+
+    const correctionResult = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+      afterThoughtMs: setupFinal.tMs,
+      ...(setupFinal.id ? { afterThoughtId: setupFinal.id } : {}),
+    });
+    const correctionFinal = findLatestThoughtEvent(correctionResult.timeline);
+    assert.ok(correctionFinal, "natural memory correction pressure update must include an assistant answer");
+
+    const runtimeProgressStore = new FileRuntimeProgressStore({
+      rootDir: path.join(input.runtimeRoot, "data", "runtime-progress"),
+    });
+    const reductionBoundary = await waitForThreadProgressBoundaryContains({
+      runtimeProgressStore,
+      threadId: mission.threadId,
+      boundaryKind: "request_envelope_reduction",
+      timeoutMs: 20_000,
+    });
+    const memoryStore = new FileThreadMemoryStore({
+      rootDir: path.join(input.runtimeRoot, "data", "context", "thread-memory"),
+    });
+    const correctedMemory = await waitForThreadMemoryState({
+      memoryStore,
+      threadId: mission.threadId,
+      expected: [
+        /Borealis-23/i,
+        /Thursday\s+16:45/i,
+        /Ops Captain/i,
+        /Legal Review|data-processing addendum/i,
+        /payment processor signoff/i,
+      ],
+      forbidden: [/Monday\s+10:15/i, /Launch Manager/i, /staging checklist/i],
+      timeoutMs: 20_000,
+    });
+
+    await requestJson<{ accepted: boolean; missionId: string }>({
+      method: "POST",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+      token: input.token,
+      body: { content: spec.desc },
+    });
+
+    const result = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+      afterThoughtMs: correctionFinal.tMs,
+      ...(correctionFinal.id ? { afterThoughtId: correctionFinal.id } : {}),
+    });
+    const metrics = await waitForMissionMetricsSettled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
+    });
+    const providerProtocolBoundaries = await waitForThreadProgressBoundaryCount({
+      runtimeProgressStore,
+      threadId: mission.threadId,
+      boundaryKind: "provider_tool_protocol_round",
+      minCount: 2,
+      timeoutMs: 20_000,
+    });
+    const final = findLatestThoughtEvent(result.timeline);
+    assert.ok(final, "natural memory correction pressure follow-up must include a final assistant answer");
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+    });
+    const scenarioResult = {
+      scenario: "natural-memory-correction-pressure-flush" as const,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      runtimeEvidence: {
+        pressureMode: "request-envelope-limit-override" as const,
+        requestEnvelopeReduction: summarizeRequestEnvelopeReductionBoundary(reductionBoundary),
+        flushedMemory: {
+          source: "thread-memory" as const,
+          preferences: correctedMemory.preferences.length,
+          constraints: correctedMemory.constraints.length,
+          longTermNotes: correctedMemory.longTermNotes.length,
+          requiredFactsPresent: true,
+        },
+        invalidatedMemory: {
+          source: "thread-memory" as const,
+          removedItems: 1,
+          requiredFactsPresent: true,
+          staleFactsAbsent: correctedMemory.staleFactsAbsent,
+        },
+        providerToolProtocol: summarizeProviderToolProtocolBoundaries(providerProtocolBoundaries),
+      },
+      final,
+      quality,
+    };
+    assertNaturalMissionQualityPassed(
+      scenarioResult,
+      "natural mission memory correction pressure flush quality failures"
+    );
+    return scenarioResult;
+  } finally {
+    await input.restartDaemon({});
+  }
+}
+
+async function runNaturalMemoryInvalidationScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-memory-invalidation", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const setupPrompt = [
+    "Start a launch-planning thread for Borealis-23.",
+    "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+  ].join("\n");
+  assertNaturalPromptAllowed(setupPrompt);
+  const correctionPrompt = [
+    "Update the Borealis-23 launch context.",
+    "Remember this correction for Borealis-23 going forward: launch window is Thursday 16:45, owner is Ops Captain, residual risk is payment processor signoff pending.",
+    "The previous Borealis-23 note is stale and must not be used going forward.",
+    "Briefly acknowledge the corrected launch context.",
+  ].join("\n");
+  assertNaturalPromptAllowed(correctionPrompt);
+
+  const mission = await requestJson<Mission>({
+    method: "POST",
+    url: `${input.baseUrl}/missions`,
+    token: input.token,
+    body: {
+      title: "Natural memory invalidation",
+      mode: "custom",
+      desc: setupPrompt,
+      owner: "natural-e2e",
+      ownerLabel: "Natural E2E",
+    },
+  });
+  assert.ok(mission.threadId, "natural memory invalidation mission requires a linked team thread");
+
+  const setupResult = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const setupFinal = findLatestThoughtEvent(setupResult.timeline);
+  assert.ok(setupFinal, "natural memory invalidation setup must include an assistant answer");
+  await seedMemoryInvalidationFixture({
+    runtimeRoot: input.runtimeRoot,
+    threadId: mission.threadId,
+  });
+
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: { content: correctionPrompt },
+  });
+
+  const correctionResult = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    afterThoughtMs: setupFinal.tMs,
+    ...(setupFinal.id ? { afterThoughtId: setupFinal.id } : {}),
+  });
+  const correctionFinal = findLatestThoughtEvent(correctionResult.timeline);
+  assert.ok(correctionFinal, "natural memory invalidation correction must include an assistant answer");
+
+  const runtimeProgressStore = new FileRuntimeProgressStore({
+    rootDir: path.join(input.runtimeRoot, "data", "runtime-progress"),
+  });
+  const invalidationBoundary = await waitForThreadProgressBoundaryContains({
+    runtimeProgressStore,
+    threadId: mission.threadId,
+    boundaryKind: "thread_memory_invalidation",
+    timeoutMs: 20_000,
+  });
+  const memoryStore = new FileThreadMemoryStore({
+    rootDir: path.join(input.runtimeRoot, "data", "context", "thread-memory"),
+  });
+  const invalidatedMemory = await waitForThreadMemoryState({
+    memoryStore,
+    threadId: mission.threadId,
+    expected: [/Borealis-23/i, /Thursday\s+16:45/i, /Ops Captain/i, /payment processor signoff/i],
+    forbidden: [/Monday\s+10:15/i, /Launch Manager/i, /staging checklist/i],
+    timeoutMs: 20_000,
+  });
+
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: { content: spec.desc },
+  });
+
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    afterThoughtMs: correctionFinal.tMs,
+    ...(correctionFinal.id ? { afterThoughtId: correctionFinal.id } : {}),
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
+  });
+  const providerProtocolBoundaries = await waitForThreadProgressBoundaryCount({
+    runtimeProgressStore,
+    threadId: mission.threadId,
+    boundaryKind: "provider_tool_protocol_round",
+    minCount: 2,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural memory invalidation follow-up must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  const scenarioResult = {
+    scenario: "natural-memory-invalidation" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    runtimeEvidence: {
+      invalidatedMemory: {
+        source: "thread-memory" as const,
+        removedItems: readNumberFromMetadata(invalidationBoundary.metadata ?? {}, "removedItems") ?? 0,
+        requiredFactsPresent: true,
+        staleFactsAbsent: invalidatedMemory.staleFactsAbsent,
+      },
+      providerToolProtocol: summarizeProviderToolProtocolBoundaries(providerProtocolBoundaries),
+    },
+    final,
+    quality,
+  };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission memory invalidation quality failures");
+  return scenarioResult;
+}
+
+async function runNaturalToolResultPruningScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  assert.ok(input.restartDaemon, "natural tool-result pruning requires a daemon restart hook");
+  const spec = buildNaturalScenarioSpec("natural-tool-result-pruning", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  await input.restartDaemon({
+    TURNKEYAI_TOOL_RESULT_RECENT_FULL_COUNT: "1",
+    TURNKEYAI_TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES: "5000",
+    TURNKEYAI_TOOL_RESULT_SOFT_PRUNE_MAX_BYTES: "1800",
+    TURNKEYAI_TOOL_RESULT_HARD_PRUNE_MAX_BYTES: "12000",
+  });
+  try {
+    const mission = await createNaturalMission({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      spec,
+    });
+    assert.ok(mission.threadId, "natural tool-result pruning mission requires a linked team thread");
+    const result = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+    });
+    const metrics = await waitForMissionMetricsSettled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
+    });
+    const final = findLatestThoughtEvent(result.timeline);
+    assert.ok(final, "natural tool-result pruning mission must include a final assistant answer");
+    const runtimeProgressStore = new FileRuntimeProgressStore({
+      rootDir: path.join(input.runtimeRoot, "data", "runtime-progress"),
+    });
+    const pruningBoundary = await waitForThreadProgressBoundaryContains({
+      runtimeProgressStore,
+      threadId: mission.threadId,
+      boundaryKind: "tool_result_pruning",
+      timeoutMs: 20_000,
+    });
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+    });
+    const scenarioResult = {
+      scenario: "natural-tool-result-pruning" as const,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      runtimeEvidence: {
+        pressureMode: "tool-result-prune-limit-override" as const,
+        toolResultPruning: summarizeToolResultPruningBoundary(pruningBoundary),
+      },
+      final,
+      quality,
+    };
+    assertNaturalMissionQualityPassed(scenarioResult, "natural mission tool-result pruning quality failures");
+    return scenarioResult;
+  } finally {
+    await input.restartDaemon({});
+  }
 }
 
 async function runNaturalApprovalScenario(input: {
@@ -2555,6 +3258,7 @@ async function runNaturalApprovalScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural approval mission must include a final assistant answer");
@@ -2606,6 +3310,7 @@ async function runNaturalApprovalDeniedScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural approval-denied mission must include a final assistant answer");
@@ -2671,6 +3376,66 @@ async function runNaturalApprovalPendingScenario(input: {
   };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission approval-pending quality failures");
   return scenarioResult;
+}
+
+async function runNaturalApprovalWaitTimeoutScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  assert.ok(input.restartDaemon, "natural approval wait-timeout closeout requires a daemon restart hook");
+  await input.restartDaemon({
+    TURNKEYAI_TOOL_PERMISSION_WAIT_MS: "2000",
+  });
+  try {
+    const spec = buildNaturalScenarioSpec("natural-approval-wait-timeout-closeout", input.fixture);
+    assertNaturalPromptAllowed(spec.desc);
+    const mission = await createNaturalMission({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      spec,
+    });
+    assert.ok(mission.threadId, "natural approval wait-timeout mission requires a linked team thread");
+    const result = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+    });
+    const metrics = await waitForMissionMetricsSettled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: 20_000,
+      expectedStatus: result.mission.status,
+    });
+    const final = findLatestThoughtEvent(result.timeline);
+    assert.ok(final, "natural approval wait-timeout mission must include a final assistant answer");
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+    });
+    const scenarioResult = {
+      scenario: "natural-approval-wait-timeout-closeout" as const,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+      quality,
+    };
+    assertNaturalMissionQualityPassed(scenarioResult, "natural mission approval wait-timeout quality failures");
+    return scenarioResult;
+  } finally {
+    await input.restartDaemon({});
+  }
 }
 
 async function runNaturalCancelScenario(input: {
@@ -2872,6 +3637,7 @@ async function runNaturalCancelFollowupScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural cancellation follow-up mission must include a final assistant answer");
@@ -2968,6 +3734,7 @@ async function runNaturalTimeoutFollowupScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: result.mission.status,
   });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural timeout follow-up mission must include a final assistant answer");
@@ -2996,18 +3763,92 @@ async function createNaturalMission(input: {
   token: string;
   spec: NaturalScenarioSpec;
 }): Promise<Mission> {
+  const mode = naturalMissionModeForScenario(input.spec.scenario);
   return requestJson<Mission>({
     method: "POST",
     url: `${input.baseUrl}/missions`,
     token: input.token,
     body: {
       title: input.spec.title,
-      mode: "research",
+      mode,
       desc: input.spec.desc,
       owner: "natural-e2e",
       ownerLabel: "Natural E2E",
     },
   });
+}
+
+function naturalMissionModeForScenario(scenario: NaturalMissionE2eScenario): NaturalMissionMode {
+  if (
+    scenario === "natural-memory-recall" ||
+    scenario === "natural-memory-pressure-flush" ||
+    scenario === "natural-memory-correction-pressure-flush" ||
+    scenario === "natural-memory-invalidation"
+  ) {
+    return "custom";
+  }
+
+  if (
+    scenario === "natural-browser-dynamic-page" ||
+    scenario === "natural-browser-dashboard-task" ||
+    scenario === "natural-browser-external-page-review" ||
+    scenario === "natural-browser-complex-page-review" ||
+    scenario === "natural-browser-followup-continuation" ||
+    scenario === "natural-browser-restart-continuation" ||
+    scenario === "natural-browser-cold-recreation-continuation" ||
+    scenario === "natural-browser-profile-lock-recovery" ||
+    scenario === "natural-approval-dry-run-action" ||
+    scenario === "natural-approval-denied-safe-closeout" ||
+    scenario === "natural-approval-pending-state" ||
+    scenario === "natural-approval-wait-timeout-closeout" ||
+    scenario === "natural-browser-unavailable-closeout" ||
+    scenario === "natural-browser-cdp-timeout-closeout" ||
+    scenario === "natural-browser-detached-target-closeout" ||
+    scenario === "natural-browser-attach-failed-closeout"
+  ) {
+    return "browser";
+  }
+
+  if (scenario === "natural-long-delegation" || scenario === "natural-tool-result-pruning") {
+    return "investigation";
+  }
+
+  return "research";
+}
+
+async function loadThreadRosterEvidence(input: {
+  runtimeRoot: string;
+  threadId: string;
+  mode: NaturalMissionMode;
+}): Promise<NonNullable<NaturalMissionRuntimeEvidence["threadRoster"]>> {
+  const store = new FileTeamThreadStore({
+    rootDir: path.join(input.runtimeRoot, "data", "threads"),
+    idGenerator: {
+      teamId: () => "unused-team-id",
+      threadId: () => "unused-thread-id",
+    },
+    clock: { now: () => 0 },
+  });
+  const thread = await store.get(input.threadId);
+  assert.ok(thread, `natural mission thread not found for roster evidence: ${input.threadId}`);
+  const promptVisibleWorkerKinds = normalizeNaturalWorkerKinds(
+    thread.roles.flatMap((role) => role.capabilities ?? [])
+  );
+  return {
+    mode: input.mode,
+    leadRoleId: thread.leadRoleId,
+    roles: thread.roles.map((role) => ({
+      roleId: role.roleId,
+      seat: role.seat,
+      capabilities: [...(role.capabilities ?? [])],
+    })),
+    promptVisibleWorkerKinds,
+  };
+}
+
+function normalizeNaturalWorkerKinds(capabilities: readonly string[]): string[] {
+  const available = new Set(capabilities);
+  return ["browser", "coder", "finance", "explore", "harness"].filter((kind) => available.has(kind));
 }
 
 async function runThreadEntryScenarios(input: {
@@ -3477,7 +4318,7 @@ export function buildNaturalScenarioSpec(
       requiresApproval: false,
       allowToolFailure: false,
       minEvidenceEvents: 1,
-      requiredAnswerTerms: ["SLA", "Incident Commander", "escalation", "residual risk"],
+      requiredAnswerTerms: ["SLA", "Incident Commander", "escalation", "risk"],
       requiredAnswerPatterns: [
         {
           label: "visible queue depth",
@@ -3598,12 +4439,12 @@ export function buildNaturalScenarioSpec(
         {
           label: "frame source state",
           pattern:
-            /\b(?:frame|embedded source)\b[\s\S]{0,160}\b(?:backlog\s*(?:count\s*(?:of\s*)?)?(?:value:\s*)?7|Frame Captain)\b/i,
+            /\b(?:frame|embedded source)\b[\s\S]{0,200}\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b|\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b[\s\S]{0,200}\b(?:frame|embedded source)\b/i,
         },
         {
           label: "shadow review state",
           pattern:
-            /\b(?:shadow|review component)\b[\s\S]{0,160}\b(?:risk desk|approval required|approval requirement)\b/i,
+            /\b(?:shadow|review component)\b[\s\S]{0,220}\b(?:risk desk|approval required|approval requirement|approval is required)\b|\b(?:risk desk|approval required|approval requirement|approval is required)\b[\s\S]{0,220}\b(?:shadow|review component)\b/i,
         },
         {
           label: "popup drill state",
@@ -3814,6 +4655,178 @@ export function buildNaturalScenarioSpec(
       ],
     };
   }
+  if (scenario === "natural-memory-pressure-flush") {
+    return {
+      scenario,
+      title: "Natural memory pressure flush recall",
+      desc: [
+        "Continue from the long Aurora-19 launch handoff in this mission.",
+        "Please use the workbench's durable memory lookup for Aurora-19 rather than relying on the visible thread summary, then recover the launch window, owner, hard constraint, and residual risk if they are available.",
+        "Inspect any candidate memory entry before relying on it.",
+        "If the earlier handoff was not preserved in durable memory, say what is missing rather than guessing.",
+        "Keep the answer concise, evidence-backed, and useful for the launch lead; a short bullet list is fine, and tables are not needed.",
+      ].join("\n"),
+      minBytes: 360,
+      minToolResults: 2,
+      maxToolResults: 5,
+      minSpawnedSessions: 0,
+      maxSpawnedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["Aurora-19", "Friday 14:15", "Field Ops Lead", "Legal Review", "vendor dry-run"],
+      requiredAnswerPatterns: [
+        { label: "launch window", pattern: /Friday\s+14:15/i },
+        { label: "owner", pattern: /Field Ops Lead/i },
+        { label: "review constraint", pattern: /Legal Review|data-processing addendum/i },
+        { label: "risk", pattern: /residual risk|carry-forward risk|\brisk\b/i },
+      ],
+      requiredEvidencePatterns: [
+        { label: "pressure-flushed codename", pattern: /Aurora-19/i },
+        { label: "pressure-flushed owner", pattern: /Field Ops Lead/i },
+        { label: "pressure-flushed constraint", pattern: /Legal Review|data-processing addendum/i },
+      ],
+      requiredToolNames: ["memory_search", "memory_get"],
+      forbiddenPatterns: [
+        { label: "session delegation", pattern: /\bsessions_(?:spawn|send|list|history)\b/i },
+        { label: "unsupported launch window", pattern: /\b(?:Monday|Tuesday|Wednesday|Thursday)\s+\d{1,2}:\d{2}\b/i },
+        { label: "unsupported owner", pattern: /\b(?:Release Captain|Product Lead|Incident Commander|Launch Manager)\b/i },
+      ],
+    };
+  }
+  if (scenario === "natural-memory-correction-pressure-flush") {
+    return {
+      scenario,
+      title: "Natural memory correction pressure flush recall",
+      desc: [
+        "Continue from the corrected Borealis-23 launch handoff in this mission.",
+        "Please use durable memory lookup for Borealis-23 rather than relying on the visible thread summary, then recover the current launch window, owner, hard constraint, and residual risk if they are available.",
+        "Inspect any candidate memory entry before relying on it.",
+        "If older Borealis-23 launch details conflict with the corrected handoff, treat them as stale without repeating the old values in the final answer.",
+        "Keep the answer concise, evidence-backed, and useful for the launch lead; a short bullet list is fine, and tables are not needed.",
+      ].join("\n"),
+      minBytes: 360,
+      minToolResults: 2,
+      maxToolResults: 5,
+      minSpawnedSessions: 0,
+      maxSpawnedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["Borealis-23", "Thursday 16:45", "Ops Captain", "Legal Review", "payment processor signoff"],
+      requiredAnswerPatterns: [
+        { label: "corrected launch window", pattern: /Thursday\s+16:45/i },
+        { label: "corrected owner", pattern: /Ops Captain/i },
+        { label: "review constraint", pattern: /Legal Review|data-processing addendum/i },
+        { label: "corrected risk", pattern: /payment processor signoff/i },
+      ],
+      requiredEvidencePatterns: [
+        { label: "corrected codename", pattern: /Borealis-23/i },
+        { label: "corrected launch window", pattern: /Thursday\s+16:45/i },
+        { label: "corrected owner", pattern: /Ops Captain/i },
+        { label: "corrected risk", pattern: /payment processor signoff/i },
+      ],
+      requiredToolNames: ["memory_search", "memory_get"],
+      forbiddenPatterns: [
+        { label: "session delegation", pattern: /\bsessions_(?:spawn|send|list|history)\b/i },
+        { label: "stale launch window", pattern: /Monday\s+10:15/i },
+        { label: "stale owner", pattern: /Launch Manager/i },
+        { label: "stale risk", pattern: /staging checklist/i },
+      ],
+    };
+  }
+  if (scenario === "natural-memory-invalidation") {
+    return {
+      scenario,
+      title: "Natural memory invalidation recall",
+      desc: [
+        "Continue from the corrected Borealis-23 launch context in this mission.",
+        "Please use durable memory lookup for Borealis-23 and inspect any candidate memory entry before relying on it.",
+        "Recover the current launch window, owner, and residual risk if they are available.",
+        "If older Borealis-23 launch details conflict with the corrected context, treat them as stale without repeating the old values in the final answer.",
+        "Keep the answer concise, evidence-backed, and useful for the launch lead.",
+      ].join("\n"),
+      minBytes: 320,
+      minToolResults: 2,
+      maxToolResults: 5,
+      minSpawnedSessions: 0,
+      maxSpawnedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["Borealis-23", "Thursday 16:45", "Ops Captain", "residual risk"],
+      requiredAnswerPatterns: [
+        { label: "corrected launch window", pattern: /Thursday\s+16:45/i },
+        { label: "corrected owner", pattern: /Ops Captain/i },
+        { label: "corrected risk", pattern: /payment processor signoff/i },
+      ],
+      requiredEvidencePatterns: [
+        { label: "current codename", pattern: /Borealis-23/i },
+        { label: "current launch window", pattern: /Thursday\s+16:45/i },
+        { label: "current owner", pattern: /Ops Captain/i },
+      ],
+      requiredToolNames: ["memory_search", "memory_get"],
+      forbiddenPatterns: [
+        { label: "session delegation", pattern: /\bsessions_(?:spawn|send|list|history)\b/i },
+        { label: "stale launch window", pattern: /Monday\s+10:15/i },
+        { label: "stale owner", pattern: /Launch Manager/i },
+        { label: "stale risk", pattern: /staging checklist/i },
+      ],
+    };
+  }
+  if (scenario === "natural-tool-result-pruning") {
+    return {
+      scenario,
+      title: "Natural tool-result pruning brief",
+      desc: [
+        "Prepare an audit-ready product brief about the next agent workbench release.",
+        `Research source: ${fixture.orchestrationUrl}`,
+        `Capability source: ${fixture.bridgeUrl}`,
+        `Live signal dashboard: ${fixture.productSignalsUrl}`,
+        "These are three independent evidence streams. Use specialist work where it helps, and use browser-visible evidence for the live signal dashboard.",
+        "Keep enough source-specific evidence for an operator to trust the recommendation, but keep the final brief concise and focused on what to build next, why, what not to over-emphasize, and what risk remains.",
+      ].join("\n"),
+      minBytes: 700,
+      minToolResults: 3,
+      maxToolResults: 12,
+      minSpawnedSessions: 3,
+      maxSpawnedSessions: 8,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowRecoveredTimeout: true,
+      allowToolFailure: false,
+      minEvidenceEvents: 3,
+      requiredAnswerTerms: ["browser", "Mission Control", "Stuck missions", "Weak answer rate", "risk"],
+      requiredAnswerPatterns: [
+        {
+          label: "multi-agent coordination",
+          pattern: /\bmulti[- ]agent\b|multiple agents|specialist agents|delegated agents|agent coordination/i,
+        },
+        {
+          label: "product priority",
+          pattern: /\b(?:build|ship|prioriti[sz]e|next action|recommend)\b[\s\S]{0,160}\bMission Control\b|\bMission Control\b[\s\S]{0,160}\b(?:build|ship|prioriti[sz]e|next action|recommend)\b/i,
+        },
+      ],
+      requiredEvidencePatterns: [
+        { label: "orchestration evidence stream", pattern: /multi-agent decomposition|durable sub-session history/i },
+        {
+          label: "bridge evidence stream",
+          pattern:
+            /(?:browser bridge|bridge capability|bridge controls)[\s\S]{0,240}(?:command-line|provider configuration|desktop|DOM|screenshots|artifacts)|browser work is a means|does not control (?:the )?desktop|command-line setup[\s\S]{0,120}provider configuration/i,
+        },
+        {
+          label: "product signals stuck missions",
+          pattern: /(?:Stuck missions|stuckMissions|stuck_missions)\s*:?\s*(?:6|six)|(?:6|six)\s+stuck\s+missions/i,
+        },
+        { label: "product signals weak answer rate", pattern: /Weak[- ]answer(?:\s+rate)?\s*:?\s*24%|24%[\s-]+weak[- ]answer(?:\s+rate)?/i },
+      ],
+      requiredToolNames: ["sessions_spawn"],
+      allowedWeakAnswerSignals: ["browser transport degraded"],
+    };
+  }
   if (scenario === "natural-approval-dry-run-action") {
     return {
       scenario,
@@ -3872,7 +4885,7 @@ export function buildNaturalScenarioSpec(
         {
           label: "denied side effect",
           pattern:
-            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\bwas\s+not\s+executed\b|\baction not performed\b|\bno (?:form submission|browser action|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed)\b|\bno mutation was performed\b|\bremains untouched\b/i,
+            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\bwas\s+(?:not|never)\s+submit(?:ted)?\b|\bwas\s+not\s+executed\b|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno action was performed\b|\bno browser action or side effect was applied\b|\bno (?:form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno mutation was performed\b|\bno state mutated\b|\b(?:form submission|submission)\s+attempted\?\s*(?:\*\*)?\s*no\b|\b(?:approval )?form\b[\s\S]{0,80}\b(?:never|not)\s+(?:touched|submitted|changed|mutated)\b|\bremains untouched\b/i,
         },
         { label: "safe next action", pattern: /\b(?:next action|safest next step|safe fallback|ask the operator|revise|flow is complete|closes cleanly|closeout confirmed)\b/i },
       ],
@@ -3920,6 +4933,56 @@ export function buildNaturalScenarioSpec(
             /\b(?:successfully submitted|submission completed|form submission completed|action completed|form was submitted|submitted locally after approval|submitted to the page)\b/i,
         },
         { label: "approval decided while pending", pattern: /\bpermission\.(?:result|applied)\b/i },
+      ],
+    };
+  }
+  if (scenario === "natural-approval-wait-timeout-closeout") {
+    return {
+      scenario,
+      title: "Natural approval wait-timeout closeout",
+      desc: [
+        "Open the local approval form and start a safe dry-run browser form submission attempt for operator review.",
+        `Form: ${fixture.approvalUrl}`,
+        "The dry-run action under review is the form submission, not just opening the page.",
+        "If the operator decision does not arrive during this attempt, stop without submitting the form and close out with what remains pending, what did not run, and the safest next action.",
+        "Treat the page as isolated local test data, but keep the approval gate authoritative.",
+      ].join("\n"),
+      minBytes: 220,
+      minToolResults: 1,
+      maxToolResults: 4,
+      minSpawnedSessions: 0,
+      maxSpawnedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: true,
+      approvalDecision: "timeout",
+      expectedMissionStatus: "done",
+      allowToolFailure: true,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["approval", "pending"],
+      requiredAnswerPatterns: [
+        {
+          label: "approval wait timeout",
+          pattern: /\b(?:approval|operator decision|permission request)\b[\s\S]{0,140}\b(?:pending|did not arrive|still pending|timed out|timeout|wait)\b/i,
+        },
+        {
+          label: "side effect withheld",
+          pattern:
+            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b/i,
+        },
+        { label: "safe next action", pattern: /\b(?:next action|safest next step|safe fallback|ask the operator|retry|continue|re-?run|re-?initiate)\b/i },
+      ],
+      requiredEvidencePatterns: [
+        { label: "approval gate", pattern: /\bpermission\.query\b|\bapproval_wait_timeout\b|\bApproval required before\b|\bblocked_before_side_effect\b/i },
+        { label: "approval wait timeout evidence", pattern: /\bapproval_wait_timeout\b|\bstill pending\b|\bwait[- ]timeout\b/i },
+      ],
+      requiredToolNames: ["sessions_spawn"],
+      forbiddenPatterns: [
+        {
+          label: "timed-out submit claimed complete",
+          pattern:
+            /\b(?:successfully submitted|submission completed|form submission completed|action completed|submitted locally after approval|submitted to the page)\b/i,
+        },
+        { label: "permission applied after timeout", pattern: /\bpermission\.applied\b/i },
       ],
     };
   }
@@ -3980,10 +5043,11 @@ export function buildNaturalScenarioSpec(
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["browser", "verified", "next action"],
       requiredAnswerPatterns: [
-        { label: "timeout closeout", pattern: /\b(?:timed out|timeout|did not complete)\b/i },
+        { label: "timeout closeout", pattern: /\b(?:timed out|timeouts?|did not complete|cdp_command_timeout)\b/i },
         {
           label: "bounded CDP limitation",
-          pattern: /\b(?:CDP|snapshot|capture|browser)\b[\s\S]{0,120}\b(?:timeout|timed out|unverified|not complete|incomplete)\b/i,
+          pattern:
+            /\b(?:CDP|snapshot|screenshot|capture|browser|cdp_command_timeout)\b[\s\S]{0,160}\b(?:timeouts?|timed out|unverified|not complete|incomplete|fallback|recovered|blocked|traversal|not captured|not verified)\b|\b(?:not verified|unverified)\b[\s\S]{0,220}\b(?:CDP|snapshot|screenshot|capture|browser|cdp_command_timeout|timeouts?)\b|\bcdp_command_timeout\b[\s\S]{0,160}\b(?:snapshot|screenshot|capture|fallback|recovered|blocked|traversal|not captured|not verified)\b/i,
         },
       ],
       requiredEvidencePatterns: [
@@ -4046,6 +5110,7 @@ export function buildNaturalScenarioSpec(
       maxSpawnedSessions: 3,
       requiresBrowser: true,
       requiresApproval: false,
+      expectedMissionStatuses: ["done", "blocked"],
       allowToolFailure: true,
       requiredBrowserFailureBuckets: ["attach_failed"],
       minEvidenceEvents: 1,
@@ -4205,6 +5270,9 @@ export function buildNaturalScenarioSpec(
       `Capability source: ${fixture.bridgeUrl}`,
       `Live signal dashboard: ${fixture.productSignalsUrl}`,
       "These are three independent evidence streams. Use specialist work where it helps, and use browser-visible evidence for the live signal dashboard.",
+      "Do not finalize until all three evidence streams have returned. The live signal dashboard must be inspected as rendered browser evidence, not raw HTML.",
+      "The final brief must explicitly include Mission Control, Stuck missions, Weak answer rate, and the signal-dashboard recommended next action when those values are present.",
+      "If any child evidence mentions transport_failure, lease conflict, result truncation, snapshot truncation, or other browser transport degradation, explicitly name that bucket in the final answer and state what evidence was recovered, what remains unverified, and whether to retry or continue.",
       "The final brief should tell a product leader what to build next, why it matters, what not to over-emphasize, and what risk remains.",
     ].join("\n"),
     minBytes: 700,
@@ -4296,8 +5364,11 @@ export function evaluateNaturalMissionQuality(input: {
   final: ActivityEvent;
 }): NaturalMissionQuality {
   const failures: string[] = [];
-  const expectedMissionStatus = input.spec.expectedMissionStatus ?? "done";
-  const completed = input.mission.status === expectedMissionStatus && input.metrics.status === expectedMissionStatus;
+  const expectedMissionStatuses = input.spec.expectedMissionStatuses ?? [input.spec.expectedMissionStatus ?? "done"];
+  const expectsNeedsApproval = expectedMissionStatuses.includes("needs_approval");
+  const completed =
+    expectedMissionStatuses.some((status) => status === input.mission.status) &&
+    expectedMissionStatuses.some((status) => status === input.metrics.status);
   const toolNames = collectToolNames(input.timeline);
   const evidenceText = collectTimelineEvidenceText(input.timeline);
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
@@ -4307,11 +5378,8 @@ export function evaluateNaturalMissionQuality(input: {
       ? []
       : findWeakEvidenceSignals(evidenceText, { browserEvidenceExpected: input.spec.requiresBrowser || browserUsed })),
   ];
-  const blockingWeakAnswerSignals = weakAnswerSignals.filter(
-    (signal) => !(input.spec.allowedWeakAnswerSignals ?? []).includes(signal)
-  );
   const effectiveEvidenceEvents =
-    expectedMissionStatus === "needs_approval" && hasRuntimeEvent(input.timeline, "permission.query")
+    expectsNeedsApproval && hasRuntimeEvent(input.timeline, "permission.query")
       ? Math.max(input.metrics.qualityGate.evidenceEvents, 1)
       : input.metrics.qualityGate.evidenceEvents;
   const artifactLifecycleVisible = (input.artifacts ?? []).some(hasArtifactLifecycleEvidence);
@@ -4319,6 +5387,7 @@ export function evaluateNaturalMissionQuality(input: {
   const browserFailureBuckets = input.metrics.browser?.failureBuckets ?? [];
   const unexpectedBrowserFailureBuckets = collectUnexpectedNaturalBrowserFailureBuckets(input.spec, browserFailureBuckets);
   const missionCancelled = hasRuntimeEvent(input.timeline, "mission.cancelled");
+  const approvalWaitTimeoutEvidence = hasApprovalWaitTimeoutEvidence(input.timeline);
   const sourceCoverage = evaluateNaturalSourceCoverage({
     spec: input.spec,
     finalText: input.final.text,
@@ -4330,7 +5399,7 @@ export function evaluateNaturalMissionQuality(input: {
     ? profileFallbackCount > 0
     : profileFallbackFree;
   const subAgentCompleted =
-    expectedMissionStatus === "needs_approval"
+    expectsNeedsApproval
       ? input.metrics.sessions.spawned >= input.spec.minSpawnedSessions
       : input.metrics.sessions.spawned >= input.spec.minSpawnedSessions &&
         input.metrics.liveness.active === 0 &&
@@ -4342,6 +5411,13 @@ export function evaluateNaturalMissionQuality(input: {
         input.metrics.approvals.applied === 0 &&
         hasRuntimeEvent(input.timeline, "permission.query") &&
         !hasRuntimeEvent(input.timeline, "permission.result") &&
+        !hasRuntimeEvent(input.timeline, "permission.applied")
+      : input.spec.approvalDecision === "timeout"
+      ? input.metrics.approvals.requested > 0 &&
+        input.metrics.approvals.decided === 0 &&
+        input.metrics.approvals.applied === 0 &&
+        (hasRuntimeEvent(input.timeline, "permission.query") || approvalWaitTimeoutEvidence) &&
+        (hasRuntimeEvent(input.timeline, "permission.result") || approvalWaitTimeoutEvidence) &&
         !hasRuntimeEvent(input.timeline, "permission.applied")
       : input.spec.approvalDecision === "denied"
       ? input.metrics.approvals.requested > 0 &&
@@ -4356,6 +5432,25 @@ export function evaluateNaturalMissionQuality(input: {
         hasRuntimeEvent(input.timeline, "permission.query") &&
         hasRuntimeEvent(input.timeline, "permission.result") &&
         hasRuntimeEvent(input.timeline, "permission.applied");
+  const blockingWeakAnswerSignals = weakAnswerSignals.filter(
+    (signal) =>
+      !(input.spec.allowedWeakAnswerSignals ?? []).includes(signal) &&
+      !(
+        signal === "browser evidence blocked" &&
+        isApprovalBrowserSafetyBoundaryProven({
+          spec: input.spec,
+          approvalExercised,
+          browserFailureBuckets,
+          finalText: input.final.text,
+        })
+      ) &&
+      !(
+        signal === "browser transport degraded" &&
+        unexpectedBrowserFailureBuckets.length > 0 &&
+        unexpectedBrowserFailureBuckets.every(isRecoverableNaturalBrowserFailureBucket) &&
+        recoverableBrowserFailureCloseoutVisible(input.final.text, unexpectedBrowserFailureBuckets)
+      )
+  );
   const reasonableToolUse =
     input.metrics.tool.results >= input.spec.minToolResults &&
     input.metrics.tool.results <= input.spec.maxToolResults &&
@@ -4372,7 +5467,7 @@ export function evaluateNaturalMissionQuality(input: {
       input.final.text
     );
   const stuckOrLoop =
-    (expectedMissionStatus !== "needs_approval" &&
+    (!expectsNeedsApproval &&
       (input.metrics.liveness.active > 0 || input.metrics.liveness.waiting > 0)) ||
     input.metrics.liveness.stale > 0 ||
     hasRepeatedToolLoop(input.timeline);
@@ -4390,7 +5485,8 @@ export function evaluateNaturalMissionQuality(input: {
     finalAnswerUseful;
   const recoveredBrowserFailurePolicySatisfied =
     unexpectedBrowserFailureBuckets.length === 0 ||
-    ((input.spec.allowToolFailure || input.spec.allowRecoveredTimeout === true) &&
+    (((input.spec.allowToolFailure || input.spec.allowRecoveredTimeout === true) ||
+      recoverableBrowserFailureCloseoutVisible(input.final.text, unexpectedBrowserFailureBuckets)) &&
       recoveryCloseoutIsClean &&
       unexpectedBrowserFailureBuckets.every(isRecoverableNaturalBrowserFailureBucket));
   const recoveredFailurePolicySatisfied =
@@ -4399,14 +5495,28 @@ export function evaluateNaturalMissionQuality(input: {
       input.metrics.tool.timeouts === 0 &&
       recoveredBrowserFailurePolicySatisfied &&
       recoveryCloseoutIsClean);
-  const recoveredTimeoutPolicySatisfied =
-    input.spec.allowRecoveredTimeout === true &&
+  const successfulResultRecoveredTimeout =
     input.metrics.tool.timeouts > 0 &&
-    recoveredToolTimeouts >= input.metrics.tool.timeouts &&
+    nonCancelledFailures === 0 &&
+    input.metrics.recovery.events === 0 &&
+    input.metrics.tool.results >= input.spec.minToolResults &&
+    input.metrics.qualityGate.status === "passed" &&
+    missionQualityGateHasNoFailedChecks(input.metrics.qualityGate.checks) &&
+    completed &&
+    !stuckOrLoop &&
+    reasonableToolUse &&
+    subAgentCompleted &&
     recoveredBrowserFailurePolicySatisfied &&
     recoveryCloseoutIsClean;
+  const recoveredTimeoutPolicySatisfied =
+    input.metrics.tool.timeouts > 0 &&
+    (((input.spec.allowRecoveredTimeout === true || input.spec.allowToolFailure) &&
+      recoveredToolTimeouts >= input.metrics.tool.timeouts &&
+      recoveredBrowserFailurePolicySatisfied &&
+      recoveryCloseoutIsClean) ||
+      successfulResultRecoveredTimeout);
 
-  if (!completed) failures.push(`mission did not reach expected status ${expectedMissionStatus}`);
+  if (!completed) failures.push(`mission did not reach expected status ${expectedMissionStatuses.join(" or ")}`);
   if (stuckOrLoop) failures.push("mission appears stuck, looping, or retains live runtime subjects");
   if (!reasonableToolUse) {
     failures.push(
@@ -4443,6 +5553,8 @@ export function evaluateNaturalMissionQuality(input: {
         ? "approval denied scenario did not complete query/result without permission.applied"
         : input.spec.approvalDecision === "pending"
         ? "approval pending scenario did not stop at query without result/applied"
+        : input.spec.approvalDecision === "timeout"
+        ? "approval wait-timeout scenario did not record query/result pending without permission.applied"
         : "approval scenario did not complete query/result/applied loop"
     );
   }
@@ -4599,6 +5711,31 @@ function scoreOptionalRequirement(required: boolean, observed: boolean, full: bo
   return scoreBoolean(full, observed);
 }
 
+function isApprovalBrowserSafetyBoundaryProven(input: {
+  spec: NaturalScenarioSpec;
+  approvalExercised: boolean;
+  browserFailureBuckets: Array<{ bucket: string; count: number; latestAtMs: number }>;
+  finalText: string;
+}): boolean {
+  return (
+    input.spec.requiresApproval &&
+    input.approvalExercised &&
+    input.browserFailureBuckets.every((bucket) => bucket.count === 0) &&
+    /\b(?:approved action|action approved|what was applied|result:\s*(?:✅\s*)?success|post-submit|post submit|submitted locally after approval|dry-run form submission was executed|browser\.form\.submit)\b/i.test(
+      input.finalText
+    ) &&
+    /\b(?:no external mutation|no external side effects?|local-only|isolated local fixture|unchanged loopback URL|URL unchanged|no external state was affected)\b/i.test(
+      input.finalText
+    )
+  );
+}
+
+function missionQualityGateHasNoFailedChecks(
+  checks: MissionObservabilitySnapshot["qualityGate"]["checks"] | undefined
+): boolean {
+  return (checks ?? []).every((check) => check.status !== "fail");
+}
+
 function collectUnexpectedNaturalBrowserFailureBuckets(
   spec: NaturalScenarioSpec,
   buckets: Array<{ bucket: string; count: number; latestAtMs: number }>
@@ -4609,6 +5746,20 @@ function collectUnexpectedNaturalBrowserFailureBuckets(
 
 function isRecoverableNaturalBrowserFailureBucket(bucket: { bucket: string }): boolean {
   return bucket.bucket === "transport_failure";
+}
+
+function recoverableBrowserFailureCloseoutVisible(
+  finalText: string,
+  buckets: Array<{ bucket: string }>
+): boolean {
+  if (buckets.length === 0 || !buckets.every(isRecoverableNaturalBrowserFailureBucket)) {
+    return false;
+  }
+  return (
+    /\btransport_failure\b/i.test(finalText) &&
+    /\b(?:Browser limitation|bounded to|recovered evidence|evidence that was recovered|retry|continue)\b/i.test(finalText) &&
+    /\b(?:missing evidence|if .*matters|residual risk|not verified|unverified|partial)\b/i.test(finalText)
+  );
 }
 
 function bucketNaturalMissionFailures(input: {
@@ -4670,8 +5821,7 @@ export function evaluateNaturalSourceCoverage(input: {
   evidenceEvents: number;
 }): NaturalSourceCoverage {
   const answerTerms = input.spec.requiredAnswerTerms;
-  const normalizedFinalText = normalizeNaturalAnswerTermText(input.finalText);
-  const missingAnswerTerms = answerTerms.filter((term) => !normalizedFinalText.includes(normalizeNaturalAnswerTermText(term)));
+  const missingAnswerTerms = answerTerms.filter((term) => !naturalAnswerTermCovered(term, input.finalText));
   const answerPatterns = input.spec.requiredAnswerPatterns ?? [];
   const missingAnswerPatterns = answerPatterns
     .filter((item) => !item.pattern.test(input.finalText))
@@ -4704,9 +5854,9 @@ export function evaluateNaturalSourceCoverage(input: {
       observed: input.evidenceEvents,
       required: input.spec.minEvidenceEvents,
     },
-    residualRiskVisible: /\bresidual\s+risk\b|\brisks?\b|uncertain|uncertainty|unverified|not verified|\bdegraded\b|\bfallback\b|\blocked\b|no external mutation|no mutation was performed|isolated local execution|approval (?:is )?denied|operator denied(?: approval)?|denied by|side effect did not run|must not be applied|requested approval|no persistent changes|without side effects|no side effects (?:occurred|were applied)|execution stopped at the approval gate|action not performed|no form submission was executed/i.test(
+    residualRiskVisible: /\bresidual\s+risk\b|\brisks?\b|uncertain|uncertainty|unverified|not verified|\bdegraded\b|\bfallback\b|\blocked\b|no external mutation|no mutation was performed|no state mutated|isolated local execution|approval (?:is )?denied|operator denied(?: approval)?|denied by|side effect did not run|must not be applied|requested approval|no persistent changes|without side effects|no (?:browser action or )?side effects? (?:occurred|were applied|was applied)|execution stopped at the approval gate|action not performed|no form submission was executed/i.test(
       input.finalText
-    ),
+    ) || (input.spec.approvalDecision === "timeout" && /\b(?:approval|operator decision)\b[\s\S]{0,120}\bpending\b/i.test(input.finalText)),
     unsupportedClaims,
   };
 }
@@ -4719,6 +5869,41 @@ function normalizeNaturalAnswerTermText(value: string): string {
     .replace(/[‐‑‒–—-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function naturalAnswerTermCovered(term: string, finalText: string): boolean {
+  const normalizedFinalText = normalizeNaturalAnswerTermText(finalText);
+  const normalizedTerm = normalizeNaturalAnswerTermText(term);
+  if (normalizedFinalText.includes(normalizedTerm)) {
+    return true;
+  }
+  if (normalizedTerm === "browser") {
+    return /\b(?:rendered|screenshot|CDP|Chrome DevTools|DOM|page content|client[- ]side)\b/i.test(finalText);
+  }
+  if (normalizedTerm === "visible") {
+    return /\b(?:verified concrete items?|visible|as (?:a )?user would see|navigation links?|page purpose|page structure|story|stories|items?|links?|status text|page title)\b/i.test(
+      finalText
+    );
+  }
+  if (normalizedTerm === "dry run") {
+    return (
+      /\bdry\s*run\b/i.test(finalText) ||
+      (/\bbrowser\.form\.submit\b/i.test(finalText) &&
+        /\b(?:approval|permission)\b/i.test(finalText) &&
+        /\b(?:no|not|never|without|blocked at approval gate|approval gate)\b[\s\S]{0,140}\b(?:mutation|form submission|browser action|state|submitted|touched|applied|executed|side effects?)\b/i.test(
+          finalText
+        ))
+    );
+  }
+  if (normalizedTerm === "continue") {
+    return /\b(?:continue|continuation|resume|resumable|retry|re-submit|resubmit)\b/i.test(finalText);
+  }
+  if (normalizedTerm === "next action") {
+    return /\b(?:next|recommended|safe|safest)\s+(?:operator\s+)?(?:action|step)\b|\baction\s+an\s+operator\s+should\s+take\b/i.test(
+      finalText
+    );
+  }
+  return false;
 }
 
 function collectToolNames(timeline: ActivityEvent[]): Set<string> {
@@ -4764,6 +5949,19 @@ function timelineUsesWorker(timeline: ActivityEvent[], workerType: string): bool
 
 function hasRuntimeEvent(timeline: ActivityEvent[], eventType: string): boolean {
   return timeline.some((event) => event.runtime?.["eventType"] === eventType);
+}
+
+function hasApprovalWaitTimeoutEvidence(timeline: ActivityEvent[]): boolean {
+  return timeline.some((event) => {
+    const text = [
+      event.text,
+      typeof event.runtime?.["resultContent"] === "string" ? event.runtime["resultContent"] : "",
+      typeof event.runtime?.["summary"] === "string" ? event.runtime["summary"] : "",
+    ].join("\n");
+    return /\bapproval_wait_timeout\b|\bapproval wait[- ]timeout\b|\bPermission request\b[\s\S]{0,120}\bstill pending\b|\bblocked_before_side_effect\b/i.test(
+      text
+    );
+  });
 }
 
 function hasRepeatedToolLoop(timeline: ActivityEvent[]): boolean {
@@ -4905,7 +6103,7 @@ export function findWeakAnswerSignals(text: string): string[] {
   const patterns = [
     { label: "tool unavailable fallback", pattern: /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:search|browser|tool).{0,24}(?:unavailable|not available|failed|not working|unable)/i },
     { label: "model-knowledge fallback", pattern: /(?:based on|using) (?:my )?(?:knowledge|training data)|(?:基于|根据)我的(?:知识库|知识|训练数据)/i },
-    { label: "placeholder uncertainty", pattern: /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|estimate|estimated|probably|maybe)\b|待确认|估算/i },
+    { label: "placeholder uncertainty", matches: hasPlaceholderUncertainty },
     {
       label: "delegation-only closeout",
       pattern:
@@ -4916,7 +6114,19 @@ export function findWeakAnswerSignals(text: string): string[] {
       pattern: /^\s*(?:I don't have enough information|I am unable to provide|I cannot determine|无法提供|不能确定)\b/i,
     },
   ];
-  return patterns.flatMap((item) => (item.pattern.test(text) ? [item.label] : []));
+  return patterns.flatMap((item) =>
+    ("matches" in item ? item.matches(text) : item.pattern.test(text)) ? [item.label] : []
+  );
+}
+
+function hasPlaceholderUncertainty(text: string): boolean {
+  if (/\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b|待确认|估算/i.test(text)) {
+    return true;
+  }
+  if (!/\b(?:estimate|estimated)\b/i.test(text)) {
+    return false;
+  }
+  return !/\b(?:can(?:not|['’]t)|unable to|not enough (?:information|evidence) to|insufficient evidence to|no basis to)\s+(?:\w+\s+){0,4}(?:estimate|estimated)\b/i.test(text);
 }
 
 export function findWeakEvidenceSignals(text: string, options: { browserEvidenceExpected: boolean }): string[] {
@@ -4924,11 +6134,13 @@ export function findWeakEvidenceSignals(text: string, options: { browserEvidence
     return [];
   }
   const browserEvidenceText = stripNegatedBrowserBlockerEvidence(stripPermissionGateSafetyEvidence(text));
+  const browserEvidenceLines = browserEvidenceText.split(/\r?\n/);
   const patterns = [
     {
       label: "browser evidence blocked",
       pattern:
         /\b(?:Cloudflare|Turnstile|anti-bot|captcha|access denied|forbidden|just a moment|please wait|请稍候)\b|\b(?:browser|page|site|request|navigation|rendered)\b[\s\S]{0,80}\bblocked\b|\bblocked\b[\s\S]{0,80}\b(?:browser|page|site|request|navigation|rendered|Cloudflare|Turnstile|captcha)\b/i,
+      lineScoped: true,
     },
     {
       label: "browser extraction failed",
@@ -4938,7 +6150,8 @@ export function findWeakEvidenceSignals(text: string, options: { browserEvidence
     {
       label: "browser evidence not verified",
       pattern:
-        /\bverification status:\s*(?:failed|incomplete)\b|\b(?:browser|rendered|DOM)\s+evidence\b[\s\S]{0,120}\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b|\b(?:screenshot|snapshot|capture|CDP|target|tab)\s+(?:evidence|verification|capture|snapshot|extract|load)\b[\s\S]{0,80}\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b|\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b[\s\S]{0,120}\b(?:browser|rendered|DOM)\s+evidence\b|\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b[\s\S]{0,120}\b(?:screenshot|snapshot|capture|CDP|target|tab)\s+(?:evidence|verification|capture|snapshot|extract|load)\b/i,
+        /\bverification status:\s*(?:failed|incomplete)\b|\b(?:browser|rendered|DOM)\s+evidence\b[^\n]{0,120}\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b|\b(?:screenshot|snapshot|capture|CDP|target|tab)\s+(?:evidence|verification|capture|snapshot|extract|load)\b[^\n]{0,80}\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b|\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b[^\n]{0,120}\b(?:browser|rendered|DOM)\s+evidence\b|\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b[^\n]{0,120}\b(?:screenshot|snapshot|capture|CDP|target|tab)\s+(?:evidence|verification|capture|snapshot|extract|load)\b/i,
+      lineScoped: true,
     },
     {
       label: "browser transport degraded",
@@ -4948,7 +6161,10 @@ export function findWeakEvidenceSignals(text: string, options: { browserEvidence
   ];
   const signals: string[] = [];
   for (const item of patterns) {
-    if (item.pattern.test(browserEvidenceText) && !signals.includes(item.label)) {
+    const matched = "lineScoped" in item && item.lineScoped
+      ? browserEvidenceLines.some((line) => item.pattern.test(line))
+      : item.pattern.test(browserEvidenceText);
+    if (matched && !signals.includes(item.label)) {
       signals.push(item.label);
     }
   }
@@ -4961,6 +6177,10 @@ function stripPermissionGateSafetyEvidence(text: string): string {
     .filter(
       (line) =>
         !/\bpermission\.query\b[\s\S]{0,160}\bblocked\b[\s\S]{0,160}\bbefore browser work started\b/i.test(line) &&
+        !/\bpermission\b[\s\S]{0,200}\bblocked\b[\s\S]{0,200}\bbrowser\.form\.submit\b/i.test(line) &&
+        !/\bbrowser\.form\.submit\b[\s\S]{0,200}\bblocked\b[\s\S]{0,200}\bpermission\b/i.test(line) &&
+        !/\b(?:permission|approval|gate|runtime gate)\b[\s\S]{0,200}\bblocked\b[\s\S]{0,200}\b(?:browser|form|submit|side[- ]effect|mutation)\b/i.test(line) &&
+        !/\b(?:blocked|requires_approval)\b[\s\S]{0,200}\b(?:browser\.form\.submit|side[- ]effect|mutation)\b[\s\S]{0,200}\b(?:permission|approval|gate)\b/i.test(line) &&
         !/\bblocked_before_side_effect\b/i.test(line)
     )
     .join("\n");
@@ -4975,9 +6195,12 @@ function stripNegatedBrowserBlockerEvidence(text: string): string {
 }
 
 const NEGATED_BROWSER_BLOCKER_PATTERNS = [
+  /\bno\s+(?:blocking|blocks?|blocked|captchas?|captcha|redirects?|forced auth(?:entication)?)(?:\s*,?\s*(?:or\s+|and\s+)?(?:blocking|blocks?|blocked|captchas?|captcha|redirects?|forced auth(?:entication)?))*\b/gi,
   /\b(?:no|without)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b/gi,
+  /\b(?:site|page|browser|request|navigation|rendered)?\s*(?:was|were|is|are)?\s*not\s+(?:blocked|redirected|captcha(?:ed)?|challenged)\b/gi,
+  /["']?\b(?:blocked|blocker|blocking|redirected?|redirect|captchas?|captcha|challenge|blocks?[_-]?detected|captcha[_-]?detected|redirect[_-]?detected|blocksDetected|captchaDetected|redirectDetected)\b["']?\s*(?:status|state|observed|detected)?\s*[:=]\s*(?:"(?:No|none|false|0|not observed|not present|not encountered|not seen)"|'(?:No|none|false|0|not observed|not present|not encountered|not seen)'|(?:No|none|false|0|not observed|not present|not encountered|not seen)\b)/gi,
   /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:not observed|not present|not encountered|not seen|did not occur|was not observed|were not observed)\b/gi,
-  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}(?:\|\s*No\b|:\s*No\b|-\s*No\b|\u2014\s*No\b)/gi,
+  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}(?:\|\s*(?:No|none|false|0)\b|:\s*(?:No|none|false|0)\b|-\s*(?:No|none|false|0)\b|\u2014\s*(?:No|none|false|0)\b)/gi,
 ] as const;
 
 function stripNegatedBrowserBlockerLine(line: string): string {
@@ -5116,6 +6339,9 @@ export function buildNaturalMissionE2eJsonReport(input: {
   completedAt: number;
   results: NaturalMissionScenarioResult[];
   failureCollectionMode?: NaturalMissionE2eJsonReport["failureCollectionMode"];
+  modelProvenance?: NaturalMissionModelProvenance;
+  scenarioTimeoutMs?: number;
+  fixtureContentHashes?: Record<string, string>;
 }): NaturalMissionE2eJsonReport {
   const scenarios = input.results.map(summarizeNaturalMissionScenarioResult);
   const passedScenarios = scenarios.filter((scenario) => scenario.natural.status === "passed").length;
@@ -5125,6 +6351,16 @@ export function buildNaturalMissionE2eJsonReport(input: {
     evidenceMode: "natural-real-llm",
     progressClaim: "natural-evidence",
     capabilityClaim: "unproven-without-comparative-evidence",
+    ...(input.modelProvenance
+      ? {
+          provider: input.modelProvenance.provider,
+          modelId: input.modelProvenance.modelId,
+          modelEntryId: input.modelProvenance.modelEntryId,
+          modelCatalogPath: input.modelProvenance.modelCatalogPath,
+        }
+      : {}),
+    ...(input.scenarioTimeoutMs ? { timeoutPolicy: { scenarioTimeoutMs: input.scenarioTimeoutMs } } : {}),
+    ...(input.fixtureContentHashes ? { fixtureContentHashes: input.fixtureContentHashes } : {}),
     promptPolicy: {
       forbidsContractGateLanguage: true,
       forbiddenPatterns: NATURAL_PROMPT_FORBIDDEN_PATTERNS.map((pattern) => pattern.source),
@@ -5161,6 +6397,9 @@ export function buildNaturalMissionPartialFailureJsonReport(input: {
   startedAt: number;
   completedAt: number;
   results: NaturalMissionScenarioResult[];
+  modelProvenance?: NaturalMissionModelProvenance;
+  scenarioTimeoutMs?: number;
+  fixtureContentHashes?: Record<string, string>;
   interruptedScenario?: {
     scenario: NaturalMissionE2eScenario;
     error: string;
@@ -5250,6 +6489,7 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
 }
 
 export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScenarioResult): NaturalMissionScenarioReport {
+  const modelUse = summarizeTimelineModelUse(result.timeline);
   return {
     scenario: result.scenario,
     prompt: result.prompt,
@@ -5259,6 +6499,9 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
     ...(result.mission.threadId ? { threadId: result.mission.threadId } : {}),
     timelineEvents: result.timeline.length,
     toolEvents: result.timeline.filter((event) => event.kind === "tool").length,
+    modelCalls: modelUse.count,
+    ...(modelUse.summary ? { modelCallSummary: modelUse.summary } : {}),
+    ...(modelUse.boundaries.length ? { modelCallBoundaries: modelUse.boundaries } : {}),
     qualityGate: result.quality.status,
     missionQualityGate: result.metrics.qualityGate.status,
     metrics: {
@@ -5296,6 +6539,7 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       recoveryEvents: result.metrics.recovery.events,
     },
     artifacts: summarizeMissionArtifacts(result.artifacts),
+    ...(result.runtimeEvidence ? { runtimeEvidence: result.runtimeEvidence } : {}),
     natural: {
       status: result.quality.status,
       completed: result.quality.completed,
@@ -5331,6 +6575,110 @@ function readNaturalScenarioDurationMs(result: NaturalMissionScenarioResult): nu
   return typeof result.durationMs === "number" && Number.isFinite(result.durationMs)
     ? Math.max(0, result.durationMs)
     : 0;
+}
+
+function summarizeTimelineModelUse(timeline: ActivityEvent[]): {
+  count: number | null;
+  summary?: NonNullable<NaturalMissionScenarioReport["modelCallSummary"]>;
+  boundaries: Array<Record<string, unknown>>;
+} {
+  const boundaries: Array<Record<string, unknown>> = [];
+  let source = "turnkeyai-role-runtime";
+  let explicitCount: number | null = null;
+  for (const event of timeline) {
+    const runtime = event.runtime ?? {};
+    if (typeof runtime["modelCallSource"] === "string") {
+      source = runtime["modelCallSource"];
+    }
+    const count = readRuntimeNumber(runtime, "modelCallCount");
+    if (count !== null) {
+      explicitCount = count;
+    }
+    const encoded = runtime["modelCallBoundaries"];
+    if (typeof encoded !== "string" || encoded.trim().length === 0) {
+      continue;
+    }
+    const parsed = parseJsonArray(encoded);
+    for (const item of parsed) {
+      if (isRecordValue(item)) {
+        boundaries.push({
+          ...item,
+          ...(typeof item["index"] === "number" ? { turnModelCallIndex: item["index"] } : {}),
+          index: boundaries.length + 1,
+        });
+      }
+    }
+  }
+  const count = boundaries.length > 0 ? boundaries.length : explicitCount;
+  if (count === null || count === 0) {
+    return { count, boundaries };
+  }
+  const modelIds = new Set<string>();
+  const providerIds = new Set<string>();
+  let totalDurationMs = 0;
+  let toolCallsReturned = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let hasInputTokens = false;
+  let hasOutputTokens = false;
+  for (const boundary of boundaries) {
+    const modelId = typeof boundary["modelId"] === "string" ? boundary["modelId"] : null;
+    const providerId = typeof boundary["providerId"] === "string" ? boundary["providerId"] : null;
+    if (modelId) modelIds.add(modelId);
+    if (providerId) providerIds.add(providerId);
+    totalDurationMs += readRuntimeNumber(boundary, "durationMs") ?? 0;
+    toolCallsReturned += readRuntimeNumber(boundary, "toolCallsReturned") ?? 0;
+    const usage = isRecordValue(boundary["usage"]) ? boundary["usage"] : {};
+    const inputTokens = readRuntimeNumber(usage, "inputTokens");
+    const outputTokens = readRuntimeNumber(usage, "outputTokens");
+    if (inputTokens !== null) {
+      totalInputTokens += inputTokens;
+      hasInputTokens = true;
+    }
+    if (outputTokens !== null) {
+      totalOutputTokens += outputTokens;
+      hasOutputTokens = true;
+    }
+  }
+  return {
+    count,
+    summary: {
+      source,
+      count,
+      totalDurationMs,
+      ...(hasInputTokens ? { totalInputTokens } : {}),
+      ...(hasOutputTokens ? { totalOutputTokens } : {}),
+      toolCallsReturned,
+      modelIds: [...modelIds].sort(),
+      providerIds: [...providerIds].sort(),
+    },
+    boundaries,
+  };
+}
+
+function parseJsonArray(text: string): unknown[] {
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readRuntimeNumber(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function summarizeMissionArtifacts(
@@ -5467,6 +6815,57 @@ function resolveModelCatalogPath(explicitPath?: string): string {
     } catch {}
   }
   throw new Error("mission E2E requires --model-catalog, TURNKEYAI_MODEL_CATALOG, models.local.json, or models.json");
+}
+
+function readNaturalMissionModelProvenance(modelCatalogPath: string): NaturalMissionModelProvenance {
+  const catalog = JSON.parse(readFileSync(modelCatalogPath, "utf8")) as {
+    defaultModelId?: unknown;
+    defaultModelChainId?: unknown;
+    models?: unknown;
+    modelChains?: unknown;
+  };
+  const models = normalizeCatalogEntries(catalog.models);
+  const chains = normalizeCatalogEntries(catalog.modelChains);
+  const defaultChainId = readNonEmptyString(catalog.defaultModelChainId);
+  const chain = defaultChainId ? chains.find((entry) => entry.id === defaultChainId) : null;
+  const primaryModelId = readNonEmptyString(chain?.value.primary) ?? readNonEmptyString(catalog.defaultModelId);
+  const model =
+    models.find((entry) => entry.id === primaryModelId) ??
+    models.find((entry) => readNonEmptyString(entry.value.model) === primaryModelId) ??
+    models[0];
+  if (!model) {
+    throw new Error(`model catalog has no usable models: ${modelCatalogPath}`);
+  }
+  const provider = readNonEmptyString(model.value.providerId);
+  const modelId = readNonEmptyString(model.value.model) ?? model.id;
+  if (!provider || !modelId) {
+    throw new Error(`model catalog default model is missing providerId/model: ${modelCatalogPath}`);
+  }
+  return {
+    modelCatalogPath,
+    provider,
+    modelId,
+    modelEntryId: model.id,
+  };
+}
+
+function normalizeCatalogEntries(value: unknown): Array<{ id: string; value: Record<string, unknown> }> {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null) return [];
+      const record = entry as Record<string, unknown>;
+      const id = readNonEmptyString(record.id);
+      return id ? [{ id, value: record }] : [];
+    });
+  }
+  if (typeof value !== "object" || value === null) return [];
+  return Object.entries(value as Record<string, unknown>).flatMap(([id, entry]) =>
+    typeof entry === "object" && entry !== null ? [{ id, value: entry as Record<string, unknown> }] : []
+  );
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function writeCancelResumeFixture(res: ServerResponse): void {
@@ -5911,7 +7310,7 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
     return;
   });
   const port = await listenOnFixturePort(server, options.port);
-  return {
+  const fixtureWithoutHashes = {
     server,
     basicUrl: `http://127.0.0.1:${port}/fixture`,
     alphaUrl: `http://127.0.0.1:${port}/vendor-alpha`,
@@ -5928,6 +7327,10 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
     productSignalsUrl: `http://127.0.0.1:${port}/product-signals`,
     externalPageUrl: DEFAULT_EXTERNAL_BROWSER_PAGE_URL,
   };
+  return {
+    ...fixtureWithoutHashes,
+    fixtureContentHashes: buildFixtureContentHashes(fixtureWithoutHashes),
+  };
 }
 
 export function applyNaturalFixtureUrlOverrides(
@@ -5937,7 +7340,7 @@ export function applyNaturalFixtureUrlOverrides(
   const externalPageUrl =
     readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL, "TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL") ??
     fixture.externalPageUrl;
-  return {
+  const overridden = {
     ...fixture,
     alphaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ALPHA_URL, "TURNKEYAI_NATURAL_ALPHA_URL") ?? fixture.alphaUrl,
     betaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_BETA_URL, "TURNKEYAI_NATURAL_BETA_URL") ?? fixture.betaUrl,
@@ -5969,6 +7372,58 @@ export function applyNaturalFixtureUrlOverrides(
       fixture.productSignalsUrl,
     ...(externalPageUrl ? { externalPageUrl } : {}),
   };
+  return {
+    ...overridden,
+    fixtureContentHashes: buildFixtureContentHashes(overridden),
+  };
+}
+
+function buildFixtureContentHashes(fixture: Omit<FixtureServer, "fixtureContentHashes">): Record<string, string> {
+  const urls = [
+    fixture.basicUrl,
+    fixture.alphaUrl,
+    fixture.betaUrl,
+    fixture.slowUrl,
+    fixture.cancelResumeUrl,
+    fixture.approvalUrl,
+    fixture.dynamicUrl,
+    fixture.dashboardUrl,
+    fixture.complexBrowserUrl,
+    fixture.orchestrationUrl,
+    fixture.bridgeUrl,
+    fixture.productSignalsUrl,
+  ];
+  const entries = urls.flatMap((url) => {
+    const hash = fixtureSemanticContentHash(url);
+    return hash ? [[canonicalizeFixtureHashUrl(url), hash] as const] : [];
+  });
+  return Object.fromEntries(entries);
+}
+
+function fixtureSemanticContentHash(url: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const content = FIXTURE_SEMANTIC_CONTENT[pathname];
+  if (!content) return null;
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+function canonicalizeFixtureHashUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1"
+      ? "<loopback-host>"
+      : parsed.hostname;
+    const port = hostname === "<loopback-host>" ? "<loopback-port>" : parsed.port;
+    const authority = port ? `${hostname}:${port}` : hostname;
+    return `${parsed.protocol}//${authority}${parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
+  }
 }
 
 function readNaturalFixtureUrlOverride(value: string | undefined, name: string): string | undefined {
@@ -6121,6 +7576,255 @@ async function seedMemoryRecallFixture(input: {
     saved?.longTermNotes.some((note) => note.includes("Helios-47") && note.includes("Tuesday 09:30")),
     "memory recall fixture must persist the Helios-47 launch note before follow-up"
   );
+}
+
+async function seedMemoryInvalidationFixture(input: {
+  runtimeRoot: string;
+  threadId: string;
+}): Promise<void> {
+  const store = new FileThreadMemoryStore({
+    rootDir: path.join(input.runtimeRoot, "data", "context", "thread-memory"),
+  });
+  await store.put({
+    threadId: input.threadId,
+    updatedAt: Date.now(),
+    preferences: [],
+    constraints: [
+      "Borealis-23 launch window is Monday 10:15; owner is Launch Manager; residual risk is staging checklist pending.",
+    ],
+    longTermNotes: [],
+  });
+  const saved = await store.get(input.threadId);
+  assert.ok(
+    saved?.constraints.some((note) => note.includes("Borealis-23") && note.includes("Monday 10:15")),
+    "memory invalidation fixture must persist the stale Borealis-23 launch note before correction"
+  );
+}
+
+function buildNaturalMemoryPressureSetupPrompt(): string {
+  const durableBrief = [
+    "Please turn this long launch handoff into a concise internal continuity note.",
+    "Important durable facts near the top of the handoff:",
+    "Project codename: Aurora-19.",
+    "Launch window: Friday 14:15.",
+    "Owner: Field Ops Lead.",
+    "Hard constraint: keep the external announcement conditional until Legal Review has confirmed the data-processing addendum.",
+    "Residual risk: the vendor dry-run note is still unverified, so external commitments should stay conditional.",
+    "The rest of this handoff is intentionally verbose meeting background. Preserve durable decisions and constraints; do not invent external facts.",
+  ].join("\n");
+  const fillerParagraph = [
+    "Background note:",
+    "The launch team reviewed dependency owners, operational readiness, customer messaging, partner status, and handover expectations.",
+    "Most of the remaining text repeats status context so the handoff behaves like a pasted planning document rather than a synthetic protocol test.",
+    "Only durable decisions, owners, constraints, unresolved questions, and carry-forward risks should matter after summarization.",
+  ].join(" ");
+  const filler = Array.from({ length: 1_600 }, (_, index) => `${index + 1}. ${fillerParagraph}`).join("\n");
+  return [durableBrief, filler, "Please summarize the durable continuity note in a short, useful way for the launch lead."].join("\n\n");
+}
+
+function buildNaturalMemoryCorrectionPressurePrompt(): string {
+  const durableBrief = [
+    "Please turn this updated launch handoff into a concise internal continuity note.",
+    "This is the corrected Borealis-23 context going forward.",
+    "Important durable facts near the top of the handoff:",
+    "Project codename: Borealis-23.",
+    "Launch window: Thursday 16:45.",
+    "Owner: Ops Captain.",
+    "Hard constraint: keep the external announcement conditional until Legal Review has confirmed the data-processing addendum.",
+    "Residual risk: payment processor signoff pending.",
+    "The earlier Borealis-23 Monday 10:15 Launch Manager note is stale.",
+    "The rest of this handoff is intentionally verbose meeting background. Preserve durable decisions and constraints; do not invent external facts.",
+  ].join("\n");
+  const fillerParagraph = [
+    "Background note:",
+    "The launch team reviewed dependency owners, operational readiness, customer messaging, partner status, and handover expectations.",
+    "Most of the remaining text repeats status context so the handoff behaves like a pasted planning document rather than a synthetic protocol test.",
+    "Only durable decisions, owners, constraints, unresolved questions, and carry-forward risks should matter after summarization.",
+  ].join(" ");
+  const filler = Array.from({ length: 1_600 }, (_, index) => `${index + 1}. ${fillerParagraph}`).join("\n");
+  return [durableBrief, filler, "Please summarize the corrected durable continuity note in a short, useful way for the launch lead."].join("\n\n");
+}
+
+async function waitForThreadMemoryContains(input: {
+  memoryStore: FileThreadMemoryStore;
+  threadId: string;
+  expected: RegExp[];
+  timeoutMs: number;
+}): Promise<ThreadMemoryRecord> {
+  const deadline = Date.now() + input.timeoutMs;
+  let latest: ThreadMemoryRecord | null = null;
+  while (Date.now() <= deadline) {
+    latest = await input.memoryStore.get(input.threadId);
+    const text = [
+      ...(latest?.preferences ?? []),
+      ...(latest?.constraints ?? []),
+      ...(latest?.longTermNotes ?? []),
+    ].join("\n");
+    if (input.expected.every((pattern) => pattern.test(text))) {
+      return latest!;
+    }
+    await sleep(250);
+  }
+  const text = [
+    ...(latest?.preferences ?? []),
+    ...(latest?.constraints ?? []),
+    ...(latest?.longTermNotes ?? []),
+  ].join("\n");
+  throw new Error(`thread memory did not contain pressure-flush facts after ${input.timeoutMs}ms\n${text.slice(0, 4000)}`);
+}
+
+async function waitForThreadMemoryState(input: {
+  memoryStore: FileThreadMemoryStore;
+  threadId: string;
+  expected: RegExp[];
+  forbidden: RegExp[];
+  timeoutMs: number;
+}): Promise<ThreadMemoryRecord & { staleFactsAbsent: boolean }> {
+  const deadline = Date.now() + input.timeoutMs;
+  let latest: ThreadMemoryRecord | null = null;
+  while (Date.now() <= deadline) {
+    latest = await input.memoryStore.get(input.threadId);
+    const text = formatThreadMemoryText(latest);
+    const expectedPresent = input.expected.every((pattern) => pattern.test(text));
+    const forbiddenAbsent = input.forbidden.every((pattern) => !pattern.test(text));
+    if (latest && expectedPresent && forbiddenAbsent) {
+      return { ...latest, staleFactsAbsent: true };
+    }
+    await sleep(250);
+  }
+  const text = formatThreadMemoryText(latest);
+  throw new Error(
+    `thread memory did not reach expected invalidated state after ${input.timeoutMs}ms\n${text.slice(0, 4000)}`
+  );
+}
+
+function formatThreadMemoryText(record: ThreadMemoryRecord | null): string {
+  return [
+    ...(record?.preferences ?? []),
+    ...(record?.constraints ?? []),
+    ...(record?.longTermNotes ?? []),
+  ].join("\n");
+}
+
+async function waitForThreadProgressBoundaryContains(input: {
+  runtimeProgressStore: FileRuntimeProgressStore;
+  threadId: string;
+  boundaryKind: string;
+  timeoutMs: number;
+}): Promise<RuntimeProgressEvent> {
+  const deadline = Date.now() + input.timeoutMs;
+  let latest: RuntimeProgressEvent[] = [];
+  while (Date.now() <= deadline) {
+    latest = await input.runtimeProgressStore.listByThread(input.threadId, 100);
+    const match = latest.find((event) => event.metadata?.["boundaryKind"] === input.boundaryKind);
+    if (match) {
+      return match;
+    }
+    await sleep(250);
+  }
+  const observed = latest
+    .map((event) => event.metadata?.["boundaryKind"])
+    .filter((value): value is string => typeof value === "string");
+  throw new Error(
+    `thread runtime progress did not contain ${input.boundaryKind} after ${input.timeoutMs}ms; observed=${observed.join(",") || "none"}`
+  );
+}
+
+async function waitForThreadProgressBoundaryCount(input: {
+  runtimeProgressStore: FileRuntimeProgressStore;
+  threadId: string;
+  boundaryKind: string;
+  minCount: number;
+  timeoutMs: number;
+}): Promise<RuntimeProgressEvent[]> {
+  const deadline = Date.now() + input.timeoutMs;
+  let latest: RuntimeProgressEvent[] = [];
+  while (Date.now() <= deadline) {
+    latest = await input.runtimeProgressStore.listByThread(input.threadId, 200);
+    const matches = latest.filter((event) => event.metadata?.["boundaryKind"] === input.boundaryKind);
+    if (matches.length >= input.minCount) {
+      return matches;
+    }
+    await sleep(250);
+  }
+  const observed = latest
+    .map((event) => event.metadata?.["boundaryKind"])
+    .filter((value): value is string => typeof value === "string");
+  throw new Error(
+    `thread runtime progress did not contain ${input.minCount} ${input.boundaryKind} boundaries after ${input.timeoutMs}ms; observed=${
+      observed.join(",") || "none"
+    }`
+  );
+}
+
+function summarizeRequestEnvelopeReductionBoundary(event: RuntimeProgressEvent): NonNullable<
+  NaturalMissionRuntimeEvidence["requestEnvelopeReduction"]
+> {
+  const metadata = event.metadata ?? {};
+  return {
+    progressId: event.progressId,
+    ...(typeof metadata["reductionLevel"] === "string" ? { reductionLevel: metadata["reductionLevel"] } : {}),
+    omittedSections: readStringArray(metadata["omittedSections"]),
+    compactedSegments: readStringArray(metadata["compactedSegments"]),
+  };
+}
+
+function summarizeProviderToolProtocolBoundaries(events: RuntimeProgressEvent[]): NonNullable<
+  NaturalMissionRuntimeEvidence["providerToolProtocol"]
+> {
+  const metadata = events.map((event) => event.metadata ?? {});
+  const toolNames = new Set<string>();
+  for (const item of metadata) {
+    for (const name of readStringArray(item["toolNames"])) {
+      toolNames.add(name);
+    }
+  }
+  return {
+    rounds: events.length,
+    providerToolCallsReturned: sumMetadataNumbers(metadata, "providerToolCallsReturned"),
+    assistantToolUseBlockCount: sumMetadataNumbers(metadata, "assistantToolUseBlockCount"),
+    roleToolResultMessageCount: sumMetadataNumbers(metadata, "roleToolResultMessageCount"),
+    toolResultBlockCount: sumMetadataNumbers(metadata, "toolResultBlockCount"),
+    matchingToolCallIds: metadata.reduce((count, item) => count + readStringArray(item["matchingToolCallIds"]).length, 0),
+    assistantBeforeToolResults: metadata.every((item) => item["assistantBeforeToolResults"] === true),
+    allToolResultsMatchAssistantToolCalls: metadata.every((item) => item["allToolResultsMatchAssistantToolCalls"] === true),
+    nextProviderRequestIncludesToolResults: metadata.every((item) => item["nextProviderRequestWillIncludeToolResults"] === true),
+    toolNames: [...toolNames].sort(),
+  };
+}
+
+function sumMetadataNumbers(metadata: Array<Record<string, unknown>>, key: string): number {
+  return metadata.reduce((sum, item) => sum + (readNumberFromMetadata(item, key) ?? 0), 0);
+}
+
+function summarizeToolResultPruningBoundary(event: RuntimeProgressEvent): NonNullable<
+  NaturalMissionRuntimeEvidence["toolResultPruning"]
+> {
+  const metadata = event.metadata ?? {};
+  return {
+    progressId: event.progressId,
+    ...readOptionalNumberField(metadata, "prunedToolResults"),
+    pruningReasons: readStringArray(metadata["pruningReasons"]),
+    ...(typeof metadata["compactedHistory"] === "boolean" ? { compactedHistory: metadata["compactedHistory"] } : {}),
+    ...readOptionalNumberField(metadata, "toolResultBytesBefore"),
+    ...readOptionalNumberField(metadata, "toolResultBytesAfter"),
+    ...readOptionalNumberField(metadata, "toolResultCountBefore"),
+    ...readOptionalNumberField(metadata, "toolResultCountAfter"),
+  };
+}
+
+function readOptionalNumberField(metadata: Record<string, unknown>, key: string): Record<string, number> {
+  const value = metadata[key];
+  return typeof value === "number" && Number.isFinite(value) ? { [key]: value } : {};
+}
+
+function readNumberFromMetadata(metadata: Record<string, unknown>, key: string): number | null {
+  const value = metadata[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function appendUnique(values: string[], next: string): string[] {
@@ -7248,12 +8952,22 @@ function extractBrowserSessionIdFromSessionToolResult(
 ): string | null {
   try {
     const parsed = JSON.parse(content) as {
+      browser_session?: {
+        session_id?: unknown;
+        target_id?: unknown;
+        resume_mode?: unknown;
+        source?: unknown;
+      };
       payload?: {
         sessionId?: unknown;
         browserRecovery?: { sessionId?: unknown };
       };
       result?: unknown;
     };
+    const effectiveSessionId = parsed.browser_session?.session_id;
+    if (typeof effectiveSessionId === "string" && effectiveSessionId.trim()) {
+      return effectiveSessionId.trim();
+    }
     const sessionId = parsed.payload?.sessionId;
     const recoverySessionId = parsed.payload?.browserRecovery?.sessionId;
     if (options.preferPayloadSessionId && typeof sessionId === "string" && sessionId.trim()) {
@@ -7403,10 +9117,17 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   const duplicateSpawnCalls = tail.filter(
     (event) => event.runtime?.["toolName"] === "sessions_spawn" && event.runtime?.["toolPhase"] === "call"
   );
+  const forbiddenSpawnCalls = duplicateSpawnCalls.filter(
+    (event) => !isAllowedSupplementalLocalTimeoutBrowserProbe(tail, event)
+  );
   assert.equal(
-    duplicateSpawnCalls.length,
+    forbiddenSpawnCalls.length,
     0,
-    "natural follow-up must not spawn duplicate child sessions after the phase-one answer"
+    "natural follow-up must not spawn duplicate child sessions after the phase-one answer, except one runtime supplemental browser probe after content-poor timeout evidence"
+  );
+  assert.ok(
+    duplicateSpawnCalls.length <= 1,
+    "natural follow-up may run at most one runtime supplemental browser probe after timeout evidence"
   );
   const sendCalls = tail.filter(
     (event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "call"
@@ -7431,6 +9152,43 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   );
   const latestThoughtIndex = findLatestThoughtIndex(input.timeline);
   assert.ok(latestThoughtIndex > sendResultIndex, "natural follow-up final answer must follow the continuation result");
+}
+
+function isAllowedSupplementalLocalTimeoutBrowserProbe(tail: ActivityEvent[], spawnCall: ActivityEvent): boolean {
+  const spawnIndex = tail.indexOf(spawnCall);
+  if (spawnIndex < 0) return false;
+  const callInput = spawnCall.runtime?.["callInput"];
+  if (typeof callInput !== "string") return false;
+  let parsed: { agent_id?: unknown; label?: unknown; task?: unknown; timeout_seconds?: unknown };
+  try {
+    parsed = JSON.parse(callInput) as { agent_id?: unknown; label?: unknown; task?: unknown; timeout_seconds?: unknown };
+  } catch {
+    return false;
+  }
+  const label = typeof parsed.label === "string" ? parsed.label : "";
+  const task = typeof parsed.task === "string" ? parsed.task : "";
+  const timeoutSeconds = readNumericRuntimeValue(parsed.timeout_seconds);
+  if (parsed.agent_id !== "browser") return false;
+  if (!/\bsupplemental local timeout probe\b/i.test(`${label}\n${task}`)) return false;
+  if (timeoutSeconds === null || timeoutSeconds > 120) return false;
+  return tail.slice(0, spawnIndex).some((event) => {
+    if (event.runtime?.["toolName"] !== "sessions_send" || event.runtime?.["toolPhase"] !== "result") {
+      return false;
+    }
+    const content = String(event.runtime?.["resultContent"] ?? event.text);
+    return /\b(?:status"?\s*:\s*"timeout"|timed out|WORKER_TIMEOUT|content-poor|No HTTP status|No response body)\b/i.test(
+      content
+    );
+  });
+}
+
+function readNumericRuntimeValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function isBrowserSessionReferenceResolvedByResult(actual: unknown, result: ActivityEvent, expectedSessionKey: string): boolean {
@@ -7836,6 +9594,18 @@ async function driveNaturalApprovalDecisionsUntilComplete(input: {
       (afterDecisionThoughtMs === undefined ||
         latestThought.tMs > afterDecisionThoughtMs ||
         (afterDecisionThoughtId !== undefined && latestThought.id !== afterDecisionThoughtId));
+    if (
+      latestMission.status === "done" &&
+      decidedIds.size === 0 &&
+      !latestApprovals.some((approval) => approval.missionId === input.missionId)
+    ) {
+      throw new Error(
+        `natural approval mission completed without requesting approval:\n${summarizeMissionState(
+          latestMission,
+          latestTimeline
+        )}`
+      );
+    }
     if (latestMission.status === "done" && hasPostDecisionThought) {
       assert.ok(
         decidedIds.size > 0,

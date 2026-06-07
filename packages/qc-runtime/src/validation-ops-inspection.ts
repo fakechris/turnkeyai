@@ -820,7 +820,11 @@ function hasProvenNaturalMissionScenario(
       proof.approvalsApplied >= 1
     );
   }
-  if (scenario === "natural-approval-denied-safe-closeout" || scenario === "natural-approval-pending-state") {
+  if (
+    scenario === "natural-approval-denied-safe-closeout" ||
+    scenario === "natural-approval-pending-state" ||
+    scenario === "natural-approval-wait-timeout-closeout"
+  ) {
     return proof.approvalExercised && proof.approvalsRequested >= 1;
   }
   if (scenario.includes("followup") || scenario.includes("continuation")) {

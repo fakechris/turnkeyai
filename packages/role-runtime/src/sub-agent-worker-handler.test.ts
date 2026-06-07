@@ -230,7 +230,7 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   const bridgeCalls: Array<{
     mode: "spawn" | "send";
     input: {
-      actions?: Array<{ kind: string }>;
+      actions?: Array<{ kind: string; timeoutMs?: number }>;
       browserSessionId?: string;
       ownerType?: string | undefined;
       ownerId?: string | undefined;
@@ -245,6 +245,7 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
     if (toolResultCount === 0) {
       return toolCallResult("tool-1", "browser_open", {
         url: "https://example.test",
+        timeout_ms: 123_456,
       });
     }
     if (toolResultCount === 1) {
@@ -300,6 +301,7 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
     "browser_screenshot",
   ]);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /browser_open/);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /timeout_ms/);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /main page, frames\/iframes, shadow DOM or component panels, popups, and additional tabs/);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /instead of marking it not verified/);
   assert.equal(bridgeCalls.length, 2);
@@ -308,6 +310,7 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   assert.match(bridgeCalls[0]?.input.ownerId ?? "", /^sub-agent:browser:task-1:\d+$/);
   assert.equal(bridgeCalls[0]?.input.leaseHolderRunKey, bridgeCalls[0]?.input.ownerId);
   assert.deepEqual(bridgeCalls[0]?.input.actions?.map((action) => action.kind), ["open", "snapshot", "screenshot"]);
+  assert.equal(bridgeCalls[0]?.input.actions?.[0]?.timeoutMs, 123_456);
   assert.equal(bridgeCalls[1]?.mode, "send");
   assert.equal(bridgeCalls[1]?.input.browserSessionId, "browser-session-1");
   assert.equal(bridgeCalls[1]?.input.ownerType, "worker");
@@ -364,6 +367,116 @@ test("LLMSubAgentWorkerHandler lets browser_open opt out of the default evidence
 
   assert.equal(result?.status, "completed");
   assert.deepEqual(bridgeCalls[0]?.actions?.map((action) => action.kind), ["open", "snapshot"]);
+});
+
+test("LLMSubAgentWorkerHandler extends model-short browser_open timeout for slow loopback diagnostics", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", {
+        url: "http://127.0.0.1:61930/slow-fixture",
+        timeout_ms: 5_000,
+        screenshot: false,
+      });
+    }
+    return textResult("Slow loopback evidence captured.");
+  };
+  const bridgeCalls: Array<{ actions?: Array<{ kind: string; timeoutMs?: number }> }> = [];
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        bridgeCalls.push(input);
+        return browserResult({
+          title: "Slow Fixture",
+          finalUrl: "http://127.0.0.1:61930/slow-fixture",
+          traceKinds: input.actions.map((action) => action.kind),
+        });
+      },
+    }),
+  });
+  const input = buildInvocationInput("browser");
+  input.packet.taskPrompt =
+    "Inspect this localhost slow source through a browser-visible local-runtime path. Use a bounded 60 second attempt if the page does not finish loading in time.";
+
+  const result = await handler.run(input);
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalls[0]?.actions?.[0]?.kind, "open");
+  assert.equal(bridgeCalls[0]?.actions?.[0]?.timeoutMs, 240_000);
+});
+
+test("LLMSubAgentWorkerHandler extends browser_open timeout from slow loopback URL alone", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", {
+        url: "http://127.0.0.1:61930/slow-fixture",
+        screenshot: false,
+      });
+    }
+    return textResult("Slow fixture opened.");
+  };
+  const bridgeCalls: Array<{ actions?: Array<{ kind: string; timeoutMs?: number }> }> = [];
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        bridgeCalls.push(input);
+        return browserResult({});
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalls[0]?.actions?.[0]?.kind, "open");
+  assert.equal(bridgeCalls[0]?.actions?.[0]?.timeoutMs, 240_000);
+});
+
+test("LLMSubAgentWorkerHandler keeps supplemental local timeout probe browser_open bounded", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", {
+        url: "http://127.0.0.1:61930/slow-fixture",
+        timeout_ms: 10_000,
+        screenshot: false,
+      });
+    }
+    return textResult("Supplemental browser evidence bounded.");
+  };
+  const bridgeCalls: Array<{ actions?: Array<{ kind: string; timeoutMs?: number }> }> = [];
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        bridgeCalls.push(input);
+        return browserResult({});
+      },
+    }),
+  });
+  const input = buildInvocationInput("browser");
+  input.packet.taskPrompt = [
+    "Supplemental local timeout probe mode: call browser_open with timeout_ms 10000.",
+    "Open http://127.0.0.1:61930/slow-fixture as an operator would see it with a bounded local-runtime attempt.",
+  ].join("\n");
+
+  const result = await handler.run(input);
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalls[0]?.actions?.[0]?.kind, "open");
+  assert.equal(bridgeCalls[0]?.actions?.[0]?.timeoutMs, 10_000);
 });
 
 test("LLMSubAgentWorkerHandler retries read-only private browser partial transport evidence once", async () => {
@@ -827,6 +940,44 @@ test("LLMSubAgentWorkerHandler promotes private browser failure buckets to paren
   assert.deepEqual(toolPayload.payload?.failureBuckets, [{ bucket: "browser_cdp_unavailable", count: 1 }]);
 });
 
+test("LLMSubAgentWorkerHandler does not promote stale snapshot refs as transport failures", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_act", {
+        action: "type",
+        refId: "ref-1",
+        text: "dry-run test submission",
+      });
+    }
+    return textResult("Ref was stale; refreshed snapshot before continuing.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        throw new Error("unknown snapshot ref requested: ref-1");
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.doesNotMatch(result?.summary ?? "", /Browser failure buckets/);
+  assert.equal((result?.payload as { browserRecovery?: unknown } | undefined)?.browserRecovery, undefined);
+  const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
+  const toolContent = readToolContent(toolMessage?.content ?? "");
+  assert.match(toolContent, /stale_ref: unknown snapshot ref requested: ref-1/);
+  assert.doesNotMatch(toolContent, /transport_failure/);
+  assert.doesNotMatch(toolContent, /failureBuckets/);
+});
+
 test("LLMSubAgentWorkerHandler buckets private browser bridge exceptions before parent closeout", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -1249,6 +1400,62 @@ test("LLMSubAgentWorkerHandler stops before private tools when aborted after an 
   assert.equal(innerCalled, false);
 });
 
+test("LLMSubAgentWorkerHandler preserves browser evidence when aborted after a private tool", async () => {
+  const controller = new AbortController();
+  let releaseFinal!: () => void;
+  let finalStarted = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some(
+      (message) => message.role === "tool" && message.toolCallId === "tool-1",
+    );
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", {
+        url: "http://127.0.0.1:61930/product-signals",
+      });
+    }
+    finalStarted = true;
+    await new Promise<void>((resolve) => {
+      releaseFinal = resolve;
+    });
+    return textResult("Final should be interrupted.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        return browserResult({
+          title: "Workbench Product Signals",
+          finalUrl: "http://127.0.0.1:61930/product-signals",
+          textExcerpt:
+            "TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK Stuck missions: 6 Weak answer rate: 24% Mission Control.",
+          screenshotPaths: ["/artifact/product-signals.png"],
+        });
+      },
+    }),
+  });
+
+  const pending = handler.run({
+    ...buildInvocationInput("browser"),
+    signal: controller.signal,
+  });
+  await waitUntil(() => finalStarted);
+  controller.abort("Tool-use wall-clock budget reached (2m).");
+  releaseFinal();
+  const result = await pending;
+
+  assert.equal(result?.status, "partial");
+  assert.match(result?.summary ?? "", /Stuck missions: 6/);
+  assert.match(result?.summary ?? "", /Weak answer rate: 24%/);
+  const payload = result?.payload as
+    | { screenshotPaths?: string[]; content?: string }
+    | undefined;
+  assert.deepEqual(payload?.screenshotPaths, ["/artifact/product-signals.png"]);
+  assert.match(payload?.content ?? "", /TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK/);
+});
+
 test("LLMSubAgentWorkerHandler passes abort signals into explore private tools", async () => {
   const controller = new AbortController();
   let innerStarted = false;
@@ -1416,6 +1623,7 @@ function browserResult(input: {
   profileFallback?: BrowserTaskResult["profileFallback"];
   title?: string;
   finalUrl?: string;
+  textExcerpt?: string;
   traceKinds?: string[];
   traceStatuses?: Array<"ok" | "failed">;
   traceErrorMessages?: string[];
@@ -1433,7 +1641,7 @@ function browserResult(input: {
       requestedUrl: input.finalUrl ?? "https://example.test/",
       finalUrl: input.finalUrl ?? "https://example.test/",
       title: input.title ?? "Example",
-      textExcerpt: "Example page text.",
+      textExcerpt: input.textExcerpt ?? "Example page text.",
       statusCode: 200,
       interactives: [{ refId: "ref-1", tagName: "A", role: "link", label: "More" }],
     },

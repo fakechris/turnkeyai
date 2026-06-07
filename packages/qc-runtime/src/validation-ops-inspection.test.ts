@@ -1563,7 +1563,11 @@ function passingNaturalMissionScenarioProof(
       approvalsApplied: 1,
     };
   }
-  if (scenario === "natural-approval-denied-safe-closeout" || scenario === "natural-approval-pending-state") {
+  if (
+    scenario === "natural-approval-denied-safe-closeout" ||
+    scenario === "natural-approval-pending-state" ||
+    scenario === "natural-approval-wait-timeout-closeout"
+  ) {
     return {
       ...base,
       approvalExercised: true,

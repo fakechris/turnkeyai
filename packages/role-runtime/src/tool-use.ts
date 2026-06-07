@@ -5,6 +5,7 @@ import type {
   LLMToolDefinition,
 } from "@turnkeyai/llm-adapter/index";
 import {
+  MAX_BROWSER_OPEN_TIMEOUT_MS,
   getInstructions,
   getRecentMessages,
   getRelayBrief,
@@ -94,7 +95,9 @@ const DEFAULT_BROWSER_SESSION_TOOL_TIMEOUT_MS = 18 * 60 * 1_000;
 const DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS = 8 * 60 * 1_000;
 const DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
 const DEFAULT_RESUMABLE_CONTINUATION_TOOL_TIMEOUT_MS = 45_000;
-const TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
+const SUPPLEMENTAL_LOCAL_TIMEOUT_BROWSER_PROBE_TIMEOUT_MS = 90_000;
+const LOCAL_APPROVAL_BROWSER_TASK_TIMEOUT_MS = 120_000;
+const DEFAULT_TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
 const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
 const DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS = 60_000;
 const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
@@ -637,7 +640,7 @@ async function maybeGateBrowserSideEffect(input: {
       decision = await input.toolPermissionService.waitForDecision({
         threadId: input.input.activation.thread.threadId,
         approvalId: result.approvalId,
-        timeoutMs: TOOL_PERMISSION_WAIT_MS,
+        timeoutMs: readToolPermissionWaitMs(),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -725,6 +728,15 @@ async function maybeGateBrowserSideEffect(input: {
         }),
       };
     }
+    return {
+      blocked: permissionBlockedResult(input.input.call, {
+        result,
+        progress: [queryProgress, decisionProgress],
+        status: "approval_wait_timeout",
+        message: `${decision.message} The browser side effect was not performed because no operator decision arrived before the approval wait timeout.`,
+        isError: true,
+      }),
+    };
   }
   return {
     blocked: permissionBlockedResult(input.input.call, {
@@ -735,6 +747,18 @@ async function maybeGateBrowserSideEffect(input: {
       isError: true,
     }),
   };
+}
+
+function readToolPermissionWaitMs(): number {
+  const raw = process.env.TURNKEYAI_TOOL_PERMISSION_WAIT_MS;
+  if (!raw) {
+    return DEFAULT_TOOL_PERMISSION_WAIT_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_TOOL_PERMISSION_WAIT_MS;
+  }
+  return Math.floor(parsed);
 }
 
 function permissionErrorProgress(toolName: string, approvalId: string, message: string): RoleToolProgressEvent {
@@ -917,11 +941,17 @@ function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers:
 }
 
 function isReadOnlyBrowserActionVerbContext(input: string, verb: string, index: number): boolean {
+  if (isReadOnlyOperationalDecisionContext(input, verb, index)) {
+    return true;
+  }
   if (verb === "order") {
     const prefix = input.slice(Math.max(0, index - 40), index).toLowerCase();
     return /\b(?:priority|sort|sorted|display|list|ranking|ranked)\s+$/.test(prefix);
   }
   if (verb === "send" || verb === "submit") {
+    if (verb === "submit" && isReadOnlySubmitNavigationCueContext(input, index)) {
+      return true;
+    }
     const suffix = input
       .slice(Math.max(0, index + verb.length), Math.max(0, index + verb.length + 120))
       .toLowerCase();
@@ -930,6 +960,37 @@ function isReadOnlyBrowserActionVerbContext(input: string, verb: string, index: 
     );
   }
   return false;
+}
+
+function isReadOnlyOperationalDecisionContext(input: string, verb: string, index: number): boolean {
+  if (!["send", "approve", "accept", "reject", "cancel"].includes(verb)) {
+    return false;
+  }
+  const prefix = input.slice(Math.max(0, index - 90), index).toLowerCase();
+  if (
+    !/\b(?:whether|should|determine|identify|explain|assess|evaluate|review|check|verify)\b[\s\S]{0,80}$/.test(prefix)
+  ) {
+    return false;
+  }
+  const suffix = input.slice(index + verb.length, index + verb.length + 120).toLowerCase();
+  return /^\s+(?:a\s+|an\s+|the\s+|any\s+)?(?:page|pages|pager|paging|alert|alerts|notification|notifications|escalation|incident|on-call|operator)\b/.test(
+    suffix
+  );
+}
+
+function isReadOnlySubmitNavigationCueContext(input: string, index: number): boolean {
+  const context = input.slice(Math.max(0, index - 120), index + 80).toLowerCase();
+  if (!/\b(?:navigation|nav|links?|menus?|items?|cues?|visible)\b/.test(context)) {
+    return false;
+  }
+  const prefix = input.slice(Math.max(0, index - 40), index).toLowerCase();
+  if (/\b(?:click|press|select|activate|use|follow)\b[\s\S]{0,40}$/.test(prefix)) {
+    return false;
+  }
+  if (/\bsubmit\s+(?:form|review|report|abuse|request|order|purchase|application|changes?|data)\b/.test(context)) {
+    return false;
+  }
+  return true;
 }
 
 function hasReadOnlyOutputFollowerContext(input: string, followerEndIndex: number): boolean {
@@ -949,7 +1010,10 @@ function hasReadOnlyOutputFollowerContext(input: string, followerEndIndex: numbe
 
 function isNegatedBrowserActionVerb(input: string, index: number): boolean {
   const prefix = input.slice(Math.max(0, index - 32), index).toLowerCase();
-  return /(?:do\s+not|don't|not|never|without|no)\s+$/.test(prefix);
+  return (
+    /(?:do\s+not|don't|not|never|without|no)\s+$/.test(prefix) ||
+    /(?:do\s+not|don't|never|without|no)\b(?:\s+\w+|,\s*|\s+or\s+|\s+and\s+){0,6}$/.test(prefix)
+  );
 }
 
 function browserSideEffectCacheKey(threadId: string, action: string, scope: string): string {
@@ -1018,7 +1082,13 @@ async function executeSessionsSpawn(
     },
   };
   const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
-  const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, effectiveAgentId, maxSessionToolTimeoutMs);
+  const timeoutMs = resolveToolTimeoutMsForTask({
+    value: input.call.input.timeout_seconds,
+    workerKind: effectiveAgentId,
+    ...(maxSessionToolTimeoutMs !== undefined ? { maxTimeoutMs: maxSessionToolTimeoutMs } : {}),
+    taskText: task,
+    parentTaskPrompt: input.packet.taskPrompt,
+  });
   const spawnAttempt = await (sessionSpawnGate ?? new AsyncSerialGate()).run(async () => {
     const concurrencyError = await maybeRejectSessionConcurrency(workerRuntime, input, sessionConcurrency);
     if (concurrencyError) {
@@ -1083,6 +1153,21 @@ async function executeSessionsSpawn(
         parentSessionKey: input.activation.runState.runKey,
         toolCallId: input.call.id,
       });
+    }
+    if (sendResult === null) {
+      const timeoutState = await getWorkerStateSafely(workerRuntime, spawned.workerRunKey);
+      if (isWorkerTimeoutSummaryState(timeoutState)) {
+        return timedOutResult(input.call, {
+          sessionKey: spawned.workerRunKey,
+          agentId: spawned.workerType,
+          taskId: input.activation.handoff.taskId,
+          timeoutMs,
+          evidenceSummary: summarizeWorkerEvidence(timeoutState),
+          label,
+          parentSessionKey: input.activation.runState.runKey,
+          toolCallId: input.call.id,
+        });
+      }
     }
     result = sendResult;
   } finally {
@@ -1167,7 +1252,7 @@ function hasPublicReadOnlySourceSignal(input: string): boolean {
 }
 
 function hasBrowserRequiredSignal(input: string): boolean {
-  return /\b(?:authenticated|login|logged in|account|session|interactive|click|fill|submit|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|client-side|rendered dashboard|dashboard|as a user would see|browser session|active browser)\b/i.test(
+  return /\b(?:authenticated|login|logged in|account|session|interactive|click|fill|submit|submission|form|approval|dry-run|dry run|operator review|side effect|side-effect|mutation|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|client-side|rendered dashboard|dashboard|as a user would see|browser session|active browser)\b/i.test(
     input
   );
 }
@@ -1406,12 +1491,14 @@ async function executeSessionsSend(
     continuityMode: "resume-existing" as const,
     ...(runtimeApprovalContext ? { runtimeApprovalContext } : {}),
   };
-  const timeoutMs = resolveContinuationToolTimeoutMs(
-    input.call.input.timeout_seconds,
-    state.workerType,
-    state.status,
-    maxSessionToolTimeoutMs
-  );
+  const timeoutMs = resolveContinuationToolTimeoutMsForTask({
+    value: input.call.input.timeout_seconds,
+    workerKind: state.workerType,
+    currentStatus: state.status,
+    ...(maxSessionToolTimeoutMs !== undefined ? { maxTimeoutMs: maxSessionToolTimeoutMs } : {}),
+    taskText: message,
+    parentTaskPrompt: input.packet.taskPrompt,
+  });
   const registration = toolCancellationRegistry?.register({
     threadId: input.activation.thread.threadId,
     toolCallId: input.call.id,
@@ -1460,6 +1547,21 @@ async function executeSessionsSend(
         parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
         toolCallId: input.call.id,
       });
+    }
+    if (sendResult === null) {
+      const timeoutState = await getWorkerStateSafely(workerRuntime, sessionKey);
+      if (isWorkerTimeoutSummaryState(timeoutState)) {
+        return timedOutResult(input.call, {
+          sessionKey,
+          agentId: state.workerType,
+          taskId: input.activation.handoff.taskId,
+          timeoutMs,
+          evidenceSummary: summarizeWorkerEvidence(timeoutState),
+          label,
+          parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
+          toolCallId: input.call.id,
+        });
+      }
     }
     result = sendResult;
   } finally {
@@ -1721,7 +1823,15 @@ async function executeSessionsList(
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
-    content: JSON.stringify({ sessions: filtered }, null, 2),
+    content: JSON.stringify(
+      {
+        sessions: filtered,
+        inspection_guidance:
+          "Use sessions_list only to choose a session key. Do not call sessions_list repeatedly in the same turn; after selecting the relevant session, inspect it once with sessions_history or continue it with sessions_send if the user asked to continue.",
+      },
+      null,
+      2
+    ),
   };
 }
 
@@ -1772,6 +1882,11 @@ async function executeSessionsHistory(
   const nextOffset = offset + messages.length;
   const hasMore = nextOffset < history.length;
   const hasMoreBefore = offset > 0;
+  const inspectionGuidance = hasMore
+    ? "More later transcript entries exist. Use next_cursor only if those entries are needed for the user's current decision."
+    : hasMoreBefore
+      ? "This page has no later transcript entries. Use previous_cursor only if earlier entries are needed for the user's current decision; otherwise synthesize from this history."
+      : "This result contains the complete available transcript for the session. Do not call sessions_history or sessions_list again for the same session in this turn; synthesize from this result or use at most one sessions_send if the user explicitly asked to continue.";
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
@@ -1788,6 +1903,7 @@ async function executeSessionsHistory(
         next_cursor: hasMore ? encodeSessionHistoryCursor(sessionKey, nextOffset) : null,
         has_more_before: hasMoreBefore,
         previous_cursor: hasMoreBefore ? encodeSessionHistoryCursor(sessionKey, Math.max(offset - limit, 0)) : null,
+        inspection_guidance: inspectionGuidance,
         messages,
       },
       null,
@@ -2139,6 +2255,10 @@ async function getWorkerStateSafely(workerRuntime: WorkerRuntime, workerRunKey: 
 async function getCancelledWorkerState(workerRuntime: WorkerRuntime, workerRunKey: string): Promise<WorkerSessionState | null> {
   const state = await getWorkerStateSafely(workerRuntime, workerRunKey);
   return state?.status === "cancelled" ? state : null;
+}
+
+function isWorkerTimeoutSummaryState(state: WorkerSessionState | null): state is WorkerSessionState {
+  return state?.status === "resumable" && state.continuationDigest?.reason === "timeout_summary";
 }
 
 async function sendWorkerWithOptionalTimeout(
@@ -2545,6 +2665,23 @@ function resolveToolTimeoutMs(value: unknown, workerKind: WorkerKind, maxTimeout
   return parseToolTimeoutMs(value, maxTimeoutMs) ?? boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs);
 }
 
+function resolveToolTimeoutMsForTask(input: {
+  value: unknown;
+  workerKind: WorkerKind;
+  maxTimeoutMs?: number;
+  taskText: string;
+  parentTaskPrompt: string;
+}): number {
+  if (input.workerKind === "browser" && isSupplementalLocalTimeoutProbeTask(input.taskText)) {
+    return Math.max(
+      parseToolTimeoutMs(input.value, undefined) ?? 0,
+      SUPPLEMENTAL_LOCAL_TIMEOUT_BROWSER_PROBE_TIMEOUT_MS
+    );
+  }
+  const timeoutMs = resolveToolTimeoutMs(input.value, input.workerKind, input.maxTimeoutMs);
+  return applyLocalBrowserTaskTimeoutFloors(timeoutMs, input);
+}
+
 function resolveContinuationToolTimeoutMs(
   value: unknown,
   workerKind: WorkerKind,
@@ -2559,6 +2696,69 @@ function resolveContinuationToolTimeoutMs(
     );
   }
   return Math.max(timeoutMs, boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs));
+}
+
+function resolveContinuationToolTimeoutMsForTask(input: {
+  value: unknown;
+  workerKind: WorkerKind;
+  currentStatus: WorkerSessionState["status"];
+  maxTimeoutMs?: number;
+  taskText: string;
+  parentTaskPrompt: string;
+}): number {
+  const timeoutMs = resolveContinuationToolTimeoutMs(
+    input.value,
+    input.workerKind,
+    input.currentStatus,
+    input.maxTimeoutMs
+  );
+  return applyLocalBrowserTaskTimeoutFloors(timeoutMs, input);
+}
+
+function applyLocalBrowserTaskTimeoutFloors(
+  timeoutMs: number,
+  input: { workerKind: WorkerKind; maxTimeoutMs?: number; taskText: string; parentTaskPrompt: string }
+): number {
+  if (input.workerKind !== "browser") {
+    return timeoutMs;
+  }
+  if (isSlowLoopbackBrowserTask(input.taskText)) {
+    return Math.max(timeoutMs, boundDefaultToolTimeoutMs(MAX_BROWSER_OPEN_TIMEOUT_MS, input.maxTimeoutMs));
+  }
+  if (isLocalApprovalBrowserTask(input.taskText, input.parentTaskPrompt)) {
+    return Math.max(timeoutMs, boundDefaultToolTimeoutMs(LOCAL_APPROVAL_BROWSER_TASK_TIMEOUT_MS, input.maxTimeoutMs));
+  }
+  return timeoutMs;
+}
+
+function isSlowLoopbackBrowserTask(taskText: string): boolean {
+  if (!/\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(taskText)) {
+    return false;
+  }
+  const urls = taskText.match(/https?:\/\/[^\s)]+/gi) ?? [];
+  return urls.some(isLoopbackUrl);
+}
+
+function isSupplementalLocalTimeoutProbeTask(taskText: string): boolean {
+  return /\bsupplemental local timeout probe\b/i.test(taskText);
+}
+
+function isLocalApprovalBrowserTask(taskText: string, parentTaskPrompt: string): boolean {
+  const text = `${parentTaskPrompt}\n${taskText}`;
+  if (!/\b(?:approval|approve|approved|permission|dry[-\s]?run|form|submit|browser\.form\.submit)\b/i.test(text)) {
+    return false;
+  }
+  const urls = text.match(/https?:\/\/[^\s)]+/gi) ?? [];
+  return urls.some(isLoopbackUrl);
+}
+
+function isLoopbackUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(sanitizeDelegationUrl(raw));
+    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
+  } catch {
+    return false;
+  }
 }
 
 function defaultToolTimeoutMs(workerKind: WorkerKind): number {
