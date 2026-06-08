@@ -1,335 +1,282 @@
-// Agent Connect — live bridge endpoint, token scope, and tool capability surface.
+// Chat — the human entry. The route name is still agent-connect for
+// compatibility, but the product surface is a chat-first work launcher.
 
-import { useCallback, useState } from "react";
+import { useState } from "react";
 
-import type { BridgeStatus, CapabilityInspectionReport } from "../api/types";
-import { useApiClient } from "../api/useApiClient";
+import type { Mission } from "../api/mission-api";
+import { useAgents, useApprovals, useCreateMission, useMissions } from "../api/useMissionData";
 import { Icon } from "../components/Icon";
-import { usePolling } from "../hooks/usePolling";
 import { useAppState } from "../state/AppState";
+import { canUseOperatorActions, OPERATOR_ACTION_SCOPE_HINT } from "../state/scopeAccess";
 
-const POLL_MS = 5_000;
-const CAPABILITY_THREAD = "agent-connect-preview";
-const CAPABILITY_ROLE = "role-lead";
-const REQUESTED_CAPABILITIES = ["browser", "research", "social-publish", "workspace"];
-
-interface AgentProfile {
-  id: string;
-  name: string;
-  note: string;
-  configHint: string;
-}
-
-const AGENT_PROFILES: AgentProfile[] = [
-  {
-    id: "codex",
-    name: "Codex CLI",
-    note: "Use the local bridge endpoint as an authenticated tool gateway for browser and mission actions.",
-    configHint: "Set base URL to the bridge endpoint and send the daemon token as Bearer or x-turnkeyai-token.",
-  },
-  {
-    id: "claude-code",
-    name: "Claude Code",
-    note: "Connect through an HTTP tool adapter that calls the bridge command route with operator scope.",
-    configHint: "Expose only operator-safe commands by default; reserve admin token use for short diagnostics windows.",
-  },
-  {
-    id: "comet",
-    name: "Comet / Browser Agent",
-    note: "Use the bridge as the browser-control backend while keeping raw CDP behind the daemon boundary.",
-    configHint: "Route browser actions through /bridge/command; do not give the client direct CDP credentials.",
-  },
-  {
-    id: "custom",
-    name: "Custom OpenAPI Client",
-    note: "Any local client can call the same authenticated daemon routes once it has a scoped token.",
-    configHint: "Start with read or operator scope, then add approval handling before enabling write-heavy tools.",
-  },
+const EXAMPLES = [
+  "Compare three options and tell me which one to choose.",
+  "Open the dashboard, check what changed, and summarize it.",
+  "Review this result and point out what is missing.",
 ];
-
-interface AgentConnectLive {
-  bridge: BridgeStatus | null;
-  capabilities: CapabilityInspectionReport | null;
-  reachable: boolean;
-  error: string | null;
-}
+const EXTERNAL_CLIENTS = ["Codex CLI", "Claude Code", "Custom API client"];
+const BROWSERS = ["Chrome", "Comet", "Edge", "Chromium"];
 
 export function AgentConnectPage() {
-  const { state } = useAppState();
-  const client = useApiClient();
-  const [selected, setSelected] = useState<string>(AGENT_PROFILES[0]?.id ?? "custom");
-  const [live, setLive] = useState<AgentConnectLive>({
-    bridge: null,
-    capabilities: null,
-    reachable: false,
-    error: null,
-  });
+  const { state, openMission, setRoute } = useAppState();
+  const createMission = useCreateMission();
+  const agentsRemote = useAgents([]);
+  const missionsRemote = useMissions([]);
+  const approvalsRemote = useApprovals([]);
+  const agents = agentsRemote.value;
+  const recentMissions = missionsRemote.value
+    .filter((mission) => mission.status !== "archived")
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, 5);
+  const pendingApprovals = approvalsRemote.value.filter((approval) => !approval.decision && !state.decisions[approval.id]);
+  const canStart = canUseOperatorActions(state.scope);
+  const [brief, setBrief] = useState("");
+  const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const refreshLive = useCallback(async () => {
-    const capabilityQuery = new URLSearchParams({
-      threadId: CAPABILITY_THREAD,
-      roleId: CAPABILITY_ROLE,
-      requestedCapabilities: REQUESTED_CAPABILITIES.join(","),
-    });
-    const [bridgeResult, capabilityResult] = await Promise.allSettled([
-      client.get<BridgeStatus>("/bridge/status"),
-      client.get<CapabilityInspectionReport>(`/capabilities?${capabilityQuery.toString()}`),
-    ]);
-    const bridge = bridgeResult.status === "fulfilled" ? bridgeResult.value : null;
-    const capabilities = capabilityResult.status === "fulfilled" ? capabilityResult.value : null;
-    const error =
-      bridgeResult.status === "rejected"
-        ? bridgeResult.reason instanceof Error
-          ? bridgeResult.reason.message
-          : String(bridgeResult.reason)
-        : capabilityResult.status === "rejected"
-          ? capabilityResult.reason instanceof Error
-            ? capabilityResult.reason.message
-            : String(capabilityResult.reason)
-          : null;
-    setLive({ bridge, capabilities, reachable: bridge != null || capabilities != null, error });
-  }, [client]);
-
-  usePolling(refreshLive, POLL_MS);
-
-  const profile = AGENT_PROFILES.find((candidate) => candidate.id === selected) ?? AGENT_PROFILES[0];
-  const tokenMasked = state.token ? maskToken(state.token) : "(token missing)";
-  const endpoint = `${window.location.origin}/bridge/command`;
-  const status = bridgeStatusLabel(live);
-
-  const copy = (text: string) => {
-    void navigator.clipboard.writeText(text).catch(() => {
-      // Visible read-only fields remain selectable if clipboard access is blocked.
-    });
+  const trimmed = brief.trim();
+  const submit = async () => {
+    if (!trimmed || submitting || !canStart) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const mission = await createMission({
+        title: deriveTitle(trimmed),
+        desc: trimmed,
+        agents: selectedAgents,
+      });
+      openMission(mission.id);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError));
+      setSubmitting(false);
+    }
   };
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h2>Agent Connect</h2>
-          <div className="sub">
-            Connect external agents to the local daemon without handing them direct browser or filesystem control.
+    <div className="page start-page">
+      <section className="work-home">
+        <div className="chat-shell">
+          <div className="start-composer" aria-label="Chat">
+            <div className="chat-message assistant">
+              <b>TurnkeyAI</b>
+              <span>Tell me what you want done. I will pick the team, use tools when useful, and pause before risky actions.</span>
+            </div>
+            <textarea
+              className="start-brief"
+              value={brief}
+              onChange={(event) => {
+                setBrief(event.target.value);
+                setError(null);
+              }}
+              placeholder="Message TurnkeyAI..."
+              disabled={submitting || !canStart}
+              rows={7}
+            />
+            {error ? <div className="start-error" role="alert">{error}</div> : null}
+            {!canStart ? <div className="start-error" role="note">{OPERATOR_ACTION_SCOPE_HINT}</div> : null}
+            <div className="start-actions">
+              <div className="chat-selected-team">
+                {selectedAgents.length === 0
+                  ? "Auto team"
+                  : `${selectedAgents.length} helper${selectedAgents.length === 1 ? "" : "s"} selected`}
+              </div>
+              <button
+                type="button"
+                className="btn primary start-primary"
+                onClick={() => void submit()}
+                disabled={!trimmed || submitting || !canStart}
+              >
+                <Icon name="play" size={13} /> {submitting ? "Sending..." : "Send"}
+              </button>
+            </div>
           </div>
-        </div>
-        <div className="right">
-          <button type="button" className="btn" onClick={() => void refreshLive()}>
-            <Icon name="diagnose" size={13} /> Test connection
-          </button>
-        </div>
-      </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
-        <div className="col" style={{ gap: 4 }}>
-          {AGENT_PROFILES.map((candidate) => (
+          <aside className="work-home-side" aria-label="Current work">
+            <section className="chat-team-panel" aria-label="Choose team">
+              <div className="panel-headline">
+                <span>Team</span>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    setRoute("agents");
+                    window.location.hash = "#/agents";
+                  }}
+                >
+                  Change
+                </button>
+              </div>
+              <button
+                type="button"
+                className="chat-team-choice"
+                data-active={selectedAgents.length === 0}
+                disabled={submitting || !canStart}
+                onClick={() => setSelectedAgents([])}
+              >
+                <b>Auto</b>
+                <span>Best for most work.</span>
+              </button>
+              {agents.length > 0 ? (
+                <div className="chat-agent-list">
+                  {agents.slice(0, 4).map((agent) => {
+                    const selected = selectedAgents.includes(agent.id);
+                    return (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        className="chat-team-choice"
+                        data-active={selected}
+                        disabled={submitting || !canStart}
+                        onClick={() =>
+                          setSelectedAgents((current) =>
+                            selected ? current.filter((id) => id !== agent.id) : [...current, agent.id]
+                          )
+                        }
+                      >
+                        <b>{agent.name}</b>
+                        <span>{agent.role}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="chat-team-note">
+                  {agentsRemote.isLive ? "Auto is ready." : "Checking team..."}
+                </div>
+              )}
+            </section>
+
+            <WorkNowPanel
+              recentMissions={recentMissions}
+              pendingApprovals={pendingApprovals.length}
+              isLive={missionsRemote.isLive || approvalsRemote.isLive}
+              onOpenMission={openMission}
+            />
+          </aside>
+        </div>
+
+        <div className="start-examples" aria-label="Examples">
+          {EXAMPLES.map((example) => (
             <button
-              key={candidate.id}
+              key={example}
               type="button"
-              className={"sb-item" + (selected === candidate.id ? " active" : "")}
-              onClick={() => setSelected(candidate.id)}
-              style={{ background: selected === candidate.id ? "var(--surface)" : "transparent" }}
+              className="start-example"
+              disabled={submitting || !canStart}
+              onClick={() => setBrief(example)}
             >
-              <span className="glyph"><Icon name="connect" size={13} /></span>
-              <span style={{ flex: 1 }}>{candidate.name}</span>
-              <span className={"tag " + status.tone}>{status.label}</span>
+              {example}
             </button>
           ))}
         </div>
-
-        <div className="card">
-          <div className="card-hd">
-            <h3
-              style={{
-                flex: 1,
-                fontSize: 13,
-                textTransform: "none",
-                letterSpacing: 0,
-                color: "var(--text)",
-              }}
-            >
-              {profile?.name ?? "Agent client"}
-            </h3>
-            <span className={"tag " + status.tone}>{status.label}</span>
-          </div>
-          <div style={{ padding: "16px 18px" }}>
-            <div className="muted" style={{ marginBottom: 14, fontSize: 12.5 }}>
-              {profile?.note}
-            </div>
-
-            <div className="setting-row" style={{ paddingTop: 4 }}>
-              <div className="lbl"><b>Endpoint</b><span>local daemon bridge command route</span></div>
-              <div>
-                <input className="field" readOnly value={endpoint} />
-              </div>
-              <div className="row" style={{ justifyContent: "flex-end" }}>
-                <button type="button" className="btn ghost" onClick={() => copy(endpoint)}>
-                  Copy
-                </button>
-              </div>
-            </div>
-            <div className="setting-row">
-              <div className="lbl"><b>Token</b><span>stored in this browser session</span></div>
-              <div>
-                <input className="field" readOnly value={tokenMasked} />
-              </div>
-              <div className="row" style={{ justifyContent: "flex-end" }}>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  disabled={!state.token}
-                  onClick={() => state.token && copy(state.token)}
-                >
-                  Copy
-                </button>
-              </div>
-            </div>
-            <div className="setting-row">
-              <div className="lbl"><b>Scope</b><span>current token access level</span></div>
-              <div>
-                <input className="field" readOnly value={state.scope === "unknown" ? "checking" : state.scope} />
-              </div>
-              <div><span className={"tag " + scopeTone(state.scope)}>{state.scope}</span></div>
-            </div>
-            <div className="setting-row">
-              <div className="lbl"><b>Bridge health</b><span>transport and expert-lane availability</span></div>
-              <div className="row" style={{ flexWrap: "wrap" }}>
-                <span className="tag">{live.bridge?.transport.label ?? "transport pending"}</span>
-                <span className="tag">{live.bridge?.transport.mode ?? "mode pending"}</span>
-                {live.bridge?.transport.health && (
-                  <span className={"tag " + (live.bridge.transport.health.healthy ? "success" : "warning")}>
-                    {live.bridge.transport.health.healthy
-                      ? "transport healthy"
-                      : live.bridge.transport.health.reason ?? "transport attention"}
-                  </span>
-                )}
-                <span className={"tag " + (live.bridge?.expertLane.available ? "success" : "warning")}>
-                  {live.bridge?.expertLane.available ? "expert lane available" : "expert lane gated"}
-                </span>
-              </div>
-              <div />
-            </div>
-            <div className="setting-row" style={{ borderBottom: 0 }}>
-              <div className="lbl"><b>Client note</b><span>recommended integration posture</span></div>
-              <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{profile?.configHint}</div>
-              <div />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 20 }}>
-        <div className="card-hd">
-          <Icon name="agents" size={13} />
-          <h3>Live capability surface</h3>
-          <span className="mono faint" style={{ fontSize: 10, marginLeft: "auto" }}>
-            {live.capabilities ? `generated ${formatRelativeMs(live.capabilities.generatedAt)}` : live.error ?? "checking"}
-          </span>
-        </div>
-        <div className="card-bd">
-          <CapabilityRows report={live.capabilities} />
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 20 }}>
-        <div className="card-hd">
-          <Icon name="warning" size={13} />
-          <h3>Why not admin by default?</h3>
-        </div>
-        <div className="card-bd muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-          Admin scope exposes raw-CDP and configuration mutation. Daily agent clients should use operator scope
-          with approval gates; keep admin tokens short-lived and local to runtime diagnostics.
-        </div>
-      </div>
+      </section>
+      <ConnectMoreTools
+        onOpenSettings={() => {
+          setRoute("settings");
+          window.location.hash = "#/settings";
+        }}
+        token={state.token}
+      />
     </div>
   );
 }
 
-function CapabilityRows({ report }: { report: CapabilityInspectionReport | null }) {
-  if (!report) {
-    return (
-      <div className="setting-row" style={{ borderBottom: 0, paddingTop: 4 }}>
-        <div className="lbl"><b>Capabilities</b><span>daemon has not returned a report yet</span></div>
-        <div className="muted">Waiting for /capabilities.</div>
-        <div><span className="tag warning">pending</span></div>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <CapabilityRow label="Workers" items={report.availableWorkers} empty="no workers" />
-      <CapabilityRow
-        label="Native tools"
-        items={(report.toolCapabilities ?? []).map((tool) => `${tool.name} · ${tool.executorKind}`)}
-        empty="no native tools"
-      />
-      <CapabilityRow
-        label="Connectors"
-        items={report.connectorStates.map((connector) =>
-          `${connector.provider} · ${connector.available && connector.authorized ? "ready" : "needs setup"}`
-        )}
-        empty="no connectors"
-      />
-      <CapabilityRow
-        label="APIs"
-        items={report.apiStates.map((api) => `${api.name} · ${api.ready ? "ready" : "needs env"}`)}
-        empty="no APIs"
-      />
-      <CapabilityRow
-        label="Transport order"
-        items={report.transportPreferences.map(
-          (preference) => `${preference.capability}: ${preference.orderedTransports.join(" > ")}`
-        )}
-        empty="no transport preferences"
-        last
-      />
-    </>
-  );
-}
-
-function CapabilityRow({
-  label,
-  items,
-  empty,
-  last,
+function WorkNowPanel({
+  recentMissions,
+  pendingApprovals,
+  isLive,
+  onOpenMission,
 }: {
-  label: string;
-  items: string[];
-  empty: string;
-  last?: boolean;
+  recentMissions: Mission[];
+  pendingApprovals: number;
+  isLive: boolean;
+  onOpenMission: (missionId: string) => void;
 }) {
+  const active = recentMissions.filter((mission) => mission.status === "working" || mission.status === "needs_approval" || mission.status === "blocked");
   return (
-    <div className="setting-row" style={{ borderBottom: last ? 0 : undefined, paddingTop: label === "Workers" ? 4 : undefined }}>
-      <div className="lbl"><b>{label}</b><span>from daemon capability inspection</span></div>
-      <div className="row" style={{ flexWrap: "wrap" }}>
-        {items.length > 0 ? items.map((item) => <span key={item} className="tag">{item}</span>) : <span className="muted">{empty}</span>}
+    <section className="work-now-panel">
+      <div className="panel-headline">
+        <span>Work</span>
+        <small>{isLive ? "live" : "connecting"}</small>
       </div>
-      <div />
-    </div>
+      {pendingApprovals > 0 && (
+        <div className="work-attention">
+          <Icon name="warning" size={14} />
+          <div>
+            <b>{pendingApprovals} decision{pendingApprovals === 1 ? "" : "s"} needed</b>
+            <span>Open the related work item to approve or deny it.</span>
+          </div>
+        </div>
+      )}
+      {recentMissions.length === 0 ? (
+        <div className="work-empty">Your work will appear here after you send the first message.</div>
+      ) : (
+        <div className="work-list">
+          {(active.length > 0 ? active : recentMissions).slice(0, 4).map((mission) => (
+            <button key={mission.id} type="button" className="work-row" onClick={() => onOpenMission(mission.id)}>
+              <span className={"work-dot " + mission.status} />
+              <span>
+                <b>{mission.title}</b>
+                <small>{humanWorkStatus(mission)}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
-function bridgeStatusLabel(live: AgentConnectLive): { label: string; tone: string } {
-  if (live.bridge?.ok) return { label: "ready", tone: "success" };
-  if (live.reachable) return { label: "partial", tone: "warning" };
-  return { label: "offline", tone: "warning" };
+function ConnectMoreTools({ onOpenSettings, token }: { onOpenSettings: () => void; token: string | null }) {
+  const endpoint = `${window.location.origin}/bridge/command`;
+  return (
+    <section className="start-secondary">
+      <details className="start-advanced">
+        <summary>Use TurnkeyAI from another app</summary>
+        <div className="start-advanced-grid">
+          <div>
+            <h3>AI apps</h3>
+            <p>{EXTERNAL_CLIENTS.join(", ")} can send work to this local TurnkeyAI app.</p>
+            <div className="start-copy-row">
+              <span>Address</span>
+              <input className="field mono" readOnly value={endpoint} />
+            </div>
+            <div className="start-copy-row">
+              <span>Token</span>
+              <input className="field mono" readOnly value={token ? maskToken(token) : "(missing)"} />
+            </div>
+          </div>
+          <div>
+            <h3>Browser</h3>
+            <p>Set this up only when TurnkeyAI needs logged-in websites or screenshots.</p>
+            <div className="start-browser-list">{BROWSERS.join(" / ")}</div>
+            <code>turnkeyai bridge install-extension</code>
+          </div>
+        </div>
+      </details>
+      <button type="button" className="btn ghost" onClick={onOpenSettings}>
+        <Icon name="settings" size={13} /> Settings
+      </button>
+    </section>
+  );
 }
 
-function scopeTone(scope: string): string {
-  if (scope === "admin") return "warning";
-  if (scope === "operator") return "success";
-  return "info";
+function humanWorkStatus(mission: Mission): string {
+  if (mission.status === "done") return "Finished";
+  if (mission.status === "working" || mission.status === "planning") return "Working";
+  if (mission.status === "needs_approval") return "Waiting for you";
+  if (mission.status === "blocked") return "Needs help";
+  if (mission.status === "draft") return "Draft";
+  return "Archived";
 }
 
-function formatRelativeMs(timestamp: number): string {
-  const delta = Math.max(0, Date.now() - timestamp);
-  if (delta < 1_000) return "now";
-  if (delta < 60_000) return `${Math.round(delta / 1_000)}s ago`;
-  return `${Math.round(delta / 60_000)}m ago`;
+function deriveTitle(text: string): string {
+  const firstLine = text.split("\n").find((line) => line.trim())?.trim() ?? "New chat";
+  const clean = firstLine.replace(/\s+/g, " ");
+  return clean.length > 86 ? `${clean.slice(0, 83)}...` : clean;
 }
 
 function maskToken(token: string): string {
   if (token.length <= 6) return "tk_....";
-  const tail = token.slice(-4);
-  return `tk_................${tail}`;
+  return `tk_................${token.slice(-4)}`;
 }

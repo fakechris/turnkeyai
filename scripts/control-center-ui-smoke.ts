@@ -96,6 +96,9 @@ try {
   if (!browserPath) {
     process.exitCode = 0;
   } else {
+    await runHumanProductSmoke(browserPath);
+    const runLegacySmoke = false;
+    if (runLegacySmoke) {
     browser = await chromium.launch({
       executablePath: browserPath,
       headless: !headful,
@@ -1052,6 +1055,7 @@ try {
     console.log("control-center-ui-smoke: passed");
     console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
     console.log(`control-center-ui-smoke: mobile-screenshot-bytes ${mobileScreenshot.byteLength}`);
+    }
   }
 } finally {
   if (browser) {
@@ -1061,6 +1065,255 @@ try {
     socket.destroy();
   }
   await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+async function runHumanProductSmoke(browserPath: string): Promise<void> {
+  let humanBrowser: Browser | undefined;
+  try {
+    humanBrowser = await chromium.launch({
+      executablePath: browserPath,
+      headless: !headful,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+
+    const noTokenPage = await newSmokePage(humanBrowser, { viewport: { width: 1100, height: 760 } });
+    await noTokenPage.goto(`http://127.0.0.1:${port}/app#/missions`, {
+      waitUntil: "domcontentloaded",
+    });
+    await noTokenPage.waitForSelector(".launch-command-list");
+    assert(await noTokenPage.locator("text=Auth token required").isVisible(), "no-token page should explain token recovery");
+    assert(
+      await noTokenPage.locator("text=launchers/TurnkeyAI Mission Control.command").isVisible(),
+      "no-token page should show the bundled launcher"
+    );
+    assert(
+      await noTokenPage.locator("text=npx @turnkeyai/cli app").isVisible(),
+      "no-token page should show the no-install launcher"
+    );
+    await noTokenPage.close();
+
+    const page = await newSmokePage(humanBrowser, { viewport: { width: 1440, height: 980 } });
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        if (isIgnorableConsoleError(message.text())) return;
+        const location = message.location();
+        const source = location.url ? ` ${location.url}:${location.lineNumber}` : "";
+        browserConsoleErrors.push(`browser-console-error:${source} ${message.text()}`);
+      }
+    });
+    page.on("pageerror", (error) => {
+      browserPageErrors.push(`browser-page-error: ${error.message}`);
+    });
+    await page.addInitScript(() => {
+      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-admin-token");
+      sessionStorage.setItem("turnkeyai.controlCenter.scope", "admin");
+    });
+
+    await page.goto(`http://127.0.0.1:${port}/app#/agent-connect`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForSelector(".start-brief");
+    assert(
+      await page.locator(".chat-message", { hasText: "Tell me what you want done" }).isVisible(),
+      "chat should be the product entry"
+    );
+    assert(await page.locator(".start-brief").isVisible(), "chat should expose the main composer");
+    assert(await page.locator(".chat-team-panel", { hasText: "Auto" }).isVisible(), "chat should default to Auto team");
+    assert(await page.locator(".work-now-panel", { hasText: "UI smoke mission" }).isVisible(), "chat should show current work");
+    assert(
+      (await page.locator("text=Context sources").count()) === 0,
+      "chat entry should not expose internal context-source terminology"
+    );
+    assert((await page.locator("text=Runtime attention").count()) === 0, "chat entry should not expose runtime internals");
+    await page.locator(".start-brief").fill("Open dynamic pages, collect browser evidence, and compare the result.");
+    await page.getByRole("button", { name: /^Send$/ }).click();
+    await page.waitForSelector(".mission-bar");
+    assert(postedMissions.length === 1, "chat send should create one work item");
+    assert(
+      JSON.stringify(postedMissions[0]).includes("Open dynamic pages"),
+      "chat send should post the user's plain-language request"
+    );
+
+    await page.goto(`http://127.0.0.1:${port}/app#/agents`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForSelector("text=Team");
+    assert(await page.locator(".team-choice-card", { hasText: "Auto" }).isVisible(), "team page should offer Auto");
+    assert(
+      await page.locator(".team-choice-card", { hasText: "Use websites" }).isVisible(),
+      "team page should explain browser-backed work in user language"
+    );
+    assert(
+      await page.locator(".team-choice-card", { hasText: "Review carefully" }).isVisible(),
+      "team page should offer review mode in user language"
+    );
+    assert((await page.locator("text=sessions_spawn").count()) === 0, "team page should not expose tool schema names");
+
+    await page.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForSelector(".work-status-overview");
+    await page.waitForSelector(".mission-progress-card");
+    await page.waitForSelector(".work-answer-card .markdown-body h2");
+    assert(await page.locator(".work-status-overview").count() === 1, "work detail should show one current-state panel");
+    assert(await page.locator(".mission-progress-card").count() === 1, "work detail should show one chronological progress panel");
+    assert(await page.locator(".work-answer-card").count() === 1, "work detail should show one answer panel");
+    assert(
+      await page.locator(".work-needs-you-card", { hasText: "Browser target detached" }).isVisible(),
+      "work detail should surface human decisions near the top"
+    );
+    const rawToolCallText = page.locator("text=Tool Call").first();
+    assert(
+      (await rawToolCallText.count()) === 0 || !(await rawToolCallText.isVisible()),
+      "work detail should not lead with raw tool-call terminology"
+    );
+    await assertVerticalOrder(
+      page,
+      ".work-status-overview",
+      ".mission-progress-card",
+      "current state should appear before chronological progress"
+    );
+    await assertVerticalOrder(
+      page,
+      ".mission-progress-card",
+      ".work-answer-card",
+      "chronological progress should appear before the answer"
+    );
+    await page.locator(".work-detail-section", { hasText: "Activity details" }).locator("summary").click();
+    await page.getByRole("button", { name: "Show activity" }).click();
+    await page.waitForSelector("#thinking-record-timeline .tool-process");
+    await assertNoOverlap(page, ".thinking-card", ".work-answer-card", "activity and answer should not overlap");
+    const followUp = page.getByLabel("Follow-up message to mission team");
+    await followUp.fill("Please tighten the result with the same evidence.");
+    await page.getByRole("button", { name: /Send/ }).click();
+    await page.waitForSelector("[role='status']");
+    assert(
+      await page.locator("[role='status']", { hasText: "Message sent" }).isVisible(),
+      "work detail should accept follow-up messages"
+    );
+    assert(
+      postedMessages.some((body) => JSON.stringify(body).includes("Please tighten the result")),
+      "follow-up should POST the user's message"
+    );
+    const screenshot = await page.screenshot({ fullPage: true });
+    assert(screenshot.byteLength > 20_000, `expected non-trivial desktop screenshot, got ${screenshot.byteLength} bytes`);
+    const desktopLayoutEvidence = await collectMissionLayoutEvidence(page);
+
+    await page.goto(`http://127.0.0.1:${port}/app#/settings`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForSelector("text=Settings");
+    assert(await page.locator(".settings-overview-card", { hasText: "Model" }).isVisible(), "settings should lead with Model");
+    assert(await page.locator(".settings-overview-card", { hasText: "Team" }).isVisible(), "settings should expose Team");
+    assert(await page.locator(".settings-overview-card", { hasText: "Browser" }).isVisible(), "settings should expose Browser");
+    assert(await page.locator(".settings-overview-card", { hasText: "Other apps" }).isVisible(), "settings should expose Other apps");
+    assert((await page.locator("text=LLM models").count()) === 0, "settings should avoid LLM jargon in the default view");
+    await page.locator(".settings-advanced").evaluate((node) => {
+      if (node instanceof HTMLDetailsElement) node.open = true;
+    });
+    await page.getByLabel("Model catalog JSON").fill(JSON.stringify(modelCatalogConfigContent({ defaultModelId: "gpt-5" }), null, 2));
+    await page.getByRole("button", { name: /^Save$/ }).click();
+    await page.waitForSelector("text=Catalog saved");
+    assert(savedModelCatalogContents.length === 1, "settings should save edited model catalog content once");
+
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
+    await page.getByLabel("Search").fill("Team");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => window.location.hash === "#/agents");
+    assert(page.url().includes("#/agents"), "command palette should navigate to Team");
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
+    await page.getByLabel("Search").fill("UI smoke mission");
+    await page.locator(".command-palette-item", { hasText: "UI smoke mission" }).click();
+    await page.waitForFunction((id) => window.location.hash === `#/mission/${id}`, missionId);
+    assert(page.url().includes(`#/mission/${missionId}`), "command palette should open work details");
+
+    for (const oldRoute of ["#/missions", "#/approvals", "#/context", "#/runtime", "#/onboarding"]) {
+      await page.goto(`http://127.0.0.1:${port}/app${oldRoute}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await page.waitForSelector(".start-brief");
+      assert((await page.locator("text=Runtime attention").count()) === 0, `${oldRoute} should not show old runtime IA`);
+      assert((await page.locator("text=Context sources").count()) === 0, `${oldRoute} should not show old context IA`);
+      assert((await page.locator("text=Approvals").count()) === 0, `${oldRoute} should not show old approvals IA`);
+    }
+    await page.close();
+
+    const mobilePage = await newSmokePage(humanBrowser, { viewport: { width: 390, height: 844 } });
+    mobilePage.on("console", (message) => {
+      if (message.type() === "error") {
+        if (isIgnorableConsoleError(message.text())) return;
+        const location = message.location();
+        const source = location.url ? ` ${location.url}:${location.lineNumber}` : "";
+        browserConsoleErrors.push(`mobile-browser-console-error:${source} ${message.text()}`);
+      }
+    });
+    mobilePage.on("pageerror", (error) => {
+      browserPageErrors.push(`mobile-browser-page-error: ${error.message}`);
+    });
+    await mobilePage.addInitScript(() => {
+      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-token");
+      sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
+    });
+    await mobilePage.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await mobilePage.waitForSelector(".work-status-overview");
+    await mobilePage.waitForSelector(".work-answer-card .markdown-body h2");
+    await assertNoPageHorizontalOverflow(mobilePage, "mobile work detail should not create page-level horizontal scroll");
+    await assertWithinViewport(mobilePage, ".mission-bar", "mobile mission bar should fit the viewport");
+    await assertWithinViewport(mobilePage, ".mission-detail-pane", "mobile work detail pane should fit the viewport");
+    await assertWithinViewport(mobilePage, ".thinking-card", "mobile activity card should fit the viewport");
+    await assertWithinViewport(mobilePage, ".work-answer-card", "mobile answer card should fit the viewport");
+    await assertVerticalOrder(
+      mobilePage,
+      ".mission-progress-card",
+      ".work-answer-card",
+      "mobile progress should appear before answer"
+    );
+    const mobileScreenshot = await mobilePage.screenshot({ fullPage: true });
+    assert(
+      mobileScreenshot.byteLength > 15_000,
+      `expected non-trivial mobile screenshot, got ${mobileScreenshot.byteLength} bytes`
+    );
+    const mobileLayoutEvidence = await collectMissionLayoutEvidence(mobilePage);
+    await mobilePage.close();
+
+    assert(requestedPaths.some((value) => value.startsWith("/missions")), "missions endpoint was not requested");
+    assert(
+      requestedPaths.some((value) => value.startsWith(`/missions/${missionId}/timeline`)),
+      "mission timeline endpoint was not requested"
+    );
+    assert(requestedPaths.some((value) => value.startsWith("/mission-agents")), "team endpoint was not requested");
+    assert(requestedPaths.some((value) => value.startsWith("/models")), "models endpoint was not requested");
+    assert(requestedPaths.some((value) => value.startsWith("/diagnostics")), "diagnostics endpoint was not requested");
+    assert(
+      browserConsoleErrors.length === 0,
+      `browser console errors should stay clean:\n${browserConsoleErrors.join("\n")}`
+    );
+    assert(
+      browserPageErrors.length === 0,
+      `browser page errors should stay clean:\n${browserPageErrors.join("\n")}`
+    );
+    if (smokeArtifactDir) {
+      const artifact = await writeSmokeArtifacts({
+        artifactDir: smokeArtifactDir,
+        desktopScreenshot: screenshot,
+        mobileScreenshot,
+        desktopLayoutEvidence,
+        mobileLayoutEvidence,
+      });
+      console.log(`control-center-ui-smoke: artifact-summary ${artifact.summaryPath}`);
+      console.log(`control-center-ui-smoke: desktop-screenshot ${artifact.desktopScreenshotPath}`);
+      console.log(`control-center-ui-smoke: mobile-screenshot ${artifact.mobileScreenshotPath}`);
+    }
+    console.log("control-center-ui-smoke: passed");
+    console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
+    console.log(`control-center-ui-smoke: mobile-screenshot-bytes ${mobileScreenshot.byteLength}`);
+  } finally {
+    if (humanBrowser) {
+      await humanBrowser.close();
+    }
+  }
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

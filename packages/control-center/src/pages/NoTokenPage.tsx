@@ -18,73 +18,50 @@ export function NoTokenPage() {
   };
 
   return (
-    <div className="page" style={{ maxWidth: 720 }}>
-      <div className="page-head">
+    <div className="page auth-page">
+      <div className="human-page-head">
         <div>
           <h2>Auth token required</h2>
-          <div className="sub">
-            Mission Control talks to the daemon as a real client and needs the daemon's auth token.
-          </div>
+          <p>The launcher starts the local service and opens this app with access already attached.</p>
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-bd" style={{ padding: 20 }}>
-          <p style={{ marginTop: 0 }}>Open Mission Control through one of these entry points:</p>
-          <div className="launch-command-list" aria-label="Mission Control launch commands">
+      <section className="auth-card">
+        <div>
+          <h3>Recommended</h3>
+          <p>Use the local launcher so TurnkeyAI can connect automatically.</p>
+          <div className="launch-command-list" aria-label="Recommended launch commands">
             <LaunchCommand
               label="Bundled launcher"
               command="launchers/TurnkeyAI Mission Control.command"
-              note="Open this file from Finder in a source checkout; it starts the app with the local daemon token."
-            />
-            <LaunchCommand
-              label="Double-click launcher"
-              command="npm run app:install-launcher"
-              note="Use this from the repository root to install a local Mission Control launcher."
-            />
-            <LaunchCommand
-              label="Installed CLI"
-              command="turnkeyai app"
-              note="Use this after installing or linking the TurnkeyAI CLI."
-            />
-            <LaunchCommand
-              label="Persistent daemon"
-              command="turnkeyai daemon service install"
-              note="On macOS, install the local daemon as a LaunchAgent before opening Mission Control."
-            />
-            <LaunchCommand
-              label="Reload service config"
-              command="turnkeyai daemon service restart"
-              note="Use this after editing daemon.env, model catalogs, or local browser settings."
-            />
-            <LaunchCommand
-              label="Link local CLI"
-              command="npm run install:local-cli"
-              note="Use this from the repository root if the turnkeyai command is not on PATH."
+              note="Open this from Finder in a source checkout."
             />
             <LaunchCommand
               label="No install"
               command="npx @turnkeyai/cli app"
-              note="Use this from any shell when the turnkeyai command is not on PATH."
+              note="Starts TurnkeyAI without installing the command globally."
             />
             <LaunchCommand
               label="Source checkout"
               command="npm run app -- --no-open"
-              note="Use this from the repository root; it prints the tokenized URL."
+              note="Run this from the repository root. It prints a ready-to-open URL."
+            />
+            <LaunchCommand
+              label="Installed app"
+              command="turnkeyai app"
+              note="Use this after installing or linking the TurnkeyAI command."
             />
           </div>
-          <p>
-            Launcher commands start the daemon if needed and open this page with the token already
-            attached to the URL fragment. Persistent daemon commands keep the local service
-            running across logins and reload service-only configuration.
-          </p>
-          <p>If you already have a token, paste it below — it's kept only in this browser tab.</p>
+        </div>
+        <div>
+          <h3>Paste access token</h3>
+          <p>If you already have the local token, paste it here. It stays in this browser tab.</p>
           <form
             onSubmit={handleSubmit}
-            style={{ display: "flex", gap: 8, margin: "16px 0" }}
+            className="auth-token-form"
           >
             <label className="sr-only" htmlFor="token-input">
-              Daemon token
+              Local access token
             </label>
             <input
               id="token-input"
@@ -92,25 +69,37 @@ export function NoTokenPage() {
               type="password"
               autoComplete="off"
               required
-              placeholder="Daemon token"
+              placeholder="Local access token"
               value={value}
               onChange={(event) => setValue(event.target.value)}
-              style={{ flex: 1 }}
             />
             <button type="submit" className="btn primary">
-              Use token
+              Continue
             </button>
           </form>
-          <p className="note">
-            Token is read from <code>~/.turnkeyai/config.json</code> by the launcher.{" "}
-            Check access with <code>turnkeyai daemon status</code>,{" "}
-            <code>turnkeyai daemon service status</code>,{" "}
-            <code>npx @turnkeyai/cli daemon status</code>, or <code>npm run daemon:status</code>{" "}
-            from a source checkout. Restart the service with{" "}
-            <code>turnkeyai daemon service restart</code>.
-          </p>
         </div>
-      </div>
+      </section>
+
+      <details className="settings-advanced auth-advanced">
+        <summary>Developer launch options</summary>
+        <div className="launch-command-list" aria-label="Developer launch commands">
+          <LaunchCommand
+            label="Install launcher"
+            command="npm run app:install-launcher"
+            note="Installs a double-click launcher from the repository root."
+          />
+          <LaunchCommand
+            label="Keep service running"
+            command="turnkeyai daemon service install"
+            note="On macOS, installs the local service as a LaunchAgent."
+          />
+          <LaunchCommand
+            label="Restart service"
+            command="turnkeyai daemon service restart"
+            note="Use after editing local config or model settings."
+          />
+        </div>
+      </details>
     </div>
   );
 }
