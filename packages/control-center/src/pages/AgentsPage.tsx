@@ -1,8 +1,7 @@
-// Agents roster — grid of connected agents with capabilities + usage.
+// Team — user-facing work modes, not an internal agent/provider roster.
 
 import { useAgents } from "../api/useMissionData";
 import { Icon } from "../components/Icon";
-import { AgentAvatar, StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
 import type { Route } from "../state/types";
 
@@ -16,68 +15,54 @@ export function AgentsPage() {
   };
 
   return (
-    <div className="page">
-      <div className="page-head">
+    <div className="page team-page">
+      <div className="human-page-head">
         <div>
-          <h2>Agents</h2>
-          <div className="sub">
-            本机连接到 mission 的 agents · 能力 / 状态 / 用量 / 限权一览。
-          </div>
+          <h2>Team</h2>
+          <p>Choose how TurnkeyAI should approach the next chat. Auto is the default.</p>
         </div>
-        <div className="right">
-          <button type="button" className="btn" onClick={() => openRoute("settings")}>
-            <Icon name="key" size={13} /> Manage tokens
-          </button>
-          <button type="button" className="btn primary" onClick={() => openRoute("agent-connect")}>
-            <Icon name="plus" size={13} /> Connect agent
-          </button>
-        </div>
+        <button type="button" className="btn primary" onClick={() => openRoute("agent-connect")}>
+          <Icon name="play" size={13} /> Open Chat
+        </button>
       </div>
-      {agents.length === 0 ? (
-        <div className="card" style={{ marginTop: 16, padding: 28, textAlign: "center" }}>
-          <div className="muted" style={{ fontSize: 12.5 }}>
-            {agentsRemote.isLive
-              ? "No agents registered yet. Connect an external agent from Agent Connect, or run a mission to spawn the default coordinator team."
-              : "Connecting to the daemon…"}
-          </div>
+      <div className="team-choice-grid">
+        <button type="button" className="team-choice-card active" onClick={() => openRoute("agent-connect")}>
+          <div className="team-choice-icon"><Icon name="agents" size={18} /></div>
+          <h3>Auto</h3>
+          <p>Best for most work. TurnkeyAI reads the message and picks the right helper.</p>
+        </button>
+        <button type="button" className="team-choice-card" onClick={() => openRoute("agent-connect")}>
+          <div className="team-choice-icon"><Icon name="browser" size={18} /></div>
+          <h3>Use websites</h3>
+          <p>For checking pages, logged-in apps, dashboards, screenshots, and visible evidence.</p>
+        </button>
+        <button type="button" className="team-choice-card" onClick={() => openRoute("agent-connect")}>
+          <div className="team-choice-icon"><Icon name="check" size={18} /></div>
+          <h3>Review carefully</h3>
+          <p>For decisions where sources, edge cases, and risk need extra scrutiny.</p>
+        </button>
+      </div>
+      <section className="team-readable-section">
+        <div className="panel-headline">
+          <span>Available helpers</span>
+          <small>{agentsRemote.isLive ? `${agents.length || 1} ready` : "connecting"}</small>
         </div>
-      ) : (
-      <div className="agent-grid">
-        {agents.map((a) => (
-          <div key={a.id} className="agent-card">
-            <div className="hd">
-              <AgentAvatar agent={a} size={36} />
-              <div style={{ flex: 1 }}>
-                <div className="name">
-                  {a.name}{" "}
-                  <span className="faint mono" style={{ fontSize: 10, marginLeft: 6 }}>{a.nameCn}</span>
+        {agents.length === 0 ? (
+          <p>Auto is ready. Named helpers will appear here when the local workspace reports them.</p>
+        ) : (
+          <div className="team-helper-list">
+            {agents.map((agent) => (
+              <div key={agent.id} className="team-helper-row">
+                <div className="team-helper-mark">{agent.ava}</div>
+                <div>
+                  <b>{agent.name}</b>
+                  <span>{agent.role}</span>
                 </div>
-                <div className="role">{a.role} · {a.provider}</div>
               </div>
-              <StatusTag status={a.status} />
-            </div>
-            <div className="muted" style={{ fontSize: 11.5 }}>{a.providerNote}</div>
-            <div className="caps">
-              {a.capabilities.map((c) => <span key={c} className="tag mono">{c}</span>)}
-            </div>
-            <div className="stats">
-              <div className="stat">
-                <div className="n">{a.missions}</div>
-                <div className="l">Missions</div>
-              </div>
-              <div className="stat">
-                <div className="n">{a.tokensIn}</div>
-                <div className="l">Tok in</div>
-              </div>
-              <div className="stat">
-                <div className="n">{a.tokensOut}</div>
-                <div className="l">Tok out</div>
-              </div>
-            </div>
+            ))}
           </div>
-        ))}
-      </div>
-      )}
+        )}
+      </section>
     </div>
   );
 }

@@ -1,34 +1,21 @@
-// Mission Control shell — sidebar + main column with toolbar + page.
-//
-// The Mission Detail page renders WITHOUT a toolbar because it owns its
-// own mission-bar header (with mission title + status). Other pages get
-// a breadcrumb toolbar.
+// Human product shell. The public IA is Chat, Team, Settings, plus the
+// work detail view opened from Chat.
 
 import { useEffect, useState } from "react";
 
 import { CommandPalette } from "./components/CommandPalette";
 import { Sidebar, type SidebarCounts } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
-import { Icon } from "./components/Icon";
 import { NewMissionModal } from "./components/NewMissionModal";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { AgentConnectPage } from "./pages/AgentConnectPage";
 import { AgentsPage } from "./pages/AgentsPage";
-import { ApprovalsPage } from "./pages/ApprovalsPage";
-import { ContextSourcesPage } from "./pages/ContextSourcesPage";
 import { MissionDetailPage } from "./pages/MissionDetailPage";
-import { MissionsPage } from "./pages/MissionsPage";
 import { NoTokenPage } from "./pages/NoTokenPage";
-import { OnboardingPage } from "./pages/OnboardingPage";
-import { RuntimePage } from "./pages/RuntimePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import {
   useAgents,
-  useApprovals,
-  useContextSources,
   useMissions,
-  useRuntimeSummary,
-  useOnboardingState,
 } from "./api/useMissionData";
 import { useAppState } from "./state/AppState";
 import { canUseOperatorActions } from "./state/scopeAccess";
@@ -49,38 +36,15 @@ export function App() {
   const [newMissionOpen, setNewMissionOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
-  // K3.5: sidebar counts are LIVE (driven by the daemon stores) instead
-  // of K1 mock fixtures. Each hook falls back to [] so the page renders
-  // immediately and the counts populate as fetches resolve.
-  const missions = useMissions([]).value;
-  const approvals = useApprovals([]).value;
   const agents = useAgents([]).value;
-  const contextSources = useContextSources([]).value;
-  const runtimeSummary = useRuntimeSummary(null, { limit: 1 }).value;
-  const onboarding = useOnboardingState(null);
+  const missions = useMissions([]).value;
   const counts: SidebarCounts = {
-    missions: missions.filter((m) => m.status !== "archived").length,
-    // Approvals: subtract optimistic local decisions while the daemon
-    // decision POST refetches, so the sidebar moves immediately.
-    approvals: approvals.filter(
-      (a) => !a.decision && !state.decisions[a.id]
-    ).length,
+    missions: 0,
+    approvals: 0,
     agents: agents.length,
-    context: contextSources.length,
-    recoveries: runtimeSummary?.attentionCount ?? 0,
+    context: 0,
+    recoveries: 0,
   };
-
-  useEffect(() => {
-    if (
-      state.token !== null &&
-      onboarding.isLive &&
-      onboarding.value?.completedAt == null &&
-      state.route === "missions" &&
-      state.scope !== "read"
-    ) {
-      window.location.hash = "#/onboarding";
-    }
-  }, [onboarding.isLive, onboarding.value?.completedAt, state.route, state.scope, state.token]);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -110,9 +74,8 @@ export function App() {
     <div className="app">
       <Sidebar counts={counts} canCreateMission={canCreateMission} onNewMission={openNewMission} />
       <div className="main">
-        {state.route !== "mission" && <PageToolbar onOpenCommandPalette={() => setCommandPaletteOpen(true)} />}
         <div className="content">
-          <RoutedPage onNewMission={openNewMission} />
+          <RoutedPage />
         </div>
       </div>
       <NewMissionModal
@@ -128,81 +91,39 @@ export function App() {
         missions={missions}
         canCreateMission={canCreateMission}
         onClose={() => setCommandPaletteOpen(false)}
-        onNewMission={openNewMission}
       />
     </div>
   );
 }
 
-function PageToolbar({ onOpenCommandPalette }: { onOpenCommandPalette: () => void }) {
+function RoutedPage() {
   const { state } = useAppState();
   switch (state.route) {
     case "missions":
-      return <Toolbar crumbs="home" title="Missions" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
+      return <AgentConnectPage />;
     case "onboarding":
-      return <Toolbar crumbs="home / first-run" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
-    case "approvals":
-      return <Toolbar crumbs="home / approvals" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
-    case "agents":
-      return <Toolbar crumbs="home / agents" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
-    case "context":
-      return <Toolbar crumbs="home / context" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
-    case "agent-connect":
-      return <Toolbar crumbs="home / agent-connect" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
-    case "runtime":
-      return <Toolbar crumbs="home / runtime" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
-    case "settings":
-      return <Toolbar crumbs="home / settings" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
-    default:
-      return null;
-  }
-}
-
-function SearchSlot({ onOpen }: { onOpen: () => void }) {
-  return (
-    <div className="row" style={{ gap: 6 }}>
-      <button
-        type="button"
-        className="btn ghost"
-        style={{ padding: "3px 8px" }}
-        aria-label="Open command palette"
-        onClick={onOpen}
-      >
-        <Icon name="search" size={12} /> Search
-      </button>
-      <span className="kbd">⌘K</span>
-    </div>
-  );
-}
-
-function RoutedPage({ onNewMission }: { onNewMission: () => void }) {
-  const { state } = useAppState();
-  switch (state.route) {
-    case "missions":
-      return <MissionsPage onNewMission={onNewMission} />;
-    case "onboarding":
-      return <OnboardingPage />;
+      return <AgentConnectPage />;
     case "mission": {
       // K3.5: route directly to the selected mission. MissionDetailPage
       // owns the "loading" / "no such mission" empty states.
       if (!state.selectedMissionId) {
-        return <MissionsPage onNewMission={onNewMission} />;
+        return <AgentConnectPage />;
       }
       return <MissionDetailPage missionId={state.selectedMissionId} />;
     }
     case "approvals":
-      return <ApprovalsPage />;
+      return <AgentConnectPage />;
     case "agents":
       return <AgentsPage />;
     case "context":
-      return <ContextSourcesPage />;
+      return <AgentConnectPage />;
     case "agent-connect":
       return <AgentConnectPage />;
     case "runtime":
-      return <RuntimePage />;
+      return <AgentConnectPage />;
     case "settings":
       return <SettingsPage />;
     default:
-      return <MissionsPage onNewMission={onNewMission} />;
+      return <AgentConnectPage />;
   }
 }

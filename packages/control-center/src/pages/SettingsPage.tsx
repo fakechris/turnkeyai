@@ -1,26 +1,25 @@
-// Settings — local runtime configuration and policy defaults.
+// Settings — user-facing preferences first, local operator details collapsed.
 
 import { useRef, useState } from "react";
 
-import type { BridgeStatus, DiagnosticsSnapshot, ModelCatalogConfigReport, ModelsReport } from "../api/types";
+import type { DiagnosticsSnapshot, ModelCatalogConfigReport, ModelsReport } from "../api/types";
 import { useApiClient } from "../api/useApiClient";
 import { Icon } from "../components/Icon";
 import { usePolling } from "../hooks/usePolling";
 import { useAppState } from "../state/AppState";
 
 const POLICIES = [
-  { k: "browser.form.submit", v: "always require approval", lvl: "warning" as const },
-  { k: "browser.download", v: "require approval if size > 1 MB", lvl: "warning" as const },
-  { k: "doc.write in ~/turnkey/**", v: "require approval", lvl: "warning" as const },
-  { k: "desktop.*", v: "require approval · log every call", lvl: "danger" as const },
-  { k: "search.web", v: "auto-allow", lvl: "success" as const },
+  { k: "Submitting forms in the browser", v: "Ask first", lvl: "warning" as const },
+  { k: "Large downloads", v: "Ask first", lvl: "warning" as const },
+  { k: "Writing files", v: "Ask first", lvl: "warning" as const },
+  { k: "Desktop actions", v: "Ask first and keep a log", lvl: "danger" as const },
+  { k: "Web search", v: "Allowed", lvl: "success" as const },
 ];
 
 const POLL_MS = 5_000;
 
 interface SettingsLive {
   diagnostics: DiagnosticsSnapshot | null;
-  bridgeStatus: BridgeStatus | null;
   models: ModelsReport | null;
   modelCatalogConfig: ModelCatalogConfigReport | null;
   modelCatalogConfigError: string | null;
@@ -29,14 +28,13 @@ interface SettingsLive {
 
 export function SettingsPage() {
   const client = useApiClient();
-  const { state } = useAppState();
+  const { state, setRoute } = useAppState();
   const editorDirtyRef = useRef(false);
   const [catalogEditor, setCatalogEditor] = useState("");
   const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
   const [catalogSaving, setCatalogSaving] = useState(false);
   const [live, setLive] = useState<SettingsLive>({
     diagnostics: null,
-    bridgeStatus: null,
     models: null,
     modelCatalogConfig: null,
     modelCatalogConfigError: null,
@@ -44,14 +42,12 @@ export function SettingsPage() {
   });
 
   usePolling(async () => {
-    const [diagnosticsResult, bridgeStatusResult, modelsResult, modelCatalogConfigResult] = await Promise.allSettled([
+    const [diagnosticsResult, modelsResult, modelCatalogConfigResult] = await Promise.allSettled([
       client.get<DiagnosticsSnapshot>("/diagnostics"),
-      client.get<BridgeStatus>("/bridge/status"),
       client.get<ModelsReport>("/models"),
       client.getNoAuthReset<ModelCatalogConfigReport>("/daemon/config/model-catalog"),
     ]);
     const diagnostics = diagnosticsResult.status === "fulfilled" ? diagnosticsResult.value : null;
-    const bridgeStatus = bridgeStatusResult.status === "fulfilled" ? bridgeStatusResult.value : null;
     const models = modelsResult.status === "fulfilled" ? modelsResult.value : null;
     const modelCatalogConfig =
       modelCatalogConfigResult.status === "fulfilled" ? modelCatalogConfigResult.value : null;
@@ -62,11 +58,10 @@ export function SettingsPage() {
     }
     setLive({
       diagnostics,
-      bridgeStatus,
       models,
       modelCatalogConfig,
       modelCatalogConfigError,
-      reachable: diagnostics != null || bridgeStatus != null || models != null || modelCatalogConfig != null,
+      reachable: diagnostics != null || models != null || modelCatalogConfig != null,
     });
   }, POLL_MS);
 
@@ -97,211 +92,135 @@ export function SettingsPage() {
     }
   };
 
+  const defaultModel = live.models?.defaultSelection?.ok ? live.models.defaultSelection.primaryModelId : null;
+  const modelReady = Boolean(defaultModel && live.models?.models.find((model) => model.id === defaultModel)?.configured);
+
   return (
-    <div className="page" style={{ maxWidth: 920 }}>
-      <div className="page-head">
+    <div className="page settings-page">
+      <div className="human-page-head">
         <div>
           <h2>Settings</h2>
-          <div className="sub">本地数据路径、模型、策略、传输——单机配置，不离开本机。</div>
+          <p>Keep the defaults unless something is not working.</p>
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-hd"><h3>Identity</h3></div>
-        <div className="card-bd">
-          <div className="setting-row" style={{ paddingTop: 4 }}>
-            <div className="lbl"><b>Operator name</b><span>显示在审批 / timeline 中</span></div>
-            <div><input className="field" value="operator" readOnly /></div>
-            <div><span className="tag info">local</span></div>
-          </div>
-          <div className="setting-row" style={{ borderBottom: 0 }}>
-            <div className="lbl"><b>Daemon auth</b><span>Control Center 使用本地 token 访问 daemon</span></div>
-            <div><input className="field" value={live.diagnostics?.daemon.authMode ?? "checking"} readOnly /></div>
-            <div><span className={"tag " + authTone(live.diagnostics?.daemon.authMode)}>{live.diagnostics?.daemon.authMode ?? "pending"}</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-hd">
-          <h3>LLM models</h3>
-          <span className="mono faint" style={{ fontSize: 10, marginLeft: "auto" }}>
-            {live.models?.adapterMode ?? (live.reachable ? "checking" : "offline")}
-          </span>
-        </div>
-        <div className="card-bd">
-          <ModelCatalogRow models={live.models} />
-          <DefaultModelSelectionRow models={live.models} />
-          <ModelCatalogEditor
-            config={live.modelCatalogConfig}
-            error={live.modelCatalogConfigError}
-            editor={catalogEditor}
-            saving={catalogSaving}
-            notice={catalogNotice}
-            scope={state.scope}
-            onChange={(value) => {
-              editorDirtyRef.current = true;
-              setCatalogNotice(null);
-              setCatalogEditor(value);
+      <div className="settings-overview-grid">
+        <section className="settings-overview-card">
+          <Icon name="settings" size={18} />
+          <h3>Model</h3>
+          <p>What TurnkeyAI uses to think and answer.</p>
+          <b>{defaultModel ?? "Checking model"}</b>
+          <span className={"tag " + (modelReady ? "success" : "warning")}>{modelReady ? "ready" : "needs key"}</span>
+        </section>
+        <section className="settings-overview-card">
+          <Icon name="agents" size={18} />
+          <h3>Team</h3>
+          <p>How helpers are chosen for new chats.</p>
+          <b>Auto</b>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              setRoute("agents");
+              window.location.hash = "#/agents";
             }}
-            onSave={saveCatalog}
-          />
-          <ModelChainsBlock models={live.models} />
-          {live.models?.models.length ? (
-            live.models.models.map((model) => (
-              <div key={model.id} className="setting-row">
-                <div className="lbl">
-                  <b>{model.label || model.id}</b>
-                  <span>{model.providerId} · {model.protocol} · {model.model}</span>
-                </div>
-                <div>
-                  <input className="field" value={model.apiKeyEnv} readOnly />
-                </div>
-                <div>
-                  <span className={"tag " + (model.configured ? "success" : "warning")}>
-                    {model.configured ? "configured" : "missing key"}
-                  </span>
-                </div>
+          >
+            Choose team
+          </button>
+        </section>
+        <section className="settings-overview-card">
+          <Icon name="browser" size={18} />
+          <h3>Browser</h3>
+          <p>Lets TurnkeyAI inspect pages when a chat needs it.</p>
+          <b>{live.diagnostics ? "Available" : "Checking"}</b>
+          <span className="tag info">optional</span>
+        </section>
+        <section className="settings-overview-card">
+          <Icon name="connect" size={18} />
+          <h3>Other apps</h3>
+          <p>Lets another AI app send work into TurnkeyAI.</p>
+          <b>Local only</b>
+          <span className="tag">advanced</span>
+        </section>
+      </div>
+
+      <details className="settings-advanced">
+        <summary>Advanced local setup</summary>
+        <div className="settings-advanced-body">
+          <div className="card">
+            <div className="card-hd"><h3>Access</h3></div>
+            <div className="card-bd">
+              <div className="setting-row" style={{ paddingTop: 4 }}>
+                <div className="lbl"><b>User</b><span>Shown when you approve or deny an action</span></div>
+                <div><input className="field" value="operator" readOnly /></div>
+                <div><span className="tag info">local</span></div>
               </div>
-            ))
-          ) : (
-            <div className="setting-row" style={{ borderBottom: 0 }}>
-              <div className="lbl"><b>No live models</b><span>模型 catalog 未配置或 daemon 未连接</span></div>
-              <div className="muted">Configure a model catalog before production task runs.</div>
-              <div><span className="tag warning">attention</span></div>
+              <div className="setting-row" style={{ borderBottom: 0 }}>
+                <div className="lbl"><b>Local access</b><span>How this browser talks to TurnkeyAI on this machine</span></div>
+                <div><input className="field" value={live.diagnostics?.daemon.authMode ?? "checking"} readOnly /></div>
+                <div><span className={"tag " + authTone(live.diagnostics?.daemon.authMode)}>{live.diagnostics?.daemon.authMode ?? "pending"}</span></div>
+              </div>
             </div>
-          )}
-        </div>
-      </div>
+          </div>
 
-      <BrowserBridgeSettings
-        diagnostics={live.diagnostics}
-        bridgeStatus={live.bridgeStatus}
-        reachable={live.reachable}
-      />
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-hd">
-          <Icon name="shield" size={13} />
-          <h3>Policies</h3>
-        </div>
-        <div className="card-bd">
-          {POLICIES.map((p) => (
-            <div key={p.k} className="setting-row" style={{ paddingTop: 8, paddingBottom: 8 }}>
-              <div className="lbl">
-                <b className="mono" style={{ fontSize: 12, fontWeight: 500 }}>{p.k}</b>
-              </div>
-              <div className="muted">{p.v}</div>
-              <div><span className={"tag " + p.lvl}>policy</span></div>
+          <div className="card">
+            <div className="card-hd">
+              <h3>Model catalog</h3>
+              <span className="mono faint" style={{ fontSize: 10, marginLeft: "auto" }}>
+                {live.models?.adapterMode ?? (live.reachable ? "checking" : "offline")}
+              </span>
             </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-hd"><h3>Local data</h3></div>
-        <div className="card-bd">
-          <PathRow label="Runtime root" value={live.diagnostics?.paths.runtimeRoot} />
-          <PathRow label="Data directory" value={live.diagnostics?.paths.dataDir} />
-          <PathRow label="Config file" value={live.diagnostics?.paths.configFile} />
-          <PathRow label="Daemon log" value={live.diagnostics?.paths.logFile} />
-          <PathRow label="Model catalog" value={live.diagnostics?.paths.modelCatalogPath ?? live.models?.modelCatalogPath ?? null} last />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BrowserBridgeSettings({
-  diagnostics,
-  bridgeStatus,
-  reachable,
-}: {
-  diagnostics: DiagnosticsSnapshot | null;
-  bridgeStatus: BridgeStatus | null;
-  reachable: boolean;
-}) {
-  const checks = (diagnostics?.readiness?.checks ?? []).filter((check) =>
-    check.id === "browser_transport" || check.id === "browser_runtime"
-  );
-  const health = bridgeStatus?.transport.health;
-  const healthText = health
-    ? health.healthy
-      ? "healthy"
-      : health.reason ?? "unhealthy"
-    : reachable
-      ? "not reported"
-      : "offline";
-  const expertText = bridgeStatus
-    ? bridgeStatus.expertLane.available
-      ? "available"
-      : bridgeStatus.expertLane.reason ?? "unavailable"
-    : "checking";
-  const transportTone = !bridgeStatus || bridgeStatus.ok ? (health?.healthy === false ? "warning" : "success") : "danger";
-  const expertTone = bridgeStatus?.expertLane.available ? "success" : "warning";
-  const endpoint = bridgeStatus?.directCdp.endpoint ?? "";
-
-  return (
-    <div className="card" style={{ marginTop: 16 }}>
-      <div className="card-hd">
-        <Icon name="browser" size={13} />
-        <h3>Browser bridge</h3>
-        <span className={"tag " + transportTone} style={{ marginLeft: "auto" }}>
-          {healthText}
-        </span>
-      </div>
-      <div className="card-bd">
-        <div className="setting-row" style={{ paddingTop: 4 }}>
-          <div className="lbl"><b>Transport</b><span>browser work execution route</span></div>
-          <div>
-            <input
-              className="field"
-              value={bridgeStatus ? `${bridgeStatus.transport.mode} · ${bridgeStatus.transport.label}` : "checking"}
-              readOnly
-            />
+            <div className="card-bd">
+              <ModelCatalogRow models={live.models} />
+              <DefaultModelSelectionRow models={live.models} />
+              <ModelCatalogEditor
+                config={live.modelCatalogConfig}
+                error={live.modelCatalogConfigError}
+                editor={catalogEditor}
+                saving={catalogSaving}
+                notice={catalogNotice}
+                scope={state.scope}
+                onChange={(value) => {
+                  editorDirtyRef.current = true;
+                  setCatalogNotice(null);
+                  setCatalogEditor(value);
+                }}
+                onSave={saveCatalog}
+              />
+              <ModelChainsBlock models={live.models} />
+            </div>
           </div>
-          <div><span className={"tag " + transportTone}>{bridgeStatus?.transport.mode ?? "pending"}</span></div>
-        </div>
-        <div className="setting-row">
-          <div className="lbl"><b>Expert lane</b><span>direct browser diagnostics and fallback controls</span></div>
-          <div><input className="field" value={expertText} readOnly /></div>
-          <div><span className={"tag " + expertTone}>{bridgeStatus?.expertLane.available ? "ready" : "attention"}</span></div>
-        </div>
-        <div className="setting-row">
-          <div className="lbl"><b>Direct CDP endpoint</b><span>required only for direct-CDP expert lane</span></div>
-          <div><input className="field mono" value={endpoint || "(not configured)"} readOnly /></div>
-          <div><span className={"tag " + (endpoint ? "success" : "warning")}>{endpoint ? "set" : "optional"}</span></div>
-        </div>
-        <div className="setting-row">
-          <div className="lbl"><b>Operator checks</b><span>transport and runtime issues from diagnostics</span></div>
-          <div className="settings-health-list">
-            {checks.length > 0 ? checks.map((check) => (
-              <div key={check.id} className="settings-health-line" data-status={check.status}>
-                <span className={`status-dot ${readinessDotClass(check.status)}`} />
-                <div>
-                  <b>{check.label}</b>
-                  <span>{check.detail}</span>
-                  {check.action ? <em>{check.action}</em> : null}
+
+          <div className="card">
+            <div className="card-hd">
+              <Icon name="shield" size={13} />
+              <h3>Permissions</h3>
+            </div>
+            <div className="card-bd">
+              {POLICIES.map((p) => (
+                <div key={p.k} className="setting-row" style={{ paddingTop: 8, paddingBottom: 8 }}>
+                  <div className="lbl">
+                    <b style={{ fontSize: 12, fontWeight: 600 }}>{p.k}</b>
+                  </div>
+                  <div className="muted">{p.v}</div>
+                  <div><span className={"tag " + p.lvl}>policy</span></div>
                 </div>
-              </div>
-            )) : (
-              <div className="muted" style={{ fontSize: 12 }}>
-                {reachable ? "Waiting for browser readiness checks." : "Connect to the daemon to inspect browser readiness."}
-              </div>
-            )}
+              ))}
+            </div>
           </div>
-          <div><span className="tag info">{checks.length || 0} check(s)</span></div>
-        </div>
-        <div className="setting-row" style={{ borderBottom: 0 }}>
-          <div className="lbl"><b>Validation commands</b><span>run before trusting browser-backed missions</span></div>
-          <div className="settings-command-list">
-            <code>turnkeyai bridge status</code>
-            <code>turnkeyai bridge install-extension</code>
-            <code>npm run cdp:smoke -- --timeout-ms 45000</code>
+
+          <div className="card">
+            <div className="card-hd"><h3>Local files</h3></div>
+            <div className="card-bd">
+              <PathRow label="Runtime root" value={live.diagnostics?.paths.runtimeRoot} />
+              <PathRow label="Data directory" value={live.diagnostics?.paths.dataDir} />
+              <PathRow label="Config file" value={live.diagnostics?.paths.configFile} />
+              <PathRow label="Daemon log" value={live.diagnostics?.paths.logFile} />
+              <PathRow label="Model catalog" value={live.diagnostics?.paths.modelCatalogPath ?? live.models?.modelCatalogPath ?? null} last />
+            </div>
           </div>
-          <div><span className="tag info">local</span></div>
         </div>
-      </div>
+      </details>
     </div>
   );
 }
@@ -444,12 +363,6 @@ function PathRow({ label, value, last }: { label: string; value?: string | null;
 function authTone(authMode: DiagnosticsSnapshot["daemon"]["authMode"] | undefined): string {
   if (!authMode) return "warning";
   return authMode === "disabled" ? "warning" : "success";
-}
-
-function readinessDotClass(status: "ok" | "warn" | "error"): string {
-  if (status === "error") return "blocked";
-  if (status === "warn") return "needs_approval";
-  return "done";
 }
 
 function readableSettingsError(error: unknown): string {

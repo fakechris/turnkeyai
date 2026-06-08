@@ -9,19 +9,14 @@ interface CommandPaletteItem {
   id: string;
   label: string;
   detail: string;
-  kind: "page" | "mission" | "action";
+  kind: "page" | "work" | "action";
   run: () => void;
 }
 
 const PAGE_COMMANDS: Array<{ route: Route; label: string; detail: string }> = [
-  { route: "missions", label: "Missions", detail: "All active work and mission status" },
-  { route: "approvals", label: "Approvals", detail: "Permission-gated actions waiting for a decision" },
-  { route: "agents", label: "Agents", detail: "Runtime roles and connected agents" },
-  { route: "context", label: "Context sources", detail: "Documents, browser sessions, and mission evidence sources" },
-  { route: "agent-connect", label: "Agent Connect", detail: "Bridge endpoint and tool capability setup" },
-  { route: "runtime", label: "Runtime", detail: "Diagnostics, recovery, logs, and active worker state" },
-  { route: "settings", label: "Settings", detail: "Local model, browser, policy, and data-path configuration" },
-  { route: "onboarding", label: "First-run setup", detail: "Setup checklist for model and browser readiness" },
+  { route: "agent-connect", label: "Chat", detail: "Message TurnkeyAI and choose a team" },
+  { route: "agents", label: "Team", detail: "Choose who should help" },
+  { route: "settings", label: "Settings", detail: "Model, browser, other apps, and permissions" },
 ];
 
 export function CommandPalette({
@@ -29,13 +24,11 @@ export function CommandPalette({
   missions,
   canCreateMission,
   onClose,
-  onNewMission,
 }: {
   open: boolean;
   missions: Mission[];
   canCreateMission: boolean;
   onClose: () => void;
-  onNewMission: () => void;
 }) {
   const { setRoute, openMission } = useAppState();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -66,21 +59,24 @@ export function CommandPalette({
       .map((mission) => ({
         id: `mission:${mission.id}`,
         label: mission.title,
-        detail: `${mission.shortId} · ${mission.status.replace("_", " ")} · ${mission.modeLabel}`,
-        kind: "mission" as const,
+        detail: humanWorkStatus(mission),
+        kind: "work" as const,
         run: () => openMission(mission.id),
       }));
     const actionItems = canCreateMission
       ? [{
           id: "action:new-mission",
-          label: "New mission",
-          detail: "Create a mission from a natural-language request",
+          label: "New chat",
+          detail: "Message TurnkeyAI",
           kind: "action" as const,
-          run: onNewMission,
+          run: () => {
+            setRoute("agent-connect");
+            window.location.hash = "#/agent-connect";
+          },
         }]
       : [];
     return [...actionItems, ...pageItems, ...missionItems];
-  }, [canCreateMission, missions, onNewMission, openMission, setRoute]);
+  }, [canCreateMission, missions, openMission, setRoute]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -146,14 +142,14 @@ export function CommandPalette({
               setActiveIndex(0);
             }}
             onKeyDown={onKeyDown}
-            placeholder="Search pages and missions"
-            aria-label="Search pages and missions"
+            placeholder="Search"
+            aria-label="Search"
           />
           <span className="kbd">Esc</span>
         </div>
         <div className="command-palette-list" role="listbox" aria-label="Command results">
           {visibleItems.length === 0 ? (
-            <div className="command-palette-empty">No matching pages or missions.</div>
+            <div className="command-palette-empty">No matching pages or work.</div>
           ) : (
             visibleItems.map((item, index) => (
               <button
@@ -190,4 +186,13 @@ function commandSearchRank(item: CommandPaletteItem, needle: string): number | n
   if (detail.includes(needle)) return 3;
   if (kind.includes(needle)) return 4;
   return null;
+}
+
+function humanWorkStatus(mission: Mission): string {
+  if (mission.status === "done") return "Finished";
+  if (mission.status === "needs_approval") return "Waiting for you";
+  if (mission.status === "blocked") return "Needs help";
+  if (mission.status === "working" || mission.status === "planning") return "Working";
+  if (mission.status === "draft") return "Draft";
+  return "Archived";
 }

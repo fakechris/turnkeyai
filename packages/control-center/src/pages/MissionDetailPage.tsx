@@ -46,7 +46,7 @@ import {
   useWorkerSessions,
 } from "../api/useMissionData";
 import { formatRelativeAgo, formatTimeOfDay } from "../util/format-time";
-import { Icon } from "../components/Icon";
+import { Icon, type IconName } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
@@ -65,12 +65,12 @@ import { selectBrowserFailureBucketRows } from "../state/browserFailureBuckets";
 type TraceFilter = "all" | "agent" | "tools" | "approvals" | "recovery" | "evidence";
 
 const TRACE_FILTERS: Array<{ id: TraceFilter; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "agent", label: "Agent" },
+  { id: "all", label: "Activity" },
+  { id: "agent", label: "Messages" },
   { id: "tools", label: "Tools" },
-  { id: "approvals", label: "Approvals" },
-  { id: "recovery", label: "Recovery" },
-  { id: "evidence", label: "Evidence" },
+  { id: "approvals", label: "Review" },
+  { id: "recovery", label: "Retry" },
+  { id: "evidence", label: "References" },
 ];
 
 export function MissionDetailPage({ missionId }: { missionId: string }) {
@@ -99,8 +99,8 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
     try {
       await archiveMission(mission.id);
       refetchMissions();
-      setRoute("missions");
-      window.location.hash = "#/missions";
+      setRoute("agent-connect");
+      window.location.hash = "#/agent-connect";
     } catch (err) {
       setArchiveError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -120,11 +120,17 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
     return (
       <div className="page" style={{ padding: 28 }}>
         <p className="muted">
-          Mission <span className="mono">{missionId}</span> is no longer
-          available. It may have been archived.
+          This chat is no longer available. It may have been archived.
         </p>
-        <button type="button" className="btn primary" onClick={() => setRoute("missions")}>
-          ← Back to Missions
+        <button
+          type="button"
+          className="btn primary"
+          onClick={() => {
+            setRoute("agent-connect");
+            window.location.hash = "#/agent-connect";
+          }}
+        >
+          Back to Chat
         </button>
       </div>
     );
@@ -134,7 +140,10 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
     <>
       <MissionBar
         mission={mission}
-        onBack={() => setRoute("missions")}
+        onBack={() => {
+          setRoute("agent-connect");
+          window.location.hash = "#/agent-connect";
+        }}
         canArchive={canArchiveMission}
         archiving={archiving}
         archiveError={archiveError}
@@ -167,12 +176,11 @@ function MissionBar({
   return (
     <div className="mission-bar">
       <button type="button" className="btn ghost" onClick={onBack} style={{ padding: "2px 6px" }}>
-        ← Missions
+        Chat
       </button>
-      <span className="mono faint" style={{ fontSize: 10.5 }}>{mission.shortId}</span>
       <h2 style={{ marginLeft: 4 }}>{mission.title}</h2>
       <StatusTag status={mission.status} />
-      <div className="meta">created {mission.createdAt} · {mission.modeLabel}</div>
+      <div className="meta">Started {mission.createdAt}</div>
       <div className="right">
         {archiveError && (
           <span role="alert" className="mono" style={{ fontSize: 10.5, color: "var(--danger)" }}>
@@ -209,8 +217,7 @@ function UnlinkedMissionView({ mission }: { mission: Mission }) {
         <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
           This mission was imported via <code>POST /missions/bootstrap-demo</code>{" "}
           (design fixture) and has no live agent team attached. To run a real
-          coordination, start a fresh mission with the <b>New mission</b>{" "}
-          button on the Missions page.
+          coordination, start a fresh task from the <b>Start</b> page.
         </div>
       </div>
     </div>
@@ -272,6 +279,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
     (contextSources.isLive || Boolean(contextSources.error)) &&
     (workerSessions.isLive || Boolean(workerSessions.error)) &&
     (timeline.isLive || Boolean(timeline.error));
+  const manualRecoveryRuns = recoveryRuns.value.runs.filter((run) => run.requiresManualIntervention);
   const toolProcessCount = replayItems.filter((item) => item.kind === "tool-process").length;
   const toolStepCount = replayItems.reduce(
     (count, item) => count + (item.kind === "tool-process" ? item.toolEvents.length : 0),
@@ -328,7 +336,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
     try {
       await send({ missionId: mission.id, content });
       setPending("");
-      setAcceptedNotice("Follow-up accepted. The team is working; updates will appear in the timeline.");
+      setAcceptedNotice("Message sent. Progress will update here.");
       refetchMissionRuntime();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -351,7 +359,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
             "Inspect its session history first, continue only the still-open work, and summarize the result for this mission.",
           ].join(" "),
         });
-        setAcceptedNotice("Session follow-up accepted. The lead will continue from the stored sub-agent history.");
+        setAcceptedNotice("Continue request sent.");
         refetchMissionRuntime();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -373,7 +381,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
           runKey: run.runKey,
           reason: "operator cancelled active role run from Mission replay",
         });
-        setAcceptedNotice("Active role run cancellation requested.");
+        setAcceptedNotice("Cancellation requested.");
         refetchMissionRuntime();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -399,9 +407,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
           reason: "operator cancelled active tool calls from Mission replay",
         });
         setAcceptedNotice(
-          result.cancelled
-            ? `Tool cancellation requested for ${result.toolCallIds.length} call${result.toolCallIds.length === 1 ? "" : "s"}.`
-            : "No active tool calls remained to cancel."
+          result.cancelled ? "Cancellation requested." : "There was nothing active to cancel."
         );
         refetchMissionRuntime();
       } catch (err) {
@@ -448,7 +454,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
           workerRunKey: session.workerRunKey,
           reason: "operator cancelled sub-agent session from Mission replay",
         });
-        setAcceptedNotice("Sub-agent session cancelled.");
+        setAcceptedNotice("Cancellation requested.");
         refetchMissionRuntime();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -460,194 +466,216 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
   );
 
   return (
-    <div className="mission-shell mission-shell-single">
+    <div className="mission-shell mission-shell-single work-detail-shell">
       <div className="mission-pane center mission-detail-pane">
-        <div className="timeline-head">
-          <span className="lbl label">Mission replay</span>
-          <span className="mono faint" style={{ fontSize: 10.5, marginRight: 8 }}>
-            {timeline.value.length} event{timeline.value.length === 1 ? "" : "s"}
-          </span>
-          <span className="spacer" />
-          {timeline.error && (
-            <span className="mono" style={{ fontSize: 10.5, color: "var(--danger)" }}>
-              {timeline.error}
-            </span>
-          )}
-        </div>
-        {mission.pendingApprovals > 0 && (
-          <div className="mission-approval-callout">
-            <div>
-              <div className="label" style={{ fontSize: 11 }}>Approval required</div>
-              <div className="muted" style={{ fontSize: 11.5 }}>
-                {mission.pendingApprovals} pending decision
-                {mission.pendingApprovals === 1 ? "" : "s"} are blocking at least one action.
-              </div>
-            </div>
-            <button type="button" className="btn primary" onClick={() => setRoute("approvals")}>
-              <Icon name="approvals" size={13} /> Review approvals
-            </button>
-          </div>
-        )}
-        <div className="mission-detail-scroll">
+        <div className="mission-detail-scroll work-detail-scroll">
+          <WorkStatusOverview
+            mission={mission}
+            progress={progressNow}
+            pendingApprovals={mission.pendingApprovals}
+          />
           <MissionProgressNowCard progress={progressNow} />
-          <ActiveRoleRunsCard
-            runs={roleRuns.value}
-            isLive={roleRuns.isLive}
-            error={roleRuns.error}
-            actionKey={roleRunActionKey}
-            canAct={canUseMissionActions}
-            onCancel={onCancelRoleRun}
+          <AgentWorkTimeline
+            mission={mission}
+            replayItems={replayItems}
+            finalAnswer={finalAnswer?.text ?? null}
+            timelineLive={timeline.isLive}
           />
-          <MissionMetricsCard
-            metrics={metrics.value}
-            isLive={metrics.isLive}
-            error={metrics.error}
-            canAct={canUseMissionActions}
-            busy={reconcilingMission}
-            onReconcile={onReconcileMission}
-          />
-          <ContextContinuityCard
-            memory={sessionMemory.value}
-            isLive={sessionMemory.isLive}
-            error={sessionMemory.error}
-          />
-          <MissionRecoveryCasesCard
-            response={recoveryRuns.value}
-            isLive={recoveryRuns.isLive}
-            error={recoveryRuns.error}
-            actionKey={recoveryActionKey}
-            canAct={canUseMissionActions}
-            onAction={onRecoveryRunAction}
-          />
-          <BrowserContinuityCard
-            signals={browserContinuitySignals}
-            isSettled={browserContinuitySettled}
-            errors={[contextSources.error, workerSessions.error, timeline.error].filter(
-              (value): value is string => Boolean(value)
-            )}
-          />
-          <SubAgentSessionsCard
-            sessions={workerSessions.value}
-            isLive={workerSessions.isLive}
-            error={workerSessions.error}
-            actionKey={sessionActionKey}
-            canAct={canUseMissionActions}
-            onContinue={onContinueSession}
-            onCancel={onCancelSession}
-          />
-          <section className="card thinking-card">
-            <div className="thinking-card-head">
-              <div>
-                <div className="label" style={{ fontSize: 11 }}>Work trace</div>
-                <div className="muted" style={{ fontSize: 11.5 }}>
-                  Tool calls, progress, approvals, and source-gathering steps before the answer
+          <WorkAnswerCard finalAnswer={finalAnswer?.text ?? null} progress={progressNow} />
+          {manualRecoveryRuns.length > 0 && (
+            <ManualRecoveryNeedsCard
+              run={manualRecoveryRuns[0]!}
+              count={manualRecoveryRuns.length}
+              onOpen={() => {
+                const details = document.querySelector(".work-detail-section.run-details-section");
+                if (details instanceof HTMLDetailsElement) details.open = true;
+                details?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+            />
+          )}
+          {mission.pendingApprovals > 0 && (
+            <NeedsYouCard
+              count={mission.pendingApprovals}
+              onOpen={() => {
+                setRoute("approvals");
+                window.location.hash = "#/approvals";
+              }}
+            />
+          )}
+
+          <details className="work-detail-section run-details-section">
+            <summary>
+              <span>Activity details</span>
+              <small>
+                {timeline.value.length} update{timeline.value.length === 1 ? "" : "s"} · {toolStepCount} action
+                {toolStepCount === 1 ? "" : "s"}
+              </small>
+            </summary>
+            <section className="card thinking-card">
+              <div className="thinking-card-head">
+                <div>
+                  <div className="label" style={{ fontSize: 11 }}>Activity</div>
+                  <div className="muted" style={{ fontSize: 11.5 }}>
+                    A detailed log of what happened while TurnkeyAI worked.
+                  </div>
                 </div>
+                <div className="thinking-card-meta">
+                  <span>{toolProcessCount} run{toolProcessCount === 1 ? "" : "s"}</span>
+                  <span>{toolStepCount} action{toolStepCount === 1 ? "" : "s"}</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  aria-expanded={thinkingExpanded}
+                  aria-controls="thinking-record-timeline"
+                  onClick={() => setThinkingExpanded((value) => !value)}
+                >
+                  {thinkingExpanded ? "Hide activity" : "Show activity"}
+                </button>
               </div>
-              <div className="thinking-card-meta">
-                <span>{toolProcessCount} process{toolProcessCount === 1 ? "" : "es"}</span>
-                <span>{toolStepCount} tool step{toolStepCount === 1 ? "" : "s"}</span>
-              </div>
-              <button
-                type="button"
-                className="btn ghost"
-                aria-expanded={thinkingExpanded}
-                aria-controls="thinking-record-timeline"
-                onClick={() => setThinkingExpanded((value) => !value)}
-              >
-                {thinkingExpanded ? "Collapse trace" : "Show trace"}
-              </button>
-            </div>
-            {!thinkingExpanded && (
-              <div className="thinking-card-preview">
-                {timeline.value.length === 0
-                  ? timeline.isLive
-                    ? "Waiting for the first agent event."
-                    : "Loading activity."
-                  : `${timeline.value.length} replay event${timeline.value.length === 1 ? "" : "s"} captured. Final answer remains below.`}
-              </div>
-            )}
-            {thinkingExpanded && (
-              <>
-                <div className="trace-filter-bar" role="group" aria-label="Trace filters">
-                  {TRACE_FILTERS.map((filter) => (
+              {!thinkingExpanded && (
+                <div className="thinking-card-preview">
+                  {timeline.value.length === 0
+                    ? timeline.isLive
+                      ? "Waiting for the first update."
+                      : "Loading activity."
+                    : `${timeline.value.length} update${timeline.value.length === 1 ? "" : "s"} captured.`}
+                </div>
+              )}
+              {thinkingExpanded && (
+                <>
+                  <div className="trace-filter-bar" role="group" aria-label="Activity filters">
+                    {TRACE_FILTERS.map((filter) => (
+                      <button
+                        key={filter.id}
+                        type="button"
+                        className="trace-filter-chip"
+                        data-active={traceFilter === filter.id}
+                        aria-pressed={traceFilter === filter.id}
+                        onClick={() => setTraceFilter(filter.id)}
+                      >
+                        <span>{filter.label}</span>
+                        <span className="mono">{traceFilterCounts[filter.id]}</span>
+                      </button>
+                    ))}
+                    <span className="spacer" />
                     <button
-                      key={filter.id}
                       type="button"
                       className="trace-filter-chip"
-                      data-active={traceFilter === filter.id}
-                      aria-pressed={traceFilter === filter.id}
-                      onClick={() => setTraceFilter(filter.id)}
+                      disabled={!timeline.hasMore || timeline.isLoadingOlder}
+                      onClick={timeline.loadOlder}
                     >
-                      <span>{filter.label}</span>
-                      <span className="mono">{traceFilterCounts[filter.id]}</span>
+                      <span>{timeline.isLoadingOlder ? "Loading older" : "Load older"}</span>
                     </button>
-                  ))}
-                  <span className="spacer" />
-                  <button
-                    type="button"
-                    className="trace-filter-chip"
-                    disabled={!timeline.hasMore || timeline.isLoadingOlder}
-                    onClick={timeline.loadOlder}
-                  >
-                    <span>{timeline.isLoadingOlder ? "Loading older" : "Load older"}</span>
-                  </button>
-                </div>
-                {timeline.olderError && (
-                  <div className="inline-error">
-                    {timeline.olderError}
                   </div>
-                )}
-                <div id="thinking-record-timeline" className="timeline">
-                {timeline.value.length === 0 ? (
-                  <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
-                    {timeline.isLive
-                      ? "No activity yet. Agents will reply here as they work — the timeline refreshes every 2 seconds."
-                      : "Loading activity…"}
-                  </div>
-                ) : visibleReplayItems.length === 0 ? (
-                  <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
-                    No trace entries match this filter.
-                  </div>
-                ) : (
-                  visibleReplayItems.map((item) =>
-                    item.kind === "event" ? (
-                      <LiveTimelineRow key={item.event.id} event={item.event} />
+                  {timeline.error && <div className="inline-error">{timeline.error}</div>}
+                  {timeline.olderError && <div className="inline-error">{timeline.olderError}</div>}
+                  <div id="thinking-record-timeline" className="timeline">
+                    {timeline.value.length === 0 ? (
+                      <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
+                        {timeline.isLive ? "No updates yet." : "Loading activity..."}
+                      </div>
+                    ) : visibleReplayItems.length === 0 ? (
+                      <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
+                        No updates match this filter.
+                      </div>
                     ) : (
-                      <ToolProcessRow
-                        key={item.id}
-                        process={item}
-                        workerSessions={workerSessions.value}
-                        actionKey={sessionActionKey}
-                        toolCallActionKey={toolCallActionKey}
-                        canAct={canUseMissionActions}
-                        onContinue={onContinueSession}
-                        onCancel={onCancelSession}
-                        onCancelToolCalls={onCancelToolCalls}
-                      />
-                    )
-                  )
-                )}
-              </div>
-              </>
-            )}
-          </section>
-          <MissionEvidenceCard
-            contextSources={missionContextSources}
-            artifacts={artifacts.value}
-            approvals={missionApprovals}
-            isSettled={evidenceSettled}
-            errors={[contextSources.error, artifacts.error, approvals.error].filter(
-              (value): value is string => Boolean(value)
-            )}
-          />
-          {finalAnswer && (
-            <section className="card final-answer-card">
-              <div className="label" style={{ fontSize: 11, marginBottom: 8 }}>
-                Final answer
-              </div>
-              <Markdown text={finalAnswer.text} />
+                      visibleReplayItems.map((item) =>
+                        item.kind === "event" ? (
+                          <LiveTimelineRow key={item.event.id} event={item.event} />
+                        ) : (
+                          <ToolProcessRow
+                            key={item.id}
+                            process={item}
+                            workerSessions={workerSessions.value}
+                            actionKey={sessionActionKey}
+                            toolCallActionKey={toolCallActionKey}
+                            canAct={canUseMissionActions}
+                            onContinue={onContinueSession}
+                            onCancel={onCancelSession}
+                            onCancelToolCalls={onCancelToolCalls}
+                          />
+                        )
+                      )
+                    )}
+                  </div>
+                </>
+              )}
             </section>
-          )}
+          </details>
+
+          <details className="work-detail-section">
+            <summary>
+              <span>What was used</span>
+              <small>
+                {missionContextSources.length} reference{missionContextSources.length === 1 ? "" : "s"} ·{" "}
+                {artifacts.value.length} file{artifacts.value.length === 1 ? "" : "s"}
+              </small>
+            </summary>
+            <MissionEvidenceCard
+              contextSources={missionContextSources}
+              artifacts={artifacts.value}
+              approvals={missionApprovals}
+              isSettled={evidenceSettled}
+              errors={[contextSources.error, artifacts.error, approvals.error].filter(
+                (value): value is string => Boolean(value)
+              )}
+            />
+          </details>
+
+          <details className="work-detail-section">
+            <summary>
+              <span>Run details</span>
+              <small>Only needed when something looks stuck or wrong</small>
+            </summary>
+            <div className="work-detail-advanced-grid">
+              <ActiveRoleRunsCard
+                runs={roleRuns.value}
+                isLive={roleRuns.isLive}
+                error={roleRuns.error}
+                actionKey={roleRunActionKey}
+                canAct={canUseMissionActions}
+                onCancel={onCancelRoleRun}
+              />
+              <MissionMetricsCard
+                metrics={metrics.value}
+                isLive={metrics.isLive}
+                error={metrics.error}
+                canAct={canUseMissionActions}
+                busy={reconcilingMission}
+                onReconcile={onReconcileMission}
+              />
+              <ContextContinuityCard
+                memory={sessionMemory.value}
+                isLive={sessionMemory.isLive}
+                error={sessionMemory.error}
+              />
+              <MissionRecoveryCasesCard
+                response={recoveryRuns.value}
+                isLive={recoveryRuns.isLive}
+                error={recoveryRuns.error}
+                actionKey={recoveryActionKey}
+                canAct={canUseMissionActions}
+                onAction={onRecoveryRunAction}
+              />
+              <BrowserContinuityCard
+                signals={browserContinuitySignals}
+                isSettled={browserContinuitySettled}
+                errors={[contextSources.error, workerSessions.error, timeline.error].filter(
+                  (value): value is string => Boolean(value)
+                )}
+              />
+              <SubAgentSessionsCard
+                sessions={workerSessions.value}
+                isLive={workerSessions.isLive}
+                error={workerSessions.error}
+                actionKey={sessionActionKey}
+                canAct={canUseMissionActions}
+                onContinue={onContinueSession}
+                onCancel={onCancelSession}
+              />
+            </div>
+          </details>
         </div>
         <div className="row mission-follow-up-bar">
           <textarea
@@ -663,7 +691,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
                 void onSend();
               }
             }}
-            placeholder="Follow up with the team… (⌘↩ to send)"
+            placeholder="Message TurnkeyAI..."
             rows={2}
             disabled={submitting || !canUseMissionActions}
             title={canUseMissionActions ? undefined : OPERATOR_ACTION_SCOPE_HINT}
@@ -698,12 +726,344 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
   );
 }
 
+function WorkAnswerCard({
+  finalAnswer,
+  progress,
+}: {
+  finalAnswer: string | null;
+  progress: MissionProgressNow;
+}) {
+  return (
+    <section className="card work-answer-card" data-empty={finalAnswer ? "false" : "true"}>
+      <div className="work-answer-head">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>{finalAnswer ? "Answer" : "Working on it"}</div>
+          <h3>{finalAnswer ? "TurnkeyAI's answer" : progress.title}</h3>
+        </div>
+        <span className="tag info">{finalAnswer ? "ready" : "in progress"}</span>
+      </div>
+      {finalAnswer ? (
+        <Markdown text={finalAnswer} />
+      ) : (
+        <p>{progress.detail || "TurnkeyAI is working. The next useful update will appear below."}</p>
+      )}
+    </section>
+  );
+}
+
+function WorkStatusOverview({
+  mission,
+  progress,
+  pendingApprovals,
+}: {
+  mission: Mission;
+  progress: MissionProgressNow;
+  pendingApprovals: number;
+}) {
+  const status = describeMissionStatus(mission, pendingApprovals);
+  const statusMeta = progress.meta
+    .map((item) => humanizeProgressMeta(item, mission.status))
+    .filter((item): item is string => Boolean(item));
+  return (
+    <section className="work-status-overview" data-tone={status.tone}>
+      <div className="work-status-icon"><Icon name={status.icon} size={16} /></div>
+      <div className="work-status-main">
+        <div className="work-status-kicker">Current state</div>
+        <h3>{status.title}</h3>
+        <p>{status.detail || progress.detail}</p>
+      </div>
+      <div className="work-status-meta">
+        {statusMeta.map((item) => (
+          <span key={item}>{item}</span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AgentWorkTimeline({
+  mission,
+  replayItems,
+  finalAnswer,
+  timelineLive,
+}: {
+  mission: Mission;
+  replayItems: TimelineReplayItem[];
+  finalAnswer: string | null;
+  timelineLive: boolean;
+}) {
+  const visibleItems = replayItems
+    .filter((item) => !isNoisyStoryItem(item))
+    .slice(0, finalAnswer ? 8 : 12);
+  return (
+    <section className="agent-story" aria-label="Work timeline">
+      <div className="agent-story-line" aria-hidden="true" />
+      <StoryStep tone="user" title="You asked" meta="request">
+        <p>{mission.desc || mission.title}</p>
+      </StoryStep>
+      {visibleItems.length === 0 ? (
+        <StoryStep tone="working" title={timelineLive ? "TurnkeyAI is getting started" : "Loading work"} meta="working">
+          <p>{timelineLive ? "The first useful update will appear here." : "Checking the latest state."}</p>
+        </StoryStep>
+      ) : (
+        visibleItems.map((item) => <StoryItem key={storyItemKey(item)} item={item} />)
+      )}
+      {finalAnswer ? (
+        <StoryStep tone="answer" title="Answer" meta="result">
+          <p>The answer is ready below.</p>
+        </StoryStep>
+      ) : (
+        <StoryStep tone="working" title="Still working" meta="in progress">
+          <p>TurnkeyAI has not produced the final answer yet.</p>
+        </StoryStep>
+      )}
+    </section>
+  );
+}
+
+function StoryItem({ item }: { item: TimelineReplayItem }) {
+  if (item.kind === "tool-process") {
+    const toolNames = [...new Set(item.toolEvents.map((event) => event.runtime?.toolName).filter(Boolean))];
+    const status =
+      item.status === "failed" ? "failed" : item.status === "running" ? "running" : "finished";
+    const title = describeToolProcessTitle(toolNames, status);
+    const resultEvent = item.toolEvents.find((event) => event.runtime?.toolPhase === "result");
+    return (
+      <StoryStep tone={item.status === "failed" ? "problem" : item.status === "running" ? "working" : "tool"} title={title} meta={status}>
+        <p>{resultEvent ? formatProgressDetail(resultEvent.text) : "Started the next step."}</p>
+        <details className="agent-story-details">
+          <summary>Show details</summary>
+          <div className="agent-story-detail-list">
+            {item.toolEvents.slice(0, 4).map((event) => (
+              <div key={event.id}>
+                <b>{event.runtime?.toolPhase ?? "step"}</b>
+                <span>{formatToolName(event.runtime?.toolName)}</span>
+                <p>{formatProgressDetail(event.text)}</p>
+              </div>
+            ))}
+          </div>
+        </details>
+      </StoryStep>
+    );
+  }
+
+  const event = item.event;
+  const story = describeStoryEvent(event);
+  return (
+    <StoryStep tone={story.tone} title={story.title} meta={story.meta}>
+      <p>{story.detail}</p>
+    </StoryStep>
+  );
+}
+
+function StoryStep({
+  tone,
+  title,
+  meta,
+  children,
+}: {
+  tone: "user" | "working" | "tool" | "answer" | "problem";
+  title: string;
+  meta: string;
+  children: ReactNode;
+}) {
+  return (
+    <article className="agent-story-step" data-tone={tone}>
+      <div className="agent-story-dot" aria-hidden="true" />
+      <div className="agent-story-card">
+        <div className="agent-story-head">
+          <h3>{title}</h3>
+          <span>{meta}</span>
+        </div>
+        <div className="agent-story-body">{children}</div>
+      </div>
+    </article>
+  );
+}
+
+function storyItemKey(item: TimelineReplayItem): string {
+  return item.kind === "event" ? item.event.id : item.id;
+}
+
+function describeToolProcessTitle(toolNames: string[], status: "failed" | "running" | "finished"): string {
+  if (toolNames.includes("sessions_spawn")) {
+    if (status === "running") return "Started a helper";
+    if (status === "failed") return "Helper could not finish";
+    return "Helper reported back";
+  }
+  if (toolNames.some((name) => name.startsWith("browser_") || name.includes("browser"))) {
+    if (status === "running") return "Using the browser";
+    if (status === "failed") return "Browser step failed";
+    return "Checked the browser";
+  }
+  if (toolNames.includes("web_search")) return status === "running" ? "Searching the web" : "Searched the web";
+  if (toolNames.includes("web_fetch")) return status === "running" ? "Reading a webpage" : "Read a webpage";
+  if (toolNames.includes("sessions_send")) return status === "running" ? "Sending a follow-up" : "Follow-up sent";
+  if (toolNames.length === 0) {
+    if (status === "running") return "Working";
+    if (status === "failed") return "Step failed";
+    return "Step finished";
+  }
+  const formattedNames = toolNames.slice(0, 2).map(formatToolName).join(", ");
+  return status === "running" ? `Using ${formattedNames}` : `Used ${formattedNames}`;
+}
+
+function formatToolName(toolName: string | undefined): string {
+  if (!toolName) return "tool";
+  if (toolName === "sessions_spawn") return "helper";
+  if (toolName === "sessions_send") return "helper message";
+  if (toolName === "web_search") return "web search";
+  if (toolName === "web_fetch") return "webpage read";
+  return toolName.replace(/_/g, " ");
+}
+
+function isNoisyStoryItem(item: TimelineReplayItem): boolean {
+  if (item.kind === "event") {
+    const event = item.event;
+    if (event.kind === "plan" && event.actor === "user") return true;
+    if (event.kind === "tool") return true;
+  }
+  return false;
+}
+
+function describeStoryEvent(event: ActivityEvent): {
+  title: string;
+  detail: string;
+  meta: string;
+  tone: "working" | "tool" | "answer" | "problem";
+} {
+  if (event.kind === "thought") {
+    const detail = formatProgressDetail(event.text);
+    return {
+      title: detail === "Final answer appears in the Answer step." ? "Prepared the answer" : "Updated the work",
+      detail,
+      meta: "TurnkeyAI",
+      tone: "working",
+    };
+  }
+  if (event.kind === "approval") {
+    return {
+      title: "Needs confirmation",
+      detail: formatProgressDetail(event.text),
+      meta: "review",
+      tone: "problem",
+    };
+  }
+  if (event.kind === "artifact") {
+    return {
+      title: "Saved a file",
+      detail: formatProgressDetail(event.text),
+      meta: "file",
+      tone: "tool",
+    };
+  }
+  if (event.kind === "recovery" || event.emph === "danger") {
+    return {
+      title: "Handled a problem",
+      detail: formatProgressDetail(event.text),
+      meta: "recovery",
+      tone: "problem",
+    };
+  }
+  return {
+    title: "Updated the work",
+    detail: formatProgressDetail(event.text),
+    meta: event.kind,
+    tone: "working",
+  };
+}
+
+function describeMissionStatus(
+  mission: Mission,
+  pendingApprovals: number
+): { title: string; detail: string; tone: "ok" | "working" | "warning" | "danger"; icon: IconName } {
+  if (pendingApprovals > 0 || mission.status === "needs_approval") {
+    return {
+      title: "Waiting for your confirmation",
+      detail: "TurnkeyAI paused before an action that needs approval.",
+      tone: "warning",
+      icon: "approvals",
+    };
+  }
+  if (mission.status === "done") {
+    return {
+      title: "Finished",
+      detail: "The final answer is shown at the end of the timeline.",
+      tone: "ok",
+      icon: "check",
+    };
+  }
+  if (mission.status === "blocked") {
+    return {
+      title: "Stuck",
+      detail: "TurnkeyAI could not finish without help or a retry.",
+      tone: "danger",
+      icon: "x",
+    };
+  }
+  return {
+    title: "Working",
+    detail: "TurnkeyAI is working through the request.",
+    tone: "working",
+    icon: "play",
+  };
+}
+
+function humanizeProgressMeta(item: string, missionStatus?: Mission["status"]): string | null {
+  if (missionStatus === "done" && /\d+\s+active\s*·\s*\d+\s+waiting/i.test(item)) return null;
+  return item
+    .replace(/active roles/i, "active helpers")
+    .replace(/active sessions/i, "open runs")
+    .replace(/tools/i, "actions");
+}
+
+function ManualRecoveryNeedsCard({
+  run,
+  count,
+  onOpen,
+}: {
+  run: RecoveryRun;
+  count: number;
+  onOpen: () => void;
+}) {
+  return (
+    <section className="card work-needs-you-card">
+      <div>
+        <div className="label" style={{ fontSize: 11 }}>Needs you</div>
+        <h3>{run.latestSummary || "A run needs confirmation"}</h3>
+        <p>
+          TurnkeyAI paused because this step may need a retry or a different path.
+          {count > 1 ? ` ${count} items need attention.` : ""}
+        </p>
+      </div>
+      <button type="button" className="btn primary" onClick={onOpen}>
+        Review options
+      </button>
+    </section>
+  );
+}
+
+function NeedsYouCard({ count, onOpen }: { count: number; onOpen: () => void }) {
+  return (
+    <section className="card work-needs-you-card">
+      <div>
+        <div className="label" style={{ fontSize: 11 }}>Needs you</div>
+        <h3>{count} request{count === 1 ? "" : "s"} need confirmation</h3>
+        <p>TurnkeyAI has paused before taking an action that needs your approval.</p>
+      </div>
+      <button type="button" className="btn primary" onClick={onOpen}>
+        Review request{count === 1 ? "" : "s"}
+      </button>
+    </section>
+  );
+}
+
 function MissionProgressNowCard({ progress }: { progress: MissionProgressNow }) {
   return (
     <section className="card mission-progress-card" data-tone={progress.tone}>
       <div className="mission-progress-main">
         <div>
-          <div className="label" style={{ fontSize: 11 }}>Mission now</div>
+          <div className="label" style={{ fontSize: 11 }}>Progress</div>
           <h3>{progress.title}</h3>
         </div>
         <div className="mission-progress-meta">
@@ -715,13 +1075,13 @@ function MissionProgressNowCard({ progress }: { progress: MissionProgressNow }) 
       <div className="mission-progress-detail">{progress.detail}</div>
       <div className="mission-progress-grid">
         <MissionProgressLine
-          label="Latest event"
-          value={progress.latestEvent ? progress.latestEvent.label : "Waiting for replay"}
+          label="Latest update"
+          value={formatProgressEventLabel(progress.latestEvent?.label)}
           detail={progress.latestEvent?.text}
         />
         <MissionProgressLine
-          label="Latest tool"
-          value={progress.latestTool ? `${progress.latestTool.name} · ${progress.latestTool.phase}` : "No tool step yet"}
+          label="Latest action"
+          value={formatProgressToolLabel(progress.latestTool)}
           detail={progress.latestTool?.text}
         />
       </div>
@@ -734,9 +1094,42 @@ function MissionProgressLine({ label, value, detail }: { label: string; value: s
     <div className="mission-progress-line">
       <span>{label}</span>
       <b>{value}</b>
-      {detail && <p>{detail}</p>}
+      {detail && <p>{formatProgressDetail(detail)}</p>}
     </div>
   );
+}
+
+function formatProgressEventLabel(label: string | undefined): string {
+  if (!label) return "Waiting for an update";
+  const lowered = label.toLowerCase();
+  if (lowered.includes("thought")) return "TurnkeyAI updated the answer";
+  if (lowered.includes("tool")) return "TurnkeyAI used a tool";
+  if (lowered.includes("approval")) return "Confirmation is needed";
+  if (lowered.includes("artifact")) return "A file was saved";
+  return label.replace(/\s*·\s*role-[\w-]+/g, "");
+}
+
+function formatProgressToolLabel(tool: MissionProgressNow["latestTool"]): string {
+  if (!tool) return "No action yet";
+  if (tool.phase === "result") return "Tool finished";
+  if (tool.phase === "call") return "Tool started";
+  if (tool.phase === "progress") return "Tool is working";
+  return "Tool updated";
+}
+
+function formatProgressDetail(detail: string): string {
+  const normalized = detail
+    .replace(/\s+/g, " ")
+    .replace(/^Tool\s+[\w.-]+\s+returned\s+\([^)]*\):\s*/i, "Tool returned: ")
+    .trim();
+  if (/^#{1,3}\s/.test(normalized) || normalized.includes("### ")) {
+    return "Final answer appears in the Answer step.";
+  }
+  if (/^Tool returned:\s*\{/.test(normalized) || normalized.includes('"protocol"')) {
+    return "The step finished.";
+  }
+  if (normalized.length <= 220) return normalized;
+  return `${normalized.slice(0, 217)}...`;
 }
 
 function ContextContinuityCard({
@@ -1082,14 +1475,14 @@ function MissionEvidenceCard({
     <section className="card mission-evidence-card">
       <div className="subagent-session-head">
         <div>
-          <div className="label" style={{ fontSize: 11 }}>Mission evidence</div>
+          <div className="label" style={{ fontSize: 11 }}>Used by this answer</div>
           <div className="muted" style={{ fontSize: 11.5 }}>
-            Context, artifacts, and approval decisions linked to this mission
+            Pages, files, and confirmations TurnkeyAI used while working
           </div>
         </div>
         <div className="thinking-card-meta">
-          <span>{contextSources.length} context</span>
-          <span>{artifacts.length} artifact{artifacts.length === 1 ? "" : "s"}</span>
+          <span>{contextSources.length} reference{contextSources.length === 1 ? "" : "s"}</span>
+          <span>{artifacts.length} file{artifacts.length === 1 ? "" : "s"}</span>
           <span>{pendingApprovals} pending</span>
           {decidedApprovals > 0 && <span>{decidedApprovals} decided</span>}
         </div>
@@ -1100,34 +1493,34 @@ function MissionEvidenceCard({
         </div>
       ))}
       {!isSettled && contextSources.length === 0 && artifacts.length === 0 && approvals.length === 0 ? (
-        <div className="subagent-session-empty">Loading mission evidence…</div>
+        <div className="subagent-session-empty">Loading what TurnkeyAI used...</div>
       ) : contextSources.length === 0 && artifacts.length === 0 && approvals.length === 0 ? (
         <div className="subagent-session-empty">
-          No linked context sources, artifacts, or approvals have been recorded yet.
+          Nothing has been attached yet.
         </div>
       ) : (
         <div className="mission-evidence-grid">
-          <EvidenceColumn title="Context sources" count={contextSources.length}>
+          <EvidenceColumn title="References" count={contextSources.length}>
             {contextSources.length === 0 ? (
-              <EmptyEvidenceLine text="No context sources referenced yet." />
+              <EmptyEvidenceLine text="No references yet." />
             ) : (
               contextSources.slice(0, 4).map((source) => (
                 <ContextSourceLine key={source.id} source={source} />
               ))
             )}
           </EvidenceColumn>
-          <EvidenceColumn title="Artifacts" count={artifacts.length}>
+          <EvidenceColumn title="Saved files" count={artifacts.length}>
             {artifacts.length === 0 ? (
-              <EmptyEvidenceLine text="No artifacts saved yet." />
+              <EmptyEvidenceLine text="No files saved yet." />
             ) : (
               artifacts.slice(0, 4).map((artifact) => (
                 <ArtifactLine key={artifact.id} artifact={artifact} />
               ))
             )}
           </EvidenceColumn>
-          <EvidenceColumn title="Approvals" count={approvals.length}>
+          <EvidenceColumn title="Confirmations" count={approvals.length}>
             {approvals.length === 0 ? (
-              <EmptyEvidenceLine text="No approval decisions for this mission." />
+              <EmptyEvidenceLine text="No confirmations for this chat." />
             ) : (
               approvals.slice(0, 4).map((approval) => (
                 <ApprovalLine key={approval.id} approval={approval} />

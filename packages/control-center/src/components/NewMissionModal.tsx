@@ -135,14 +135,14 @@ export function NewMissionModal({
         style={{ width: "min(560px, 92vw)", maxWidth: "92vw" }}
       >
         <div className="card-hd">
-          <h3 style={{ flex: 1 }}>New mission</h3>
+          <h3 style={{ flex: 1 }}>New chat</h3>
           <button type="button" className="btn ghost" onClick={onClose}>
             Cancel
           </button>
         </div>
         <div className="card-bd" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span className="label" style={{ fontSize: 11 }}>Title</span>
+            <span className="label" style={{ fontSize: 11 }}>Name</span>
             <input
               ref={titleRef}
               type="text"
@@ -154,7 +154,7 @@ export function NewMissionModal({
             />
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span className="label" style={{ fontSize: 11 }}>Goal / brief</span>
+            <span className="label" style={{ fontSize: 11 }}>Message</span>
             <textarea
               value={desc}
               onChange={(e) => setDesc(e.target.value)}
@@ -182,7 +182,7 @@ export function NewMissionModal({
           </label>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
-              <span className="label" style={{ fontSize: 11 }}>Agent team</span>
+              <span className="label" style={{ fontSize: 11 }}>Team</span>
               {agents.length > 0 && (
                 <button
                   type="button"
@@ -253,7 +253,7 @@ export function NewMissionModal({
               onClick={handleSubmit}
               disabled={submitting || title.trim().length === 0}
             >
-              {submitting ? "Creating…" : "Create mission"}
+              {submitting ? "Sending…" : "Send"}
             </button>
           </div>
         </div>
