@@ -274,7 +274,7 @@ export function createMissionThreadBridge(
 
   async function updateMissionLifecycle(
     mission: Mission,
-    patch: Partial<Pick<Mission, "status" | "progress" | "blockers">>
+    patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout">>
   ): Promise<void> {
     try {
       const latest = (await options.missionStore.get(mission.id)) ?? mission;

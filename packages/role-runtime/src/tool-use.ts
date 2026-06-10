@@ -1200,7 +1200,11 @@ async function executeSessionsSpawn(
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
-    ...(result ? {} : { isError: true }),
+    // A failed worker run is an error result even when the worker returned a
+    // structured failure payload — otherwise the repeated-failure breaker
+    // (findRepeatedFailedToolCall) never counts it and the message-level
+    // toolStatus reads as a successful turn.
+    ...(!result || result.status === "failed" ? { isError: true } : {}),
     content: serializeSessionToolResult(sessionToolResult),
     progress: [
       ...approvalProgress,
@@ -1593,7 +1597,9 @@ async function executeSessionsSend(
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
-    ...(result ? {} : { isError: true }),
+    // Same rule as sessions_spawn: a structured failure is still an error
+    // result for the breaker and message toolStatus.
+    ...(!result || result.status === "failed" ? { isError: true } : {}),
     content: serializeSessionToolResult(sessionToolResult),
     progress: [
       ...approvalProgress,
@@ -1797,8 +1803,12 @@ async function executeSessionsList(
   const records = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
   const kinds = stringArray(input.call.input.kinds);
   const agentId = requiredString(input.call.input.agent_id);
-  const parentSessionKey = requiredString(input.call.input.parentSessionKey);
-  const activeMinutes = positiveInteger(input.call.input.activeMinutes);
+  // Accept both spellings: the tool's own output uses snake_case field names
+  // and models copy those back as filter arguments.
+  const parentSessionKey =
+    requiredString(input.call.input.parent_session_key) ?? requiredString(input.call.input.parentSessionKey);
+  const activeMinutes =
+    positiveInteger(input.call.input.active_minutes) ?? positiveInteger(input.call.input.activeMinutes);
   const limit = positiveInteger(input.call.input.limit) ?? 20;
   const activeAfter = activeMinutes ? Date.now() - activeMinutes * 60 * 1000 : null;
   const filtered = records

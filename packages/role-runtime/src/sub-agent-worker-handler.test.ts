@@ -1793,3 +1793,118 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 function stripUndefined<T extends Record<string, unknown>>(input: T): T {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as T;
 }
+
+test("LLMSubAgentWorkerHandler reports wall-clock-bounded runs as partial, not completed", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let now = 1;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length <= 2) {
+      return toolCallResult(`tool-${gatewayInputs.length}`, "explore_run", {
+        instruction: "Fetch another source.",
+      });
+    }
+    return textResult("Best-effort synthesis from evidence gathered before the budget cut off.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run() {
+        now = 90_500;
+        return {
+          workerType: "explore",
+          status: "completed",
+          summary: "Fetched enough evidence.",
+          payload: { facts: ["fact-a"] },
+        };
+      },
+    }),
+    gateway,
+    clock: { now: () => now },
+  });
+
+  const result = await handler.run(buildInvocationInput("explore"));
+
+  // The inner loop was cut off by the wall-clock budget: the parent must not
+  // see this as authoritative completion evidence (findCompletedSessionEvidence
+  // keys on status === "completed").
+  assert.equal(result?.status, "partial");
+  assert.equal(
+    (result?.payload as { resumableReason?: string } | undefined)?.resumableReason,
+    "wall_clock_budget"
+  );
+});
+
+test("LLMSubAgentWorkerHandler reports round-limit-bounded runs as partial, not completed", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    // The model keeps asking for tools past the round limit; only the forced
+    // final-synthesis pass returns text.
+    if (gatewayInputs.length <= 2) {
+      return toolCallResult(`tool-${gatewayInputs.length}`, "explore_run", {
+        instruction: "Fetch the next source.",
+      });
+    }
+    return textResult("Synthesis forced by the round limit.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run() {
+        return {
+          workerType: "explore",
+          status: "completed",
+          summary: "Fetched one source.",
+          payload: { facts: ["fact-a"] },
+        };
+      },
+    }),
+    gateway,
+    maxRounds: 1,
+  });
+
+  const result = await handler.run(buildInvocationInput("explore"));
+
+  assert.equal(result?.status, "partial");
+  assert.equal(
+    (result?.payload as { resumableReason?: string } | undefined)?.resumableReason,
+    "round_limit"
+  );
+});
+
+test("LLMSubAgentWorkerHandler keeps model-chosen finals as completed", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let calls = 0;
+  gateway.generate = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return toolCallResult("tool-1", "explore_run", { instruction: "Fetch the source." });
+    }
+    return textResult("Model finished on its own with verified evidence.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run() {
+        return {
+          workerType: "explore",
+          status: "completed",
+          summary: "Fetched the source.",
+          payload: { facts: ["fact-a"] },
+        };
+      },
+    }),
+    gateway,
+  });
+
+  const result = await handler.run(buildInvocationInput("explore"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal((result?.payload as { resumableReason?: string } | undefined)?.resumableReason, undefined);
+});

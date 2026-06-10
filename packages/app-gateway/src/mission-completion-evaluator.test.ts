@@ -129,10 +129,12 @@ describe("MissionCompletionEvaluator", () => {
       roleRuns: [idleRun],
     });
 
+    // Terminal, but NOT goal-achieved: no fake 100% progress, and the
+    // closeout is tagged so UIs can distinguish it from a real "done".
     assert.deepEqual(decision, {
       action: "update",
       reason: "final_answer",
-      patch: { status: "done", progress: 1, pendingApprovals: 0 },
+      patch: { status: "done", pendingApprovals: 0, closeout: "approval_timeout" },
     });
   });
 
@@ -601,7 +603,7 @@ describe("MissionCompletionEvaluator", () => {
     assert.deepEqual(decision, {
       action: "update",
       reason: "final_answer",
-      patch: { status: "done", progress: 1, blockers: 0 },
+      patch: { status: "done", blockers: 0, closeout: "bounded_failure" },
     });
   });
 
@@ -693,7 +695,7 @@ describe("MissionCompletionEvaluator", () => {
     assert.deepEqual(decision, {
       action: "update",
       reason: "final_answer",
-      patch: { status: "done", progress: 1, blockers: 0 },
+      patch: { status: "done", blockers: 0, closeout: "bounded_failure" },
     });
   });
 
@@ -728,7 +730,7 @@ describe("MissionCompletionEvaluator", () => {
     assert.deepEqual(decision, {
       action: "update",
       reason: "final_answer",
-      patch: { status: "done", progress: 1, blockers: 0 },
+      patch: { status: "done", blockers: 0, closeout: "bounded_failure" },
     });
   });
 

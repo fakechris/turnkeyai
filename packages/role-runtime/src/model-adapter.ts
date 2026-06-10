@@ -102,6 +102,7 @@ function summarizeLeadConclusion(activation: RoleActivationInput): string {
     const earlierToolUpdates = latestToolUpdateIndex >= 0 ? recentToolUpdates.slice(0, latestToolUpdateIndex) : [];
     return summarizeToolConclusion(latestToolUpdate.content, {
       cancellationSeen: earlierToolUpdates.some((message) => hasCancelledToolEvidence(message.content)),
+      partial: readToolEvidenceStatus(latestToolUpdate.content) === "partial",
     });
   }
 
@@ -120,8 +121,19 @@ function summarizeLeadConclusion(activation: RoleActivationInput): string {
   return `Final synthesis based on the latest specialist update:\n${normalized}`;
 }
 
-function summarizeToolConclusion(content: string, context: { cancellationSeen?: boolean } = {}): string {
+function summarizeToolConclusion(
+  content: string,
+  context: { cancellationSeen?: boolean; partial?: boolean } = {}
+): string {
   const extracted = extractToolEvidence(content);
+  // A partial sub-agent result must not be presented as verified completion
+  // evidence — it is best-effort output from a run that was cut off
+  // (timeout/budget) and is still resumable.
+  const evidenceLine = context.partial
+    ? `Partially verified (the delegated session returned a PARTIAL, resumable result — not a completed run): ${
+        extracted || "no concise evidence summary was available."
+      }`
+    : `Verified: ${extracted || "the tool returned a result, but no concise evidence summary was available."}`;
   return [
     "Final synthesis based on the latest tool result:",
     ...(context.cancellationSeen
@@ -129,10 +141,12 @@ function summarizeToolConclusion(content: string, context: { cancellationSeen?: 
           "Cancellation context: an earlier tool result was cancelled before this continuation; confidence depends on the resumed evidence below.",
         ]
       : []),
-    `Verified: ${extracted || "the tool returned a result, but no concise evidence summary was available."}`,
+    evidenceLine,
     "Unverified: any claim not present in the tool result remains unverified.",
     "Residual risk: this fallback answer was produced without another model synthesis pass, so use the visible tool evidence as the authority.",
-    "Continuation: if the evidence is incomplete or timeout-bounded, continue the same session rather than starting duplicate work.",
+    context.partial
+      ? "Continuation: the delegated session is resumable — continue the same session to finish the cut-off work rather than treating this as final."
+      : "Continuation: if the evidence is incomplete or timeout-bounded, continue the same session rather than starting duplicate work.",
   ].join("\n");
 }
 
@@ -271,12 +285,18 @@ function hasCancelledToolEvidence(content: string): boolean {
 }
 
 function hasCompletedOrPartialToolEvidence(content: string): boolean {
+  return readToolEvidenceStatus(content) !== null;
+}
+
+function readToolEvidenceStatus(content: string): "completed" | "partial" | null {
   const parsed = parseJsonObject(content);
   if (isRecord(parsed)) {
     const status = parsed["status"];
-    return (status === "completed" || status === "partial") && Boolean(extractEvidenceFromRecord(parsed));
+    if ((status === "completed" || status === "partial") && Boolean(extractEvidenceFromRecord(parsed))) {
+      return status;
+    }
   }
-  return false;
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -25,7 +25,7 @@ export type MissionCompletionDecision =
   | {
       action: "update";
       reason: MissionCompletionReason;
-      patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals">>;
+      patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout">>;
       recovery?: MissionCompletionRecovery;
     };
 
@@ -66,10 +66,13 @@ export function evaluateMissionCompletion(input: {
     hasCompletePendingApprovalWaitTimeoutCloseout(mission, messages) &&
     !hasActiveExecution(input.roleRuns, input.workerSessions)
   ) {
+    // Terminal, but NOT a goal-achieved completion: the approval never got a
+    // decision and the gated action was never performed. Do not fake 100%
+    // progress; tag the closeout so humans can tell this apart from "done".
     return {
       action: "update",
       reason: "final_answer",
-      patch: { status: "done", progress: 1, pendingApprovals: 0 },
+      patch: { status: "done", pendingApprovals: 0, closeout: "approval_timeout" },
     };
   }
 
@@ -93,10 +96,13 @@ export function evaluateMissionCompletion(input: {
     hasCompleteBoundedFailureCloseout(mission, messages) &&
     !hasActiveExecution(input.roleRuns, input.workerSessions)
   ) {
+    // Terminal bounded failure: automated work could not proceed and the
+    // lead closed out with verified/unverified/next-action. The flow is over
+    // but the goal was not achieved — keep progress honest and tag it.
     return {
       action: "update",
       reason: "final_answer",
-      patch: { status: "done", progress: 1, blockers: 0 },
+      patch: { status: "done", blockers: 0, closeout: "bounded_failure" },
     };
   }
 

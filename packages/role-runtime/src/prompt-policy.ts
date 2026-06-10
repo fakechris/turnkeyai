@@ -17,6 +17,7 @@ import type {
 import {
   getContinuationContext,
   getDispatchContinuityMode,
+  getDispatchGoal,
   getInstructions,
   getMergeContext,
   getParallelContext,
@@ -161,11 +162,13 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       requestedCapabilities: inferRequestedCapabilities(currentRole),
       preferredWorkerKinds,
     });
+    const dispatchGoal = getDispatchGoal(input.handoff.payload);
     const assembly = await this.promptAssembler.assemble({
       thread: input.thread,
       flow: input.flow,
       role: currentRole,
       handoff: input.handoff,
+      ...(dispatchGoal ? { goal: dispatchGoal } : {}),
       recentTurns: getRecentMessages(input.handoff.payload),
       threadSummary,
       threadSessionMemory,

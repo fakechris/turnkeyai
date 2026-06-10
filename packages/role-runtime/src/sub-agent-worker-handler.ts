@@ -140,7 +140,17 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       const summary = browserRecovery
         ? `${browserRecovery.summary} ${summarizeReply(reply.content)}`
         : summarizeReply(reply.content);
-      const status = isTimeoutSummaryInvocation(input) ? "partial" : "completed";
+      // Run-level status must reflect how the inner tool loop ended, not just
+      // that it produced text. Exhaustion closeouts (round/wall-clock budget,
+      // repeated tool failure, local evidence fallback, cancellation) mean the
+      // final text was forced from incomplete work — reporting "completed"
+      // would let the parent loop treat it as authoritative completion
+      // evidence (findCompletedSessionEvidence keys on status === "completed").
+      const exhaustionReason = readExhaustionCloseoutReason(reply.metadata);
+      const resumableReason = isTimeoutSummaryInvocation(input)
+        ? "timeout_summary"
+        : exhaustionReason;
+      const status = resumableReason ? "partial" : "completed";
       return {
         workerType: this.kind,
         status,
@@ -148,7 +158,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
         payload: {
           mode: "llm_sub_agent",
           workerType: this.kind,
-          ...(status === "partial" ? { resumableReason: "timeout_summary" } : {}),
+          ...(resumableReason ? { resumableReason } : {}),
           ...(browserRecovery ? { browserRecovery } : {}),
           content: reply.content,
           metadata: reply.metadata ?? {},
@@ -200,6 +210,28 @@ function isTimeoutSummaryInvocation(input: WorkerInvocationInput): boolean {
     input.packet.continuityMode === "resume-existing" &&
     /\bprevious sub-agent run reached its timeout boundary\b/i.test(input.packet.taskPrompt)
   );
+}
+
+/** Closeout reasons that mean the inner loop was cut off rather than allowed
+ *  to finish: the synthesized text is best-effort partial evidence, and the
+ *  session stays resumable. A plain model-chosen final (no closeout) and a
+ *  completed-sub-agent closeout still count as completed. */
+const SUB_AGENT_EXHAUSTION_CLOSEOUT_REASONS = new Set([
+  "round_limit",
+  "wall_clock_budget",
+  "repeated_tool_failure",
+  "tool_evidence_fallback",
+  "operator_cancelled",
+  "sub_agent_timeout",
+]);
+
+function readExhaustionCloseoutReason(metadata: Record<string, unknown> | undefined): string | null {
+  const closeout = metadata?.["toolLoopCloseout"];
+  if (!closeout || typeof closeout !== "object" || Array.isArray(closeout)) {
+    return null;
+  }
+  const reason = (closeout as Record<string, unknown>)["reason"];
+  return typeof reason === "string" && SUB_AGENT_EXHAUSTION_CLOSEOUT_REASONS.has(reason) ? reason : null;
 }
 
 class SubAgentToolExecutor implements RoleToolExecutor {

@@ -284,7 +284,11 @@ export function buildSessionToolDefinitions(
         properties: {
           kinds: { type: "array", items: { type: "string", enum: workerKinds } },
           agent_id: { type: "string", enum: workerKinds },
+          // snake_case matches the field names this tool RETURNS (models copy
+          // them back as filters); camelCase kept for backward compatibility.
+          parent_session_key: { type: "string" },
           parentSessionKey: { type: "string" },
+          active_minutes: { type: "number", minimum: 1 },
           activeMinutes: { type: "number", minimum: 1 },
           limit: { type: "number", minimum: 1 },
         },

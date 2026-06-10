@@ -251,7 +251,7 @@ function MissionCard({ mission, onOpen }: { mission: Mission; onOpen: () => void
     <button type="button" className="mission-card" onClick={onOpen}>
       <div className="row">
         <span className={"status-dot " + mission.status} />
-        <StatusTag status={mission.status} />
+        <StatusTag status={mission.status} {...(mission.closeout ? { closeout: mission.closeout } : {})} />
         <div style={{ flex: 1 }} />
         <span className="label-id mono">{mission.shortId}</span>
       </div>

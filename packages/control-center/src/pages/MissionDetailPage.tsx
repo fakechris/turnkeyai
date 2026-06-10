@@ -985,6 +985,24 @@ function describeMissionStatus(
       icon: "approvals",
     };
   }
+  if (mission.status === "done" && mission.closeout === "bounded_failure") {
+    return {
+      title: "Closed — could not finish the automated work",
+      detail:
+        "The run hit a hard blocker (for example the browser was unreachable). The closing note lists what was verified, what was not, and the suggested next step.",
+      tone: "warning",
+      icon: "x",
+    };
+  }
+  if (mission.status === "done" && mission.closeout === "approval_timeout") {
+    return {
+      title: "Closed — approval never arrived",
+      detail:
+        "The gated action was never performed because no approval decision was made in time. Re-run the mission to try again.",
+      tone: "warning",
+      icon: "approvals",
+    };
+  }
   if (mission.status === "done") {
     return {
       title: "Finished",

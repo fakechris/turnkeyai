@@ -5040,3 +5040,205 @@ function buildEngine(input: {
     ...(input.runtimeChainRecorder ? { runtimeChainRecorder: input.runtimeChainRecorder } : {}),
   });
 }
+
+test("coordination engine carries the verbatim user goal past dispatch truncation", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-goal",
+    teamId: "team-goal",
+    teamName: "Demo",
+    leadRoleId: "lead",
+    roles: [
+      { roleId: "lead", name: "Lead", seat: "lead", runtime: "local" },
+      { roleId: "operator", name: "Operator", seat: "member", runtime: "local" },
+    ],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const originalGoal = [
+    "Compare five workflow vendors and produce a table with EXACT columns:",
+    "vendor, entry price, SSO, SLA, evidence URL.",
+    `Padding so the goal far exceeds the 320-char dispatch sanitizer: ${"g".repeat(600)}`,
+  ].join("\n");
+  const originalGoalMessage: TeamMessage = {
+    id: "msg-goal",
+    threadId: thread.threadId,
+    role: "user",
+    name: "Chris",
+    content: originalGoal,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const interimReply: TeamMessage = {
+    id: "msg-reply",
+    threadId: thread.threadId,
+    role: "assistant",
+    roleId: "lead",
+    name: "Lead",
+    content: "Working on the vendor table.",
+    createdAt: 2,
+    updatedAt: 2,
+  };
+
+  let storedFlow: FlowLedger | null = null;
+  const enqueued: HandoffEnvelope[] = [];
+  const persisted: TeamMessage[] = [originalGoalMessage, interimReply];
+
+  const engine = new CoordinationEngine({
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append(message) {
+        persisted.push(message);
+      },
+      async list(_threadId, limit) {
+        return limit == null ? persisted : persisted.slice(-limit);
+      },
+      async get(messageId) {
+        return persisted.find((message) => message.id === messageId) ?? null;
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return storedFlow?.flowId === flowId ? storedFlow : null;
+      },
+      async put(flow) {
+        storedFlow = { ...flow, version: (flow.version ?? 0) + 1 };
+      },
+      async listByThread() {
+        return storedFlow ? [storedFlow] : [];
+      },
+    },
+    roleRunCoordinator: {
+      async getOrCreate() {
+        return {
+          runKey: "role:lead:thread:thread-goal",
+          threadId: thread.threadId,
+          roleId: "lead",
+          mode: "group",
+          status: "running",
+          iterationCount: 0,
+          maxIterations: 3,
+          inbox: [],
+          lastActiveAt: 1,
+        };
+      },
+      async enqueue(_, handoff) {
+        enqueued.push(handoff);
+        return {
+          runKey: "role:lead:thread:thread-goal",
+          threadId: thread.threadId,
+          roleId: "lead",
+          mode: "group",
+          status: "queued",
+          iterationCount: 0,
+          maxIterations: 3,
+          inbox: [handoff],
+          lastActiveAt: 1,
+        };
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus() {},
+      async incrementIteration() {
+        return 0;
+      },
+      async fail() {},
+      async finish() {},
+    },
+    handoffPlanner: {
+      parseMentions() {
+        return [];
+      },
+      async validateMentionTargets() {
+        return { allowed: true, mode: "serial", targetRoleIds: [] };
+      },
+      async buildHandoffs() {
+        return [];
+      },
+    },
+    recoveryDirector: {
+      async onUserMessage() {
+        return null;
+      },
+      async onRoleReply() {
+        return null;
+      },
+      async onRoleFailure() {
+        return null;
+      },
+    } as unknown as RecoveryDirector,
+    roleLoopRunner: {
+      async ensureRunning() {},
+    },
+    summaryBuilder: {
+      async getRecentMessages() {
+        return persisted.map((message) => ({
+          messageId: message.id,
+          role: message.role,
+          ...(message.roleId ? { roleId: message.roleId } : {}),
+          name: message.name,
+          content: message.content,
+          createdAt: message.createdAt,
+        }));
+      },
+    },
+    relayBriefBuilder: {
+      build() {
+        return "relay brief digest";
+      },
+    },
+    idGenerator: {
+      flowId: () => "flow-goal",
+      messageId: () => "msg-follow-up",
+      taskId: () => "task-goal",
+    },
+    runtimeLimits: {
+      flowMaxHops: 6,
+    },
+    clock: {
+      now: () => 100,
+    },
+  });
+
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "Follow-up: drop vendors without EU hosting.",
+  });
+
+  const handoff = enqueued[0];
+  assert.ok(handoff, "expected a dispatched handoff");
+  const goal = handoff.payload.intent?.goal;
+  assert.ok(goal, "dispatch payload must carry the verbatim goal");
+  // Origin anchors on the thread's FIRST user message, in full — not the
+  // 320-char sanitized digest and not the follow-up post.
+  assert.equal(goal.origin.messageId, "msg-goal");
+  assert.equal(goal.origin.content, originalGoal);
+  assert.equal(goal.origin.truncated, undefined);
+  // The new post rides along as the latest direction.
+  assert.equal(goal.latestDirection?.messageId, "msg-follow-up");
+  assert.equal(goal.latestDirection?.content, "Follow-up: drop vendors without EU hosting.");
+  // The sanitized recents still cap content — the goal is the only verbatim channel.
+  const recentGoalCopy = handoff.payload.intent?.recentMessages.find((message) => message.messageId === "msg-goal");
+  assert.ok(recentGoalCopy);
+  assert.ok(recentGoalCopy.content.length <= 320);
+});

@@ -7,6 +7,7 @@ import {
 } from "@turnkeyai/core-types/continuation-semantics";
 import { getContinuationContext, getRelayBrief } from "@turnkeyai/core-types/team";
 import type {
+  DispatchGoal,
   FlowLedger,
   HandoffEnvelope,
   PromptAssemblyContextDiagnostics,
@@ -36,6 +37,10 @@ export interface PromptAssemblyInput {
   flow: FlowLedger;
   role: RoleSlot;
   handoff: HandoffEnvelope;
+  /** Verbatim user goal carried by the dispatch (see DispatchGoal). Rendered
+   *  ahead of the relay brief and never silently truncated — explicit
+   *  truncation markers are emitted instead. */
+  goal?: DispatchGoal;
   recentTurns: TeamMessageSummary[];
   threadSummary?: ThreadSummaryRecord | null;
   threadSessionMemory?: ThreadSessionMemoryRecord | null;
@@ -142,10 +147,23 @@ export class DefaultPromptAssembler implements PromptAssembler {
       `Activation: ${input.handoff.activationType}.`,
     ].join("\n");
 
-    const taskSection = trimSectionText(
+    // The verbatim goal gets first claim on the task layer budget. The relay
+    // brief is a truncated digest (220 chars/line at the builder); the goal is
+    // the binding task statement, so it must never lose to the digest.
+    const goalSection = input.goal
+      ? buildGoalSection(input.goal, Math.max(Math.floor(input.budget.taskLayerBudget * 0.7), 1))
+      : null;
+    const briefBudget = goalSection
+      ? Math.max(
+          input.budget.taskLayerBudget - roughTokenEstimate(goalSection),
+          Math.floor(input.budget.taskLayerBudget * 0.15)
+        )
+      : input.budget.taskLayerBudget;
+    const briefSection = trimSectionText(
       ["Task brief:", getRelayBrief(input.handoff.payload)].join("\n"),
-      input.budget.taskLayerBudget
+      briefBudget
     );
+    const taskSection = goalSection ? [goalSection, briefSection].join("\n\n") : briefSection;
     const recentTurnSelection =
       input.recentTurns.length > 0
         ? selectRecentTurnsForPacking(input.recentTurns, this.maxRecentTurns)
@@ -448,6 +466,24 @@ function buildUserPrompt(
   sections: Array<{ text: string }>
 ): string {
   return [taskSection, ...sections.map((section) => section.text)].join("\n\n");
+}
+
+function buildGoalSection(goal: DispatchGoal, maxTokens: number): string {
+  const lines = ["Original user goal (verbatim):", ...goal.origin.content.split("\n")];
+  if (goal.origin.truncated) {
+    lines.push("[truncated] The goal exceeded the dispatch carriage cap; the text above is the verbatim prefix.");
+  }
+  if (goal.latestDirection) {
+    lines.push("", "Latest user direction (verbatim):", ...goal.latestDirection.content.split("\n"));
+    if (goal.latestDirection.truncated) {
+      lines.push("[truncated] The direction exceeded the dispatch carriage cap; the text above is the verbatim prefix.");
+    }
+  }
+  lines.push(
+    "",
+    "The goal above is binding: honor every explicit requirement it states (output format, table columns, evidence demands, blocked/partial reporting). If a requirement cannot be met, say so explicitly instead of silently dropping it."
+  );
+  return trimSectionText(lines.join("\n"), maxTokens);
 }
 
 function buildRecentTurnsSection(turns: TeamMessageSummary[], totalTurns: number, maxChars = 220): string {
