@@ -1762,3 +1762,73 @@ function buildFinanceActivationInput(): RoleActivationInput {
     },
   };
 }
+
+test("dispatch goal is rendered verbatim ahead of the task brief", async () => {
+  const policy = new DefaultRolePromptPolicy({
+    roleProfileRegistry: new DefaultRoleProfileRegistry(),
+  });
+
+  const longGoal = [
+    "Research the top 5 workflow automation vendors.",
+    "Produce a markdown table with EXACTLY these columns: vendor, entry price, SSO support, SLA, evidence URL.",
+    "Every row needs a citation from the vendor's official site.",
+    "If any column cannot be verified, write 'not verified' for that cell instead of guessing.",
+    `Padding to exceed the legacy relay-brief truncation: ${"z".repeat(300)}`,
+  ].join("\n");
+
+  const activation = buildFinanceActivationInput();
+  activation.handoff.payload = normalizeRelayPayload({
+    ...activation.handoff.payload,
+    intent: {
+      ...activation.handoff.payload.intent!,
+      goal: {
+        origin: { messageId: "msg-user-goal", content: longGoal },
+        latestDirection: { messageId: "msg-user-2", content: "Drop vendor Beta, add vendor Gamma." },
+      },
+    },
+  });
+
+  const packet = await policy.buildPacket(activation);
+
+  assert.match(packet.taskPrompt, /Original user goal \(verbatim\):/);
+  // The full goal must survive — including content beyond 220 chars.
+  assert.ok(packet.taskPrompt.includes(longGoal), "verbatim goal text must be present in the task prompt");
+  assert.match(packet.taskPrompt, /Latest user direction \(verbatim\):/);
+  assert.ok(packet.taskPrompt.includes("Drop vendor Beta, add vendor Gamma."));
+  assert.match(packet.taskPrompt, /The goal above is binding/);
+  // Goal renders before the relay-brief digest.
+  assert.ok(
+    packet.taskPrompt.indexOf("Original user goal (verbatim):") < packet.taskPrompt.indexOf("Task brief:"),
+    "goal section must precede the task brief digest"
+  );
+});
+
+test("dispatch goal truncation is explicit, never silent", async () => {
+  const policy = new DefaultRolePromptPolicy({
+    roleProfileRegistry: new DefaultRoleProfileRegistry(),
+  });
+
+  const activation = buildFinanceActivationInput();
+  activation.handoff.payload = normalizeRelayPayload({
+    ...activation.handoff.payload,
+    intent: {
+      ...activation.handoff.payload.intent!,
+      goal: {
+        origin: { messageId: "msg-user-goal", content: "Long goal prefix...", truncated: true },
+      },
+    },
+  });
+
+  const packet = await policy.buildPacket(activation);
+  assert.match(packet.taskPrompt, /\[truncated\] The goal exceeded the dispatch carriage cap/);
+});
+
+test("prompt without a dispatch goal keeps the legacy task brief shape", async () => {
+  const policy = new DefaultRolePromptPolicy({
+    roleProfileRegistry: new DefaultRoleProfileRegistry(),
+  });
+
+  const packet = await policy.buildPacket(buildFinanceActivationInput());
+  assert.doesNotMatch(packet.taskPrompt, /Original user goal \(verbatim\):/);
+  assert.match(packet.taskPrompt, /Task brief:/);
+});

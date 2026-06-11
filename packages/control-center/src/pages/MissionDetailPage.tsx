@@ -179,7 +179,7 @@ function MissionBar({
         Chat
       </button>
       <h2 style={{ marginLeft: 4 }}>{mission.title}</h2>
-      <StatusTag status={mission.status} />
+      <StatusTag status={mission.status} {...(mission.closeout ? { closeout: mission.closeout } : {})} />
       <div className="meta">Started {mission.createdAt}</div>
       <div className="right">
         {archiveError && (
@@ -981,6 +981,24 @@ function describeMissionStatus(
     return {
       title: "Waiting for your confirmation",
       detail: "TurnkeyAI paused before an action that needs approval.",
+      tone: "warning",
+      icon: "approvals",
+    };
+  }
+  if (mission.status === "done" && mission.closeout === "bounded_failure") {
+    return {
+      title: "Closed — could not finish the automated work",
+      detail:
+        "The run hit a hard blocker (for example the browser was unreachable). The closing note lists what was verified, what was not, and the suggested next step.",
+      tone: "warning",
+      icon: "x",
+    };
+  }
+  if (mission.status === "done" && mission.closeout === "approval_timeout") {
+    return {
+      title: "Closed — approval never arrived",
+      detail:
+        "The gated action was never performed because no approval decision was made in time. Re-run the mission to try again.",
       tone: "warning",
       icon: "approvals",
     };

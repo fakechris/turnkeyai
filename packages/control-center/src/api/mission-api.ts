@@ -58,6 +58,9 @@ export interface Mission {
   createdAtMs: number;
   agents: string[];
   progress: number;
+  /** Non-success terminal closeout. Mirrors core-types MissionCloseout:
+   *  the flow ended but the goal was NOT achieved — render distinctly. */
+  closeout?: "bounded_failure" | "approval_timeout";
   pendingApprovals: number;
   blockers: number;
   contextSummary: string[];

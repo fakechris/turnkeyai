@@ -274,7 +274,7 @@ export function createMissionThreadBridge(
 
   async function updateMissionLifecycle(
     mission: Mission,
-    patch: Partial<Pick<Mission, "status" | "progress" | "blockers">>
+    patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout">>
   ): Promise<void> {
     try {
       const latest = (await options.missionStore.get(mission.id)) ?? mission;
@@ -286,10 +286,19 @@ export function createMissionThreadBridge(
       ) {
         return;
       }
-      await options.missionStore.putRaw({
+      const next: Mission = {
         ...latest,
         ...patch,
-      });
+      };
+      // A closeout tag describes how THIS terminal state was reached. Any
+      // status transition that doesn't set one (reopen for approval, back to
+      // working, or a genuine final-answer done) must clear a stale tag —
+      // otherwise a reopened mission that later completes for real would
+      // still render as "Closed · blocked".
+      if (patch.status && patch.status !== latest.status && !patch.closeout) {
+        delete next.closeout;
+      }
+      await options.missionStore.putRaw(next);
     } catch (error) {
       logger.warn("mission lifecycle update failed", {
         missionId: mission.id,

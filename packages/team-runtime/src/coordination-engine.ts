@@ -37,7 +37,10 @@ import {
   createRelayPayload,
   normalizeRelayPayload,
   requireScheduledDispatch,
+  resolveDispatchGoal,
+  toMessageSummary,
 } from "@turnkeyai/core-types/team";
+import type { DispatchGoal } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import { detectConflictRoleIds, detectDuplicateRoleIds } from "@turnkeyai/core-types/shard-result-analysis";
@@ -311,9 +314,15 @@ export class CoordinationEngine {
     parallelContext?: ParallelOrchestrationContext;
   }): Promise<void> {
     const flow = await this.requireFlow(input.flow.flowId);
-    const recentMessages = sanitizeRecentMessagesForDispatch(
-      await this.deps.summaryBuilder.getRecentMessages(input.thread.threadId, MAX_RECENT_MESSAGES_PER_DISPATCH)
+    const rawRecentMessages = await this.deps.summaryBuilder.getRecentMessages(
+      input.thread.threadId,
+      MAX_RECENT_MESSAGES_PER_DISPATCH
     );
+    const recentMessages = sanitizeRecentMessagesForDispatch(rawRecentMessages);
+    // Goal carriage must read the UNSANITIZED summaries — the sanitized copy
+    // caps message content at 320 chars, which is exactly the lossy digest the
+    // verbatim goal exists to bypass.
+    const goal = await this.resolveDispatchGoalSafely(flow, input.sourceMessage, rawRecentMessages);
     const dispatchPolicy = {
       allowParallel: flow.mode !== "serial",
       allowReenter: true,
@@ -336,6 +345,7 @@ export class CoordinationEngine {
         threadId: input.thread.threadId,
         relayBrief: "",
         recentMessages,
+        ...(goal ? { goal } : {}),
         ...(input.instructions ? { instructions: input.instructions } : {}),
         ...(input.sessionTarget ? { sessionTarget: input.sessionTarget } : {}),
         ...(input.continuationContext || input.continuityMode
@@ -410,6 +420,49 @@ export class CoordinationEngine {
       await this.markHandoffCancelled(flow.flowId, edgeId);
       await this.removeActiveRole(flow.flowId, input.toRoleId);
       throw error;
+    }
+  }
+
+  /**
+   * Resolve the verbatim user goal for a dispatch. Never throws: goal
+   * carriage is an additive guarantee and a store hiccup must not break
+   * dispatching (the relay brief / recent turns still flow).
+   *
+   * Always widens beyond the last-8 dispatch window: every user post starts a
+   * new flow, so on follow-ups (and on scheduled/recovery flows, whose root
+   * is a synthetic system message) the thread's ORIGINAL user request has
+   * usually scrolled out of the recents. The widened read uses full message
+   * content — the sanitized dispatch recents cap content at 320 chars, which
+   * is exactly the lossy digest the verbatim goal exists to bypass.
+   */
+  private async resolveDispatchGoalSafely(
+    flow: FlowLedger,
+    sourceMessage: TeamMessage,
+    recentMessages: TeamMessageSummary[]
+  ): Promise<DispatchGoal | undefined> {
+    try {
+      let threadMessages = recentMessages;
+      try {
+        const widened = await this.deps.teamMessageStore.list(
+          flow.threadId,
+          DISPATCH_GOAL_LOOKBACK_MESSAGES
+        );
+        if (widened.length > 0) {
+          threadMessages = widened.map(toMessageSummary);
+        }
+      } catch {
+        // fall back to the (sanitized) dispatch recents — better a truncated
+        // goal anchor than none.
+      }
+
+      return resolveDispatchGoal({ sourceMessage, threadMessages });
+    } catch (error) {
+      console.error("dispatch goal resolution failed", {
+        flowId: flow.flowId,
+        threadId: flow.threadId,
+        error,
+      });
+      return undefined;
     }
   }
 
@@ -1807,6 +1860,10 @@ export class CoordinationEngine {
 const MAX_RECENT_MESSAGES_PER_DISPATCH = 8;
 const MAX_RECENT_MESSAGE_CHARS = 320;
 const MAX_RECENT_TOOL_MESSAGE_CHARS = 1600;
+/** Window for locating the thread's original user goal during dispatch goal
+ *  carriage. Bounded to keep per-dispatch reads cheap; threads longer than
+ *  this anchor on the earliest user message still visible. */
+const DISPATCH_GOAL_LOOKBACK_MESSAGES = 200;
 
 function sanitizeRecentMessagesForDispatch(messages: TeamMessageSummary[]): TeamMessageSummary[] {
   return messages.slice(-MAX_RECENT_MESSAGES_PER_DISPATCH).map((message) => ({

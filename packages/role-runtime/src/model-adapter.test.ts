@@ -218,3 +218,74 @@ function buildActivationWithToolResult(
     },
   };
 }
+
+test("heuristic lead fallback labels partial sub-agent evidence as partial, not verified", async () => {
+  const adapter = new HeuristicModelAdapter();
+  const activation = buildActivationWithToolResult(
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      task_id: "task-1",
+      session_key: "worker:explore:1",
+      agent_id: "explore",
+      status: "partial",
+      tool_chain: ["explore"],
+      result: "Run was cut off by the wall-clock budget.",
+      final_content: "Source A verified the pricing page; source B not reached.",
+      payload: { content: "Source A verified the pricing page; source B not reached." },
+    })
+  );
+  const profile = new DefaultRoleProfileRegistry().resolve(activation.thread.roles[0]!);
+
+  const result = await adapter.invoke({
+    activation,
+    profile,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Close out the delegated research.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.match(result.content, /Partially verified \(the delegated session returned a PARTIAL, resumable result/);
+  assert.doesNotMatch(result.content, /\nVerified:/);
+  assert.match(result.content, /continue the same session to finish the cut-off work/i);
+});
+
+test("heuristic lead fallback keeps completed sub-agent evidence as verified", async () => {
+  const adapter = new HeuristicModelAdapter();
+  const activation = buildActivationWithToolResult(
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      task_id: "task-1",
+      session_key: "worker:explore:1",
+      agent_id: "explore",
+      status: "completed",
+      tool_chain: ["explore"],
+      result: "Completed.",
+      final_content: "Source A verified the pricing page in full.",
+      payload: { content: "Source A verified the pricing page in full." },
+    })
+  );
+  const profile = new DefaultRoleProfileRegistry().resolve(activation.thread.roles[0]!);
+
+  const result = await adapter.invoke({
+    activation,
+    profile,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Close out the delegated research.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.match(result.content, /Verified: /);
+  assert.doesNotMatch(result.content, /Partially verified/);
+});

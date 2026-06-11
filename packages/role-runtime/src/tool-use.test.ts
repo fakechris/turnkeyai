@@ -6028,3 +6028,179 @@ function buildActivation(): RoleActivationInput {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test("sessions_list accepts snake_case filters matching its own output fields", async () => {
+  const now = Date.now();
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:recent",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+            parentSessionKey: "role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:recent",
+            workerType: "browser",
+            status: "done",
+            createdAt: now - 60_000,
+            updatedAt: now - 30_000,
+          },
+        },
+        {
+          workerRunKey: "worker:browser:stale",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-2",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+            parentSessionKey: "role:role-other:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:stale",
+            workerType: "browser",
+            status: "done",
+            createdAt: now - 7_200_000,
+            updatedAt: now - 7_200_000,
+          },
+        },
+      ];
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-1",
+      name: "sessions_list",
+      // Models copy the snake_case field names straight out of a previous
+      // sessions_list result; these must filter identically to camelCase.
+      input: {
+        agent_id: "browser",
+        parent_session_key: "role:role-lead:thread:thread-1",
+        active_minutes: 10,
+      },
+    },
+    activation: {
+      thread: {
+        threadId: "thread-1",
+        teamId: "team-1",
+        teamName: "Team",
+        leadRoleId: "role-lead",
+        roles: [{ roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" }],
+        participantLinks: [],
+        metadataVersion: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      flow: {
+        flowId: "flow-1",
+        threadId: "thread-1",
+        rootMessageId: "msg-root",
+        mode: "serial",
+        status: "running",
+        currentStageIndex: 0,
+        activeRoleIds: ["role-lead"],
+        completedRoleIds: [],
+        failedRoleIds: [],
+        hopCount: 1,
+        maxHops: 4,
+        edges: [],
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      runState: {
+        runKey: "role:role-lead:thread:thread-1",
+        threadId: "thread-1",
+        roleId: "role-lead",
+        mode: "group",
+        status: "running",
+        iterationCount: 1,
+        maxIterations: 4,
+        inbox: [],
+        lastActiveAt: 1,
+      },
+      handoff: {
+        taskId: "task-1",
+        flowId: "flow-1",
+        sourceMessageId: "msg-root",
+        targetRoleId: "role-lead",
+        activationType: "cascade",
+        threadId: "thread-1",
+        payload: {
+          threadId: "thread-1",
+          intent: { relayBrief: "List sessions", recentMessages: [] },
+        },
+        createdAt: 1,
+      },
+    },
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "List sessions.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { sessions: Array<{ session_key: string }> };
+  assert.deepEqual(body.sessions.map((session) => session.session_key), ["worker:browser:recent"]);
+});
+
+test("sessions_spawn marks structured worker failures as error results", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:failed-run" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "failed",
+        summary: "Worker crashed while fetching the source.",
+        payload: { error: "fetch exploded" },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-failed-run",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Fetch the source and extract facts.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research the source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string };
+  assert.equal(body.status, "failed");
+  // Without isError the repeated-failure breaker never counts this run and
+  // the persisted tool turn reads as a successful round.
+  assert.equal(result.isError, true);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+});

@@ -29,8 +29,23 @@ export const COLOR_FG: Record<ColorTag, string> = {
   muted: "var(--text-muted)",
 };
 
-/** Pill with a status dot + human label. */
-export function StatusTag({ status }: { status: MissionStatus }) {
+/** Pill with a status dot + human label. A non-success closeout overrides
+ *  the cheerful "Done" presentation: the flow ended, the goal did not. */
+export function StatusTag({
+  status,
+  closeout,
+}: {
+  status: MissionStatus;
+  closeout?: "bounded_failure" | "approval_timeout";
+}) {
+  if (status === "done" && closeout) {
+    return (
+      <span className="tag warning">
+        <span className="status-dot blocked" style={{ width: 6, height: 6 }} />
+        {closeout === "bounded_failure" ? "Closed · blocked" : "Closed · no approval"}
+      </span>
+    );
+  }
   const tone = STATUS_TAG[status];
   return (
     <span className={"tag " + tone}>
