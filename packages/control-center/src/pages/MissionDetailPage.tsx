@@ -179,7 +179,7 @@ function MissionBar({
         Chat
       </button>
       <h2 style={{ marginLeft: 4 }}>{mission.title}</h2>
-      <StatusTag status={mission.status} />
+      <StatusTag status={mission.status} {...(mission.closeout ? { closeout: mission.closeout } : {})} />
       <div className="meta">Started {mission.createdAt}</div>
       <div className="right">
         {archiveError && (

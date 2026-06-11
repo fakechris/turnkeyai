@@ -2087,3 +2087,84 @@ describe("MissionThreadBridge", () => {
     assert.ok(warnings.some((w) => w.includes("activity append failed")));
   });
 });
+
+describe("MissionThreadBridge stale closeout clearing", () => {
+  it("clears a stale closeout tag when a reopened mission completes for real", async () => {
+    counter = 0;
+    // A mission that was once closed via approval timeout, got reopened, went
+    // back to working, and now produces a genuine lead final answer. The old
+    // closeout tag must not survive onto the fresh "done" — otherwise the UI
+    // renders a real completion as "Closed · no approval".
+    const missions: Mission[] = [
+      {
+        ...baseMission,
+        status: "working",
+        closeout: "approval_timeout",
+      },
+    ];
+    const store = memMissionStore(missions);
+    const bridge = createMissionThreadBridge({
+      missionStore: store,
+      roleRunStore: memRoleRunStore([]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          name: "Lead",
+          content: "Final answer: the vendor table is complete with all requested columns and citations.",
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const updated = await store.get("msn.1");
+    assert.equal(updated?.status, "done");
+    assert.equal(updated?.progress, 1);
+    assert.equal(updated?.closeout, undefined);
+  });
+
+  it("keeps the closeout tag written by the same lifecycle patch", async () => {
+    counter = 0;
+    const missions: Mission[] = [
+      {
+        ...baseMission,
+        status: "needs_approval",
+        pendingApprovals: 1,
+        desc: "Submit the local form only after approval.",
+      },
+    ];
+    const store = memMissionStore(missions);
+    const bridge = createMissionThreadBridge({
+      missionStore: store,
+      roleRunStore: memRoleRunStore([]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          name: "Lead",
+          content: [
+            "## Wait-timeout closeout",
+            "The operator decision for browser.form.submit did not arrive during this attempt cycle and the approval remains pending.",
+            "No form submission or browser side effect was performed.",
+            "Safe fallback: keep the dry-run unsubmitted. Next action: ask the operator to approve a new request or rerun the submission attempt when ready.",
+          ].join("\n"),
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const updated = await store.get("msn.1");
+    assert.equal(updated?.status, "done");
+    assert.equal(updated?.closeout, "approval_timeout");
+    // Honest progress: the gated action never ran, so no fake 100%.
+    assert.equal(updated?.progress, 0);
+  });
+});

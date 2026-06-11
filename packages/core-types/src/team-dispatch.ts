@@ -94,7 +94,9 @@ export function resolveDispatchGoal(input: {
   const seen = new Set<MessageId>();
   const push = (message: { id: MessageId; role: string; content: string; createdAt: number } | null | undefined) => {
     if (!message || message.role !== "user" || seen.has(message.id)) return;
-    if (!message.content.trim()) return;
+    // Store-loaded records can be malformed despite the static type; goal
+    // resolution must degrade, not throw, on a non-string content.
+    if (typeof message.content !== "string" || !message.content.trim()) return;
     seen.add(message.id);
     userMessages.push({ id: message.id, content: message.content, createdAt: message.createdAt });
   };
