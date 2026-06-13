@@ -4,6 +4,8 @@ import type {
   TeamMessage,
   WorkerSessionRecord,
 } from "@turnkeyai/core-types/team";
+import { isLifecycleStatusText } from "./mission-final-answer-guard";
+import { evaluateMissionGoalSlotCoverage } from "./mission-goal-slot-coverage";
 
 export type MissionCompletionReason =
   | "terminal"
@@ -29,11 +31,18 @@ export type MissionCompletionDecision =
       recovery?: MissionCompletionRecovery;
     };
 
+export type MissionIncompleteFinalReason =
+  | "max_tokens"
+  | "truncated_markdown"
+  | "stale_pending_approval"
+  | "goal_slots_unverified";
+
 export type MissionCompletionRecovery =
   | {
       kind: "incomplete_final_answer";
       message: TeamMessage;
-      reason: "max_tokens" | "truncated_markdown" | "stale_pending_approval";
+      reason: MissionIncompleteFinalReason;
+      goalText: string;
     }
   | {
       kind: "stalled_tool_turn";
@@ -76,6 +85,14 @@ export function evaluateMissionCompletion(input: {
     };
   }
 
+  if (mission.pendingApprovals === 0 && hasCompletePendingApprovalWaitTimeoutCloseout(mission, messages)) {
+    return {
+      action: "update",
+      reason: "pending_approval",
+      patch: { status: "needs_approval", pendingApprovals: 1, progress: Math.min(mission.progress, 0.95) },
+    };
+  }
+
   if (mission.pendingApprovals > 0) {
     if (mission.status === "needs_approval") {
       return { action: "none", reason: "pending_approval" };
@@ -87,8 +104,84 @@ export function evaluateMissionCompletion(input: {
     };
   }
 
+  if (mission.blockers > 0 && hasKnownActiveExecution(input.roleRuns, input.workerSessions)) {
+    return {
+      action: "update",
+      reason: "active_execution",
+      patch: {
+        status: "working",
+        blockers: 0,
+        progress: Math.min(mission.progress, 0.95),
+      },
+    };
+  }
+
+  if (mission.status === "blocked" && mission.progress >= 1) {
+    return {
+      action: "update",
+      reason: "existing_blocker",
+      patch: { progress: 0.95 },
+    };
+  }
+
+  const incompleteFinal = findIncompleteLeadFinalAnswer(mission, messages);
+  if (incompleteFinal) {
+    if (hasActiveExecutionAfterAnswer(input.roleRuns, input.workerSessions, incompleteFinal.message.createdAt)) {
+      if (mission.status === "done") {
+        return {
+          action: "update",
+          reason: "active_execution",
+          patch: { status: "working", progress: Math.min(mission.progress, 0.95) },
+        };
+      }
+      return { action: "none", reason: "active_execution" };
+    }
+    if (mission.status === "blocked" && mission.blockers > 0) {
+      return { action: "none", reason: "existing_blocker" };
+    }
+    return {
+      action: "update",
+      reason: "incomplete_final_answer",
+      patch:
+        mission.status === "done"
+          ? { status: "blocked", blockers: 1, progress: 0.95 }
+          : { status: "blocked", blockers: 1 },
+      recovery: { kind: "incomplete_final_answer", ...incompleteFinal },
+    };
+  }
+
+  if (mission.status === "done" && hasUserFollowUpAfterLatestLeadAnswer(mission, messages)) {
+    if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
+      return {
+        action: "update",
+        reason: "active_execution",
+        patch: { status: "working", blockers: 0, progress: Math.min(mission.progress, 0.95) },
+      };
+    }
+    return {
+      action: "update",
+      reason: "awaiting_work",
+      patch: { status: "working", blockers: 0, progress: Math.min(mission.progress, 0.99) },
+    };
+  }
+
   if (mission.status === "done") {
     return { action: "none", reason: "terminal" };
+  }
+
+  if (
+    mission.blockers === 0 &&
+    hasCompleteBrowserBoundedFailureCloseout(mission, messages) &&
+    !hasActiveExecution(input.roleRuns, input.workerSessions)
+  ) {
+    // Terminal bounded failure: automated work could not proceed and the
+    // lead closed out with verified/unverified/next-action. The flow is over
+    // but the goal was not achieved — keep progress honest and tag it.
+    return {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", blockers: 0, closeout: "bounded_failure" },
+    };
   }
 
   if (
@@ -106,6 +199,14 @@ export function evaluateMissionCompletion(input: {
     };
   }
 
+  if (mission.blockers > 0 && canClearExistingBlockerWithFinalAnswer(mission, messages)) {
+    return {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1, blockers: 0 },
+    };
+  }
+
   if (mission.blockers > 0) {
     if (mission.status === "blocked") {
       return { action: "none", reason: "existing_blocker" };
@@ -114,19 +215,6 @@ export function evaluateMissionCompletion(input: {
       action: "update",
       reason: "existing_blocker",
       patch: { status: "blocked" },
-    };
-  }
-
-  const incompleteFinal = findIncompleteLeadFinalAnswer(mission, messages);
-  if (incompleteFinal) {
-    if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
-      return { action: "none", reason: "active_execution" };
-    }
-    return {
-      action: "update",
-      reason: "incomplete_final_answer",
-      patch: { status: "blocked", blockers: 1 },
-      recovery: { kind: "incomplete_final_answer", ...incompleteFinal },
     };
   }
 
@@ -194,9 +282,37 @@ function hasActiveExecution(
   return hasActiveRoleRun(roleRuns) || hasActiveWorkerSession(workerSessions);
 }
 
+function hasKnownActiveExecution(
+  roleRuns: RoleRunState[] | "unknown" | undefined,
+  workerSessions: WorkerSessionRecord[] | "unknown" | undefined
+): boolean {
+  if (roleRuns === "unknown" || workerSessions === "unknown") {
+    return false;
+  }
+  return hasActiveExecution(roleRuns, workerSessions);
+}
+
+function hasActiveExecutionAfterAnswer(
+  roleRuns: RoleRunState[] | "unknown" | undefined,
+  workerSessions: WorkerSessionRecord[] | "unknown" | undefined,
+  answerCreatedAt: number
+): boolean {
+  return hasActiveRoleRunAtOrAfter(roleRuns, answerCreatedAt) || hasActiveWorkerSession(workerSessions);
+}
+
 function hasActiveRoleRun(roleRuns: RoleRunState[] | "unknown" | undefined): boolean {
   if (roleRuns === undefined || roleRuns === "unknown") return true;
   return roleRuns.some(isActiveRoleRun);
+}
+
+function hasActiveRoleRunAtOrAfter(
+  roleRuns: RoleRunState[] | "unknown" | undefined,
+  createdAt: number
+): boolean {
+  if (roleRuns === undefined || roleRuns === "unknown") return true;
+  return roleRuns.some(
+    (run) => isActiveRoleRun(run) && (typeof run.lastActiveAt !== "number" || run.lastActiveAt >= createdAt)
+  );
 }
 
 function hasActiveWorkerSession(workerSessions: WorkerSessionRecord[] | "unknown" | undefined): boolean {
@@ -212,7 +328,7 @@ function hasFinalLeadAssistantMessage(
   const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
   return Boolean(
     latest &&
-      !isIncompleteLeadFinalAnswer(mission, latest.message) &&
+      !isIncompleteLeadFinalAnswer(mission, latest.message, messages) &&
       !hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index)
   );
 }
@@ -221,10 +337,29 @@ function hasCompleteBoundedFailureCloseout(mission: Mission, messages: TeamMessa
   const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
   return Boolean(
     latest &&
-      !isIncompleteLeadFinalAnswer(mission, latest.message) &&
+      !isIncompleteLeadFinalAnswer(mission, latest.message, messages) &&
       !hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index) &&
       looksLikeCompleteBoundedFailureCloseout(mission.desc, latest.message.content)
   );
+}
+
+function hasCompleteBrowserBoundedFailureCloseout(mission: Mission, messages: TeamMessage[]): boolean {
+  const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  return Boolean(
+    latest &&
+      missionAllowsBrowserBoundedFailureCloseout(mission.desc) &&
+      !isIncompleteLeadFinalAnswer(mission, latest.message, messages) &&
+      !hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index) &&
+      looksLikeCompleteBoundedFailureCloseout(mission.desc, latest.message.content)
+  );
+}
+
+function canClearExistingBlockerWithFinalAnswer(mission: Mission, messages: TeamMessage[]): boolean {
+  const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  if (!latest) return false;
+  if (isIncompleteLeadFinalAnswer(mission, latest.message, messages)) return false;
+  if (hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index)) return false;
+  return !looksLikeBlockedOrFailedCloseout(latest.message.content);
 }
 
 function hasCompletePendingApprovalWaitTimeoutCloseout(mission: Mission, messages: TeamMessage[]): boolean {
@@ -247,9 +382,9 @@ function isLeadAssistantMessage(mission: Mission, message: TeamMessage): boolean
 function findIncompleteLeadFinalAnswer(
   mission: Mission,
   messages: TeamMessage[]
-): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" | "stale_pending_approval" } | null {
+): { message: TeamMessage; reason: MissionIncompleteFinalReason; goalText: string } | null {
   const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
-  return latest ? isIncompleteLeadFinalAnswer(mission, latest.message) : null;
+  return latest ? isIncompleteLeadFinalAnswer(mission, latest.message, messages) : null;
 }
 
 function findLatestLeadAnswerCandidateWithIndex(
@@ -265,6 +400,7 @@ function findLatestLeadAnswerCandidateWithIndex(
     if (message.role !== "assistant") continue;
     const content = message.content.trim();
     if (content.length === 0) continue;
+    if (isLifecycleStatusText(content)) continue;
     if (!isLeadAssistantMessage(mission, message)) continue;
     if ((message.toolCalls?.length ?? 0) > 0) continue;
     if (message.toolStatus === "pending") continue;
@@ -275,7 +411,34 @@ function findLatestLeadAnswerCandidateWithIndex(
   return latest;
 }
 
+function hasUserFollowUpAfterLatestLeadAnswer(mission: Mission, messages: TeamMessage[]): boolean {
+  const latestUserIndex = findLatestUserMessageIndex(messages);
+  if (latestUserIndex < 0) return false;
+  const latestAnswerIndex = findLatestLeadAnswerIndexIgnoringStaleness(mission, messages);
+  return latestAnswerIndex >= 0 && latestUserIndex > latestAnswerIndex;
+}
+
+function findLatestLeadAnswerIndexIgnoringStaleness(mission: Mission, messages: TeamMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== "assistant") continue;
+    const content = message.content.trim();
+    if (content.length === 0) continue;
+    if (isLifecycleStatusText(content)) continue;
+    if (!isLeadAssistantMessage(mission, message)) continue;
+    if ((message.toolCalls?.length ?? 0) > 0) continue;
+    if (message.toolStatus === "pending") continue;
+    if (hasDispatchMention(content)) continue;
+    return index;
+  }
+  return -1;
+}
+
 function hasDispatchMention(content: string): boolean {
+  const normalized = content.trim();
+  if (/^@(?:role-)?[A-Za-z0-9_-]+(?:\s+@(?:role-)?[A-Za-z0-9_-]+)*[.!?。！]*$/.test(normalized)) {
+    return true;
+  }
   for (const match of content.matchAll(/@\{([^}]+)\}/g)) {
     const mention = match[1]?.trim();
     if (!mention) continue;
@@ -326,29 +489,150 @@ function findLatestUserMessageIndex(messages: TeamMessage[]): number {
 
 function isIncompleteLeadFinalAnswer(
   mission: Mission,
-  message: TeamMessage
-): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" | "stale_pending_approval" } | null {
+  message: TeamMessage,
+  messages: TeamMessage[]
+): { message: TeamMessage; reason: MissionIncompleteFinalReason; goalText: string } | null {
   if (looksLikeCompleteApprovalCloseout(message.content)) {
     return null;
   }
   if (looksLikeCompleteAwaitingContextCloseout(mission.desc, message.content)) {
     return null;
   }
+  if (looksLikeCompleteBoundedFailureCloseout(mission.desc, message.content)) {
+    return null;
+  }
   if (looksLikeStalePendingApprovalAnswer(message.content)) {
-    return { message, reason: "stale_pending_approval" };
+    return { message, reason: "stale_pending_approval", goalText: missionGoalTextForAnswer(mission, messages, message) };
+  }
+  if (looksLikeIncompleteApprovalGateAnswer(message.content)) {
+    return { message, reason: "goal_slots_unverified", goalText: missionGoalTextForAnswer(mission, messages, message) };
   }
   const stopReason = readStringMetadata(message.metadata, "stopReason");
   if (isMaxTokensStopReason(stopReason)) {
-    return { message, reason: "max_tokens" };
+    return { message, reason: "max_tokens", goalText: missionGoalTextForAnswer(mission, messages, message) };
   }
   if (looksLikeTruncatedMarkdown(message.content)) {
-    return { message, reason: "truncated_markdown" };
+    return { message, reason: "truncated_markdown", goalText: missionGoalTextForAnswer(mission, messages, message) };
+  }
+  const goalText = missionGoalTextForAnswer(mission, messages, message);
+  const goalCoverage = evaluateMissionGoalSlotCoverage({
+    goalText,
+    finalText: message.content,
+    evidence: {
+      completedSessionResultCount: countCompletedSessionResultsBeforeAnswer(messages, message),
+    },
+  });
+  if (goalCoverage.issues.length > 0) {
+    return { message, reason: "goal_slots_unverified", goalText };
   }
   return null;
 }
 
+function countCompletedSessionResultsBeforeAnswer(messages: TeamMessage[], answer: TeamMessage): number {
+  const seen = new Set<string>();
+  for (const message of messages) {
+    if (message.createdAt > answer.createdAt) continue;
+    if (message.role !== "tool") continue;
+    if (message.name !== "sessions_spawn" && message.name !== "sessions_send") continue;
+    if (!isCompletedSessionToolResult(message)) continue;
+    seen.add(readCompletedSessionEvidenceKey(message));
+    for (const progress of message.toolProgress ?? []) {
+      if (
+        (progress.toolName === "sessions_spawn" || progress.toolName === "sessions_send") &&
+        progress.phase === "completed"
+      ) {
+        seen.add(progress.toolCallId);
+      }
+    }
+  }
+  return seen.size;
+}
+
+function isCompletedSessionToolResult(message: TeamMessage): boolean {
+  if (message.toolStatus && message.toolStatus !== "completed") return false;
+  const parsed = parseSessionToolResultStatus(message.content);
+  if (parsed) {
+    return parsed.status === "completed";
+  }
+  return /\bcompleted\b/i.test(message.content) && !/\b(?:partial|failed|timeout|timed out|cancelled|canceled|blocked|unverified)\b/i.test(message.content);
+}
+
+function readCompletedSessionEvidenceKey(message: TeamMessage): string {
+  const parsed = parseSessionToolResultStatus(message.content);
+  return parsed?.sessionKey ?? message.toolCallId ?? message.id;
+}
+
+function parseSessionToolResultStatus(content: string): { status: string; sessionKey?: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  const status = typeof record.status === "string" ? record.status : null;
+  if (!status) return null;
+  const sessionKey = typeof record.session_key === "string" && record.session_key.trim() ? record.session_key : undefined;
+  return { status, ...(sessionKey ? { sessionKey } : {}) };
+}
+
+function missionGoalText(mission: Mission): string {
+  return [mission.title, mission.desc].filter((part) => part.trim()).join("\n");
+}
+
+function missionGoalTextForAnswer(mission: Mission, messages: TeamMessage[], answer: TeamMessage): string {
+  const latestUser = latestUserMessageBeforeAnswer(messages, answer);
+  const latestUserText = latestUser?.content.trim() ?? "";
+  const activeGoalText =
+    shouldPreferLatestUserGoal(latestUserText)
+      ? latestUserText
+      : mission.desc;
+  return uniqueNonEmptyStrings([mission.title, activeGoalText]).join("\n");
+}
+
+function shouldPreferLatestUserGoal(text: string): boolean {
+  if (!text) return false;
+  if (looksLikeAutomaticRecoveryUserMessage(text)) return false;
+  if (/^user says\s+\S+$/i.test(text)) return false;
+  if (/^(?:继续|继续吧|go on|continue|keep going|resume)$/i.test(text.trim())) return false;
+  return true;
+}
+
+function looksLikeAutomaticRecoveryUserMessage(text: string): boolean {
+  return /^\s*System recovery:\s+/i.test(text) || /\bAutomatic recovery attempt\s+\d+\s+of\s+\d+\b/i.test(text);
+}
+
+function latestUserMessageBeforeAnswer(messages: TeamMessage[], answer: TeamMessage): TeamMessage | null {
+  let latest: TeamMessage | null = null;
+  for (const message of messages) {
+    if (message.role !== "user") continue;
+    if (message.createdAt > answer.createdAt) continue;
+    latest = message;
+  }
+  return latest;
+}
+
+function uniqueNonEmptyStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
 function looksLikeStalePendingApprovalAnswer(content: string): boolean {
-  return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once you approve|after you approve)\b/i.test(
+  return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator|the operator(?:'s)?) decision|waiting for operator|waiting on operator approval|once you approve|after you approve|before (?:the )?(?:browser worker )?can)\b/i.test(
+    content
+  );
+}
+
+function looksLikeIncompleteApprovalGateAnswer(content: string): boolean {
+  return /\b(?:status\s*:\s*)?incomplete\b[\s\S]{0,180}\b(?:permission|approval)\b[\s\S]{0,180}\b(?:not finalized|not finali[sz]ed|not complete|incomplete|missing)|\b(?:permission|approval)\s+loop\b[\s\S]{0,160}\b(?:not finalized|not finali[sz]ed|incomplete|not complete|missing)\b/i.test(
     content
   );
 }
@@ -358,7 +642,7 @@ function looksLikeCompletePendingApprovalWaitTimeoutCloseout(content: string): b
     /\b(?:approval|permission|operator decision)\b[\s\S]{0,180}\b(?:did not arrive|still pending|pending|timed out|timeout|wait[- ]timeout|wait boundary|attempt cycle)\b/i.test(
       content
     ) &&
-    /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno form submission or browser side effect was performed\b/i.test(
+    /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:browser )?(?:form submission|browser action|browser mutation|mutation|side effects?|side effect|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated|occurred)\b|\bno form submission or browser side effect was performed\b|\bno browser navigation,\s*no form submission,\s*no side effects?\b|\bno form submission,\s*no side effects?\b/i.test(
       content
     ) &&
     /\b(?:next action|safest next step|safe fallback|ask the operator|retry|continue|re-?run|re-?initiate|flow is complete|closeout confirmed)\b/i.test(
@@ -386,25 +670,150 @@ function looksLikeCompleteAwaitingContextCloseout(missionDesc: string, content: 
 }
 
 function looksLikeCompleteBoundedFailureCloseout(missionDesc: string, content: string): boolean {
-  if (!missionAllowsBrowserBoundedFailureCloseout(missionDesc)) {
+  if (looksLikeCompleteTimeoutFollowupRecovery(missionDesc, content)) {
+    return true;
+  }
+  if (looksLikeCompleteCancelledSourceCloseout(missionDesc, content)) {
+    return true;
+  }
+  if (missionAllowsBrowserBoundedFailureCloseout(missionDesc)) {
+    return (
+      /\b(?:browser|CDP|Chrome DevTools|automation|browser automation|target|snapshot|screenshot|capture|scroll)\b[\s\S]{0,200}\b(?:unavailable|unreachable|cannot be reached|could not be reached|connection refused|ECONNREFUSED|could not establish|cannot establish|browser_cdp_unavailable|timed out|timeouts?|timeout|cdp_command_timeout|detached_target|detached|detaches?|attach_failed|attach failed|target attach failed|browser target attach failed|failed to attach|cannot attach|can't attach)\b|\b(?:timed out|timeouts?|timeout|cdp_command_timeout|detached_target|detached|detaches?|attach_failed|attach failed|target attach failed|browser target attach failed|failed to attach|cannot attach|can't attach)\b[\s\S]{0,200}\b(?:browser|CDP|Chrome DevTools|automation|target|snapshot|screenshot|capture|scroll)\b/i.test(
+        content
+      ) &&
+      /\bwhat was verified\b|\bverified\b[\s\S]{0,100}\b(?:URL|target|reachable|connection|port)\b/i.test(content) &&
+      /\bwhat remains unverified\b|\b(?:remains? )?unverified\b|\bnot verified\b/i.test(content) &&
+      /\bnext action\b|\boperator\b[\s\S]{0,120}\b(?:should|can|must|next)\b|\bmanual(?:ly)?\b/i.test(content) &&
+      hasTerminalBrowserFailureRationale(content)
+    );
+  }
+  if (!missionAllowsSourceBoundedFailureCloseout(missionDesc)) {
     return false;
   }
   return (
-    /\b(?:browser|CDP|Chrome DevTools|automation|browser automation|snapshot|screenshot|capture|scroll)\b[\s\S]{0,200}\b(?:unavailable|unreachable|cannot be reached|could not be reached|connection refused|ECONNREFUSED|could not establish|cannot establish|browser_cdp_unavailable|timed out|timeouts?|timeout|cdp_command_timeout)\b|\b(?:timed out|timeouts?|timeout|cdp_command_timeout)\b[\s\S]{0,200}\b(?:browser|CDP|Chrome DevTools|automation|snapshot|screenshot|capture|scroll)\b/i.test(
+    /\b(?:slow source|source|endpoint|URL|fixture)\b[\s\S]{0,220}\b(?:timed out|timeouts?|timeout|did not respond|no response|no HTTP response|does not return|didn't return)\b|\b(?:timed out|timeouts?|timeout|did not respond|no response|no HTTP response)\b[\s\S]{0,220}\b(?:slow source|source|endpoint|URL|fixture)\b/i.test(
       content
     ) &&
-    /\bwhat was verified\b|\bverified\b[\s\S]{0,100}\b(?:URL|target|reachable|connection|port)\b/i.test(content) &&
+    hasSourceTimeoutAttemptEvidence(content) &&
     /\bwhat remains unverified\b|\b(?:remains? )?unverified\b|\bnot verified\b/i.test(content) &&
-    /\bnext action\b|\boperator\b[\s\S]{0,120}\b(?:should|can|must|next)\b|\bmanual(?:ly)?\b/i.test(content) &&
-    /\b(?:flow|mission|task|automated work)\b[\s\S]{0,120}\b(?:closed|complete|completed|no further|not possible|cannot continue)\b|\b(?:source[- ]bounded|bounded to|scope (?:is )?limited|scope of the fixture|cannot validate real[- ]world)\b|\b(?:browser runtime infrastructure issue|target application is not the source of the failure|restart or repair the browser runtime|re-submit the review task|resubmit the review task|no live production system is affected)\b/i.test(
+    /\b(?:how to continue|next action|continue|retry|increase the timeout|check the service|resume)\b/i.test(content) &&
+    /\b(?:release[- ]risk note|partial evidence closeout|partial closeout|bounded attempt|source[- ]bounded|closeout)\b/i.test(content)
+  );
+}
+
+function hasSourceTimeoutAttemptEvidence(content: string): boolean {
+  return (
+    /\bwhat was verified\b|\bverified\b[\s\S]{0,100}\b(?:URL|target|reachable|connection|port|source|status)\b/i.test(
+      content
+    ) ||
+    /\b(?:source|target URL|URL)\b[\s\S]{0,120}\bhttps?:\/\/[^\s)`|]+/i.test(content) ||
+    /\b(?:status|attempt result|outcome|content received)\b[\s\S]{0,120}\b(?:timed out|timeout|no response|none|no HTTP response)\b/i.test(
+      content
+    )
+  );
+}
+
+function hasTerminalBrowserFailureRationale(content: string): boolean {
+  return (
+    /\b(?:flow|mission|task|automated work)\b[\s\S]{0,120}\b(?:closed|complete|completed|no further|not possible|cannot continue)\b/i.test(
+      content
+    ) ||
+    /\b(?:source[- ]bounded|bounded to|scope (?:is )?limited|scope of the fixture|cannot validate real[- ]world)\b/i.test(
+      content
+    ) ||
+    /\b(?:browser runtime|browser infrastructure|browser automation|CDP|Chrome DevTools)\b[\s\S]{0,80}\b(?:infrastructure|connectivity|transport|runtime|failure|issue|unavailable|detached)\b/i.test(
+      content
+    ) ||
+    /\b(?:browser_cdp_unavailable|cdp_command_timeout|detached_target|attach_failed|target_not_found)\b/i.test(
+      content
+    ) ||
+    /\b(?:target application|target app|page[- ]load|endpoint|dashboard service|server)\b[\s\S]{0,100}\b(?:not the source|not the cause|not a source|not an endpoint|not a page[- ]load)\b/i.test(
+      content
+    ) ||
+    /\b(?:not a|is not a)\b[\s\S]{0,80}\b(?:page[- ]load|endpoint|dashboard service|server)\b[\s\S]{0,80}\b(?:issue|failure|problem)\b/i.test(
+      content
+    ) ||
+    /\b(?:restart|repair|re[- ]?submit|resubmit|retry)\b[\s\S]{0,80}\b(?:browser runtime|browser automation|CDP|Chrome DevTools|review task|task)\b/i.test(
+      content
+    ) ||
+    /\bno live production system is affected\b/i.test(content)
+  );
+}
+
+function looksLikeCompleteTimeoutFollowupRecovery(missionDesc: string, content: string): boolean {
+  if (!missionAllowsSourceBoundedFailureCloseout(missionDesc)) {
+    return false;
+  }
+  if (!/\bfollow[- ]?up\b|\bcontinue\b|\bresume\b/i.test(missionDesc)) {
+    return false;
+  }
+  return (
+    /\b(?:resume(?:d)?|retry|continued?|cold resume|recovered)\b[\s\S]{0,160}\b(?:completed|finished|succeeded|success)\b|\b(?:completed|finished|succeeded|success)\b[\s\S]{0,160}\b(?:resume(?:d)?|retry|continued?|cold resume|recovered)\b/i.test(
+      content
+    ) &&
+    /\b(?:browser|rendered|screenshot|snapshot|visible text|page shows|content rendered|full content rendered)\b/i.test(
+      content
+    ) &&
+    /\bverified facts?\b|\bverified\b[\s\S]{0,120}\b(?:owner|risk|source|content|URL)\b/i.test(content) &&
+    /\bunverified\b|\bresidual risks?\b|\bremaining risk\b|\b(?:timeout|earlier timeout)\b[\s\S]{0,160}\b(?:does not|doesn't|no longer|still|limits?|limit)\b/i.test(
+      content
+    )
+  );
+}
+
+function looksLikeCompleteCancelledSourceCloseout(missionDesc: string, content: string): boolean {
+  if (
+      !/\b(?:operator|user)\b[\s\S]{0,120}\b(?:cancel(?:s|led|ed|ling|ing)?|canceled)\b[\s\S]{0,160}\b(?:source check|source-check|source|active work|active tool)\b[\s\S]{0,220}\b(?:close out|closeout|how to continue|continue later|resume)\b/i.test(
+        missionDesc
+      )
+  ) {
+    return false;
+  }
+  return (
+    /\bcancel(?:led|ed)?\b|\bcanceled\b/i.test(content) &&
+    /\b(?:source check|source-check|target URL|URL|source|content)\b[\s\S]{0,180}\b(?:not retrieved|was not retrieved|not fetched|no content|none|not verified|unverified|before any content was fetched)\b/i.test(
+      content
+    ) &&
+    /\b(?:continue|resume|follow-up|follow up|later|retry|next action)\b/i.test(content)
+  );
+}
+
+function looksLikeBlockedOrFailedCloseout(content: string): boolean {
+  if (looksLikeCompleteAnswerWithBoundedResidualScope(content)) {
+    return false;
+  }
+  return /\b(?:blocked|unavailable|unreachable|cannot be reached|could not be reached|connection refused|ECONNREFUSED|timed out|timeouts?|timeout|not verified|unverified|failed|failure|did not complete|not completed|could not complete)\b/i.test(
+    content
+  );
+}
+
+function looksLikeCompleteAnswerWithBoundedResidualScope(content: string): boolean {
+  return (
+    /\b(?:residual risk|unverified scope|remaining risk)\b/i.test(content) &&
+    /\b(?:source[- ]bounded|local fixture|production freshness|external availability|deeper pricing tiers|not verified elsewhere|outside (?:the )?source|outside (?:the )?captured page)\b/i.test(
+      content
+    ) &&
+    !/\b(?:blocked|unavailable|unreachable|cannot be reached|could not be reached|connection refused|ECONNREFUSED|timed out|timeouts?|timeout|failed|failure|did not complete|not completed|could not complete)\b/i.test(
       content
     )
   );
 }
 
 function missionAllowsBrowserBoundedFailureCloseout(missionDesc: string): boolean {
-  return /\bif\b[\s\S]{0,120}\b(?:browser|CDP|automation)\b[\s\S]{0,120}\b(?:cannot|can't|unavailable|unreachable|refused|cannot be reached|could not be reached|times? out|timed out|timeout)\b[\s\S]{0,160}\b(?:close out|closeout|what was verified|remains? unverified|next action)\b/i.test(
+  return /\bif\b[\s\S]{0,120}\b(?:browser|CDP|automation|target)\b[\s\S]{0,120}\b(?:cannot|can't|unavailable|unreachable|refused|cannot be reached|could not be reached|times? out|timed out|timeout|detaches?|detached|detached_target|attach(?:es|ed|ing)?|attach_failed|failed to attach)\b[\s\S]{0,160}\b(?:close out|closeout|what was verified|remains? unverified|next action)\b/i.test(
     missionDesc
+  );
+}
+
+function missionAllowsSourceBoundedFailureCloseout(missionDesc: string): boolean {
+  if (/\b(?:provider|providers|pricing|price|search support|web search|model support)\b|价格|搜索|联网|供应商|提供商/iu.test(missionDesc)) {
+    return false;
+  }
+  return (
+    /\bbounded\b[\s\S]{0,120}\b(?:attempt|try|window|timeout)\b/i.test(missionDesc) &&
+    /\bif\b[\s\S]{0,180}\b(?:source|endpoint|page|service|fixture)\b[\s\S]{0,180}\b(?:does not return|doesn't return|fails? to return|times? out|timed out|timeout)\b[\s\S]{0,220}\b(?:close out|closeout|available evidence|verified facts?|unverified items?|how to continue)\b/i.test(
+      missionDesc
+    )
   );
 }
 
@@ -430,7 +839,30 @@ function looksLikeTruncatedMarkdown(content: string): boolean {
   const lastNonEmpty = trimmed.slice(Math.max(0, lastLfIndex + 1));
   const pipeCount = (lastNonEmpty.match(/\|/g) ?? []).length;
   if (lastNonEmpty.trimStart().startsWith("|") && pipeCount < 2) return true;
-  return /(\*\*|__|\[)$/.test(lastNonEmpty.trim());
+  return hasUnclosedTrailingInlineMarkdown(lastNonEmpty);
+}
+
+function hasUnclosedTrailingInlineMarkdown(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.endsWith("[")) return true;
+  if (trimmed.endsWith("**")) {
+    return countOccurrences(trimmed, "**") % 2 === 1;
+  }
+  if (trimmed.endsWith("__")) {
+    return countOccurrences(trimmed, "__") % 2 === 1;
+  }
+  return false;
+}
+
+function countOccurrences(value: string, needle: string): number {
+  let count = 0;
+  let index = 0;
+  while (true) {
+    const next = value.indexOf(needle, index);
+    if (next < 0) return count;
+    count += 1;
+    index = next + needle.length;
+  }
 }
 
 function looksLikeCompleteApprovalCloseout(content: string): boolean {
@@ -491,7 +923,8 @@ function findStalledLeadToolTurn(
   message: TeamMessage;
   status: "pending" | "failed" | "cancelled" | "timeout" | "waiting_input" | "waiting_external" | "resumable";
 } | null {
-  const latest = findLatestLeadToolMessage(mission, messages);
+  const latestEntry = findLatestLeadToolMessageAfterLatestUser(mission, messages);
+  const latest = latestEntry?.message;
   if (!latest) return null;
   if (
     latest.toolStatus !== "pending" &&
@@ -517,7 +950,8 @@ function findSkippedLeadToolTurn(
   mission: Mission,
   messages: TeamMessage[]
 ): { message: TeamMessage; status: "skipped" } | null {
-  const latest = findLatestLeadToolMessage(mission, messages);
+  const latestEntry = findLatestLeadToolMessageAfterLatestUser(mission, messages);
+  const latest = latestEntry?.message;
   if (!latest) return null;
   if (latest.content.trim().length > 0) return null;
   if (latest.toolStatus !== "completed") return null;
@@ -556,7 +990,8 @@ function findCompletedLeadToolTurnWithoutFinal(
   mission: Mission,
   messages: TeamMessage[]
 ): { message: TeamMessage; status: "completed" } | null {
-  const latest = findLatestLeadToolMessage(mission, messages);
+  const latestEntry = findLatestLeadToolMessageAfterLatestUser(mission, messages);
+  const latest = latestEntry?.message;
   if (!latest || latest.toolStatus !== "completed") return null;
   if (latest.content.trim().length > 0) return null;
   return { message: latest, status: "completed" };
@@ -565,6 +1000,24 @@ function findCompletedLeadToolTurnWithoutFinal(
 function findLatestLeadToolMessage(mission: Mission, messages: TeamMessage[]): TeamMessage | null {
   const index = findLatestLeadToolMessageIndex(mission, messages);
   return index >= 0 ? messages[index]! : null;
+}
+
+function findLatestLeadToolMessageAfterLatestUser(
+  mission: Mission,
+  messages: TeamMessage[]
+): { message: TeamMessage; index: number } | null {
+  const latestUserIndex = findLatestUserMessageIndex(messages);
+  for (let index = messages.length - 1; index > latestUserIndex; index -= 1) {
+    const message = messages[index]!;
+    if (
+      message.role === "assistant" &&
+      isLeadAssistantMessage(mission, message) &&
+      (message.toolCalls?.length ?? 0) > 0
+    ) {
+      return { message, index };
+    }
+  }
+  return null;
 }
 
 function findLatestLeadToolMessageIndex(mission: Mission, messages: TeamMessage[]): number {

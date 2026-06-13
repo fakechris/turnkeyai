@@ -36,6 +36,5 @@ test("bridgeReadiness reports route-level failures with an error action", () => 
   } satisfies BridgeStatus);
 
   assert.equal(item.state, "error");
-  assert.equal(item.action, "Bridge route is not healthy; open Agent Connect for transport diagnostics.");
+  assert.equal(item.action, "Start is not healthy; open Start first, then Diagnostics if it still fails.");
 });
-

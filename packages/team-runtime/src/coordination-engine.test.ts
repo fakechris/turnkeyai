@@ -12,11 +12,16 @@ import type {
   ReplayRecord,
   RecoveryDirector,
   RuntimeChainRecorder,
+  RuntimeProgressEvent,
+  RuntimeProgressRecorder,
   RoleLoopRunner,
   RoleRunCoordinator,
   RoleRunState,
+  RoleId,
   SummaryBuilder,
   TeamMessage,
+  TeamEvent,
+  TeamEventBus,
   TeamMessageStore,
   TeamThread,
   TeamThreadStore,
@@ -26,6 +31,7 @@ import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 import { buildReplayInspectionReport } from "@turnkeyai/qc-runtime/replay-inspection";
 
 import { CoordinationEngine } from "./coordination-engine";
+import type { ContextStateMaintainer } from "./context-state-maintainer";
 import { FileBatchOutbox } from "./file-batch-outbox";
 
 test("coordination engine aborts flow when hop limit is reached before dispatch", async () => {
@@ -813,6 +819,254 @@ test("coordination engine dedupes repeated handoffs and advances edge state to c
   assert.equal(storedFlow.edges[0]?.state, "closed");
 });
 
+test("coordination engine suppresses mention dispatch after final recovery tool budget is exhausted", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-recovery-budget",
+    teamId: "team-recovery-budget",
+    teamName: "Demo",
+    leadRoleId: "lead",
+    roles: [
+      { roleId: "lead", name: "Lead", seat: "lead", runtime: "local" },
+      { roleId: "operator", name: "Operator", seat: "member", runtime: "local" },
+    ],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const handoff: HandoffEnvelope = {
+    taskId: "task-recovery-budget",
+    flowId: "flow-recovery-budget",
+    sourceMessageId: "msg-user",
+    targetRoleId: "lead",
+    activationType: "cascade",
+    threadId: thread.threadId,
+    payload: normalizeRelayPayload({
+      threadId: thread.threadId,
+      relayBrief: "brief",
+      recentMessages: [],
+      dispatchPolicy: {
+        allowParallel: false,
+        allowReenter: true,
+        sourceFlowMode: "serial",
+      },
+    }),
+    createdAt: 1,
+  };
+  let storedFlow: FlowLedger = {
+    flowId: handoff.flowId,
+    threadId: thread.threadId,
+    rootMessageId: "msg-user",
+    mode: "serial",
+    status: "running",
+    currentStageIndex: 0,
+    activeRoleIds: ["lead"],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    hopCount: 2,
+    maxHops: 8,
+    edges: [
+      {
+        edgeId: `${handoff.taskId}:edge`,
+        flowId: handoff.flowId,
+        toRoleId: "lead",
+        sourceMessageId: handoff.sourceMessageId,
+        state: "acked",
+        createdAt: 1,
+      },
+    ],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const history: TeamMessage[] = [
+    {
+      id: "msg-recovery",
+      threadId: thread.threadId,
+      role: "user",
+      name: "user",
+      content: [
+        "System recovery: the previous final answer did not satisfy required goal slots.",
+        "Automatic recovery attempt 2 of 2.",
+        "This is the last automatic recovery attempt for this mission. Use at most five additional tool calls total.",
+      ].join("\n"),
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    ...[1, 2, 3, 4, 5].map((n) => ({
+      id: `msg-call-${n}`,
+      threadId: thread.threadId,
+      role: "assistant" as const,
+      roleId: "lead",
+      name: "Lead",
+      content: `Calling sessions_history(session_key="worker:${n}")`,
+      createdAt: 1 + n,
+      updatedAt: 1 + n,
+    })),
+  ];
+  const replyMessage: TeamMessage = {
+    id: "msg-reply",
+    threadId: thread.threadId,
+    role: "assistant",
+    roleId: "lead",
+    name: "Lead",
+    content:
+      "Lead is operating as Lead Coordinator.\n@{operator} Please take the next assigned slice and report back briefly.",
+    createdAt: 10,
+    updatedAt: 10,
+  };
+  let enqueueCount = 0;
+  let recoveryMentions: RoleId[] | null = null;
+
+  const engine = new CoordinationEngine({
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append(message) {
+        history.push(message);
+      },
+      async list(threadId, limit) {
+        const rows = threadId === thread.threadId ? history : [];
+        return typeof limit === "number" ? rows.slice(-limit) : rows;
+      },
+      async get() {
+        return null;
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return flowId === storedFlow.flowId ? storedFlow : null;
+      },
+      async put(flow) {
+        storedFlow = flow;
+      },
+      async listByThread(threadId) {
+        return threadId === storedFlow.threadId ? [storedFlow] : [];
+      },
+    },
+    roleRunCoordinator: {
+      async getOrCreate(_threadId, roleId) {
+        return {
+          runKey: `role:${roleId}:thread:${thread.threadId}`,
+          threadId: thread.threadId,
+          roleId,
+          mode: "group",
+          status: "idle",
+          iterationCount: 0,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 1,
+        };
+      },
+      async enqueue() {
+        enqueueCount += 1;
+        throw new Error("mention dispatch should have been suppressed");
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus() {},
+      async incrementIteration() {
+        return 0;
+      },
+      async fail() {},
+      async finish() {},
+    },
+    handoffPlanner: {
+      parseMentions() {
+        return [{ raw: "@{operator}", roleId: "operator", offsetStart: 0, offsetEnd: 11 }];
+      },
+      async validateMentionTargets() {
+        return { allowed: true, mode: "serial", targetRoleIds: ["operator"] };
+      },
+      async buildHandoffs() {
+        return [];
+      },
+    },
+    recoveryDirector: {
+      async onUserMessage() {
+        return { action: "complete" };
+      },
+      async onRoleReply(input) {
+        recoveryMentions = input.mentions;
+        return { action: "complete" };
+      },
+      async onRoleFailure() {
+        return { action: "abort", reason: "fail" };
+      },
+    },
+    roleLoopRunner: {
+      async ensureRunning() {},
+    },
+    summaryBuilder: {
+      async getRecentMessages() {
+        return history.map((message) => ({
+          messageId: message.id,
+          role: message.role,
+          name: message.name,
+          content: message.content,
+          createdAt: message.createdAt,
+        }));
+      },
+    },
+    relayBriefBuilder: {
+      build() {
+        return "brief";
+      },
+    },
+    idGenerator: {
+      flowId: () => "flow-generated",
+      messageId: () => "msg-generated",
+      taskId: () => "task-generated",
+    },
+    runtimeLimits: {
+      flowMaxHops: 8,
+    },
+    clock: {
+      now: () => 20,
+    },
+  });
+
+  await engine.handleRoleReply({
+    flow: storedFlow,
+    thread,
+    runState: {
+      runKey: `role:lead:thread:${thread.threadId}`,
+      threadId: thread.threadId,
+      roleId: "lead",
+      mode: "group",
+      status: "running",
+      iterationCount: 1,
+      maxIterations: 6,
+      inbox: [],
+      lastActiveAt: 10,
+      lastDequeuedTaskId: handoff.taskId,
+    },
+    handoff,
+    message: replyMessage,
+  });
+
+  assert.equal(enqueueCount, 0);
+  assert.deepEqual(recoveryMentions, []);
+  assert.equal(storedFlow.status, "completed");
+  assert.equal(storedFlow.activeRoleIds.length, 0);
+});
+
 test("coordination engine does not abort flow at hop limit while roles are still active", async () => {
   const thread: TeamThread = {
     threadId: "thread-3",
@@ -1491,7 +1745,10 @@ test("coordination engine replays user-post ingress through the outbox after par
     }
     assert.equal(replayedFlow.rootMessageId, "msg-ingress");
     assert.equal(replayedFlow.edges.length, 1);
-    assert.equal(replayedFlow.edges[0]?.state, "delivered");
+    await waitFor(async () => {
+      const latest = await flowLedgerStore.get("flow-ingress");
+      return latest?.edges[0]?.state === "delivered";
+    });
     assert.equal(ensureRunningCalls, 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -4235,6 +4492,7 @@ test("coordination engine emits runtime chain records for new flows and dispatch
     content: "start runtime chain",
   });
 
+  await waitFor(async () => flowCreatedCount === 1 && flowSyncCount >= 1 && dispatchCount === 1);
   assert.equal(flowCreatedCount, 1);
   assert.ok(flowSyncCount >= 1);
   assert.equal(dispatchCount, 1);
@@ -4495,9 +4753,25 @@ test("coordination engine: deliverDispatchIntent advances edge to delivered + in
     };
 
     let ensureRunningCalls = 0;
+    const runtimeProgressEvents: RuntimeProgressEvent[] = [];
+    const runtimeProgressRecorder: RuntimeProgressRecorder = {
+      async record(event) {
+        runtimeProgressEvents.push(event);
+      },
+    };
+    let releaseEnsureRunning!: () => void;
+    let ensureRunningStarted!: () => void;
+    const ensureRunningStartedPromise = new Promise<void>((resolve) => {
+      ensureRunningStarted = resolve;
+    });
+    const ensureRunningDonePromise = new Promise<void>((resolve) => {
+      releaseEnsureRunning = resolve;
+    });
     const roleLoopRunner: RoleLoopRunner = {
       async ensureRunning() {
         ensureRunningCalls += 1;
+        ensureRunningStarted();
+        await ensureRunningDonePromise;
       },
     };
 
@@ -4557,26 +4831,72 @@ test("coordination engine: deliverDispatchIntent advances edge to delivered + in
       // expired and re-processes the batch, causing a spurious second
       // ensureRunning invocation.
       clock: { now: () => Date.now() },
+      runtimeProgressRecorder,
       dispatchOutboxRootDir: path.join(tempDir, "dispatch-outbox"),
     });
 
-    await engine.dispatchToRole({
+    const dispatchPromise = engine.dispatchToRole({
       thread,
       flow: storedFlow,
       sourceMessage,
       toRoleId: "operator",
       activationType: "cascade",
     });
+    await ensureRunningStartedPromise;
+    const settledBeforeRoleLoopCompletes = await Promise.race([
+      dispatchPromise.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20)),
+    ]);
+    releaseEnsureRunning();
+    await dispatchPromise;
 
     // Lock-protected work observable from outside:
     assert.equal(enqueued.length, 1, "handoff enqueued exactly once");
+    // ensureRunning was signaled (the post-lock handoff in deliverDispatchIntent):
+    assert.equal(ensureRunningCalls, 1, "role loop runner signaled exactly once");
+    await waitFor(() =>
+      ["dispatch_handoff_queued", "dispatch_role_inbox_accepted", "dispatch_role_loop_signaled"].every((reason) =>
+        runtimeProgressEvents.some((event) => event.statusReason === reason)
+      )
+    );
+    assert.deepEqual(
+      runtimeProgressEvents.map((event) => ({
+        subjectKind: event.subjectKind,
+        phase: event.phase,
+        statusReason: event.statusReason,
+        roleId: event.roleId,
+      })),
+      [
+        {
+          subjectKind: "dispatch",
+          phase: "waiting",
+          statusReason: "dispatch_handoff_queued",
+          roleId: "operator",
+        },
+        {
+          subjectKind: "dispatch",
+          phase: "started",
+          statusReason: "dispatch_role_inbox_accepted",
+          roleId: "operator",
+        },
+        {
+          subjectKind: "dispatch",
+          phase: "started",
+          statusReason: "dispatch_role_loop_signaled",
+          roleId: "operator",
+        },
+      ]
+    );
+    assert.equal(
+      settledBeforeRoleLoopCompletes,
+      true,
+      "dispatch delivery must settle after signaling role loop, not after the role loop drains",
+    );
     assert.equal(
       storedFlow.edges.some((edge) => edge.state === "delivered"),
       true,
-      "edge advanced to delivered state",
+      "dispatch waits for the delivered-state write so edge state cannot silently lag",
     );
-    // ensureRunning was signaled (the post-lock handoff in deliverDispatchIntent):
-    assert.equal(ensureRunningCalls, 1, "role loop runner signaled exactly once");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -4729,6 +5049,258 @@ test("coordination engine: concurrent user posts on same thread persist both mes
   assert.equal(enqueued.length, 2, "each flow should enqueue exactly one handoff to lead");
 });
 
+test("coordination engine dispatches user posts before slow context refresh finishes", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-slow-context-refresh",
+    teamId: "team-slow-context-refresh",
+    teamName: "Slow Context Refresh",
+    leadRoleId: "lead",
+    roles: [{ roleId: "lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const messages = new Map<string, TeamMessage>();
+  const flows = new Map<string, FlowLedger>();
+  const enqueued: HandoffEnvelope[] = [];
+  let ensureRunningCalls = 0;
+  let releaseRefresh!: () => void;
+  let refreshCompleted = false;
+  const refreshStarted = new Promise<void>((resolve) => {
+    const contextStateMaintainer: ContextStateMaintainer = {
+      async onUserMessage() {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseRefresh = release;
+        });
+        refreshCompleted = true;
+      },
+      async onRoleReply() {},
+      async drain() {},
+    };
+    const engine = buildEngine({
+      teamThreadStore: {
+        async get(threadId) {
+          return threadId === thread.threadId ? thread : null;
+        },
+        async list() {
+          return [thread];
+        },
+        async create() {
+          throw new Error("not used");
+        },
+        async update() {
+          throw new Error("not used");
+        },
+        async delete() {},
+      },
+      teamMessageStore: {
+        async append(message) {
+          messages.set(message.id, message);
+        },
+        async list(threadId) {
+          return [...messages.values()].filter((message) => message.threadId === threadId);
+        },
+        async get(messageId) {
+          return messages.get(messageId) ?? null;
+        },
+        async appendIfAbsent(message) {
+          const existing = messages.get(message.id);
+          if (existing) {
+            return { written: false, existing };
+          }
+          messages.set(message.id, message);
+          return { written: true };
+        },
+      },
+      flowLedgerStore: {
+        async get(flowId) {
+          return flows.get(flowId) ?? null;
+        },
+        async put(flow) {
+          flows.set(flow.flowId, flow);
+        },
+        async listByThread(threadId) {
+          return [...flows.values()].filter((flow) => flow.threadId === threadId);
+        },
+      },
+      roleRunCoordinator: {
+        async getOrCreate(threadId, roleId) {
+          return {
+            runKey: `role:${roleId}:thread:${threadId}`,
+            threadId,
+            roleId,
+            mode: "group",
+            status: "idle",
+            iterationCount: 0,
+            maxIterations: 5,
+            inbox: [],
+            lastActiveAt: 0,
+          };
+        },
+        async enqueue(runKey, handoff) {
+          enqueued.push(handoff);
+          return {
+            runKey,
+            threadId: handoff.threadId,
+            roleId: handoff.targetRoleId,
+            mode: "group",
+            status: "queued",
+            iterationCount: 0,
+            maxIterations: 5,
+            inbox: [handoff],
+            lastActiveAt: 0,
+          };
+        },
+        async dequeue() {
+          return null;
+        },
+        async ack() {},
+        async bindWorkerSession() {},
+        async clearWorkerSession() {},
+        async setStatus() {},
+        async incrementIteration() {
+          return 1;
+        },
+        async fail() {},
+        async finish() {},
+      },
+      roleLoopRunner: {
+        async ensureRunning() {
+          ensureRunningCalls += 1;
+        },
+      },
+      contextStateMaintainer,
+    });
+    void engine.handleUserPost({ threadId: thread.threadId, content: "start now" });
+  });
+
+  await refreshStarted;
+  assert.equal(refreshCompleted, false);
+  await waitFor(() => enqueued.length === 1 && ensureRunningCalls === 1);
+  assert.equal(refreshCompleted, false);
+  releaseRefresh();
+  await waitFor(() => refreshCompleted);
+});
+
+test("coordination engine persists new messages through appendIfAbsent without a pre-read", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-append-fast-path",
+    teamId: "team-append-fast-path",
+    teamName: "Append Fast Path",
+    leadRoleId: "lead",
+    roles: [{ roleId: "lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const messages = new Map<string, TeamMessage>();
+  const flows = new Map<string, FlowLedger>();
+  const enqueued: HandoffEnvelope[] = [];
+  let appendIfAbsentCalls = 0;
+
+  const engine = buildEngine({
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append(message) {
+        messages.set(message.id, message);
+      },
+      async list(threadId) {
+        return [...messages.values()].filter((message) => message.threadId === threadId);
+      },
+      async get() {
+        throw new Error("new-message fast path should not pre-read by id");
+      },
+      async appendIfAbsent(message) {
+        appendIfAbsentCalls += 1;
+        const existing = messages.get(message.id);
+        if (existing) {
+          return { written: false, existing };
+        }
+        messages.set(message.id, message);
+        return { written: true };
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return flows.get(flowId) ?? null;
+      },
+      async put(flow) {
+        flows.set(flow.flowId, flow);
+      },
+      async listByThread(threadId) {
+        return [...flows.values()].filter((flow) => flow.threadId === threadId);
+      },
+    },
+    roleRunCoordinator: {
+      async getOrCreate(threadId, roleId) {
+        return {
+          runKey: `role:${roleId}:thread:${threadId}`,
+          threadId,
+          roleId,
+          mode: "group",
+          status: "idle",
+          iterationCount: 0,
+          maxIterations: 5,
+          inbox: [],
+          lastActiveAt: 0,
+        };
+      },
+      async enqueue(runKey, handoff) {
+        enqueued.push(handoff);
+        return {
+          runKey,
+          threadId: handoff.threadId,
+          roleId: handoff.targetRoleId,
+          mode: "group",
+          status: "queued",
+          iterationCount: 0,
+          maxIterations: 5,
+          inbox: [handoff],
+          lastActiveAt: 0,
+        };
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus() {},
+      async incrementIteration() {
+        return 1;
+      },
+      async fail() {},
+      async finish() {},
+    },
+    roleLoopRunner: {
+      async ensureRunning() {},
+    },
+  });
+
+  await engine.handleUserPost({ threadId: thread.threadId, content: "start through fast append" });
+
+  assert.equal(appendIfAbsentCalls, 1);
+  assert.equal(messages.size, 1);
+  assert.equal(enqueued.length, 1);
+});
+
 test("coordination engine refreshes existing native tool messages when final role outcome completes them", async () => {
   const thread: TeamThread = {
     threadId: "thread-native-tools",
@@ -4877,6 +5449,18 @@ test("coordination engine refreshes existing native tool messages when final rol
       return [...messages.values()].filter((message) => message.threadId === threadId);
     },
   };
+  const publishedEvents: TeamEvent[] = [];
+  const teamEventBus: TeamEventBus = {
+    async publish(event) {
+      publishedEvents.push(event);
+    },
+    subscribe() {
+      return () => undefined;
+    },
+    async listRecent() {
+      return [];
+    },
+  };
   const engine = buildEngine({
     teamThreadStore: {
       async get() {
@@ -4928,6 +5512,7 @@ test("coordination engine refreshes existing native tool messages when final rol
     roleLoopRunner: {
       async ensureRunning() {},
     },
+    teamEventBus,
   });
 
   await engine.handleRoleReply({
@@ -4954,9 +5539,18 @@ test("coordination engine refreshes existing native tool messages when final rol
   assert.equal(messages.get(completedToolMessage.id)?.toolProgress?.at(-1)?.phase, "completed");
   assert.equal(messages.get(toolResultMessage.id)?.role, "tool");
   assert.equal(messages.get(finalMessage.id)?.content, "Final answer.");
+  await waitFor(() => publishedEvents.some((event) => event.kind === "message.posted"));
+  const posted = publishedEvents.find((event) => event.kind === "message.posted");
+  assert.equal(posted?.threadId, thread.threadId);
+  assert.equal(posted?.payload.route, "role_outcome");
+  assert.deepEqual(posted?.payload.messageIds, [
+    completedToolMessage.id,
+    toolResultMessage.id,
+    finalMessage.id,
+  ]);
 });
 
-async function waitFor(check: () => Promise<boolean>, timeoutMs = 500, intervalMs = 10): Promise<void> {
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 500, intervalMs = 10): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (await check()) {
@@ -4975,6 +5569,9 @@ function buildEngine(input: {
   roleLoopRunner: RoleLoopRunner;
   workerRuntime?: Pick<WorkerRuntime, "getState">;
   runtimeChainRecorder?: RuntimeChainRecorder;
+  runtimeProgressRecorder?: RuntimeProgressRecorder;
+  teamEventBus?: TeamEventBus;
+  contextStateMaintainer?: ContextStateMaintainer;
   handoffPlanner?: HandoffPlanner;
 }): CoordinationEngine {
   const handoffPlanner: HandoffPlanner = input.handoffPlanner ?? {
@@ -5038,6 +5635,9 @@ function buildEngine(input: {
     },
     ...(input.workerRuntime ? { workerRuntime: input.workerRuntime } : {}),
     ...(input.runtimeChainRecorder ? { runtimeChainRecorder: input.runtimeChainRecorder } : {}),
+    ...(input.runtimeProgressRecorder ? { runtimeProgressRecorder: input.runtimeProgressRecorder } : {}),
+    ...(input.teamEventBus ? { teamEventBus: input.teamEventBus } : {}),
+    ...(input.contextStateMaintainer ? { contextStateMaintainer: input.contextStateMaintainer } : {}),
   });
 }
 

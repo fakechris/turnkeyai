@@ -15,8 +15,8 @@ import type {
 
 import { createMissionThreadBridge } from "./mission-thread-bridge";
 
-function memActivityStore() {
-  const events: ActivityEvent[] = [];
+function memActivityStore(initialEvents: ActivityEvent[] = []) {
+  const events: ActivityEvent[] = [...initialEvents];
   return {
     events,
     async listByMission(missionId: string): Promise<ActivityEvent[]> {
@@ -24,6 +24,14 @@ function memActivityStore() {
     },
     async append(event: ActivityEvent): Promise<void> {
       events.push(event);
+    },
+    async replaceAll(missionId: string, nextEvents: ActivityEvent[]): Promise<void> {
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        if (events[index]?.missionId === missionId) {
+          events.splice(index, 1);
+        }
+      }
+      events.push(...nextEvents);
     },
   };
 }
@@ -77,10 +85,18 @@ function memRoleRunStore(runs: RoleRunState[]) {
   };
 }
 
-function memWorkerSessionStore(sessions: WorkerSessionRecord[]) {
+function memWorkerSessionStore(
+  sessions: WorkerSessionRecord[],
+  counters?: { list?: number; listByThread?: number }
+) {
   return {
     async list(): Promise<WorkerSessionRecord[]> {
+      if (counters) counters.list = (counters.list ?? 0) + 1;
       return sessions;
+    },
+    async listByThread(threadId: string): Promise<WorkerSessionRecord[]> {
+      if (counters) counters.listByThread = (counters.listByThread ?? 0) + 1;
+      return sessions.filter((session) => session.context?.threadId === threadId);
     },
   };
 }
@@ -367,7 +383,10 @@ describe("MissionThreadBridge", () => {
         },
       ]),
       teamMessageStore: memTeamMessageStore([
-        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m1", "user", 100),
+          content: mission.desc,
+        },
         {
           ...baseMessage("m2", "assistant", 200),
           roleId: "role-lead",
@@ -449,6 +468,508 @@ describe("MissionThreadBridge", () => {
     const updated = await missionStore.get("msn.1");
     assert.equal(updated?.status, "working");
     assert.equal(updated?.blockers, 0);
+  });
+
+  it("records goal-slot coverage blockers for superficially final answers", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: "调研 deepseek v4 flash api，有哪些 provider 支持 search，价格怎么样",
+      progress: 0.8,
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "结论：DeepSeek V4 Flash API 可能可通过多个 provider 访问。",
+            "各 provider 具体输入/输出 token 价格：未验证。",
+            "支持 search 功能的 provider 列表：未验证。",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    assert.equal(await bridge.tickMission("msn.1"), 2);
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
+    const incomplete = activity.events.find(
+      (event) => event.runtime?.eventType === "mission.incomplete_final_answer"
+    );
+    assert.equal(incomplete?.runtime?.reason, "goal_slots_unverified");
+
+    await bridge.tickMission("msn.1");
+    const duplicateRecoveryEvents = activity.events.filter(
+      (event) =>
+        event.runtime?.eventType === "mission.incomplete_final_answer" &&
+        event.runtime?.messageId === "m2" &&
+        event.runtime?.reason === "goal_slots_unverified"
+    );
+    assert.equal(duplicateRecoveryEvents.length, 1);
+  });
+
+  it("posts one continuation when goal-slot coverage blocks an incomplete final answer", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: "调研 deepseek v4 flash api，有哪些 provider 支持 search，价格怎么样",
+      progress: 0.8,
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const messages: TeamMessage[] = [
+      baseMessage("m1", "user", 100),
+      {
+        ...baseMessage("m2", "assistant", 200),
+        roleId: "role-lead",
+        name: "Lead",
+        content: [
+          "结论：DeepSeek V4 Flash API 可能可通过多个 provider 访问。",
+          "各 provider 具体输入/输出 token 价格：未验证。",
+          "支持 search 功能的 provider 列表：未验证。",
+        ].join("\n"),
+        source: {
+          type: "worker",
+          chatType: "group",
+          route: "lead-role",
+          speakerType: "Role",
+          speakerName: "Lead",
+        },
+      },
+    ];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore(messages),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+        messages.push({ ...baseMessage("m3", "user", 300), content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+    await bridge.tickMission("msn.1");
+
+    assert.equal(followUps.length, 1);
+    assert.equal(followUps[0]?.threadId, "thread-1");
+    assert.match(followUps[0]?.content ?? "", /Continue the original mission/);
+    assert.match(followUps[0]?.content ?? "", /provider support.*search support.*pricing/s);
+    assert.match(followUps[0]?.content ?? "", /Do not search for placeholder words/);
+    assert.match(followUps[0]?.content ?? "", /Previous incomplete answer signals/);
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "working");
+    assert.equal(updated?.blockers, 0);
+  });
+
+  it("builds incomplete-final follow-ups from the active user goal, not stale setup text", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: [
+        "Legacy setup text from a previous run.",
+        "调研 deepseek v4 flash api，有哪些 provider 支持 search，价格怎么样。",
+      ].join("\n"),
+      progress: 0.8,
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "user", 100),
+          content:
+            "Aurora-19 launch handoff: verify the owner, launch window, hard constraint, and risk from durable memory.",
+        },
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Owner: verified from durable memory.",
+            "Launch window: verified from durable memory.",
+            "Hard constraint: verified from durable memory.",
+            "Risk: not verified.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const content = followUps[0]?.content ?? "";
+    assert.match(content, /risk or limitation/);
+    const slotLine =
+      content
+        .split(/\r?\n/)
+        .find((line) => line.includes("missing or unverified core slots")) ?? "";
+    assert.doesNotMatch(slotLine, /provider support|search support|pricing/i);
+    assert.match(content, /Do not introduce provider\/search\/model-support columns/);
+  });
+
+  it("does not inject provider search recovery slots into ordinary vendor comparisons", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: [
+        "A product lead is deciding between Vendor Alpha and Vendor Beta.",
+        "Return a concise recommendation that compares pricing, strengths, risks, and the tradeoff that matters most.",
+      ].join("\n"),
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Vendor Alpha costs $19 per seat.",
+            "Vendor Beta pricing: 未验证。",
+            "Risks: 未验证。",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const content = followUps[0]?.content ?? "";
+    assert.match(content, /pricing.*risk or limitation/s);
+    const slotLine =
+      content
+        .split(/\r?\n/)
+        .find((line) => line.includes("missing or unverified core slots")) ?? "";
+    assert.doesNotMatch(slotLine, /provider support|search\/web_search support|search support|model-support/i);
+    assert.match(content, /Do not introduce provider\/search\/model-support columns/);
+    assert.doesNotMatch(content, /Source\/provider labels/i);
+  });
+
+  it("does not echo unverified placeholder tables into incomplete-final recovery prompts", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: "调研 DeepSeek V4 Flash API：provider、search/web_search 支持、价格和关键原文摘录。",
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "## 调研结果：blocked / partial",
+            "| Provider | 支持 | search | 价格 | 证据 URL |",
+            "|---|---|---|---|---|",
+            "| DeepSeek 官方 (api.deepseek.com) | 未验证 | 未验证 | 未验证 | https://api-docs.deepseek.com/ |",
+            "| OpenRouter | 未验证 | 未验证 | 未验证 | https://openrouter.ai/models/deepseek-v4-flash |",
+            "DuckDuckGo 搜索 \"未验证\" 结果（与目标研究无关）。",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const content = followUps[0]?.content ?? "";
+    assert.match(content, /Previous incomplete answer signals/);
+    assert.match(content, /URLs already mentioned: https:\/\/api-docs\.deepseek\.com\/, https:\/\/openrouter\.ai\/models\/deepseek-v4-flash/);
+    assert.match(content, /Source labels already mentioned: DeepSeek 官方 \(api\.deepseek\.com\), OpenRouter/);
+    assert.doesNotMatch(content, /Source\/provider labels/);
+    assert.doesNotMatch(content, /DuckDuckGo 搜索 "未验证"/);
+    assert.doesNotMatch(content, /\| Provider \| 支持 \| search \| 价格 \|/);
+  });
+
+  it("caps repeated incomplete-final automatic continuations per mission", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: "调研 DeepSeek V4 Flash API：provider、search/web_search 支持、价格和关键原文摘录。",
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const messages: TeamMessage[] = [baseMessage("m1", "user", 100)];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore(messages),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+    const leadIncomplete = (id: string, createdAt: number): TeamMessage => ({
+      ...baseMessage(id, "assistant", createdAt),
+      roleId: "role-lead",
+      name: "Lead",
+      content: [
+        "结论：DeepSeek V4 Flash API 可能可通过多个 provider 访问。",
+        "provider 支持：未验证。",
+        "search/web_search 支持：未验证。",
+        "输入/输出价格：未验证。",
+        "关键原文摘录：未验证。",
+      ].join("\n"),
+      source: {
+        type: "worker",
+        chatType: "group",
+        route: "lead-role",
+        speakerType: "Role",
+        speakerName: "Lead",
+      },
+    });
+    const reviveMission = async () => {
+      const latest = await missionStore.get("msn.1");
+      await missionStore.putRaw({
+        ...latest!,
+        status: "working",
+        blockers: 0,
+      });
+    };
+
+    messages.push(leadIncomplete("m2", 200));
+    await bridge.tickMission("msn.1");
+    assert.equal(followUps.length, 1);
+    assert.match(followUps[0]?.content ?? "", /Automatic recovery attempt 1 of 2/);
+
+    await reviveMission();
+    messages.push({ ...baseMessage("m3", "user", 300), content: followUps[0]!.content });
+    messages.push(leadIncomplete("m4", 400));
+    await bridge.tickMission("msn.1");
+    assert.equal(followUps.length, 2);
+    assert.match(followUps[1]?.content ?? "", /Automatic recovery attempt 2 of 2/);
+    assert.match(followUps[1]?.content ?? "", /last automatic recovery attempt/);
+    assert.match(followUps[1]?.content ?? "", /at most five additional tool calls total/);
+
+    await reviveMission();
+    messages.push({ ...baseMessage("m5", "user", 500), content: followUps[1]!.content });
+    messages.push(leadIncomplete("m6", 600));
+    await bridge.tickMission("msn.1");
+
+    assert.equal(followUps.length, 2);
+    const incompleteEvents = activity.events.filter(
+      (event) =>
+        event.runtime?.eventType === "mission.incomplete_final_answer" &&
+        event.runtime?.reason === "goal_slots_unverified"
+    );
+    assert.equal(incompleteEvents.length, 3);
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
+  });
+
+  it("reopens a prematurely done mission when goal-slot coverage later fails", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      status: "done",
+      progress: 1,
+      desc: "调研 DeepSeek V4 Flash API：有哪些 provider 支持 search，价格怎么样。",
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "**Status: blocked.** The research session timed out before any provider data was gathered.",
+            "No pricing, model names, or search-support details could be verified.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
+    const incomplete = activity.events.find(
+      (event) => event.runtime?.eventType === "mission.incomplete_final_answer"
+    );
+    assert.equal(incomplete?.runtime?.reason, "goal_slots_unverified");
   });
 
   it("blocks a mission when the lead final answer looks structurally truncated", async () => {
@@ -803,6 +1324,333 @@ describe("MissionThreadBridge", () => {
     assert.deepEqual(stalled?.tags, ["mission_stalled", "resumable"]);
   });
 
+  it("recovers a late completed worker after a prior session timeout and posts one continuation", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      status: "blocked",
+      blockers: 1,
+      progress: 0.95,
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore([
+      {
+        id: "existing-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_send",
+        tags: ["thread", "tool-call", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send",
+          callInput: JSON.stringify({ session_key: "worker:explore:1" }),
+        },
+      },
+      {
+        id: "existing-result",
+        missionId: mission.id,
+        tMs: 200,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_send failed: Sub-agent session timed out after 45s.",
+        emph: "danger",
+        tags: ["thread", "tool-result", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send",
+          resultContent: "Sub-agent session timed out after 45s.",
+        },
+      },
+    ]);
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:explore:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+            toolCallId: "call-spawn",
+            label: "provider search",
+          },
+          state: {
+            workerRunKey: "worker:explore:1",
+            workerType: "explore",
+            status: "done",
+            createdAt: 100,
+            updatedAt: 300,
+            lastResult: {
+              workerType: "explore",
+              status: "completed",
+              summary: "Found provider evidence after timeout.",
+              payload: { mode: "llm_sub_agent", content: "Found provider evidence after timeout." },
+            },
+          },
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+    await bridge.tickMission("msn.1");
+
+    const recoveredEvents = activity.events.filter(
+      (event) => event.runtime?.eventType === "mission.worker_late_completion"
+    );
+    assert.equal(recoveredEvents.length, 1);
+    assert.match(recoveredEvents[0]!.text, /Found provider evidence after timeout/);
+    assert.equal(followUps.length, 1);
+    assert.equal(followUps[0]!.threadId, "thread-1");
+    assert.match(followUps[0]!.content, /Continue the original mission/);
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "working");
+    assert.equal(updated?.blockers, 0);
+    assert.equal(updated?.progress, 0.95);
+  });
+
+  it("does not repost late worker recovery after only successful follow-up sends update the worker", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"], progress: 0.95 };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore([
+      {
+        id: "original-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_send",
+        tags: ["thread", "tool-call", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send-original",
+          callInput: JSON.stringify({ session_key: "worker:browser:1" }),
+        },
+      },
+      {
+        id: "original-timeout",
+        missionId: mission.id,
+        tMs: 200,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_send failed: Sub-agent session timed out.",
+        emph: "danger",
+        tags: ["thread", "tool-result", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send-original",
+          resultContent: "Sub-agent session timed out.",
+        },
+      },
+      {
+        id: "late-recovery",
+        missionId: mission.id,
+        tMs: 300,
+        kind: "recovery",
+        actor: "system",
+        text: "mission.worker_late_completion: Browser failure buckets: attach_failed=2.",
+        tags: ["worker_late_completion", "browser"],
+        runtime: {
+          eventType: "mission.worker_late_completion",
+          threadId: "thread-1",
+          workerRunKey: "worker:browser:1",
+          workerType: "browser",
+          workerUpdatedAt: "300",
+        },
+      },
+      {
+        id: "follow-up-call",
+        missionId: mission.id,
+        tMs: 400,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_send",
+        tags: ["thread", "tool-call", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send-follow-up",
+          callInput: JSON.stringify({ session_key: "worker:browser:1" }),
+        },
+      },
+      {
+        id: "follow-up-result",
+        missionId: mission.id,
+        tMs: 500,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_send returned: completed",
+        tags: ["thread", "tool-result", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send-follow-up",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "completed",
+            final_content: "Browser failure buckets: attach_failed=2.",
+          }),
+        },
+      },
+    ]);
+    const followUps: string[] = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:browser:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+            toolCallId: "call-send-original",
+            label: "ops dashboard browser review",
+          },
+          state: {
+            workerRunKey: "worker:browser:1",
+            workerType: "browser",
+            status: "done",
+            createdAt: 100,
+            updatedAt: 600,
+            lastResult: {
+              workerType: "browser",
+              status: "completed",
+              summary: "Browser failure buckets: attach_failed=2.",
+              payload: { mode: "llm_sub_agent", content: "Browser failure buckets: attach_failed=2." },
+            },
+          },
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        followUps.push(input.content);
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const recoveredEvents = activity.events.filter(
+      (event) => event.runtime?.eventType === "mission.worker_late_completion"
+    );
+    assert.equal(recoveredEvents.length, 1);
+    assert.equal(followUps.length, 0);
+  });
+
+  it("does not recover a completed worker when no prior session tool failed or timed out", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const activity = memActivityStore([
+      {
+        id: "existing-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_send",
+        tags: ["thread", "tool-call", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send",
+          callInput: JSON.stringify({ session_key: "worker:explore:1" }),
+        },
+      },
+      {
+        id: "existing-result",
+        missionId: mission.id,
+        tMs: 200,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_send returned: completed within timeout",
+        tags: ["thread", "tool-result", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "completed",
+            final_content: "Completed within timeout.",
+          }),
+        },
+      },
+    ]);
+    const followUps: string[] = [];
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([mission]),
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:explore:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:1",
+            workerType: "explore",
+            status: "done",
+            createdAt: 100,
+            updatedAt: 300,
+            lastResult: {
+              workerType: "explore",
+              status: "completed",
+              summary: "Normal completion.",
+              payload: { mode: "llm_sub_agent", content: "Normal completion." },
+            },
+          },
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        followUps.push(input.content);
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    assert.equal(activity.events.some((event) => event.runtime?.eventType === "mission.worker_late_completion"), false);
+    assert.equal(followUps.length, 0);
+  });
+
   it("marks a mission blocked when the latest lead tool turn was skipped without a final answer", async () => {
     counter = 0;
     const mission: Mission = { ...baseMission, agents: ["role-lead"] };
@@ -1017,6 +1865,109 @@ describe("MissionThreadBridge", () => {
     assert.equal(activity.events[1]!.runtime?.messageId, "m2");
   });
 
+  it("does not scan worker sessions when the thread has no session tool activity", async () => {
+    counter = 0;
+    const counters: { list?: number; listByThread?: number } = {};
+    const missionStore = memMissionStore([baseMission]);
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      workerSessionStore: memWorkerSessionStore([], counters),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Done.",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    assert.equal(counters.listByThread ?? 0, 0);
+    assert.equal(counters.list ?? 0, 0);
+    assert.equal((await missionStore.get("msn.1"))?.status, "done");
+  });
+
+  it("uses one thread-scoped worker session read for recovery and completion reconciliation", async () => {
+    counter = 0;
+    const counters: { list?: number; listByThread?: number } = {};
+    const missionStore = memMissionStore([baseMission]);
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:browser:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+            toolCallId: "call-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:1",
+            workerType: "browser",
+            status: "running",
+            createdAt: 100,
+            updatedAt: 200,
+          },
+        },
+      ], counters),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+          toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+          toolStatus: "pending",
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    assert.equal(counters.listByThread, 1);
+    assert.equal(counters.list ?? 0, 0);
+    assert.equal((await missionStore.get("msn.1"))?.status, "working");
+  });
+
   it("skips missions without a threadId", async () => {
     const { threadId: _omitted, ...unlinked } = baseMission;
     const activity = memActivityStore();
@@ -1050,6 +2001,62 @@ describe("MissionThreadBridge", () => {
       { missionId: "msn.1", appended: 1 },
       { missionId: "msn.2", appended: 1 },
     ]);
+  });
+
+  it("tickThread mirrors only missions linked to the updated thread", async () => {
+    counter = 0;
+    const m2: Mission = { ...baseMission, id: "msn.2", threadId: "thread-2" };
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission, m2]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("a", "assistant", 100),
+        { ...baseMessage("b", "assistant", 200), threadId: "thread-2" },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    const result = await bridge.tickThread!("thread-2");
+
+    assert.deepEqual(result, [{ missionId: "msn.2", appended: 1 }]);
+    assert.deepEqual(activity.events.map((event) => event.missionId), ["msn.2"]);
+  });
+
+  it("tickAll prioritizes active recent missions before applying the per-tick cap", async () => {
+    counter = 0;
+    const oldDone: Mission = {
+      ...baseMission,
+      id: "msn.old",
+      threadId: "thread-old",
+      status: "done",
+      createdAtMs: 10,
+    };
+    const activeRecent: Mission = {
+      ...baseMission,
+      id: "msn.active",
+      threadId: "thread-active",
+      status: "working",
+      createdAtMs: 20,
+    };
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([oldDone, activeRecent]),
+      teamMessageStore: memTeamMessageStore([
+        { ...baseMessage("old-msg", "assistant", 100), threadId: "thread-old" },
+        { ...baseMessage("active-msg", "assistant", 200), threadId: "thread-active" },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      maxMissionsPerTick: 1,
+    });
+
+    const result = await bridge.tickAll();
+
+    assert.deepEqual(result, [{ missionId: "msn.active", appended: 1 }]);
+    assert.deepEqual(activity.events.map((event) => event.missionId), ["msn.active"]);
   });
 
   it("uses roleId as actor when available, falls back to message name", async () => {
@@ -1256,6 +2263,82 @@ describe("MissionThreadBridge", () => {
     assert.equal(result.runtime?.sourceLabel, "Vendor Alpha");
     // Inline text includes a head slice (not just byte count).
     assert.match(result.text, /Page title: Example Domain/);
+  });
+
+  it("dedupes split and metadata tool-result events by tool call while keeping full result content", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const fullResult = JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      task_id: "task-1",
+      session_key: "worker:explore:1",
+      agent_id: "explore",
+      label: "DeepSeek provider research",
+      status: "timeout",
+      resumable: true,
+      timeout_seconds: 45,
+      evidence_available: true,
+      result: "Sub-agent session timed out after 45s. The session is resumable.",
+      final_content: null,
+    }, null, 2);
+    const splitResult: TeamMessage = {
+      ...baseMessage("tool-split-result", "tool", 4_900),
+      name: "sessions_send",
+      content: fullResult,
+      toolCallId: "call-send",
+      toolStatus: "failed",
+    };
+    const finalMessage: TeamMessage = {
+      ...baseMessage("a-final", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Blocked: provider/search/pricing remain unverified.",
+      metadata: {
+        toolUse: {
+          rounds: [
+            {
+              round: 1,
+              calls: [
+                {
+                  id: "call-send",
+                  name: "sessions_send",
+                  input: { session_key: "worker:explore:1", message: "continue provider research" },
+                },
+              ],
+              results: [
+                {
+                  toolCallId: "call-send",
+                  toolName: "sessions_send",
+                  isError: true,
+                  contentBytes: 43,
+                  content: "Sub-agent session timed out after 45s.",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([splitResult, finalMessage]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    await bridge.tickMission("msn.1");
+
+    const results = activity.events.filter(
+      (event) =>
+        event.runtime?.toolPhase === "result" &&
+        event.runtime.toolName === "sessions_send" &&
+        event.runtime.toolCallId === "call-send",
+    );
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.runtime?.resultContent, fullResult);
+    assert.equal(results[0]?.runtime?.sourceLabel, "DeepSeek provider research");
+    assert.equal(results[0]?.emph, "danger");
   });
 
   it("tool-result event falls back to call label for source coverage", async () => {
@@ -1574,7 +2657,7 @@ describe("MissionThreadBridge", () => {
     );
   });
 
-  it("interleaves native split tool result messages with their assistant tool calls", async () => {
+  it("orders native split tool results at their real completion times", async () => {
     counter = 0;
     const activity = memActivityStore();
     const assistant: TeamMessage = {
@@ -1628,15 +2711,109 @@ describe("MissionThreadBridge", () => {
       })),
       [
         { messageId: "a-native-tasks", toolName: "tasks_list", phase: "call" },
-        { messageId: "tool-list", toolName: "tasks_list", phase: "result" },
         { messageId: "a-native-tasks", toolName: "tasks_create", phase: "call" },
+        { messageId: "tool-list", toolName: "tasks_list", phase: "result" },
         { messageId: "tool-create", toolName: "tasks_create", phase: "result" },
         { messageId: "a-native-tasks", toolName: null, phase: null },
       ]
     );
     assert.equal(ordered.length, 5);
-    assert.equal(ordered[1]!.runtime?.resultContent, '{"tasks":[]}');
+    assert.equal(ordered[2]!.tMs, 5_100);
+    assert.equal(ordered[3]!.tMs, 5_200);
+    assert.ok(
+      ordered[4]!.tMs > 5_200,
+      "assistant thought should not appear before split tool results complete"
+    );
+    assert.equal(ordered[2]!.runtime?.resultContent, '{"tasks":[]}');
     assert.match(ordered[3]!.text, /Follow up with support/);
+  });
+
+  it("replaces an existing native tool result summary when split result content arrives later", async () => {
+    counter = 0;
+    const fullResult = JSON.stringify(
+      {
+        status: "ok",
+        requested_url: "https://example.com/",
+        final_url: "https://example.com/",
+        status_code: 200,
+        title: "Example Domain",
+        text_excerpt:
+          "This domain is for use in documentation examples without needing permission.",
+      },
+      null,
+      2
+    );
+    const activity = memActivityStore([
+      {
+        id: "existing-result",
+        missionId: "msn.1",
+        tMs: 4_950,
+        kind: "tool",
+        actor: "role-lead",
+        text: "Tool web_fetch returned (0 B):\nTool call completed: web_fetch",
+        tags: ["thread", "tool-result", "web_fetch"],
+        runtime: {
+          threadId: "thread-1",
+          messageId: "a-web-fetch",
+          activitySourceId: "a-web-fetch:tool-result:c-web-fetch",
+          toolName: "web_fetch",
+          toolCallId: "c-web-fetch",
+          toolPhase: "result",
+          round: "1",
+          contentBytes: "0",
+          resultContent: "Tool call completed: web_fetch",
+        },
+      },
+    ]);
+    const assistant: TeamMessage = {
+      ...baseMessage("a-web-fetch", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "",
+      metadata: { nativeToolUse: true, toolRound: 1 },
+      toolCalls: [
+        {
+          id: "c-web-fetch",
+          name: "web_fetch",
+          arguments: { url: "https://example.com", max_chars: 1500 },
+        },
+      ],
+      toolProgress: [
+        {
+          toolCallId: "c-web-fetch",
+          toolName: "web_fetch",
+          phase: "completed",
+          summary: "Tool call completed: web_fetch",
+          ts: 5_000,
+        },
+      ],
+    };
+    const splitResult: TeamMessage = {
+      ...baseMessage("tool-web-fetch", "tool", 5_001),
+      name: "web_fetch",
+      content: fullResult,
+      toolCallId: "c-web-fetch",
+      toolStatus: "completed",
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([assistant, splitResult]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const results = activity.events.filter(
+      (event) => event.runtime?.toolPhase === "result" && event.runtime.toolCallId === "c-web-fetch"
+    );
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.id, "existing-result");
+    assert.equal(results[0]?.runtime?.messageId, "tool-web-fetch");
+    assert.equal(results[0]?.tMs, 5_001);
+    assert.equal(results[0]?.runtime?.resultContent, fullResult);
+    assert.match(results[0]?.text ?? "", /Example Domain/);
+    assert.match(results[0]?.text ?? "", /documentation examples/);
   });
 
   it("marks split native budget-skipped tool calls from progress admission", async () => {

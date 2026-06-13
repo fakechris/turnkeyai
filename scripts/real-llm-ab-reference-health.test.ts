@@ -183,6 +183,156 @@ test("real LLM A/B reference health accepts timeout-partial native-work baseline
   }
 });
 
+test("real LLM A/B reference health accepts timeout-followup baseline loss artifacts", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-health-"));
+  try {
+    const referenceDir = path.join(dir, "reference");
+    mkdirSync(referenceDir, { recursive: true });
+    const prompt =
+      "Evaluate this slow source for a release-risk note.\nSlow source: http://127.0.0.1:65170/slow-fixture\nUse a bounded attempt first. A follow-up may ask you to resume that same source-check context after the initial closeout.";
+    const artifactPath = path.join(referenceDir, "natural-timeout-followup-continuation.json");
+    const tasksPath = path.join(dir, "tasks.json");
+    writeFileSync(
+      tasksPath,
+      JSON.stringify({
+        kind: "turnkeyai.real-llm-ab-reference-collection-tasks.manifest",
+        taskCount: 1,
+        tasks: [
+          {
+            scenarioId: "natural-timeout-followup-continuation",
+            prompt,
+            expectedReferenceArtifactPath: artifactPath,
+            action: "collect_reference_artifact",
+          },
+        ],
+      })
+    );
+    const artifact = buildReferenceArtifact(prompt, "natural-timeout-followup-continuation");
+    artifact.timedOut = true;
+    artifact.provenance.exitStatus = "timeout";
+    artifact.provenance.errorReason = "timeout waiting for assistant response";
+    artifact.provenance.rawToolCalls = [
+      { id: "call-fetch", name: "web_fetch" },
+      { id: "call-browser", name: "sessions_spawn" },
+    ];
+    artifact.provenance.rawToolResults = [
+      {
+        role: "tool",
+        name: "web_fetch",
+        toolCallId: "call-fetch",
+        content: "Error: WebSearch proxy requires auth token",
+      },
+    ];
+    artifact.provenance.rawTranscript = [
+      { role: "user", content: prompt },
+      {
+        role: "assistant",
+        content:
+          "The web_fetch tool routes through a proxy that requires auth, so it can't reach the local endpoint. Let me try the browser agent which can access local resources directly.",
+        toolCalls: artifact.provenance.rawToolCalls,
+      },
+      artifact.provenance.rawToolResults[0],
+    ];
+    artifact.provenance.referenceScenarioDriver = { kind: "timeout_followup", supported: true };
+    artifact.rawToolCalls = artifact.provenance.rawToolCalls;
+    artifact.rawToolResults = artifact.provenance.rawToolResults;
+    artifact.rawTranscript = artifact.provenance.rawTranscript;
+    artifact.first.summary = {
+      finalText:
+        "The web_fetch tool routes through a proxy that requires auth, so it can't reach the local endpoint. Let me try the browser agent which can access local resources directly.",
+      toolCallCount: 2,
+      toolResultCount: 1,
+    };
+    artifact.score = { useful: false, weak: true };
+    writeFileSync(artifactPath, JSON.stringify(artifact));
+
+    const report = buildRealLlmAbReferenceHealthReport({ tasksPath, generatedAtMs: 1 });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.healthyCount, 1);
+    assert.equal(report.scenarios[0]?.status, "healthy");
+    assert.equal(report.scenarios[0]?.checks.finalAnswerCaptured, true);
+    assert.equal(report.scenarios[0]?.checks.finalAnswerUseful, true);
+    assert.equal(report.scenarios[0]?.checks.toolOrWorkerResult, true);
+    assert.equal(report.scenarios[0]?.checks.runtimeHealthy, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B reference health accepts successful timeout-followup closeout evidence", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-health-"));
+  try {
+    const referenceDir = path.join(dir, "reference");
+    mkdirSync(referenceDir, { recursive: true });
+    const prompt =
+      "Evaluate this slow source for a release-risk note.\nSlow source: http://127.0.0.1:65170/slow-fixture\nUse a bounded attempt first. If the source does not return in time, close out with the evidence that is available and explain how to continue.";
+    const artifactPath = path.join(referenceDir, "natural-timeout-followup-continuation.json");
+    const tasksPath = path.join(dir, "tasks.json");
+    writeFileSync(
+      tasksPath,
+      JSON.stringify({
+        kind: "turnkeyai.real-llm-ab-reference-collection-tasks.manifest",
+        taskCount: 1,
+        tasks: [
+          {
+            scenarioId: "natural-timeout-followup-continuation",
+            prompt,
+            expectedReferenceArtifactPath: artifactPath,
+            action: "collect_reference_artifact",
+          },
+        ],
+      })
+    );
+    const artifact = buildReferenceArtifact(prompt, "natural-timeout-followup-continuation");
+    const finalText = [
+      "## Release-Risk Note - Slow Source",
+      "Source: http://127.0.0.1:65170/slow-fixture",
+      "Timeout evidence: attempt 1 timed out after 10 seconds; attempt 2 timed out after 60 seconds.",
+      "No response body was returned, no content was extracted, and the source is unresolved.",
+      "This source cannot be used for release if it is a required gate.",
+      "How the mission can continue: retry after resolving the fixture, use alternative sources, or keep the release blocked until the endpoint responds.",
+    ].join("\n");
+    artifact.provenance.exitStatus = "success";
+    artifact.provenance.errorReason = "none";
+    artifact.provenance.rawToolCalls = [{ id: "call-fetch", name: "web_fetch" }];
+    artifact.provenance.rawToolResults = [
+      {
+        role: "tool",
+        name: "web_fetch",
+        toolCallId: "call-fetch",
+        content: "Error: [network_error] Direct fetch failed: The operation was aborted due to timeout",
+      },
+    ];
+    artifact.provenance.rawTranscript = [
+      { role: "user", content: prompt },
+      { role: "tool", content: artifact.provenance.rawToolResults[0].content },
+      { role: "assistant", content: finalText },
+    ];
+    artifact.provenance.referenceScenarioDriver = { kind: "timeout_followup", supported: true };
+    artifact.rawToolCalls = artifact.provenance.rawToolCalls;
+    artifact.rawToolResults = artifact.provenance.rawToolResults;
+    artifact.rawTranscript = artifact.provenance.rawTranscript;
+    artifact.first.summary = {
+      finalText,
+      toolCallCount: 1,
+      toolResultCount: 1,
+    };
+    artifact.score = { useful: true, weak: false };
+    writeFileSync(artifactPath, JSON.stringify(artifact));
+
+    const report = buildRealLlmAbReferenceHealthReport({ tasksPath, generatedAtMs: 1 });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.healthyCount, 1);
+    assert.equal(report.scenarios[0]?.status, "healthy");
+    assert.equal(report.scenarios[0]?.checks.runtimeHealthy, true);
+    assert.equal(report.scenarios[0]?.checks.finalAnswerUseful, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B reference health rejects unknown model provenance", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-health-"));
   try {
@@ -373,6 +523,74 @@ test("real LLM A/B reference health extracts concrete browser failure buckets", 
   }
 });
 
+test("real LLM A/B reference health reads late Accio session-file tool results", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-health-"));
+  try {
+    const sessionPath = path.join(dir, "accio-session.messages.jsonl");
+    const staleMessages = [
+      { role: "user", content: "Compare Vendor Alpha and Vendor Beta from the provided source pages." },
+      {
+        role: "assistant",
+        content: "I'll inspect the localhost pages with a browser worker.",
+        toolCalls: [{ id: "call-browser", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+      },
+    ];
+    const lateMessages = [
+      ...staleMessages,
+      {
+        role: "tool",
+        toolCallId: "call-browser",
+        name: "sessions_spawn",
+        content:
+          "task_id: agent:sub:browser:late\nstatus: timeout\ntool_chain: web_fetch -> browser\ntool_errors:\n  - web_fetch: Error: Fetched 0/2 URLs successfully\n<task_result>Browser worker timed out after network_error contacting localhost.</task_result>",
+      },
+      {
+        role: "assistant",
+        content:
+          "Can't reach those URLs. The localhost addresses are only accessible from your own machine, and my tools route through external infrastructure.",
+      },
+    ];
+    writeFileSync(sessionPath, lateMessages.map((message) => JSON.stringify(message)).join("\n"));
+    const fixture = writeHealthFixture(dir, {
+      mutateArtifact: (artifact, scenarioId) => {
+        if (scenarioId !== "natural-comparison-research") return;
+        artifact.timedOut = true;
+        artifact.provenance.exitStatus = "timeout";
+        artifact.provenance.errorReason = "timeout waiting for assistant response";
+        artifact.rawTranscript = staleMessages;
+        artifact.provenance.rawTranscript = staleMessages;
+        artifact.rawToolCalls = [{ id: "call-browser", name: "sessions_spawn" }];
+        artifact.provenance.rawToolCalls = artifact.rawToolCalls;
+        artifact.rawToolResults = [];
+        artifact.provenance.rawToolResults = [];
+        artifact.rawBrowserEvidence = [];
+        artifact.provenance.rawBrowserEvidence = [];
+        artifact.rawFlowEvidence = [{ source: "accio_ws_session_file", sessionPath }];
+        artifact.provenance.rawFlowEvidence = artifact.rawFlowEvidence;
+        artifact.first.summary = {
+          finalText: "I'll inspect the localhost pages with a browser worker.",
+          toolCallCount: 1,
+          toolResultCount: 0,
+        };
+        artifact.score = { useful: false, weak: false };
+      },
+    });
+    const report = buildRealLlmAbReferenceHealthReport({ tasksPath: fixture.tasksPath, generatedAtMs: 1 });
+    const scenario = report.scenarios.find((item) => item.scenarioId === "natural-comparison-research");
+
+    assert.equal(report.status, "failed");
+    assert.equal(scenario?.status, "unhealthy");
+    assert.equal(scenario?.checks.toolOrWorkerTriggered, true);
+    assert.equal(scenario?.checks.toolOrWorkerResult, true);
+    assert.equal(scenario?.checks.runtimeHealthy, false);
+    assert.ok(!scenario?.findings.includes("reference native tool/worker result was not observed"));
+    assert.ok(scenario?.rootCauseBuckets.includes("blocked_host"));
+    assert.ok(scenario?.rootCauseBuckets.includes("explore_worker_failed"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function writeHealthFixture(
   dir: string,
   options: {
@@ -429,6 +647,7 @@ interface ReferenceArtifactFixture {
     rawToolResults: unknown[];
     rawBrowserEvidence: unknown[];
     rawApprovalEvidence?: unknown[];
+    rawFlowEvidence?: unknown[];
     referenceScenarioDriver?: unknown;
     exitStatus: unknown;
     errorReason: unknown;
@@ -438,6 +657,7 @@ interface ReferenceArtifactFixture {
   rawToolResults: unknown[];
   rawBrowserEvidence: unknown[];
   rawApprovalEvidence?: unknown[];
+  rawFlowEvidence?: unknown[];
   first: { summary: { finalText: string; toolCallCount: number; toolResultCount: number } };
   score: { useful: boolean; weak: boolean };
 }

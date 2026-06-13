@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS,
+} from "./real-llm-acceptance-defaults";
+
+import {
   buildRealLlmAbMarkdownReport,
   detectControlledPromptLanguage,
   REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS,
@@ -66,6 +70,50 @@ test("real LLM A/B acceptance validates comparable natural evidence", () => {
       },
     ],
   });
+});
+
+test("real LLM A/B acceptance does not treat passing approval requirements as root causes", () => {
+  const report = buildReport({
+    scenarioId: "approval-dry-run-action",
+    requiresApproval: true,
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report);
+  const comparison = validation.summary?.comparisons[0];
+
+  assert.equal(validation.status, "passed");
+  assert.equal(comparison?.rootCauseRequired, false);
+  assert.deepEqual(comparison?.rootCauseBuckets, []);
+  assert.deepEqual(validation.summary?.rootCauseBuckets, []);
+});
+
+test("real LLM A/B acceptance reports permission root cause when approval proof is missing", () => {
+  const report = buildReport({
+    status: "failed",
+    capabilityClaim: "unproven",
+    stabilityClaim: "unstable",
+    scenarioId: "approval-dry-run-action",
+    requiresApproval: true,
+    weakenRun: {
+      turnkeyai: (run) => ({
+        ...run,
+        approval: {
+          required: true,
+          requested: true,
+          decided: true,
+          applied: true,
+          sideEffectPreventedBeforeApproval: false,
+        },
+      }),
+    },
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report);
+  const comparison = validation.summary?.comparisons[0];
+
+  assert.equal(validation.status, "failed");
+  assert.equal(comparison?.rootCauseRequired, true);
+  assert.ok(comparison?.rootCauseBuckets.includes("permission_flow"));
 });
 
 test("real LLM A/B acceptance keeps focused reports separate from core-suite evidence", () => {
@@ -174,6 +222,28 @@ test("real LLM A/B markdown conclusion downgrades unvalidated capability claims"
   assert.match(markdown, /core suite missing required scenario: comparison-research/);
 });
 
+test("real LLM A/B markdown includes reference audit findings", () => {
+  const report = buildReport({ status: "failed", capabilityClaim: "unproven", stabilityClaim: "unstable" });
+  const scenario = report.scenarios[0]!;
+  scenario.comparisonClassification = "reference_env_failed";
+  scenario.referenceAudit = {
+    ...passingReferenceAudit(),
+    runtimeHealthStatus: "failed",
+    adapterStatus: "failed",
+    findings: [
+      "reference Accio browser sub-agent exceeded native timeout before usable closeout: 1080s",
+      "reference Accio browser worker attempted unsupported browser action: wait",
+    ],
+  };
+
+  const markdown = buildRealLlmAbMarkdownReport(report);
+
+  assert.match(markdown, /## Reference Audit Findings/);
+  assert.match(markdown, /- browser-dynamic-page: reference_env_failed/);
+  assert.match(markdown, /reference Accio browser sub-agent exceeded native timeout before usable closeout: 1080s/);
+  assert.match(markdown, /reference Accio browser worker attempted unsupported browser action: wait/);
+});
+
 test("real LLM A/B acceptance validates the full core suite when requested", () => {
   const report = buildCoreSuiteReport();
 
@@ -181,6 +251,16 @@ test("real LLM A/B acceptance validates the full core suite when requested", () 
 
   assert.equal(validation.status, "passed");
   assert.equal(validation.summary?.scenarioCount, REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.length);
+});
+
+test("real LLM A/B core suite covers every default natural core A/B scenario", () => {
+  const acceptedScenarioIds = new Set(
+    REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.flatMap((requirement) => requirement.acceptedScenarioIds)
+  );
+
+  for (const scenarioId of DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS) {
+    assert.equal(acceptedScenarioIds.has(scenarioId), true, `${scenarioId} missing from core A/B requirements`);
+  }
 });
 
 test("real LLM A/B acceptance requires concrete TurnkeyAI browser proof", () => {
@@ -429,6 +509,8 @@ function buildReport(
     capabilityClaim?: RealLlmAbAcceptanceReport["capabilityClaim"];
     stabilityClaim?: RealLlmAbAcceptanceReport["stabilityClaim"];
     prompt?: string;
+    scenarioId?: string;
+    requiresApproval?: boolean;
     turnkeyaiScores?: Partial<Record<keyof typeof FULL_SCORES, RealLlmAbDimensionScore>>;
     referenceScores?: Partial<Record<keyof typeof FULL_SCORES, RealLlmAbDimensionScore>>;
     turnkeyaiArtifactPath?: string | undefined;
@@ -442,6 +524,8 @@ function buildReport(
 ): RealLlmAbAcceptanceReport {
   const prompt =
     overrides.prompt ?? "请打开这个动态页面，理解当前状态，找出应该关注的异常和下一步动作，并给出依据。";
+  const scenarioId = overrides.scenarioId ?? "browser-dynamic-page";
+  const requiresApproval = overrides.requiresApproval ?? false;
   const turnkeyaiRun = buildRun({
     system: "turnkeyai",
     artifactPath:
@@ -449,12 +533,14 @@ function buildReport(
     missionId: "turnkeyaiMissionId" in overrides ? overrides.turnkeyaiMissionId : "msn.local.1",
     dimensionScores: { ...FULL_SCORES, ...overrides.turnkeyaiScores },
     browserEvidence: overrides.turnkeyaiBrowserEvidence,
+    requiresApproval,
     prompt,
   });
   const referenceRun = buildRun({
     system: "reference",
     artifactPath: "artifacts/evals/run/reference/browser.json",
     dimensionScores: { ...FULL_SCORES, ...overrides.referenceScores },
+    requiresApproval,
     prompt,
   });
   return {
@@ -465,7 +551,7 @@ function buildReport(
     generatedAtMs: 1,
     scenarios: [
       {
-        scenarioId: "browser-dynamic-page",
+        scenarioId,
         prompt,
         promptPolicy: {
           naturalPrompt: true,
@@ -474,6 +560,7 @@ function buildReport(
           noExactAnswerShape: true,
         },
         requiresBrowser: true,
+        ...(requiresApproval ? { requiresApproval: true } : {}),
         comparisonClassification: "validated_comparison",
         referenceAudit: passingReferenceAudit(),
         turnkeyai: overrides.weakenRun?.turnkeyai?.(turnkeyaiRun) ?? turnkeyaiRun,
@@ -495,7 +582,9 @@ function buildCoreSuiteReport(input: {
     scenarios: REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.map((requirement) => {
       const scenarioId = requirement.acceptedScenarioIds[0]!;
       const prompt = `请完成 ${scenarioId} 场景，给出结论、证据和风险。`;
-      const requiresBrowser = scenarioId === "browser-dynamic-page";
+      const requiresBrowser =
+        scenarioId === "browser-dynamic-page" ||
+        scenarioId === "natural-asiawalk-multi-agent";
       const requiresApproval = scenarioId === "approval-dry-run-action";
       const requiresContinuation = scenarioId === "followup-continuation";
       const requiresTimeoutCloseout = scenarioId === "timeout-closeout";
@@ -599,7 +688,10 @@ function buildFullNaturalSuiteReport(input: { scenarios?: readonly string[] } = 
     generatedAtMs: 1,
     scenarios: scenarios.map((scenarioId) => {
       const prompt = `请完成 ${scenarioId} 自然场景，给出结论、证据和风险。`;
-      const requiresBrowser = scenarioId.startsWith("natural-browser-") || scenarioId === "natural-long-delegation";
+      const requiresBrowser =
+        scenarioId.startsWith("natural-browser-") ||
+        scenarioId === "natural-long-delegation" ||
+        scenarioId === "natural-asiawalk-multi-agent";
       const requiresApproval = scenarioId.includes("approval");
       const requiresContinuation = scenarioId.includes("followup") || scenarioId.includes("continuation");
       const requiresTimeoutCloseout = scenarioId.includes("timeout") && scenarioId !== "natural-approval-wait-timeout-closeout";
@@ -672,7 +764,12 @@ function buildRun(input: {
   prompt: string;
 }): RealLlmAbScenarioRun {
   const scenarioId = input.scenarioId ?? "browser-dynamic-page";
-  const subAgentCount = scenarioId === "long-delegation" || scenarioId === "natural-long-delegation" ? 2 : 1;
+  const subAgentCount =
+    scenarioId === "long-delegation" ||
+    scenarioId === "natural-long-delegation" ||
+    scenarioId === "natural-asiawalk-multi-agent"
+      ? 2
+      : 1;
   const completedSubAgentCount = subAgentCount;
   const toolSequence =
     scenarioId === "memory-recall" || scenarioId === "natural-memory-recall"

@@ -1,12 +1,17 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+
+import { readReferenceCompletion } from "./real-llm-ab-reference-collect";
 
 interface ReferencePreflightOptions {
   baseUrl: string;
   outPath: string;
   referenceToken?: string;
   variant: string;
+  accioWs?: boolean;
+  accioAgentId?: string;
+  accioWorkspacePath?: string;
   timeoutMs: number;
   pollMs: number;
   probePrompt: string;
@@ -27,10 +32,13 @@ interface ReferencePreflightReport {
     messageAccepted: boolean;
     promptObservedInTranscript: boolean;
     assistantFinalCaptured: boolean;
+    assistantFinalReady: boolean;
     browserSessionsRouteReachable: boolean;
     noAdapterFallback: boolean;
     noHarnessEcho: boolean;
     noDelegationOnlyFinal: boolean;
+    noRealHomeLeak: boolean;
+    noModelContradiction: boolean;
   };
   routes: ReferencePreflightRoute[];
   adapterDiagnostics: ReferenceAdapterDiagnostic[];
@@ -42,7 +50,7 @@ interface ReferencePreflightReport {
 
 interface ReferencePreflightRoute {
   route: string;
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "WS";
   ok: boolean;
   status: number;
   contentType: string;
@@ -74,6 +82,9 @@ export function parseRealLlmAbReferencePreflightArgs(
   let outPath: string | undefined;
   let referenceToken: string | undefined;
   let variant = "operator";
+  let accioWs = false;
+  let accioAgentId: string | undefined;
+  let accioWorkspacePath: string | undefined;
   let timeoutMs = 60_000;
   let pollMs = 1_000;
   let probePrompt = "Please respond with one concise sentence confirming this runtime can answer a normal user message.";
@@ -97,6 +108,20 @@ export function parseRealLlmAbReferencePreflightArgs(
     }
     if (arg === "--variant") {
       variant = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--accio-ws") {
+      accioWs = true;
+      continue;
+    }
+    if (arg === "--accio-agent-id") {
+      accioAgentId = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--accio-workspace-path") {
+      accioWorkspacePath = readValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -128,6 +153,9 @@ export function parseRealLlmAbReferencePreflightArgs(
     outPath,
     ...(referenceToken ? { referenceToken } : {}),
     variant,
+    ...(accioWs ? { accioWs } : {}),
+    ...(accioAgentId ? { accioAgentId } : {}),
+    ...(accioWs || accioWorkspacePath ? { accioWorkspacePath: accioWorkspacePath ?? process.cwd() } : {}),
     timeoutMs,
     pollMs,
     probePrompt,
@@ -141,6 +169,7 @@ export function buildRealLlmAbReferencePreflightHelpText(): string {
     "",
     "Usage:",
     "  npm run acceptance:ab:reference-preflight -- --base-url <reference-daemon-url> --out <preflight.json> [--reference-token <token>] [--variant operator] [--timeout-ms 60000] [--poll-ms 1000] [--check]",
+    "  npm run acceptance:ab:reference-preflight -- --base-url http://127.0.0.1:4097 --accio-ws --out <preflight.json> [--accio-agent-id DID-...] [--accio-workspace-path <path>] [--check]",
     "",
     "The preflight records raw route status, content type, body snippets, prompt receipt, assistant output, and browser-session route reachability before A/B collection.",
   ].join("\n");
@@ -170,6 +199,9 @@ export async function runReferencePreflight(input: {
   baseUrl: string;
   referenceToken?: string;
   variant?: string;
+  accioWs?: boolean;
+  accioAgentId?: string;
+  accioWorkspacePath?: string;
   timeoutMs?: number;
   pollMs?: number;
   probePrompt?: string;
@@ -177,6 +209,7 @@ export async function runReferencePreflight(input: {
 }): Promise<ReferencePreflightReport> {
   const baseUrl = normalizeBaseUrl(input.baseUrl);
   const variant = input.variant ?? "operator";
+  const accioWs = input.accioWs ?? false;
   const timeoutMs = input.timeoutMs ?? 60_000;
   const pollMs = input.pollMs ?? 1_000;
   const probePrompt =
@@ -185,6 +218,20 @@ export async function runReferencePreflight(input: {
   const routes: ReferencePreflightRoute[] = [];
 
   const requestAuth = buildReferenceRequestAuth(input.referenceToken);
+
+  if (accioWs) {
+    return runAccioWsReferencePreflight({
+      baseUrl,
+      variant,
+      timeoutMs,
+      pollMs,
+      probePrompt,
+      generatedAtMs: input.generatedAtMs,
+      requestAuth,
+      agentId: input.accioAgentId,
+      workspacePath: input.accioWorkspacePath ?? process.cwd(),
+    });
+  }
 
   const modelRoute = await fetchRoute(baseUrl, "GET", "/models", undefined, requestAuth);
   routes.push(modelRoute);
@@ -235,6 +282,11 @@ export async function runReferencePreflight(input: {
     finalText
   );
   const delegationOnlyFinalObserved = isDelegationOnlyReferenceText(finalText);
+  const realHomeLeakObserved = hasRealAccioHomeLeak(transcriptText);
+  const modelContradictionObserved = hasReferenceModelContradiction({
+    text: `${transcriptText}\n${finalText}`,
+    adapterDiagnostics,
+  });
   const browserSessionsRouteReachable = routes.some((route) => route.route.startsWith("/browser-sessions") && route.ok);
   const checks = {
     modelCatalogJson: modelRoute.ok && modelRoute.json,
@@ -244,10 +296,13 @@ export async function runReferencePreflight(input: {
     messageAccepted,
     promptObservedInTranscript,
     assistantFinalCaptured: Boolean(finalText),
+    assistantFinalReady: Boolean(finalText) && !harnessEchoObserved && !delegationOnlyFinalObserved,
     browserSessionsRouteReachable,
     noAdapterFallback: !adapterFallbackObserved,
     noHarnessEcho: !harnessEchoObserved,
     noDelegationOnlyFinal: !delegationOnlyFinalObserved,
+    noRealHomeLeak: !realHomeLeakObserved,
+    noModelContradiction: !modelContradictionObserved,
   };
   const rootCauseBuckets = buildRootCauseBuckets({ checks, routes, transcriptText, finalText, adapterDiagnostics });
   const findings = buildFindings(checks, routes, adapterDiagnostics, finalText);
@@ -265,6 +320,277 @@ export async function runReferencePreflight(input: {
     ...(threadId ? { threadId } : {}),
     ...(finalText ? { finalText } : {}),
   };
+}
+
+async function runAccioWsReferencePreflight(input: {
+  baseUrl: string;
+  variant: string;
+  timeoutMs: number;
+  pollMs: number;
+  probePrompt: string;
+  generatedAtMs?: number;
+  requestAuth?: ReferenceRequestAuth;
+  agentId?: string;
+  workspacePath: string;
+}): Promise<ReferencePreflightReport> {
+  const routes: ReferencePreflightRoute[] = [];
+  const healthRoute = await fetchRoute(input.baseUrl, "GET", "/reference/health", undefined, input.requestAuth);
+  routes.push(healthRoute);
+  const health = parseRouteJson(healthRoute);
+
+  const modelRoute = await fetchRoute(input.baseUrl, "GET", "/models", undefined, input.requestAuth);
+  routes.push(modelRoute);
+  const modelCatalog = parseRouteJson(modelRoute);
+  const modelConfigured = hasConfiguredModel(modelCatalog);
+  const adapterDiagnostics = buildAdapterDiagnostics(modelCatalog);
+
+  const agentsRoute = await fetchRoute(input.baseUrl, "GET", "/agents", undefined, input.requestAuth);
+  routes.push(agentsRoute);
+  const agent = selectAccioAgent(parseRouteJson(agentsRoute), input.agentId);
+  const agentId = agent?.id ?? input.agentId ?? "DID-F456DA-2B0D4C";
+  const accountId = agent?.accountId ?? "reference-account";
+  const accioHome = readString((health as { accioHome?: unknown } | null)?.accioHome);
+
+  const probe = await sendAccioWsProbe({
+    baseUrl: input.baseUrl,
+    agentId,
+    workspacePath: input.workspacePath,
+    prompt: input.probePrompt,
+    timeoutMs: Math.min(input.timeoutMs, 45_000),
+  });
+  routes.push(probe.route);
+
+  const transcriptResult = accioHome
+    ? await pollAccioSessionMessages({
+        accioHome,
+        accountId,
+        agentId,
+        conversationId: probe.conversationId,
+        timeoutMs: input.timeoutMs,
+        pollMs: input.pollMs,
+      })
+    : { messages: [], completion: { finalText: "", ready: false } };
+  const transcript = transcriptResult.messages;
+  const finalText = transcriptResult.completion.finalText;
+  const transcriptText = JSON.stringify(transcript);
+  const promptObservedInTranscript = transcriptContainsPrompt(transcript, input.probePrompt);
+  const adapterFallbackObserved = /Unexpected token '<'|<!DOCTYPE|adapterName["']?\s*:\s*["']?heuristic|fallbackReason/i.test(
+    transcriptText
+  );
+  const harnessEchoObserved = /operating as|close the flow with|use the browser worker|please consolidate this update/i.test(
+    finalText
+  );
+  const delegationOnlyFinalObserved = isDelegationOnlyReferenceText(finalText);
+  const realHomeLeakObserved = hasRealAccioHomeLeak(transcriptText, accioHome);
+  const modelContradictionObserved = hasReferenceModelContradiction({
+    text: `${transcriptText}\n${finalText}`,
+    adapterDiagnostics,
+  });
+  const checks = {
+    modelCatalogJson: modelRoute.ok && modelRoute.json,
+    modelConfigured,
+    bootstrapJson: healthRoute.ok && healthRoute.json && agentsRoute.ok && agentsRoute.json,
+    threadIdCaptured: Boolean(probe.conversationId),
+    messageAccepted: probe.accepted,
+    promptObservedInTranscript,
+    assistantFinalCaptured: Boolean(finalText.trim()),
+    assistantFinalReady: transcriptResult.completion.ready,
+    browserSessionsRouteReachable: agentsRoute.ok && agentsRoute.json,
+    noAdapterFallback: !adapterFallbackObserved,
+    noHarnessEcho: !harnessEchoObserved,
+    noDelegationOnlyFinal: !delegationOnlyFinalObserved,
+    noRealHomeLeak: !realHomeLeakObserved,
+    noModelContradiction: !modelContradictionObserved,
+  };
+  const rootCauseBuckets = buildRootCauseBuckets({ checks, routes, transcriptText, finalText, adapterDiagnostics });
+  const findings = buildFindings(checks, routes, adapterDiagnostics, finalText);
+  return {
+    kind: "turnkeyai.real-llm-ab-reference-preflight.report",
+    status: findings.length === 0 ? "passed" : "failed",
+    generatedAtMs: input.generatedAtMs ?? Date.now(),
+    baseUrl: input.baseUrl,
+    variant: `${input.variant}:accio-ws`,
+    checks,
+    routes,
+    adapterDiagnostics,
+    rootCauseBuckets,
+    findings,
+    threadId: probe.conversationId,
+    ...(finalText ? { finalText } : {}),
+  };
+}
+
+async function sendAccioWsProbe(input: {
+  baseUrl: string;
+  agentId: string;
+  workspacePath: string;
+  prompt: string;
+  timeoutMs: number;
+}): Promise<{ route: ReferencePreflightRoute; conversationId: string; accepted: boolean }> {
+  const conversationId = `CID-reference-preflight-${Date.now().toString(36)}`;
+  const clientId = `desktop-reference-preflight-${Date.now().toString(36)}`;
+  const wsUrl = `${input.baseUrl.replace(/^http/i, "ws")}/websocket/connect?clientId=${encodeURIComponent(clientId)}`;
+  const startedAt = Date.now();
+  const wsMessages: string[] = [];
+  let accepted = false;
+  let status = 0;
+  let errorMessage = "";
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(wsUrl);
+      const timer = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {}
+        resolve();
+      }, input.timeoutMs);
+      ws.addEventListener("open", () => {
+        status = 101;
+        ws.send(
+          JSON.stringify({
+            type: "req",
+            method: "sendQuery",
+            params: {
+              conversationId,
+              chatType: "direct",
+              question: { query: input.prompt },
+              path: input.workspacePath,
+              agentId: input.agentId,
+              targetAgentList: [{ agentId: input.agentId, isTL: true }],
+              skills: [],
+              language: "zh",
+              ts: Date.now(),
+              extra: {},
+              source: {
+                platform: "pcApp",
+                type: "im",
+                channelId: "reference-preflight",
+                chatId: "reference-preflight-chat",
+                userId: "reference-user",
+                chatType: "private",
+                wasMentioned: true,
+                isAuthorized: true,
+              },
+              atIds: [],
+            },
+          })
+        );
+      });
+      ws.addEventListener("message", (event) => {
+        const text = String(event.data);
+        wsMessages.push(text);
+        if (isAcceptedAccioWsMessage(text, conversationId)) {
+          accepted = true;
+          clearTimeout(timer);
+          try {
+            ws.close();
+          } catch {}
+          resolve();
+        }
+      });
+      ws.addEventListener("error", () => {
+        errorMessage = "websocket error";
+        clearTimeout(timer);
+        reject(new Error(errorMessage));
+      });
+    });
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error);
+  }
+  return {
+    conversationId,
+    accepted,
+    route: {
+      route: "/websocket/connect",
+      method: "WS",
+      ok: accepted,
+      status,
+      contentType: "application/websocket",
+      bodySnippet: wsMessages.join("\n").replace(/\s+/g, " ").trim().slice(0, 500),
+      json: wsMessages.some((message) => parseJsonText(message) !== null),
+      ...(errorMessage ? { error: errorMessage } : {}),
+      bodyJson: {
+        conversationId,
+        accepted,
+        elapsedMs: Date.now() - startedAt,
+        messageCount: wsMessages.length,
+      },
+    },
+  };
+}
+
+function isAcceptedAccioWsMessage(text: string, conversationId: string): boolean {
+  const parsed = parseJsonText(text);
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const record = parsed as { type?: unknown; payload?: { conversationId?: unknown; success?: unknown }; data?: { conversationId?: unknown } };
+  return (
+    readString(record.payload?.conversationId) === conversationId &&
+    (record.payload?.success === true || readString(record.type) === "ack")
+  );
+}
+
+async function pollAccioSessionMessages(input: {
+  accioHome: string;
+  accountId: string;
+  agentId: string;
+  conversationId: string;
+  timeoutMs: number;
+  pollMs: number;
+}): Promise<{ messages: unknown[]; completion: { finalText: string; ready: boolean } }> {
+  const sessionPath = path.join(
+    input.accioHome,
+    "accounts",
+    input.accountId,
+    "agents",
+    input.agentId,
+    "sessions",
+    `${input.agentId}_${input.conversationId}.messages.jsonl`
+  );
+  const startedAt = Date.now();
+  let lastCompletion = { finalText: "", ready: false };
+  while (Date.now() - startedAt <= input.timeoutMs) {
+    const messages = readJsonlMessages(sessionPath);
+    const completion = readReferenceCompletion(messages);
+    lastCompletion = completion;
+    if (completion.ready) return { messages, completion };
+    await sleep(input.pollMs);
+  }
+  const messages = readJsonlMessages(sessionPath);
+  return { messages, completion: readReferenceCompletion(messages) ?? lastCompletion };
+}
+
+function readJsonlMessages(filePath: string): unknown[] {
+  if (!existsSync(filePath)) return [];
+  return readFileSync(filePath, "utf-8")
+    .split(/\r?\n/g)
+    .flatMap((line) => {
+      const parsed = parseJsonText(line);
+      return parsed === null ? [] : [parsed];
+    });
+}
+
+function selectAccioAgent(value: unknown, requestedAgentId: string | undefined): { id: string; accountId: string } | null {
+  const agents = readAccioAgentRecords(value);
+  const selected =
+    agents.find((agent) => requestedAgentId && agent.id === requestedAgentId) ??
+    agents.find((agent) => agent.modelName === "MiniMax-M2.7-highspeed") ??
+    agents[0];
+  return selected ? { id: selected.id, accountId: selected.accountId } : null;
+}
+
+function readAccioAgentRecords(value: unknown): Array<{ id: string; accountId: string; modelName?: string }> {
+  if (typeof value !== "object" || value === null) return [];
+  const record = value as { data?: unknown };
+  const data = Array.isArray(record.data) ? record.data : Array.isArray(value) ? value : [];
+  return data.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const agent = item as { id?: unknown; accountId?: unknown; model?: { name?: unknown } };
+    const id = readString(agent.id);
+    const accountId = readString(agent.accountId);
+    if (!id || !accountId) return [];
+    const modelName = readString(agent.model?.name);
+    return [{ id, accountId, ...(modelName ? { modelName } : {}) }];
+  });
 }
 
 async function pollMessages(input: {
@@ -386,6 +712,7 @@ function buildRootCauseBuckets(input: {
   if (!input.checks.modelConfigured) buckets.add("model_config_unproven");
   if (!input.checks.promptObservedInTranscript) buckets.add("prompt_mismatch");
   if (!input.checks.assistantFinalCaptured) buckets.add("missing_final_answer");
+  if (input.checks.assistantFinalCaptured && !input.checks.assistantFinalReady) buckets.add("assistant_final_not_ready");
   if (!input.checks.browserSessionsRouteReachable) buckets.add("browser_route_unavailable");
   if (!input.checks.noAdapterFallback) buckets.add("model_adapter_fallback");
   if (!input.checks.noAdapterFallback && input.adapterDiagnostics.some((diagnostic) => diagnostic.basePathDropRisk)) {
@@ -396,6 +723,8 @@ function buildRootCauseBuckets(input: {
   if (!input.checks.noDelegationOnlyFinal && hasNonDispatchableTextHandoff(input.finalText)) {
     buckets.add("delegation_text_not_dispatchable");
   }
+  if (!input.checks.noRealHomeLeak) buckets.add("reference_isolation_leak");
+  if (!input.checks.noModelContradiction) buckets.add("model_config_contradiction");
   if (/page\.evaluate|ReferenceError|__name is not defined/i.test(input.transcriptText)) {
     buckets.add("browser_evaluate_error");
   }
@@ -418,6 +747,9 @@ function buildFindings(
   if (!checks.messageAccepted) findings.push("message route did not accept a JSON request");
   if (!checks.promptObservedInTranscript) findings.push("probe prompt was not observed in transcript");
   if (!checks.assistantFinalCaptured) findings.push("assistant final text was not captured");
+  if (checks.assistantFinalCaptured && !checks.assistantFinalReady) {
+    findings.push("assistant final text was captured but was not completion-ready");
+  }
   if (!checks.browserSessionsRouteReachable) findings.push("browser sessions route was not reachable");
   if (!checks.noAdapterFallback) findings.push("model adapter fallback was observed");
   if (!checks.noAdapterFallback && adapterDiagnostics.some((diagnostic) => diagnostic.basePathDropRisk)) {
@@ -428,6 +760,8 @@ function buildFindings(
   if (!checks.noDelegationOnlyFinal && hasNonDispatchableTextHandoff(finalText)) {
     findings.push("assistant final text names a role in prose rather than a dispatchable role mention");
   }
+  if (!checks.noRealHomeLeak) findings.push("reference transcript leaked real user Accio home");
+  if (!checks.noModelContradiction) findings.push("assistant transcript contradicted the configured reference model");
   for (const route of routes) {
     if (!route.ok) findings.push(`${route.method} ${route.route} returned ${route.status}${route.error ? ` (${route.error})` : ""}`);
     if (route.ok && !route.json) findings.push(`${route.method} ${route.route} returned non-JSON content`);
@@ -449,6 +783,47 @@ function hasNonDispatchableTextHandoff(text: string): boolean {
     return !new RegExp(`@\\{${escapeRegExp(roleIdMatch[1] ?? "")}\\}`, "i").test(text);
   }
   return /\b(?:next role|delegate to|delegating to|i will delegate|let me delegate|handoff to|assign(?:ing)? this to)\b/i.test(text) && !/@\{[^}]+}/.test(text);
+}
+
+function hasRealAccioHomeLeak(text: string, expectedAccioHome?: string): boolean {
+  const normalizedExpected = normalizeFilesystemPath(expectedAccioHome);
+  const normalizedText = text.replace(/\\/g, "/");
+  const realHomeMatches = normalizedText.match(/\/Users\/[^/"'\s]+\/\.accio(?:\/[^"'\s]*)?/g) ?? [];
+  return realHomeMatches.some((match) => normalizeFilesystemPath(match) !== normalizedExpected);
+}
+
+function normalizeFilesystemPath(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function hasReferenceModelContradiction(input: {
+  text: string;
+  adapterDiagnostics: ReferenceAdapterDiagnostic[];
+}): boolean {
+  const configured = input.adapterDiagnostics.find((diagnostic) => diagnostic.configured);
+  if (!configured) return false;
+  const normalizedText = input.text.replace(/\s+/g, " ").toLowerCase();
+  const configuredModel = configured.modelId.toLowerCase();
+  const configuredProvider = configured.providerId.toLowerCase();
+  const configuredIsMiniMax = configuredModel.includes("minimax") || configuredProvider.includes("minimax");
+  if (configuredIsMiniMax) {
+    if (/\b(?:not|isn't|is not)\s+(?:configured\s+to\s+use\s+|using\s+)?minimax\b/i.test(input.text)) return true;
+    if (/\bminimax\b.{0,80}\b(?:available|cache|catalog)\b.{0,80}\b(?:not|isn't|is not)\s+(?:the\s+)?(?:active|current|configured)/i.test(input.text)) {
+      return true;
+    }
+    if (/\b(?:active|current|configured|runtime|model\s+in\s+use|using)\b.{0,120}\b(?:claude|sonnet)\b/i.test(input.text)) {
+      return true;
+    }
+    if (/\b(?:claude|sonnet)\b.{0,120}\b(?:active|current|configured|runtime|model\s+in\s+use|using)\b/i.test(input.text)) {
+      return true;
+    }
+  }
+  if (!configuredModel.includes("claude") && /\bconfigured\s+to\s+use\s+(?:claude|sonnet)\b/i.test(normalizedText)) {
+    return true;
+  }
+  return false;
 }
 
 function transcriptContainsPrompt(messages: unknown[], prompt: string): boolean {
@@ -534,7 +909,22 @@ function readConfiguredModelRecords(value: unknown): Array<Record<string, unknow
   const record = value as Record<string, unknown>;
   const direct = record.configured === true ? [record] : [];
   const nested = Array.isArray(record.models) ? record.models.flatMap((item) => readConfiguredModelRecords(item)) : [];
-  return [...direct, ...nested];
+  const accioCatalog = Array.isArray(record.data)
+    ? record.data.flatMap((provider) => {
+        if (typeof provider !== "object" || provider === null) return [];
+        const providerRecord = provider as { provider?: unknown; modelList?: unknown };
+        if (!Array.isArray(providerRecord.modelList)) return [];
+        return providerRecord.modelList.flatMap((model) => {
+          if (typeof model !== "object" || model === null) return [];
+          const modelRecord = model as { modelName?: unknown; isDefault?: unknown };
+          const modelName = readString(modelRecord.modelName);
+          const providerId = readString(providerRecord.provider);
+          if (!modelName || !providerId) return [];
+          return [{ configured: modelRecord.isDefault === true, providerId, model: modelName, protocol: "anthropic-compatible" }];
+        });
+      })
+    : [];
+  return [...direct, ...nested, ...accioCatalog];
 }
 
 function appendPathToBaseUrl(baseUrl: URL, suffix: string): string {
@@ -557,6 +947,18 @@ function hasConfiguredModel(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   if (Array.isArray(value)) return value.some((item) => hasConfiguredModel(item));
   const record = value as Record<string, unknown>;
+  if (Array.isArray(record.data)) {
+    return record.data.some((provider) => {
+      if (typeof provider !== "object" || provider === null) return false;
+      const providerRecord = provider as { provider?: unknown; modelList?: unknown };
+      if (!hasKnownString(providerRecord.provider) || !Array.isArray(providerRecord.modelList)) return false;
+      return providerRecord.modelList.some((model) => {
+        if (typeof model !== "object" || model === null) return false;
+        const modelRecord = model as { modelName?: unknown; isDefault?: unknown };
+        return modelRecord.isDefault === true && hasKnownString(modelRecord.modelName);
+      });
+    });
+  }
   if (Array.isArray(record.models)) {
     return record.models.some((model) => {
       if (typeof model !== "object" || model === null) return false;

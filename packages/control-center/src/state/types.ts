@@ -1,7 +1,7 @@
 // Cross-cutting types for the Mission Control app (PR K1).
 //
 // The Control Center → Mission Control rename means the route map changes
-// shape: Setup/Bridge/Tabs/Agent Connect/Diagnostics fold into a new IA
+// shape: Setup/Bridge/Tabs/Diagnostics fold into a mission workbench IA
 // centered on Missions (the user's primary unit of work). See
 // docs/design/mission-control-product-design.md §5.
 

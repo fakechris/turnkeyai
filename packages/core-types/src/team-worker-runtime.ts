@@ -131,6 +131,7 @@ export interface WorkerResumeInput {
 export interface WorkerInterruptInput {
   workerRunKey: RunKey;
   reason?: string;
+  preserveLateResult?: boolean;
 }
 
 export interface WorkerCancelInput {
@@ -168,4 +169,5 @@ export interface WorkerSessionStore {
   get(workerRunKey: RunKey): Promise<WorkerSessionRecord | null>;
   put(record: WorkerSessionRecord): Promise<void>;
   list(limit?: number): Promise<WorkerSessionRecord[]>;
+  listByThread?(threadId: ThreadId, limit?: number): Promise<WorkerSessionRecord[]>;
 }

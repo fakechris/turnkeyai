@@ -185,6 +185,128 @@ test("real LLM A/B fairness ignores markdown punctuation after evidence URLs", (
   }
 });
 
+test("real LLM A/B fairness ignores encoded markdown backticks after evidence URLs", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-fairness-"));
+  try {
+    writeFixture(dir, {
+      naturalPatch: {
+        fixtureContentHashes: {
+          "http://<loopback-host>:<loopback-port>/ops-dashboard": "sha256:fixture",
+        },
+      },
+      referencePatch: {
+        provenance: {
+          rawBrowserEvidence: [
+            {
+              rendered: true,
+              evidenceText: [
+                "**Data extracted successfully from `http://127.0.0.1:7788/ops-dashboard`**",
+                "URLs: http://127.0.0.1:7788/ops-dashboard, https://cdn.example.test/screenshots/ops-dashboard.png",
+              ],
+              fixtureContentHashes: {
+                "http://<loopback-host>:<loopback-port>/ops-dashboard": "sha256:fixture",
+              },
+            },
+          ],
+        },
+      },
+    });
+    const report = buildRealLlmAbFairnessReport({ specPath: path.join(dir, "spec.json"), generatedAtMs: 1 });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.scenarios[0]?.checks.fixturePathComparable, "passed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B fairness ignores external screenshot artifact URLs when checking fixture paths", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-fairness-"));
+  try {
+    writeFixture(dir, {
+      referencePatch: {
+        provenance: {
+          rawBrowserEvidence: [
+            {
+              rendered: true,
+              evidenceText: [
+                "Source URL: http://127.0.0.1:7788/ops-dashboard",
+                "Screenshot: https://cdn.example.test/screenshots/ops-dashboard.png",
+              ],
+              screenshotPaths: ["https://cdn.example.test/screenshots/ops-dashboard.png"],
+              fixtureContentHash: "sha256:fixture",
+            },
+          ],
+        },
+      },
+    });
+    const report = buildRealLlmAbFairnessReport({ specPath: path.join(dir, "spec.json"), generatedAtMs: 1 });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.scenarios[0]?.checks.fixturePathComparable, "passed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B fairness treats loopback query strings as fixture payload, not a different source path", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-fairness-"));
+  try {
+    writeFixture(dir, {
+      referencePatch: {
+        provenance: {
+          rawBrowserEvidence: [
+            {
+              rendered: true,
+              evidenceText: [
+                "Source URL: http://127.0.0.1:7788/ops-dashboard?note=local+dry-run",
+                "Visible page state was captured from the same fixture path.",
+              ],
+              fixtureContentHash: "sha256:fixture",
+            },
+          ],
+        },
+      },
+    });
+    const report = buildRealLlmAbFairnessReport({ specPath: path.join(dir, "spec.json"), generatedAtMs: 1 });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.scenarios[0]?.checks.fixturePathComparable, "passed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B fairness still rejects wrong loopback source paths in browser evidence", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-fairness-"));
+  try {
+    writeFixture(dir, {
+      referencePatch: {
+        provenance: {
+          rawBrowserEvidence: [
+            {
+              rendered: true,
+              evidenceText: [
+                "Source URL: http://127.0.0.1:7788/wrong-dashboard",
+                "Screenshot: https://cdn.example.test/screenshots/ops-dashboard.png",
+              ],
+              screenshotPaths: ["https://cdn.example.test/screenshots/ops-dashboard.png"],
+              fixtureContentHash: "sha256:fixture",
+            },
+          ],
+        },
+      },
+    });
+    const report = buildRealLlmAbFairnessReport({ specPath: path.join(dir, "spec.json"), generatedAtMs: 1 });
+
+    assert.equal(report.status, "failed");
+    assert.equal(report.scenarios[0]?.checks.fixturePathComparable, "failed");
+    assert.match(report.scenarios[0]?.findings.join("\n") ?? "", /fixture URL path semantics/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B fairness requires model comparability or explicit model difference", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-fairness-"));
   try {

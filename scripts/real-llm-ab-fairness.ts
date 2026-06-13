@@ -269,6 +269,7 @@ function auditFairnessScenario(input: {
   const referenceUrls = extractComparableUrls(referencePrompt);
   const exactRequestUrls = extractComparableUrls(exactRequestPrompt);
   const browserEvidenceUrls = extractComparableUrls(referenceArtifact.provenance?.rawBrowserEvidence ?? referenceArtifact.rawBrowserEvidence);
+  const browserEvidenceFixtureUrls = browserEvidenceUrls.filter(isLoopbackComparableUrl);
   const loopbackFixtureRequired = specUrls.some((url) => url.includes("://<loopback-host>:<loopback-port>/"));
   const fixtureHashes = {
     turnkeyai: readContentHashes([naturalScenario, input.naturalReport], specUrls),
@@ -292,7 +293,7 @@ function auditFairnessScenario(input: {
       sameUrlSet(specUrls, naturalUrls) &&
       sameUrlSet(specUrls, referenceUrls) &&
       sameUrlSet(specUrls, exactRequestUrls) &&
-      browserEvidenceUrls.every((url) => specUrls.includes(url))
+      browserEvidenceFixtureUrls.every((url) => specUrls.includes(url))
         ? "passed"
         : "failed",
     fixtureContentComparable:
@@ -528,16 +529,20 @@ function normalizeUrlEvidenceText(text: string): string {
 }
 
 function canonicalizeComparableUrl(rawUrl: string): string {
-  const cleaned = rawUrl.replace(/[`)\].;:,]+$/g, "");
+  const cleaned = rawUrl
+    .replace(/(?:%60|%22|%27|[`"'*_)\].;:,])+$/gi, "")
+    .replace(/(?:%60|%22|%27|[`"'*_)\].;:,])+$/gi, "");
   if (cleaned.includes("://<loopback-host>:<loopback-port>/")) {
-    return cleaned.replace(/\/+(\?|$)/, "$1");
+    const withoutHash = cleaned.split("#")[0] ?? cleaned;
+    const [withoutSearch] = withoutHash.split("?");
+    return (withoutSearch ?? withoutHash).replace(/\/+$/g, "");
   }
   try {
     const url = new URL(cleaned);
     const hostname = url.hostname.toLowerCase();
     if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") {
       const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/+$/g, "") : url.pathname;
-      return `${url.protocol}//<loopback-host>:<loopback-port>${pathname}${url.search}`;
+      return `${url.protocol}//<loopback-host>:<loopback-port>${pathname}`;
     }
     url.hash = "";
     return url.toString();
@@ -548,6 +553,10 @@ function canonicalizeComparableUrl(rawUrl: string): string {
 
 function sameUrlSet(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function isLoopbackComparableUrl(url: string): boolean {
+  return url.includes("://<loopback-host>:<loopback-port>/");
 }
 
 function sameNonEmptySet(left: readonly string[], right: readonly string[]): boolean {

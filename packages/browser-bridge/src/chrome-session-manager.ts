@@ -1034,7 +1034,7 @@ export class ChromeSessionManager {
     }
     const pages = context.pages();
 
-    if (!this.browserSessionManager || !currentTargetId) {
+    if (!this.browserSessionManager) {
       const existing = pages.at(-1);
       if (existing) {
         return {
@@ -1043,6 +1043,13 @@ export class ChromeSessionManager {
           targetResolution: liveReuse ? "attach" : "reconnect",
         };
       }
+      return {
+        page: await context.newPage(),
+        resumeMode: "cold",
+        targetResolution: "new_target",
+      };
+    }
+    if (!currentTargetId) {
       return {
         page: await context.newPage(),
         resumeMode: "cold",
@@ -2968,9 +2975,9 @@ function buildPatternWaitExpression(pattern: string, valueExpression: string): s
     "(() => {",
     `  const pattern = ${JSON.stringify(boundedPattern)};`,
     `  const value = String(${valueExpression} ?? "");`,
-    `  if (!pattern.includes("*")) return value.includes(pattern);`,
+    `  if (!pattern.includes("*")) return value.toLowerCase().includes(pattern.toLowerCase());`,
     `  const escaped = pattern.split("*").map((part) => part.replace(new RegExp(${regexSource}, "g"), "\\\\$&")).join(".*");`,
-    `  return new RegExp("^" + escaped + "$").test(value);`,
+    `  return new RegExp("^" + escaped + "$", "i").test(value);`,
     "})()",
   ].join("\n");
 }

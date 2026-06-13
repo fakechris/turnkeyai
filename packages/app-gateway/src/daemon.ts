@@ -26,6 +26,8 @@ import type {
   RuntimeSummaryReport,
   ScheduledTaskRecord,
   SummaryBuilder,
+  TeamEvent,
+  TeamEventBus,
   ValidationOpsRunType,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
@@ -78,7 +80,7 @@ import { createRecoveryRouteDeps } from "./composition/recovery-deps";
 import { runBrowserTransportSoakViaCli } from "./composition/transport-soak-cli";
 import { createBridgeMissionActivityRecorder } from "./bridge-mission-activity-recorder";
 import { createBrowserContextSourceProvider } from "./browser-context-source-provider";
-import { createMissionThreadBridge } from "./mission-thread-bridge";
+import { createMissionThreadBridge, type MissionThreadBridge } from "./mission-thread-bridge";
 import { createMissionTaskToolService } from "./mission-task-tool-service";
 import { createMissionToolPermissionService } from "./tool-permission-service";
 import { buildBrowserRuntimeHealthSnapshot } from "./browser-runtime-health";
@@ -415,8 +417,41 @@ const missionThreadBridge = createMissionThreadBridge({
   }),
   newEventId: () => idGenerator.messageId(),
   clock,
+  async postLateWorkerCompletionFollowUp(input) {
+    void coordinationEngine
+      .handleUserPost({
+        threadId: input.threadId,
+        content: input.content,
+      })
+      .catch((error) => {
+        console.error("late worker completion follow-up failed", {
+          missionId: input.mission.id,
+          workerRunKey: input.workerSession.workerRunKey,
+          error,
+        });
+      });
+  },
+  async postIncompleteFinalFollowUp(input) {
+    void coordinationEngine
+      .handleUserPost({
+        threadId: input.threadId,
+        content: input.content,
+      })
+      .catch((error) => {
+        console.error("incomplete final follow-up failed", {
+          missionId: input.mission.id,
+          messageId: input.recovery.message.id,
+          reason: input.recovery.reason,
+          error,
+        });
+      });
+  },
 });
 const stopMissionThreadBridge = missionThreadBridge.start(2000);
+const stopMissionThreadEventMirror = installMissionThreadEventMirror({
+  teamEventBus,
+  missionThreadBridge,
+});
 const missionOrchestrator = {
   async spawnThread(input: {
     title: string;
@@ -451,6 +486,63 @@ const missionOrchestrator = {
   },
   threadBridge: missionThreadBridge,
 };
+
+function installMissionThreadEventMirror(input: {
+  teamEventBus: TeamEventBus;
+  missionThreadBridge: MissionThreadBridge;
+}): () => void {
+  const pending = new Map<string, NodeJS.Timeout>();
+  const schedule = (threadId: string) => {
+    const existing = pending.get(threadId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    const timeout = setTimeout(() => {
+      pending.delete(threadId);
+      const tickThread = input.missionThreadBridge.tickThread;
+      if (!tickThread) {
+        return;
+      }
+      void tickThread(threadId).catch((error) => {
+        console.warn("mission thread event mirror failed", {
+          threadId,
+          error,
+        });
+      });
+    }, 100);
+    timeout.unref?.();
+    pending.set(threadId, timeout);
+  };
+  const unsubscribe = input.teamEventBus.subscribe((event) => {
+    if (!shouldMirrorMissionThreadEvent(event)) {
+      return;
+    }
+    schedule(event.threadId);
+  });
+  return () => {
+    unsubscribe();
+    for (const timeout of pending.values()) {
+      clearTimeout(timeout);
+    }
+    pending.clear();
+  };
+}
+
+function shouldMirrorMissionThreadEvent(event: TeamEvent): boolean {
+  if (event.kind === "message.posted" || event.kind === "worker.updated") {
+    return true;
+  }
+  if (event.kind !== "runtime.progress") {
+    return false;
+  }
+  const phase = event.payload.phase;
+  if (phase === "completed" || phase === "failed" || phase === "cancelled") {
+    return true;
+  }
+  const subjectKind = event.payload.subjectKind;
+  const statusReason = event.payload.statusReason;
+  return subjectKind === "dispatch" || statusReason === "role_loop_dequeued" || statusReason === "role_loop_hydrated";
+}
 
 function buildMissionRuntimeRoles(mode: import("@turnkeyai/core-types/mission").MissionMode) {
   const lead = {
@@ -908,6 +1000,7 @@ function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
   // scheduled while the HTTP server is draining.
   runtimeServices.stop();
   stopMissionThreadBridge();
+  stopMissionThreadEventMirror();
   const closeTimeout = setTimeout(() => {
     console.error("daemon shutdown timed out, exiting");
     removePidFile(RUNTIME_PATHS, process.pid);

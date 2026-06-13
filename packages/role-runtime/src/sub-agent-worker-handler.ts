@@ -412,7 +412,13 @@ class SubAgentToolExecutor implements RoleToolExecutor {
     input: RoleToolExecutionInput,
     browserBridge: BrowserBridge
   ): Promise<RoleToolExecutionResult> {
-    const actionPlan = buildBrowserPrivateActionPlan(input);
+    const previousPayload =
+      this.innerSessionState?.lastResult?.payload ??
+      this.parentInput.sessionState?.lastResult?.payload;
+    const previous = decodeBrowserSessionPayload(previousPayload);
+    const actionPlan = buildBrowserPrivateActionPlan(input, {
+      refVisibleText: (refId) => readBrowserRefVisibleText(previousPayload, refId),
+    });
     if ("error" in actionPlan) {
       return {
         toolCallId: input.call.id,
@@ -423,10 +429,6 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       };
     }
 
-    const previousPayload =
-      this.innerSessionState?.lastResult?.payload ??
-      this.parentInput.sessionState?.lastResult?.payload;
-    const previous = decodeBrowserSessionPayload(previousPayload);
     const workerRunKey = this.workerRunKey();
     const useWorkerOwnedBrowserSession =
       Boolean(this.innerSessionState) || !previous?.sessionId || previous?.source === "browserRecovery";
@@ -645,9 +647,25 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
       },
     },
     {
+      name: "browser_wait_for",
+      description: "Wait until a URL, title, body text, or visible element condition is met, then capture a DOM snapshot.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: { type: "string", description: "Literal visible body text to wait for." },
+          body_text_pattern: { type: "string", description: "Regular expression pattern to match against page body text." },
+          url_pattern: { type: "string", description: "Regular expression pattern to match against the current URL." },
+          title_pattern: { type: "string", description: "Regular expression pattern to match against the page title." },
+          timeout_ms: { type: "number", minimum: 1, maximum: 60_000, description: "Maximum wait in milliseconds. Defaults to 30000." },
+          note: { type: "string", description: "Optional short snapshot note after the wait." },
+        },
+      },
+    },
+    {
       name: "browser_act",
       description:
-        "Perform one targeted browser interaction, then snapshot the result. For an approved form submission, click the submit control with submit=true so the runtime can enforce the browser.form.submit approval boundary.",
+        "Perform one targeted browser interaction, optionally wait for expected text, then snapshot the result. For an approved form submission, click the submit control with submit=true so the runtime can enforce the browser.form.submit approval boundary.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -656,6 +674,8 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
           refId: { type: "string", description: "Preferred element ref from a prior snapshot." },
           text: { type: "string", description: "Visible target text for click/hover, text to type, or key name." },
           selector: { type: "string", description: "CSS selector fallback when no refId is available." },
+          wait_for_text: { type: "string", description: "Literal text expected after the action. Use for click-and-wait dynamic UI." },
+          wait_timeout_ms: { type: "number", minimum: 1, maximum: 60_000, description: "Maximum wait for wait_for_text in milliseconds. Defaults to 30000." },
           submit: {
             type: "boolean",
             description:
@@ -705,7 +725,10 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
   ];
 }
 
-function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
+function buildBrowserPrivateActionPlan(
+  input: RoleToolExecutionInput,
+  options: { refVisibleText?: (refId: string) => string | null } = {}
+):
   | { instructions: string; actions: BrowserTaskAction[] }
   | { error: string } {
   const rawInput = input.call.input as unknown;
@@ -734,6 +757,14 @@ function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
         instructions: "Capture the current browser page state.",
         actions: [{ kind: "snapshot", note: requiredString(raw.note) ?? "current-page" }],
       };
+    case "browser_wait_for": {
+      const actions = buildBrowserWaitForActions(raw);
+      if ("error" in actions) return actions;
+      return {
+        instructions: "Wait for the requested browser condition and observe the result.",
+        actions,
+      };
+    }
     case "browser_scroll": {
       const direction = raw.direction === "up" || raw.direction === "down" ? raw.direction : null;
       if (!direction) return { error: "browser_scroll requires direction up or down." };
@@ -761,10 +792,20 @@ function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
         instructions: "Capture a screenshot of the current browser target.",
         actions: [{ kind: "screenshot", label: requiredString(raw.label) ?? "browser-sub-agent" }],
       };
-    case "browser_act":
-      return buildBrowserActPlan(raw, {
+    case "browser_act": {
+      const planOptions: {
+        approvalContext: BrowserSideEffectApprovalContext[];
+        taskPrompt: string;
+        refVisibleText?: (refId: string) => string | null;
+      } = {
         approvalContext: input.packet.runtimeApprovalContext?.browserSideEffects ?? [],
-      });
+        taskPrompt: input.packet.taskPrompt,
+      };
+      if (options.refVisibleText) {
+        planOptions.refVisibleText = options.refVisibleText;
+      }
+      return buildBrowserActPlan(raw, planOptions);
+    }
     default:
       return { error: `Unknown browser sub-agent tool: ${input.call.name}` };
   }
@@ -772,7 +813,11 @@ function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
 
 function buildBrowserActPlan(
   raw: Record<string, unknown>,
-  options: { approvalContext: BrowserSideEffectApprovalContext[] }
+  options: {
+    approvalContext: BrowserSideEffectApprovalContext[];
+    taskPrompt: string;
+    refVisibleText?: (refId: string) => string | null;
+  }
 ):
   | { instructions: string; actions: BrowserTaskAction[] }
   | { error: string } {
@@ -786,7 +831,7 @@ function buildBrowserActPlan(
   }
   if (action === "click") {
     if (!target) return { error: "browser_act click requires refId, text, or selector." };
-    const visibleText = requiredString(raw.text);
+    const visibleText = requiredString(raw.text) ?? ("refId" in target ? options.refVisibleText?.(target.refId) ?? null : null);
     if ("refId" in target && !visibleText) {
       return {
         error: "browser_act click with refId requires visible text so side effects can be screened.",
@@ -799,11 +844,21 @@ function buildBrowserActPlan(
         error: `browser_act refused likely side-effectful click target "${sideEffect}". Ask the parent agent to request approval first.`,
       };
     }
+    const actions: BrowserTaskAction[] = [{ kind: "click", ...target }];
+    const waitForText = requiredString(raw.wait_for_text) ?? extractBrowserWaitForText(options.taskPrompt);
+    if (waitForText) {
+      actions.push({
+        kind: "waitFor",
+        bodyTextPattern: escapeRegExp(waitForText),
+        timeoutMs: resolveBrowserWaitTimeoutMs(raw.wait_timeout_ms),
+      });
+    }
+    actions.push({ kind: "snapshot", note: waitForText ? `after-wait-${slugifyBrowserNote(waitForText)}` : "after-click" });
     return {
       instructions: sideEffectRequest
         ? "Click the approved scoped browser element and observe the result."
         : "Click the requested browser element and observe the result.",
-      actions: [{ kind: "click", ...target }, { kind: "snapshot", note: "after-click" }],
+      actions,
     };
   }
   if (action === "hover") {
@@ -834,6 +889,79 @@ function buildBrowserActPlan(
     };
   }
   return { error: "browser_act action must be click, type, key, or hover." };
+}
+
+function readBrowserRefVisibleText(payload: unknown, refId: string): string | null {
+  if (!isRecord(payload) || !isRecord(payload.page) || !Array.isArray(payload.page.interactives)) {
+    return null;
+  }
+  for (const interactive of payload.page.interactives) {
+    if (!isRecord(interactive) || interactive.refId !== refId) {
+      continue;
+    }
+    const label = requiredString(interactive.label);
+    const role = requiredString(interactive.role);
+    const tagName = requiredString(interactive.tagName);
+    return label ?? role ?? tagName;
+  }
+  return null;
+}
+
+function buildBrowserWaitForActions(raw: Record<string, unknown>):
+  | BrowserTaskAction[]
+  | { error: string } {
+  const timeoutMs = resolveBrowserWaitTimeoutMs(raw.timeout_ms);
+  const text = requiredString(raw.text);
+  const bodyTextPattern = requiredString(raw.body_text_pattern);
+  const urlPattern = requiredString(raw.url_pattern);
+  const titlePattern = requiredString(raw.title_pattern);
+  const conditions = [text, bodyTextPattern, urlPattern, titlePattern].filter(Boolean);
+  if (conditions.length !== 1) {
+    return { error: "browser_wait_for requires exactly one of text, body_text_pattern, url_pattern, or title_pattern." };
+  }
+  const waitAction: BrowserTaskAction = text
+    ? { kind: "waitFor", bodyTextPattern: escapeRegExp(text), timeoutMs }
+    : bodyTextPattern
+      ? { kind: "waitFor", bodyTextPattern, timeoutMs }
+      : urlPattern
+        ? { kind: "waitFor", urlPattern, timeoutMs }
+        : { kind: "waitFor", titlePattern: titlePattern!, timeoutMs };
+  return [waitAction, { kind: "snapshot", note: requiredString(raw.note) ?? "after-wait" }];
+}
+
+function resolveBrowserWaitTimeoutMs(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.min(Math.max(Math.floor(value), 1), 60_000);
+  }
+  return 30_000;
+}
+
+function extractBrowserWaitForText(taskPrompt: string): string | null {
+  const patterns = [
+    /wait(?:\s+for)?[\s\S]{0,120}?(?:display|show|appear|visible|contains?)[\s\S]{0,40}?["“](.+?)["”]/i,
+    /(?:display|show|appear|visible|contains?)[\s\S]{0,40}?["“](.+?)["”]/i,
+    /等待[\s\S]{0,80}?(?:显示|出现|可见)[\s\S]{0,20}?["“](.+?)["”]/,
+    /(?:显示|出现|可见)\s*["“](.+?)["”]/,
+  ];
+  for (const pattern of patterns) {
+    const value = taskPrompt.match(pattern)?.[1]?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function slugifyBrowserNote(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "text"
+  );
 }
 
 function isBrowserPrivateSideEffectApproved(
@@ -1520,7 +1648,17 @@ function collectBrowserFailureBucketsFromTrace(
 ): Array<{ bucket: string; count: number }> {
   const counts = new Map<string, number>();
   for (const step of trace) {
-    for (const bucket of collectBrowserFailureBucketsFromText(step.errorMessage ?? "")) {
+    if (step.status !== "failed" || !step.errorMessage) {
+      continue;
+    }
+    const buckets = collectBrowserFailureBucketsFromText(step.errorMessage);
+    if (buckets.length === 0) {
+      buckets.push(classifyBrowserPrivateToolFailureBucket(step.errorMessage));
+    }
+    for (const bucket of buckets) {
+      if (!BROWSER_FAILURE_BUCKETS.includes(bucket as (typeof BROWSER_FAILURE_BUCKETS)[number])) {
+        continue;
+      }
       counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
     }
   }
@@ -1536,6 +1674,9 @@ function collectBrowserFailureBucketsFromText(text: string): string[] {
 }
 
 function classifyBrowserPrivateToolFailureBucket(message: string): string {
+  if (/\bwaitFor(?:Function|URL)?\b[\s\S]{0,120}\b(?:Timeout|timed out|timeout)\b|\b(?:bodyTextPattern|titlePattern|urlPattern)\b[\s\S]{0,120}\b(?:Timeout|timed out|timeout)\b/i.test(message)) {
+    return "wait_condition_timeout";
+  }
   const direct = collectBrowserFailureBucketsFromText(message)[0];
   if (direct) return direct;
   if (/\b(?:unknown|stale|invalid)\s+snapshot\s+ref\b|\bref(?:erence)?\b.{0,80}\b(?:not found|stale|invalid|unknown)\b/i.test(message)) {
@@ -1613,8 +1754,9 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
   if (kind === "browser") {
     return [
       ...common,
-      "You control browser work through private browser tools: browser_open, browser_snapshot, browser_act, browser_scroll, browser_console, and browser_screenshot.",
-      "Use browser_open for absolute URLs, browser_snapshot before choosing element refs, browser_act for one targeted click/type/key/hover, browser_scroll for long pages, browser_console for bounded page probes, and browser_screenshot for visible evidence artifacts.",
+      "You control browser work through private browser tools: browser_open, browser_snapshot, browser_wait_for, browser_act, browser_scroll, browser_console, and browser_screenshot.",
+      "Use browser_open for absolute URLs, browser_snapshot before choosing element refs, browser_wait_for when the task requires a specific URL/title/body text to appear, browser_act for one targeted click/type/key/hover, browser_scroll for long pages, browser_console for bounded page probes, and browser_screenshot for visible evidence artifacts.",
+      "When clicking starts dynamic loading and the delegated task names expected text, pass wait_for_text to browser_act or call browser_wait_for before the final snapshot.",
       `For explicitly slow local or loopback diagnostics, set browser_open.timeout_ms up to ${MAX_BROWSER_OPEN_TIMEOUT_MS} and stop with a bounded evidence summary if the page still does not load.`,
       "Do not submit forms, purchase, publish, delete, approve, or change account state from the browser sub-agent private tools unless the delegated task explicitly says parent runtime approval is granted or the permission cache is already applied for that scoped action. Without that explicit approval context, report that the parent must request approval first.",
       "Retry the same browser operation at most three times, changing strategy only when the observed failure justifies it.",
@@ -1631,6 +1773,8 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
       "You investigate public or provided web/context sources through the private explore_run tool.",
       "Use explore_run for focused retrieval and extraction. Avoid broad repeated searches with no new angle.",
       "Prefer primary sources and cite the exact source facts in your final summary when available.",
+      "Do not use placeholder words from a partial answer such as not verified, unverified, unknown, missing, or 未验证 as search queries. Search the original entity names, provider names, official domains, and requested fact labels instead.",
+      "For docs/pricing/API research, if a fetched root page exposes navigation text, follow the visible nav/link target or search that exact site+label before guessing paths. After two 404/401 guesses on one host, stop guessing paths and change strategy.",
       "Preserve exact product/entity names from the delegated task. Do not append guessed categories such as smart lock, blockchain, SaaS, or library unless the task explicitly includes that category.",
       "When a name is ambiguous, search the exact name and official domain first, then report ambiguity instead of choosing a guessed interpretation.",
       "For product comparisons, verify only the dimensions the parent explicitly requested; common dimensions include official positioning, pricing, user scale, community feedback, code/repo availability, and update frequency.",

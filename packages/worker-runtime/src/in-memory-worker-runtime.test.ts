@@ -536,6 +536,72 @@ test("in-memory worker runtime resumes a cancelled session only through explicit
   assert.equal((await runtime.getState(spawned.workerRunKey))?.status, "done");
 });
 
+test("in-memory worker runtime resumes a retryable failed session through explicit resume-existing continuity", async () => {
+  let callCount = 0;
+  const prompts: string[] = [];
+  const handler: WorkerHandler = {
+    kind: "explore",
+    async canHandle() {
+      return true;
+    },
+    async run(input): Promise<WorkerExecutionResult | null> {
+      callCount += 1;
+      prompts.push(input.packet.taskPrompt);
+      if (callCount === 1) {
+        throw new Error("source fetch failed after cancellation");
+      }
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Retried source evidence.",
+        payload: { callCount },
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => 991,
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  await assert.rejects(
+    runtime.send({
+      workerRunKey: spawned.workerRunKey,
+      activation: input.activation,
+      packet: {
+        ...input.packet,
+        taskPrompt: "Check the source before retry.",
+      },
+      toolCallId: "call-failed",
+    }),
+    /source fetch failed/
+  );
+  assert.equal((await runtime.getState(spawned.workerRunKey))?.status, "failed");
+
+  const explicitResume = await runtime.resume({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: {
+      ...input.packet,
+      continuityMode: "resume-existing",
+      taskPrompt: "Resume the failed source work.",
+    },
+    toolCallId: "call-resume-failed",
+  });
+  assert.equal(explicitResume?.summary, "Retried source evidence.");
+  assert.equal(callCount, 2);
+  assert.match(prompts[1] ?? "", /Previous worker status: failed/);
+  assert.match(prompts[1] ?? "", /source fetch failed after cancellation/);
+  assert.equal((await runtime.getState(spawned.workerRunKey))?.status, "done");
+});
+
 test("in-memory worker runtime emits runtime progress across start, wait, resume, and cancel", async () => {
   let callCount = 0;
   const phases: string[] = [];
@@ -689,6 +755,230 @@ test("in-memory worker runtime stops stale heartbeats after execution token chan
   await sendPromise;
 
   assert.equal(heartbeatCount, countAfterInterrupt);
+});
+
+test("in-memory worker runtime can preserve abort-time partial evidence on timeout interrupt", async () => {
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const handler: WorkerHandler = {
+    kind: "browser",
+    async canHandle() {
+      return true;
+    },
+    async run(input): Promise<WorkerExecutionResult | null> {
+      started();
+      await new Promise<void>((resolve) => input.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      return {
+        workerType: "browser",
+        status: "partial",
+        summary: "Rendered browser evidence captured before timeout.",
+        payload: {
+          page: {
+            finalUrl: "https://the-internet.herokuapp.com/dynamic_loading/1",
+            textExcerpt: "Hello World!",
+          },
+          artifactIds: ["browser-step:1"],
+          screenshotPaths: ["/tmp/not-used-by-test/hello-world.png"],
+        },
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => Date.now(),
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  const sendPromise = runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+
+  await startedPromise;
+  await runtime.interrupt({
+    workerRunKey: spawned.workerRunKey,
+    reason: "Tool-use wall-clock budget reached (2m).",
+    preserveLateResult: true,
+  });
+  const result = await sendPromise;
+  const state = await runtime.getState(spawned.workerRunKey);
+
+  assert.equal(result?.status, "partial");
+  assert.match(result?.summary ?? "", /Rendered browser evidence/);
+  assert.equal(state?.status, "resumable");
+  assert.equal(state?.lastResult?.status, "partial");
+  assert.match(state?.lastResult?.summary ?? "", /Rendered browser evidence/);
+});
+
+test("in-memory worker runtime keeps timeout-interrupted sessions resumable when the aborted handler throws", async () => {
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const timeoutReason = "sessions_spawn timed out after 15s.";
+  const handler: WorkerHandler = {
+    kind: "explore",
+    async canHandle() {
+      return true;
+    },
+    async run(input): Promise<WorkerExecutionResult | null> {
+      started();
+      await new Promise<void>((resolve) => input.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      throw new Error(timeoutReason);
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => Date.now(),
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  const sendPromise = runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+
+  await startedPromise;
+  await runtime.interrupt({
+    workerRunKey: spawned.workerRunKey,
+    reason: timeoutReason,
+    preserveLateResult: true,
+  });
+  const result = await sendPromise;
+  const state = await runtime.getState(spawned.workerRunKey);
+
+  assert.equal(result, null);
+  assert.equal(state?.status, "resumable");
+  assert.equal(state?.lastError?.code, "WORKER_TIMEOUT");
+  assert.equal(state?.continuationDigest?.reason, "timeout_summary");
+});
+
+test("in-memory worker runtime keeps timeout-interrupted sessions resumable when the aborted handler returns completed late", async () => {
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const timeoutReason = "sessions_spawn timed out after 15s.";
+  const handler: WorkerHandler = {
+    kind: "explore",
+    async canHandle() {
+      return true;
+    },
+    async run(input): Promise<WorkerExecutionResult | null> {
+      started();
+      await new Promise<void>((resolve) => input.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Late source evidence arrived after the parent timeout.",
+        payload: { content: "Late evidence." },
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => Date.now(),
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  const sendPromise = runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+
+  await startedPromise;
+  await runtime.interrupt({
+    workerRunKey: spawned.workerRunKey,
+    reason: timeoutReason,
+    preserveLateResult: true,
+  });
+  const result = await sendPromise;
+  const state = await runtime.getState(spawned.workerRunKey);
+
+  assert.equal(result?.status, "completed");
+  assert.equal(state?.status, "resumable");
+  assert.equal(state?.lastError?.code, "WORKER_TIMEOUT");
+  assert.equal(state?.lastResult?.status, "completed");
+  assert.equal(state?.continuationDigest?.reason, "timeout_summary");
+});
+
+test("in-memory worker runtime still discards late results for ordinary interrupts", async () => {
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const handler: WorkerHandler = {
+    kind: "browser",
+    async canHandle() {
+      return true;
+    },
+    async run(input): Promise<WorkerExecutionResult | null> {
+      started();
+      await new Promise<void>((resolve) => input.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Late result that should not commit.",
+        payload: {},
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => Date.now(),
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  const sendPromise = runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+
+  await startedPromise;
+  await runtime.interrupt({
+    workerRunKey: spawned.workerRunKey,
+    reason: "operator paused the worker",
+  });
+  const result = await sendPromise;
+  const state = await runtime.getState(spawned.workerRunKey);
+
+  assert.equal(result, null);
+  assert.equal(state?.status, "resumable");
+  assert.equal(state?.lastResult, undefined);
 });
 
 test("in-memory worker runtime ignores heartbeat recorder failures", async () => {

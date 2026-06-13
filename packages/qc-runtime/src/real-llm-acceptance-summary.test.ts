@@ -503,6 +503,126 @@ test("summarizeNaturalMissionE2eReportForValidationOps rejects unrelated artifac
   assert.equal(summarizeNaturalMissionE2eReportForValidationOps(null), null);
 });
 
+test("summarizeNaturalMissionE2eReportForValidationOps downgrades missing browser failure closeout in replay evidence", () => {
+  const summary = summarizeNaturalMissionE2eReportForValidationOps({
+    kind: "turnkeyai.natural-mission-e2e.report",
+    status: "passed",
+    progressClaim: "natural-evidence",
+    capabilityClaim: "unproven-without-comparative-evidence",
+    scenarios: [
+      {
+        scenario: "natural-long-delegation",
+        prompt:
+          "Compare three browser-backed sources. If browser transport degradation occurs, explicitly name transport_failure, state what evidence was recovered, what remains unverified, and how to retry or continue.",
+        natural: {
+          status: "passed",
+          completed: true,
+          stuckOrLoop: false,
+          reasonableToolUse: true,
+          browserUsed: true,
+          subAgentCompleted: true,
+          approvalExercised: false,
+          finalAnswerHasEvidence: true,
+          finalAnswerUseful: true,
+          sourceCoverage: {
+            answerTerms: { covered: 2, total: 2, missing: [] },
+            answerPatterns: { covered: 1, total: 1, missing: [] },
+            evidencePatterns: { covered: 2, total: 2, missing: [] },
+            evidenceEvents: { observed: 2, required: 1 },
+            residualRiskVisible: true,
+            unsupportedClaims: [],
+          },
+          weakAnswerSignals: [],
+          dimensionScores: passingNaturalDimensionScores(),
+          failureBuckets: [],
+        },
+        metrics: {
+          tools: { requested: 2, results: 2, failed: 1, cancelled: 0, timeouts: 0 },
+          sessions: { spawned: 2, continued: 0 },
+          browser: { profileFallbacks: 0, failureBuckets: [{ bucket: "transport_failure", count: 1 }] },
+          approvals: { requested: 0, decided: 0, applied: 0 },
+          liveness: { active: 0, waiting: 0, stale: 0 },
+          evidenceEvents: 2,
+          recoveryEvents: 1,
+        },
+        final: {
+          text: "I finished the comparison and recommend source A. Evidence was sufficient.",
+          excerpt: "I finished the comparison and recommend source A.",
+        },
+        evidenceReplay: {
+          finalText: "I finished the comparison and recommend source A. Evidence was sufficient.",
+        },
+      },
+    ],
+  });
+
+  assert.equal(summary?.status, "failed");
+  assert.equal(summary?.passedScenarios, 0);
+  assert.equal(summary?.failedScenarios, 1);
+  assert.deepEqual(summary?.failureBuckets, ["evidence_replay"]);
+  assert.equal(summary?.scenarioProofs?.[0]?.passed, false);
+  assert.deepEqual(summary?.scenarioProofs?.[0]?.replayFindings, [
+    "natural replay final answer omitted required browser failure closeout: transport_failure",
+  ]);
+});
+
+test("summarizeNaturalMissionE2eReportForValidationOps accepts explicit browser failure closeout in replay evidence", () => {
+  const summary = summarizeNaturalMissionE2eReportForValidationOps({
+    kind: "turnkeyai.natural-mission-e2e.report",
+    status: "passed",
+    progressClaim: "natural-evidence",
+    capabilityClaim: "unproven-without-comparative-evidence",
+    scenarios: [
+      {
+        scenario: "natural-long-delegation",
+        prompt:
+          "Compare three browser-backed sources. If browser transport degradation occurs, explicitly name transport_failure, state what evidence was recovered, what remains unverified, and how to retry or continue.",
+        natural: {
+          status: "passed",
+          completed: true,
+          stuckOrLoop: false,
+          reasonableToolUse: true,
+          browserUsed: true,
+          subAgentCompleted: true,
+          approvalExercised: false,
+          finalAnswerHasEvidence: true,
+          finalAnswerUseful: true,
+          sourceCoverage: {
+            answerTerms: { covered: 2, total: 2, missing: [] },
+            answerPatterns: { covered: 1, total: 1, missing: [] },
+            evidencePatterns: { covered: 2, total: 2, missing: [] },
+            evidenceEvents: { observed: 2, required: 1 },
+            residualRiskVisible: true,
+            unsupportedClaims: [],
+          },
+          weakAnswerSignals: [],
+          dimensionScores: passingNaturalDimensionScores(),
+          failureBuckets: [],
+        },
+        metrics: {
+          tools: { requested: 2, results: 2, failed: 1, cancelled: 0, timeouts: 0 },
+          sessions: { spawned: 2, continued: 0 },
+          browser: { profileFallbacks: 0, failureBuckets: [{ bucket: "transport_failure", count: 1 }] },
+          approvals: { requested: 0, decided: 0, applied: 0 },
+          liveness: { active: 0, waiting: 0, stale: 0 },
+          evidenceEvents: 2,
+          recoveryEvents: 1,
+        },
+        evidenceReplay: {
+          finalText:
+            "Browser limitation: transport_failure occurred. Recovered evidence covered source A and source B. Source C remains unverified, so retry the browser transport or continue from the saved source list before treating this as complete.",
+        },
+      },
+    ],
+  });
+
+  assert.equal(summary?.status, "passed");
+  assert.equal(summary?.passedScenarios, 1);
+  assert.equal(summary?.failedScenarios, 0);
+  assert.equal(summary?.scenarioProofs?.[0]?.passed, true);
+  assert.equal(summary?.scenarioProofs?.[0]?.replayFindings, undefined);
+});
+
 function passingNaturalDimensionScores() {
   return {
     taskCompletion: 2,

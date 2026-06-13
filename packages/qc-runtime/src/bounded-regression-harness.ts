@@ -74,7 +74,21 @@ export function runBoundedRegressionSuite(caseIds?: string[]): BoundedRegression
   const selected = caseIds?.length
     ? BUILT_IN_CASES.filter((item) => caseIds.includes(item.caseId))
     : BUILT_IN_CASES;
-  const results = selected.map((item) => item.run());
+  const results = selected.map((desc) => {
+    try {
+      return desc.run();
+    } catch (error) {
+      // Keep one case failure from hiding the rest of the suite.
+      return {
+        caseId: desc.caseId,
+        title: desc.title,
+        area: desc.area,
+        summary: desc.summary,
+        status: "failed" as const,
+        details: [`Error: ${error instanceof Error ? error.message : String(error)}`],
+      };
+    }
+  });
   return {
     totalCases: results.length,
     passedCases: results.filter((item) => item.status === "passed").length,

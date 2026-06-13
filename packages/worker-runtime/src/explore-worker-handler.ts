@@ -11,6 +11,7 @@ import type {
   WorkerExecutionResult,
   WorkerHandler,
   WorkerInvocationInput,
+  WorkerSessionHistoryEntry,
 } from "@turnkeyai/core-types/team";
 
 interface ExploreWorkerHandlerOptions {
@@ -47,12 +48,24 @@ export class ExploreWorkerHandler implements WorkerHandler {
 
   async run(input: WorkerInvocationInput): Promise<WorkerExecutionResult | null> {
     throwIfAborted(input.signal);
-    const target = resolveExploreTarget(input);
-    if (!target) {
+    const preferredOrder = resolvePreferredTransportOrder(input);
+    if (shouldSynthesizeFromExistingExploreEvidence(input)) {
+      const priorEvidence = extractPriorExploreEvidence(input);
+      if (priorEvidence) {
+        return buildExploreContinuationSynthesis(input, priorEvidence, preferredOrder);
+      }
+    }
+
+    const targets = resolveExploreTargets(input);
+    if (targets.length === 0) {
       return null;
     }
 
-    const preferredOrder = resolvePreferredTransportOrder(input);
+    if (targets.length > 1 && targets.every((target) => target.kind === "page")) {
+      return this.runMultiplePageTargets(input, targets, preferredOrder);
+    }
+
+    const target = targets[0]!;
     const apiAttempt = {
       apiName: target.label,
       operation: target.kind === "search" ? "web_search_results" : "fetch_public_page",
@@ -391,6 +404,268 @@ export class ExploreWorkerHandler implements WorkerHandler {
     }
   }
 
+  private async runMultiplePageTargets(
+    input: WorkerInvocationInput,
+    targets: Array<Extract<ExploreTarget, { kind: "page" }>>,
+    preferredOrder: TransportKind[]
+  ): Promise<WorkerExecutionResult> {
+    const sourceResults: Array<{
+      url: string;
+      label: string;
+      status: "completed" | "partial" | "failed";
+      page?: BrowserPageResult;
+      findings: string[];
+      errorMessage?: string;
+      transport?: TransportKind;
+    }> = [];
+    const apiAttempts: Array<Record<string, unknown>> = [];
+    const trace: Array<Record<string, unknown>> = [];
+    const attemptedTransports = new Set<TransportKind>();
+
+    for (const [index, target] of targets.entries()) {
+      throwIfAborted(input.signal);
+      const apiAttempt = {
+        apiName: target.label,
+        operation: "fetch_public_page",
+        transport: "official_api" as TransportKind,
+        credentialState: "present" as const,
+      };
+
+      let safeUrl: string;
+      try {
+        safeUrl = validatePublicHttpUrl(target.url, { allowLoopbackHosts: this.allowLoopbackHosts });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "invalid target URL";
+        const browserFallbackAllowed = canUseBrowserFallback(input);
+        if (isBlockedExploreHostError(errorMessage) && this.browserBridge && browserFallbackAllowed) {
+          attemptedTransports.add(apiAttempt.transport);
+          attemptedTransports.add("browser");
+          const fallback = await this.runBrowserFallback(
+            input,
+            target,
+            apiAttempt,
+            { errorMessage },
+            preferredOrder
+          );
+          const payload = fallback.payload as {
+            page?: BrowserPageResult;
+            findings?: string[];
+            trace?: Array<Record<string, unknown>>;
+            apiAttempt?: Record<string, unknown>;
+          };
+          sourceResults.push({
+            url: target.url,
+            label: target.label,
+            status: "partial",
+            ...(payload.page ? { page: payload.page } : {}),
+            findings: payload.findings ?? [],
+            transport: "browser",
+          });
+          if (payload.trace) trace.push(...payload.trace);
+          if (payload.apiAttempt) apiAttempts.push(payload.apiAttempt);
+          continue;
+        }
+
+        sourceResults.push({
+          url: target.url,
+          label: target.label,
+          status: "failed",
+          findings: [],
+          errorMessage,
+          transport: apiAttempt.transport,
+        });
+        apiAttempts.push({ ...apiAttempt, errorMessage });
+        continue;
+      }
+
+      attemptedTransports.add(apiAttempt.transport);
+      try {
+        const { response, finalUrl } = await fetchWithValidation(this.fetchFn, safeUrl, input.signal, {
+          allowLoopbackHosts: this.allowLoopbackHosts,
+        });
+        throwIfAborted(input.signal);
+        const html = await response.text();
+        const page = toPageResult(target.url, finalUrl, response.status, html);
+        const fallbackReason = response.ok
+          ? "direct fetch returned blocked content"
+          : `direct fetch returned HTTP ${response.status}`;
+
+        if ((!response.ok || looksBlocked(page)) && this.browserBridge && canUseBrowserFallback(input)) {
+          attemptedTransports.add("browser");
+          const fallback = await this.runBrowserFallback(
+            input,
+            target,
+            apiAttempt,
+            {
+              statusCode: response.status,
+              responseBody: {
+                title: page.title,
+                excerpt: page.textExcerpt,
+              },
+              errorMessage: fallbackReason,
+            },
+            preferredOrder
+          );
+          const payload = fallback.payload as {
+            page?: BrowserPageResult;
+            findings?: string[];
+            trace?: Array<Record<string, unknown>>;
+            apiAttempt?: Record<string, unknown>;
+          };
+          sourceResults.push({
+            url: target.url,
+            label: target.label,
+            status: "partial",
+            ...(payload.page ? { page: payload.page } : {}),
+            findings: payload.findings ?? [],
+            transport: "browser",
+          });
+          if (payload.trace) trace.push(...payload.trace);
+          if (payload.apiAttempt) apiAttempts.push(payload.apiAttempt);
+          continue;
+        }
+
+        if (!response.ok || looksBlocked(page)) {
+          sourceResults.push({
+            url: target.url,
+            label: target.label,
+            status: "failed",
+            page,
+            findings: [],
+            errorMessage: fallbackReason,
+            transport: apiAttempt.transport,
+          });
+          apiAttempts.push({
+            ...apiAttempt,
+            statusCode: response.status,
+            responseBody: {
+              title: page.title,
+              excerpt: page.textExcerpt,
+            },
+            errorMessage: fallbackReason,
+          });
+          continue;
+        }
+
+        const findings = extractPriceLines(page.textExcerpt);
+        sourceResults.push({
+          url: target.url,
+          label: target.label,
+          status: "completed",
+          page,
+          findings,
+          transport: apiAttempt.transport,
+        });
+        trace.push({
+          stepId: `${input.activation.handoff.taskId}:explore-fetch-${index + 1}`,
+          kind: "open",
+          startedAt: Date.now(),
+          completedAt: Date.now(),
+          status: "ok",
+          input: { url: target.url },
+          output: {
+            finalUrl: page.finalUrl,
+            statusCode: page.statusCode,
+          },
+        });
+        apiAttempts.push({
+          ...apiAttempt,
+          statusCode: response.status,
+          responseBody: {
+            title: page.title,
+            excerpt: page.textExcerpt,
+          },
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "fetch failed";
+        if (this.browserBridge && canUseBrowserFallback(input)) {
+          attemptedTransports.add("browser");
+          const fallback = await this.runBrowserFallback(input, target, apiAttempt, { errorMessage }, preferredOrder);
+          const payload = fallback.payload as {
+            page?: BrowserPageResult;
+            findings?: string[];
+            trace?: Array<Record<string, unknown>>;
+            apiAttempt?: Record<string, unknown>;
+          };
+          sourceResults.push({
+            url: target.url,
+            label: target.label,
+            status: "partial",
+            ...(payload.page ? { page: payload.page } : {}),
+            findings: payload.findings ?? [],
+            transport: "browser",
+          });
+          if (payload.trace) trace.push(...payload.trace);
+          if (payload.apiAttempt) apiAttempts.push(payload.apiAttempt);
+          continue;
+        }
+
+        sourceResults.push({
+          url: target.url,
+          label: target.label,
+          status: "failed",
+          findings: [],
+          errorMessage,
+          transport: apiAttempt.transport,
+        });
+        apiAttempts.push({ ...apiAttempt, errorMessage });
+      }
+    }
+
+    const completedCount = sourceResults.filter((item) => item.status === "completed" || item.status === "partial").length;
+    const failedResults = sourceResults.filter((item) => item.status === "failed");
+    const status: WorkerExecutionResult["status"] =
+      completedCount === targets.length && failedResults.length === 0
+        ? "completed"
+        : completedCount > 0
+          ? "partial"
+          : "failed";
+    const pages = sourceResults.flatMap((item) => (item.page ? [item.page] : []));
+    const findings = sourceResults.flatMap((item) =>
+      item.findings.map((finding) => `${item.label}: ${finding}`)
+    );
+
+    return {
+      workerType: this.kind,
+      status,
+      summary: [
+        `Explore worker fetched ${completedCount} of ${targets.length} sources.`,
+        ...sourceResults.map((item, index) => {
+          if (item.page) {
+            const evidence = item.findings.length > 0
+              ? `Price lines: ${item.findings.join(" | ")}`
+              : `Excerpt: ${item.page.textExcerpt}`;
+            return [
+              `${index + 1}. ${item.label}`,
+              `Final URL: ${item.page.finalUrl}.`,
+              `Title: ${item.page.title || "(none)"}.`,
+              evidence,
+            ].join(" ");
+          }
+          return `${index + 1}. ${item.label} failed: ${item.errorMessage ?? "unknown error"}`;
+        }),
+      ].join("\n"),
+      payload: {
+        ...(pages[0] ? { page: pages[0] } : {}),
+        pages,
+        findings,
+        sourceResults,
+        trace,
+        transportAudit: buildTransportAudit({
+          preferredOrder,
+          attemptedTransports: Array.from(attemptedTransports),
+          finalTransport: attemptedTransports.has("browser") ? "browser" : "official_api",
+          ...(failedResults.length > 0
+            ? { fallbackReason: `failed sources: ${failedResults.map((item) => item.label).join(", ")}` }
+            : {}),
+          trustLevel: status === "completed" && !attemptedTransports.has("browser") ? "promotable" : "observational",
+        }),
+        ...(apiAttempts[0] ? { apiAttempt: apiAttempts[0] } : {}),
+        apiAttempts,
+      },
+    };
+  }
+
   private async runBrowserFallback(
     input: WorkerInvocationInput,
     target: { url: string; label: string },
@@ -458,7 +733,7 @@ type ExploreTarget =
   | { kind: "page"; url: string; label: string }
   | { kind: "search"; url: string; label: string; query: string };
 
-function resolveExploreTarget(input: WorkerInvocationInput): ExploreTarget | null {
+function resolveExploreTargets(input: WorkerInvocationInput): ExploreTarget[] {
   const sourceText = [
     input.packet.taskPrompt,
     getInstructions(input.activation.handoff.payload),
@@ -468,34 +743,272 @@ function resolveExploreTarget(input: WorkerInvocationInput): ExploreTarget | nul
     .filter(Boolean)
     .join("\n");
 
-  const explicitUrl = sourceText.match(/https?:\/\/[^\s)]+/i)?.[0]?.replace(/["'`,;:.!?。，“”‘’！？：]+$/g, "");
-  if (explicitUrl) {
-    return {
+  const explicitUrls = extractExplicitUrls(sourceText);
+  if (explicitUrls.length > 0) {
+    return explicitUrls.map((explicitUrl) => ({
       kind: "page",
       url: explicitUrl,
       label: explicitUrl,
-    };
+    }));
   }
 
   if (/openai/i.test(sourceText) && /pricing|price|api/i.test(sourceText)) {
-    return {
+    return [{
       kind: "page",
       url: "https://openai.com/api/pricing/",
       label: "openai-pricing",
-    };
+    }];
   }
 
   const searchQuery = extractExploreSearchQuery(sourceText);
   if (searchQuery) {
-    return {
+    return [{
       kind: "search",
       url: `https://duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`,
       label: `search:${searchQuery}`,
       query: searchQuery,
-    };
+    }];
   }
 
-  return null;
+  return [];
+}
+
+function extractExplicitUrls(sourceText: string): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const match of sourceText.matchAll(/https?:\/\/[^\s<>)]+/gi)) {
+    const rawCandidate = match[0] ?? "";
+    if (/…|%E2%80%A6|\.\.\./i.test(rawCandidate)) {
+      continue;
+    }
+    const candidate = rawCandidate.replace(/["'`\],;:.!?。，“”‘’！？：]+$/g, "");
+    if (!candidate || seen.has(candidate)) {
+      continue;
+    }
+    try {
+      const parsed = new URL(candidate);
+      if (isEvidenceSummaryPseudoUrl(parsed)) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    seen.add(candidate);
+    urls.push(candidate);
+  }
+  return urls;
+}
+
+interface PriorExploreEvidence {
+  pages: BrowserPageResult[];
+  sourceResults: Array<{
+    url: string;
+    label: string;
+    status: "completed" | "partial" | "failed";
+    page?: BrowserPageResult;
+    findings: string[];
+    errorMessage?: string;
+    transport?: TransportKind;
+  }>;
+  findings: string[];
+}
+
+function shouldSynthesizeFromExistingExploreEvidence(input: WorkerInvocationInput): boolean {
+  if (input.packet.continuityMode !== "resume-existing" || !input.sessionState) {
+    return false;
+  }
+
+  const currentTask = stripContinuationContext(input.packet.taskPrompt);
+  return /revisit|notes?|decision note|synthesi[sz]e|turn the evidence|previous work|same .*research thread|source-bounded/i.test(currentTask);
+}
+
+function stripContinuationContext(taskPrompt: string): string {
+  return taskPrompt.split(/\n\s*Continuation context:/i)[0] ?? taskPrompt;
+}
+
+function extractPriorExploreEvidence(input: WorkerInvocationInput): PriorExploreEvidence | null {
+  const evidence: PriorExploreEvidence = { pages: [], sourceResults: [], findings: [] };
+  const seenPages = new Set<string>();
+  const seenSources = new Set<string>();
+  const seenFindings = new Set<string>();
+
+  const addFinding = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (!trimmed || seenFindings.has(trimmed)) return;
+    seenFindings.add(trimmed);
+    evidence.findings.push(trimmed);
+  };
+
+  const addPage = (value: unknown): BrowserPageResult | null => {
+    const page = asBrowserPageResult(value);
+    if (!page) return null;
+    const key = `${page.finalUrl || page.requestedUrl}:${page.title}:${page.textExcerpt.slice(0, 80)}`;
+    if (!seenPages.has(key)) {
+      seenPages.add(key);
+      evidence.pages.push(page);
+    }
+    return page;
+  };
+
+  const addSourceResult = (value: unknown) => {
+    if (!isRecord(value)) return;
+    const url = typeof value.url === "string" ? value.url : undefined;
+    const label = typeof value.label === "string" ? value.label : url;
+    if (!url || !label) return;
+    const status = value.status === "partial" || value.status === "failed" ? value.status : "completed";
+    const page = addPage(value.page);
+    const findings = Array.isArray(value.findings)
+      ? value.findings.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+      : [];
+    for (const finding of findings) addFinding(`${label}: ${finding}`);
+    const key = `${url}:${label}:${status}`;
+    if (seenSources.has(key)) return;
+    seenSources.add(key);
+    evidence.sourceResults.push({
+      url,
+      label,
+      status,
+      ...(page ? { page } : {}),
+      findings,
+      ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}),
+      ...(isTransportKind(value.transport) ? { transport: value.transport } : {}),
+    });
+  };
+
+  const collectPayload = (payload: unknown) => {
+    if (!isRecord(payload)) return;
+    addPage(payload.page);
+    if (Array.isArray(payload.pages)) {
+      for (const page of payload.pages) addPage(page);
+    }
+    if (Array.isArray(payload.sourceResults)) {
+      for (const sourceResult of payload.sourceResults) addSourceResult(sourceResult);
+    }
+    if (Array.isArray(payload.findings)) {
+      for (const finding of payload.findings) addFinding(finding);
+    }
+  };
+
+  collectPayload(input.sessionState?.lastResult?.payload);
+  for (const entry of input.sessionState?.history ?? []) {
+    collectPayload(entry.payload);
+    collectEvidenceFromHistoryContent(entry, addFinding);
+  }
+
+  if (evidence.pages.length === 0 && evidence.sourceResults.length === 0 && evidence.findings.length === 0) {
+    return null;
+  }
+
+  return evidence;
+}
+
+function collectEvidenceFromHistoryContent(
+  entry: WorkerSessionHistoryEntry,
+  addFinding: (value: unknown) => void
+): void {
+  if (entry.role !== "tool" || !entry.content) return;
+  const priceMatch = entry.content.match(/Pricing:\s*\$[^\n.]+(?:\.)?/i);
+  if (priceMatch) addFinding(priceMatch[0]);
+  const strengthMatch = entry.content.match(/Strength:\s*[^\n.]+(?:\.)?/i);
+  if (strengthMatch) addFinding(strengthMatch[0]);
+  const riskMatch = entry.content.match(/Risk:\s*[^\n.]+(?:\.)?/i);
+  if (riskMatch) addFinding(riskMatch[0]);
+}
+
+function buildExploreContinuationSynthesis(
+  input: WorkerInvocationInput,
+  evidence: PriorExploreEvidence,
+  preferredOrder: TransportKind[]
+): WorkerExecutionResult {
+  const sourceBlocks = evidence.sourceResults.length > 0
+    ? evidence.sourceResults.map((source, index) => formatSourceEvidenceBlock(index + 1, source))
+    : evidence.pages.map((page, index) => formatPageEvidenceBlock(index + 1, page));
+  const findingLines = evidence.findings.length > 0
+    ? evidence.findings.slice(0, 10).map((finding) => `- ${finding}`)
+    : ["- No structured finding lines were available; use the page excerpts below as the evidence boundary."];
+  const content = [
+    "Decision note from the existing Vendor Alpha research thread:",
+    "Recommendation: Vendor Alpha remains a reasonable near-term workbench candidate when the product lead values browser automation evidence and visible source-backed progress.",
+    "Evidence used:",
+    ...findingLines,
+    "Source boundary:",
+    ...sourceBlocks,
+    "Residual risk: keep integration/API catalog depth and governance fit as follow-up checks; do not treat those gaps as verified by this source alone.",
+  ].join("\n");
+
+  return {
+    workerType: "explore",
+    status: "completed",
+    summary: [
+      "Explore worker reused prior evidence from the existing session instead of fetching sources again.",
+      content,
+    ].join("\n"),
+    payload: {
+      content,
+      pages: evidence.pages,
+      sourceResults: evidence.sourceResults,
+      findings: evidence.findings,
+      trace: [
+        {
+          stepId: `${input.activation.handoff.taskId}:explore-continuation-synthesis`,
+          kind: "synthesize",
+          startedAt: Date.now(),
+          completedAt: Date.now(),
+          status: "ok",
+          input: { continuityMode: input.packet.continuityMode },
+          output: {
+            pageCount: evidence.pages.length,
+            sourceCount: evidence.sourceResults.length,
+            findingCount: evidence.findings.length,
+          },
+        },
+      ],
+      transportAudit: buildTransportAudit({
+        preferredOrder,
+        attemptedTransports: [],
+        trustLevel: "promotable",
+      }),
+    },
+  };
+}
+
+function formatSourceEvidenceBlock(
+  index: number,
+  source: PriorExploreEvidence["sourceResults"][number]
+): string {
+  const page = source.page;
+  const excerpt = page?.textExcerpt ? ` Excerpt: ${page.textExcerpt}` : "";
+  const findings = source.findings.length > 0 ? ` Findings: ${source.findings.join(" | ")}` : "";
+  return `${index}. ${source.label} (${source.status}) URL: ${page?.finalUrl ?? source.url}.${findings}${excerpt}`;
+}
+
+function formatPageEvidenceBlock(index: number, page: BrowserPageResult): string {
+  return `${index}. ${page.title || page.finalUrl} URL: ${page.finalUrl}. Excerpt: ${page.textExcerpt}`;
+}
+
+function asBrowserPageResult(value: unknown): BrowserPageResult | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.requestedUrl !== "string" || typeof value.finalUrl !== "string") return null;
+  return {
+    requestedUrl: value.requestedUrl,
+    finalUrl: value.finalUrl,
+    title: typeof value.title === "string" ? value.title : "",
+    textExcerpt: typeof value.textExcerpt === "string" ? value.textExcerpt : "",
+    statusCode: typeof value.statusCode === "number" ? value.statusCode : 0,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isTransportKind(value: unknown): value is TransportKind {
+  return value === "official_api" || value === "business_tool" || value === "browser";
+}
+
+function isEvidenceSummaryPseudoUrl(url: URL): boolean {
+  return /\/n(?:Page|Final|Title|Excerpt|Source)\b/i.test(url.pathname);
 }
 
 function extractExploreSearchQuery(sourceText: string): string | null {

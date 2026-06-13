@@ -77,6 +77,47 @@ test("file worker session store reads and lists persisted sessions", async () =>
     assert.equal(records.length, 2);
     assert.equal(records[0]?.workerRunKey, "worker:browser:task:task-1");
     assert.equal(records[1]?.workerRunKey, "worker:explore:task:task-2");
+
+    const threadRecords = await store.listByThread("thread-1");
+    assert.equal(threadRecords.length, 1);
+    assert.equal(threadRecords[0]?.workerRunKey, "worker:browser:task:task-1");
+
+    const missingThreadRecords = await store.listByThread("thread-missing");
+    assert.deepEqual(missingThreadRecords, []);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file worker session store backfills thread index for legacy records", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-worker-session-store-"));
+  try {
+    const store = new FileWorkerSessionStore({ rootDir });
+
+    await store.put({
+      workerRunKey: "worker:browser:task:task-legacy",
+      executionToken: 1,
+      state: {
+        workerRunKey: "worker:browser:task:task-legacy",
+        workerType: "browser",
+        status: "done",
+        createdAt: 10,
+        updatedAt: 20,
+      },
+      context: {
+        threadId: "thread-legacy",
+        flowId: "flow-1",
+        taskId: "task-legacy",
+        roleId: "role-operator",
+        parentSpanId: "role:role-operator:thread:thread-legacy",
+      },
+    });
+
+    await rm(path.join(rootDir, "by-thread"), { recursive: true, force: true });
+
+    const indexed = await store.listByThread("thread-legacy");
+    assert.equal(indexed.length, 1);
+    assert.equal(indexed[0]?.workerRunKey, "worker:browser:task:task-legacy");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

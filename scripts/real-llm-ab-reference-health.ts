@@ -215,15 +215,25 @@ function auditReferenceHealthScenario(task: ReferenceTask, taskDir: string): Ref
     };
   }
 
-  const finalText = readFinalText(artifact);
+  const effectiveMessages = readEffectiveReferenceArtifactMessages(artifact, artifactPath);
+  const finalText = readLatestAssistantText(effectiveMessages ?? []) ?? readFinalText(artifact);
   const promptReceived = task.prompt
     ? normalizePromptForAudit(readReferencePrompt(artifact)) === normalizePromptForAudit(task.prompt) &&
       normalizePromptForAudit(readExactRequestPrompt(artifact.provenance?.exactRequestPayload)) === normalizePromptForAudit(task.prompt)
     : Boolean(readReferencePrompt(artifact) && readExactRequestPrompt(artifact.provenance?.exactRequestPayload));
   const modelConfigured = hasConfiguredModel(artifact.provenance?.modelCatalog) && hasKnownString(artifact.provenance?.provider) && hasKnownString(artifact.provenance?.modelId);
-  const rawToolCalls = artifact.provenance?.rawToolCalls ?? artifact.rawToolCalls;
-  const rawToolResults = artifact.provenance?.rawToolResults ?? artifact.rawToolResults;
-  const rawBrowserEvidence = artifact.provenance?.rawBrowserEvidence ?? artifact.rawBrowserEvidence;
+  const rawToolCalls = [
+    ...readArray(artifact.provenance?.rawToolCalls ?? artifact.rawToolCalls),
+    ...(effectiveMessages ? extractToolCalls(effectiveMessages) : []),
+  ];
+  const rawToolResults = [
+    ...readArray(artifact.provenance?.rawToolResults ?? artifact.rawToolResults),
+    ...(effectiveMessages ? extractToolResults(effectiveMessages) : []),
+  ];
+  const rawBrowserEvidence = [
+    ...readArray(artifact.provenance?.rawBrowserEvidence ?? artifact.rawBrowserEvidence),
+    ...(effectiveMessages ? extractBrowserEvidenceFromTranscript(effectiveMessages) : []),
+  ];
   const rawApprovalEvidence = artifact.provenance?.rawApprovalEvidence ?? artifact.rawApprovalEvidence;
   const rawFlowEvidence = artifact.provenance?.rawFlowEvidence ?? artifact.rawFlowEvidence;
   const approvalWaitTimeoutBaselineLoss = isApprovalWaitTimeoutBaselineLoss({
@@ -234,6 +244,12 @@ function auditReferenceHealthScenario(task: ReferenceTask, taskDir: string): Ref
     rawApprovalEvidence,
   });
   const timeoutPartialBaselineLoss = isTimeoutPartialBaselineLoss({
+    scenarioId: task.scenarioId,
+    artifact,
+    rawToolCalls,
+    rawToolResults,
+  });
+  const successfulTimeoutCloseout = isSuccessfulTimeoutCloseout({
     scenarioId: task.scenarioId,
     artifact,
     rawToolCalls,
@@ -251,11 +267,13 @@ function auditReferenceHealthScenario(task: ReferenceTask, taskDir: string): Ref
   const runtimeHealthy =
     approvalWaitTimeoutBaselineLoss ||
     timeoutPartialBaselineLoss ||
+    successfulTimeoutCloseout ||
     (readString(artifact.provenance?.exitStatus ?? artifact.exitStatus) === "success" &&
       !containsRuntimeHealthFailure([
         artifact.notes,
         artifact.provenance?.rawResponse,
         artifact.provenance?.rawTranscript,
+        effectiveMessages,
         rawToolCalls,
         rawToolResults,
         rawBrowserEvidence,
@@ -282,6 +300,7 @@ function auditReferenceHealthScenario(task: ReferenceTask, taskDir: string): Ref
     ...extractRootCauseEvidence("notes", artifact.notes),
     ...extractRootCauseEvidence("rawResponse", artifact.provenance?.rawResponse ?? artifact.rawResponse),
     ...extractRootCauseEvidence("rawTranscript", artifact.provenance?.rawTranscript ?? artifact.rawTranscript),
+    ...extractRootCauseEvidence("lateSessionTranscript", effectiveMessages),
     ...extractRootCauseEvidence("rawToolCalls", rawToolCalls),
     ...extractRootCauseEvidence("rawToolResults", rawToolResults),
     ...extractRootCauseEvidence("rawBrowserEvidence", rawBrowserEvidence),
@@ -289,7 +308,7 @@ function auditReferenceHealthScenario(task: ReferenceTask, taskDir: string): Ref
     ...extractRootCauseEvidence("rawFlowEvidence", rawFlowEvidence),
     ...extractDelegationNotExecutedEvidence({
       finalText,
-      rawTranscript: artifact.provenance?.rawTranscript ?? artifact.rawTranscript,
+      rawTranscript: effectiveMessages ?? artifact.provenance?.rawTranscript ?? artifact.rawTranscript,
       toolOrWorkerTriggered: checks.toolOrWorkerTriggered,
       toolOrWorkerResult: checks.toolOrWorkerResult,
     }),
@@ -373,23 +392,25 @@ function isTimeoutPartialBaselineLoss(input: {
   rawToolCalls: unknown;
   rawToolResults: unknown;
 }): boolean {
-  if (input.scenarioId !== "natural-timeout-partial-closeout") return false;
   const driver =
     typeof input.artifact.provenance?.referenceScenarioDriver === "object" &&
     input.artifact.provenance.referenceScenarioDriver !== null
       ? input.artifact.provenance.referenceScenarioDriver as Record<string, unknown>
       : {};
-  if (readString(driver.kind) !== "timeout_partial") return false;
+  const driverKind = readString(driver.kind);
+  const timeoutScenarioMatches =
+    (input.scenarioId === "natural-timeout-partial-closeout" && driverKind === "timeout_partial") ||
+    (input.scenarioId === "natural-timeout-followup-continuation" && driverKind === "timeout_followup");
+  if (!timeoutScenarioMatches) return false;
   if (countArrayLike(input.rawToolCalls) === 0 && readNumber(input.artifact.first?.summary?.toolCallCount) === 0) {
     return false;
   }
   const finalText = readFinalText(input.artifact);
   if (finalText && input.artifact.score?.useful === true && !isWeakReferenceFinalText(finalText)) return false;
   const toolResultCount = countArrayLike(input.rawToolResults) + readNumber(input.artifact.first?.summary?.toolResultCount);
-  const timedOutWithoutResult =
+  const timedOutWithoutUsefulCloseout =
     readString(input.artifact.provenance?.exitStatus ?? input.artifact.exitStatus) === "timeout" &&
-    input.artifact.timedOut === true &&
-    toolResultCount === 0;
+    input.artifact.timedOut === true;
   const failedWorkerCloseout =
     toolResultCount > 0 &&
     containsTerm(
@@ -402,7 +423,7 @@ function isTimeoutPartialBaselineLoss(input: {
       ],
       /\b(?:sub-agent returned no executable result|no executable results?|requested task did not match the worker|worker's implemented capability|without live network access|localhost is inaccessible)\b/i
     );
-  if (!timedOutWithoutResult && !failedWorkerCloseout) return false;
+  if (!timedOutWithoutUsefulCloseout && !failedWorkerCloseout) return false;
   if (
     containsTerm(
       [
@@ -411,6 +432,53 @@ function isTimeoutPartialBaselineLoss(input: {
         input.artifact.first,
       ],
       /\b(?:verified|confirmed)\b[\s\S]{0,120}\b(?:response body|release-risk evidence|HTTP status|headers?)\b|\bslow source\b[\s\S]{0,120}\b(?:returned|responded)\b/i
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isSuccessfulTimeoutCloseout(input: {
+  scenarioId: string;
+  artifact: ReferenceArtifactShape;
+  rawToolCalls: unknown;
+  rawToolResults: unknown;
+}): boolean {
+  const driver =
+    typeof input.artifact.provenance?.referenceScenarioDriver === "object" &&
+    input.artifact.provenance.referenceScenarioDriver !== null
+      ? input.artifact.provenance.referenceScenarioDriver as Record<string, unknown>
+      : {};
+  const driverKind = readString(driver.kind);
+  const timeoutScenarioMatches =
+    (input.scenarioId === "natural-timeout-partial-closeout" && driverKind === "timeout_partial") ||
+    (input.scenarioId === "natural-timeout-followup-continuation" && driverKind === "timeout_followup");
+  if (!timeoutScenarioMatches) return false;
+  if (readString(input.artifact.provenance?.exitStatus ?? input.artifact.exitStatus) !== "success") return false;
+  if (countArrayLike(input.rawToolCalls) === 0 && readNumber(input.artifact.first?.summary?.toolCallCount) === 0) {
+    return false;
+  }
+  if (countArrayLike(input.rawToolResults) === 0 && readNumber(input.artifact.first?.summary?.toolResultCount) === 0) {
+    return false;
+  }
+  const finalText = readFinalText(input.artifact);
+  if (!finalText || input.artifact.score?.useful !== true || isWeakReferenceFinalText(finalText)) return false;
+  if (
+    !containsTerm(
+      finalText,
+      /\b(?:timeout|timed out|unresponsive|no response body|no content|no usable content|source is unresolved|cannot be used for release|blocked until)\b/i
+    )
+  ) {
+    return false;
+  }
+  if (!containsTerm(finalText, /\b(?:how (?:the )?mission can continue|how to continue|retry|alternative sources?|resolve|blocked until)\b/i)) {
+    return false;
+  }
+  if (
+    containsTerm(
+      finalText,
+      /\b(?:verified|confirmed)\b[\s\S]{0,120}\b(?:response body|HTTP status|headers?|source content)\b|\bslow source\b[\s\S]{0,120}\b(?:returned|responded)\b/i
     )
   ) {
     return false;
@@ -557,14 +625,14 @@ function readExactRequestPrompt(payload: unknown): string | null {
 
 function containsRuntimeHealthFailure(value: unknown): boolean {
   if (typeof value === "string") {
-    return /blocked explore URL host|blocked host|page\.evaluate|ReferenceError|missing auth|wrong endpoint|Unexpected token '<'|browser worker failed|Explore worker failed|failed to fetch/i.test(value);
+    return /blocked explore URL host|blocked host|page\.evaluate|ReferenceError|missing auth|wrong endpoint|Unexpected token '<'|browser worker failed|Explore worker failed|failed to fetch|network_error|can't reach (?:those )?URLs?|localhost addresses? .*only accessible|external infrastructure/i.test(value);
   }
   if (Array.isArray(value)) return value.some((item) => containsRuntimeHealthFailure(item));
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
   const status = readString(record.status);
   if (status === "failed" || status === "error") return true;
-  for (const key of ["error", "failure", "fallbackReason", "history", "lastResult", "metadata", "messages", "workerPayload", "workerState"]) {
+  for (const key of ["content", "error", "failure", "fallbackReason", "history", "lastResult", "metadata", "messages", "workerPayload", "workerState"]) {
     if (containsRuntimeHealthFailure(record[key])) return true;
   }
   return false;
@@ -584,7 +652,7 @@ function extractRootCauseEvidence(source: string, value: unknown): ReferenceRoot
   if (status === "failed" || status === "error") {
     evidence.push({ bucket: "runtime_failure", source, detail: `status=${status}` });
   }
-  for (const key of ["error", "failure", "fallbackReason", "history", "lastResult", "metadata", "messages", "summary", "workerPayload", "workerState"]) {
+  for (const key of ["content", "error", "failure", "fallbackReason", "history", "lastResult", "metadata", "messages", "summary", "workerPayload", "workerState"]) {
     evidence.push(...extractRootCauseEvidence(`${source}.${key}`, record[key]));
   }
   return evidence;
@@ -609,16 +677,16 @@ function classifyRootCauseText(source: string, text: string): ReferenceRootCause
   if (/Browser worker failed/i.test(text)) {
     evidence.push({ bucket: "browser_worker_failed", source, detail: truncateDetail(text) });
   }
-  if (/no executable results?|could not process the task|without live network access|localhost is inaccessible|operating as|use the browser worker|close the flow with|please consolidate this update/i.test(text)) {
+  if (/no executable results?|could not process the task|without live network access|localhost is inaccessible|localhost addresses? .*only accessible|external infrastructure|can't reach (?:those )?URLs?|operating as|use the browser worker|close the flow with|please consolidate this update/i.test(text)) {
     evidence.push({ bucket: "prompt_harness_echo", source, detail: truncateDetail(text) });
   }
   if (/\b(waiting_worker|nextExpectedRoleId|activeRoleIds)\b/i.test(text)) {
     evidence.push({ bucket: "reference_flow_incomplete", source, detail: truncateDetail(text) });
   }
-  if (/Explore worker failed|failed to fetch/i.test(text)) {
+  if (/Explore worker failed|failed to fetch|network_error|Fetched 0\/\d+ URLs successfully/i.test(text)) {
     evidence.push({ bucket: "explore_worker_failed", source, detail: truncateDetail(text) });
   }
-  if (/blocked explore URL host|blocked host/i.test(text)) {
+  if (/blocked explore URL host|blocked host|localhost addresses? .*only accessible|external infrastructure|can't reach (?:those )?URLs?/i.test(text)) {
     evidence.push({ bucket: "blocked_host", source, detail: truncateDetail(text) });
   }
   if (/missing auth|wrong endpoint/i.test(text)) {
@@ -687,11 +755,147 @@ function containsRenderedBrowserEvidence(value: unknown): boolean {
 }
 
 function isWeakReferenceFinalText(text: string): boolean {
-  return /暂时无法|无法返回|待确认|估算|没有足够|cannot access|unable to access|not enough information|no executable results?|could not process the task|without live network access|localhost is inaccessible|operating as|use the browser worker|close the flow with|please consolidate this update|next role|delegate to|delegating to|i will delegate|let me delegate/i.test(text);
+  return /暂时无法|无法返回|待确认|估算|没有足够|cannot access|unable to access|not enough information|no executable results?|could not process the task|without live network access|localhost is inaccessible|localhost addresses? .*only accessible|external infrastructure|can't reach (?:those )?URLs?|operating as|use the browser worker|close the flow with|please consolidate this update|next role|delegate to|delegating to|i will delegate|let me delegate/i.test(text);
 }
 
 function countArrayLike(value: unknown): number {
   return Array.isArray(value) ? value.length : 0;
+}
+
+function readArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function readEffectiveReferenceArtifactMessages(artifact: ReferenceArtifactShape, artifactPath: string): unknown[] | null {
+  const artifactMessages = readReferenceArtifactMessages(artifact) ?? [];
+  const lateMessages = readReferenceSessionMessagesFromFlowEvidence(
+    artifact.provenance?.rawFlowEvidence ?? artifact.rawFlowEvidence,
+    artifactPath
+  );
+  const messages = lateMessages.length > artifactMessages.length ? lateMessages : artifactMessages;
+  return messages.length > 0 ? messages : null;
+}
+
+function readReferenceArtifactMessages(artifact: ReferenceArtifactShape): unknown[] | null {
+  const rawTranscript = artifact.provenance?.rawTranscript ?? artifact.rawTranscript;
+  if (Array.isArray(rawTranscript)) return rawTranscript;
+  if (typeof rawTranscript === "object" && rawTranscript !== null) {
+    const messages = (rawTranscript as { messages?: unknown }).messages;
+    if (Array.isArray(messages)) return messages;
+  }
+  return null;
+}
+
+function readReferenceSessionMessagesFromFlowEvidence(rawFlowEvidence: unknown, artifactPath: string): unknown[] {
+  for (const sessionPath of readSessionPaths(rawFlowEvidence)) {
+    const resolvedPath = path.isAbsolute(sessionPath) ? sessionPath : path.resolve(path.dirname(artifactPath), sessionPath);
+    const messages = readJsonlMessages(resolvedPath);
+    if (messages.length > 0) return messages;
+  }
+  return [];
+}
+
+function readSessionPaths(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap((item) => readSessionPaths(item));
+  if (typeof value !== "object" || value === null) return [];
+  const record = value as Record<string, unknown>;
+  const sessionPath = readString(record.sessionPath);
+  return [
+    ...(sessionPath ? [sessionPath] : []),
+    ...Object.entries(record)
+      .filter(([key]) => key !== "sessionPath")
+      .flatMap(([, item]) => readSessionPaths(item)),
+  ];
+}
+
+function readJsonlMessages(filePath: string): unknown[] {
+  try {
+    return readFileSync(filePath, "utf8")
+      .split(/\r?\n/g)
+      .flatMap((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return [];
+        try {
+          return [JSON.parse(trimmed) as unknown];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function readLatestAssistantText(messages: unknown[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (typeof message !== "object" || message === null) continue;
+    const record = message as { role?: unknown; content?: unknown };
+    if (readString(record.role) !== "assistant") continue;
+    const text = readStringFromMessageContent(record.content);
+    if (text) return text;
+  }
+  return null;
+}
+
+function readStringFromMessageContent(content: unknown): string | null {
+  if (typeof content === "string") return readString(content);
+  if (!Array.isArray(content)) return null;
+  const parts = content.flatMap((part) => {
+    if (typeof part !== "object" || part === null) return [];
+    const record = part as { type?: unknown; text?: unknown };
+    const type = readString(record.type);
+    if (type && type !== "text") return [];
+    const text = readString(record.text);
+    return text ? [text] : [];
+  });
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+function extractToolCalls(messages: unknown[]): unknown[] {
+  return messages.flatMap((message) => {
+    if (typeof message !== "object" || message === null) return [];
+    const record = message as { toolCalls?: unknown; tool_calls?: unknown; metadata?: { toolCalls?: unknown } };
+    return [...readArray(record.toolCalls), ...readArray(record.tool_calls), ...readArray(record.metadata?.toolCalls)];
+  });
+}
+
+function extractToolResults(messages: unknown[]): unknown[] {
+  return messages.flatMap((message) => {
+    if (typeof message !== "object" || message === null) return [];
+    const record = message as { role?: unknown; toolResults?: unknown; metadata?: { toolResults?: unknown } };
+    return [
+      ...(readString(record.role) === "tool" ? [message] : []),
+      ...readArray(record.toolResults),
+      ...readArray(record.metadata?.toolResults),
+    ];
+  });
+}
+
+function extractBrowserEvidenceFromTranscript(messages: unknown[]): unknown[] {
+  return messages.flatMap((message) => {
+    if (typeof message !== "object" || message === null) return [];
+    const record = message as { role?: unknown; name?: unknown; content?: unknown; metadata?: { toolName?: unknown } };
+    const toolName = readString(record.name) ?? readString(record.metadata?.toolName);
+    if (readString(record.role) !== "tool" || toolName !== "sessions_spawn") return [];
+    const content = readString(record.content);
+    if (!content || !/^tool_chain:\s*.*\bbrowser\b/im.test(content) && !/^task_id:\s*.*:sub:browser:/im.test(content)) return [];
+    const status = readAccioTextHeader(content, "status") ?? "completed";
+    return [
+      {
+        source: "session_tool_result",
+        rendered: /^completed$/i.test(status) && /(screenshot|snapshot|rendered|page title|visible page)/i.test(content),
+        status,
+        evidenceText: content.slice(0, 4000),
+      },
+    ];
+  });
+}
+
+function readAccioTextHeader(content: string, key: string): string | null {
+  const escaped = escapeRegExp(key);
+  const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, "im"));
+  return readString(match?.[1]);
 }
 
 function normalizePromptForAudit(prompt: unknown): string {

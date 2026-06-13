@@ -144,9 +144,9 @@ export function RuntimePage() {
     <div className="page">
       <div className="page-head">
         <div>
-          <h2>Runtime</h2>
+          <h2>Diagnostics</h2>
           <div className="sub">
-            操作员视图 · bridge / transport / sessions / 诊断 / replay。Mission 用户不需要常驻于此。
+            Open this when work is stuck, browser access is unhealthy, or you need logs.
           </div>
         </div>
         <div className="right">

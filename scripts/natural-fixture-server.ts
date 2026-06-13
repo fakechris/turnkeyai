@@ -21,6 +21,7 @@ export interface NaturalFixtureServerManifest {
     basicUrl: string;
     alphaUrl: string;
     betaUrl: string;
+    providerSearchPricingUrl: string;
     slowUrl: string;
     cancelResumeUrl: string;
     approvalUrl: string;
@@ -30,6 +31,9 @@ export interface NaturalFixtureServerManifest {
     orchestrationUrl: string;
     bridgeUrl: string;
     productSignalsUrl: string;
+    asiawalkRouteUrl: string;
+    asiawalkBudgetUrl: string;
+    asiawalkLiveUrl: string;
   };
   fixtureContentHashes: Record<string, string>;
   scenarios: Array<{
@@ -103,6 +107,7 @@ export function buildNaturalFixtureServerManifest(fixture: FixtureServer): Natur
       basicUrl: fixture.basicUrl,
       alphaUrl: fixture.alphaUrl,
       betaUrl: fixture.betaUrl,
+      providerSearchPricingUrl: fixture.providerSearchPricingUrl,
       slowUrl: fixture.slowUrl,
       cancelResumeUrl: fixture.cancelResumeUrl,
       approvalUrl: fixture.approvalUrl,
@@ -112,6 +117,9 @@ export function buildNaturalFixtureServerManifest(fixture: FixtureServer): Natur
       orchestrationUrl: fixture.orchestrationUrl,
       bridgeUrl: fixture.bridgeUrl,
       productSignalsUrl: fixture.productSignalsUrl,
+      asiawalkRouteUrl: fixture.asiawalkRouteUrl,
+      asiawalkBudgetUrl: fixture.asiawalkBudgetUrl,
+      asiawalkLiveUrl: fixture.asiawalkLiveUrl,
     },
     fixtureContentHashes: fixture.fixtureContentHashes,
     scenarios: BROWSER_FOCUSED_SCENARIOS.map((scenario) => ({
@@ -126,6 +134,7 @@ export function buildNaturalFixtureEnvFile(manifest: NaturalFixtureServerManifes
     ["TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL", manifest.urls.complexBrowserUrl],
     ["TURNKEYAI_NATURAL_ALPHA_URL", manifest.urls.alphaUrl],
     ["TURNKEYAI_NATURAL_BETA_URL", manifest.urls.betaUrl],
+    ["TURNKEYAI_NATURAL_PROVIDER_SEARCH_PRICING_URL", manifest.urls.providerSearchPricingUrl],
     ["TURNKEYAI_NATURAL_SLOW_URL", manifest.urls.slowUrl],
     ["TURNKEYAI_NATURAL_CANCEL_RESUME_URL", manifest.urls.cancelResumeUrl],
     ["TURNKEYAI_NATURAL_APPROVAL_URL", manifest.urls.approvalUrl],
@@ -134,6 +143,9 @@ export function buildNaturalFixtureEnvFile(manifest: NaturalFixtureServerManifes
     ["TURNKEYAI_NATURAL_ORCHESTRATION_URL", manifest.urls.orchestrationUrl],
     ["TURNKEYAI_NATURAL_BRIDGE_URL", manifest.urls.bridgeUrl],
     ["TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL", manifest.urls.productSignalsUrl],
+    ["TURNKEYAI_NATURAL_ASIAWALK_ROUTE_URL", manifest.urls.asiawalkRouteUrl],
+    ["TURNKEYAI_NATURAL_ASIAWALK_BUDGET_URL", manifest.urls.asiawalkBudgetUrl],
+    ["TURNKEYAI_NATURAL_ASIAWALK_LIVE_URL", manifest.urls.asiawalkLiveUrl],
     ...(manifest.urls.externalPageUrl
       ? ([["TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL", manifest.urls.externalPageUrl]] as const)
       : []),

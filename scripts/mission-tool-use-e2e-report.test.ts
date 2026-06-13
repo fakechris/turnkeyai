@@ -7,16 +7,20 @@ import {
   assertFollowupReusedSession,
   assertNaturalFollowupReusedExistingSession,
   assertNaturalScenarioPromptsAllowed,
+  buildNaturalFixtureReportManifest,
   buildNaturalScenarioSpec,
   buildNaturalMissionE2eJsonReport,
   buildNaturalMissionPartialFailureJsonReport,
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
+  evaluateNaturalSourceCoverage,
   extractCancelledSessionKey,
   extractBrowserSessionIdForSpawnAgent,
   extractBrowserSessionIdForSendAfter,
   extractSessionKeyForSpawnAgent,
   extractTimedOutSessionKey,
+  findWeakAnswerSignals,
+  findWeakEvidenceSignals,
   formatMissionScenarioPass,
   formatMissionScenarioStart,
   formatNaturalMissionScenarioPass,
@@ -29,6 +33,22 @@ import {
 } from "./mission-tool-use-e2e";
 
 describe("mission tool-use e2e report", () => {
+  it("does not treat browser session recovery wording as a tool-unavailable fallback", () => {
+    assert.deepEqual(
+      findWeakAnswerSignals(
+        "Prior browser session was unavailable (`session_not_found=1`); dashboard successfully reopened via cold recreation."
+      ),
+      []
+    );
+  });
+
+  it("still flags explicit tool-unavailable fallback wording", () => {
+    assert.deepEqual(
+      findWeakAnswerSignals("The browser tool is unavailable, so I am using general knowledge instead."),
+      ["tool unavailable fallback"]
+    );
+  });
+
   it("summarizes mission scenario evidence without final-answer text", () => {
     const summary = summarizeMissionScenarioResult(fakeResult());
 
@@ -202,6 +222,47 @@ describe("mission tool-use e2e report", () => {
       isStalePendingApprovalThought("Once approved, the browser worker completed the dry-run and verified the submitted page."),
       false
     );
+  });
+
+  it("does not count an unexpected mission closeout as natural task completion", () => {
+    const spec = buildNaturalScenarioSpec("natural-browser-dynamic-page", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      providerSearchPricingUrl: "http://127.0.0.1/deepseek-v4-flash",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      slowReleaseUrl: "http://127.0.0.1/slow-release-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      cancelResumeStateUrl: "http://127.0.0.1/__cancel-resume-state",
+      cancelResumeReleaseUrl: "http://127.0.0.1/cancel-resume-release-fixture",
+      dynamicUrl: "http://127.0.0.1/dynamic-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+      asiawalkRouteUrl: "http://127.0.0.1/asiawalk-route",
+      asiawalkBudgetUrl: "http://127.0.0.1/asiawalk-budget",
+      asiawalkLiveUrl: "http://127.0.0.1/asiawalk-live",
+      complexBrowserUrl: "http://127.0.0.1/complex-browser",
+      basicUrl: "http://127.0.0.1/basic",
+      fixtureContentHashes: {},
+      server: undefined as never,
+    });
+    const result = fakeNaturalResult();
+    result.mission.closeout = "bounded_failure";
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.completed, false);
+    assert.equal(quality.dimensionScores.taskCompletion, 1);
+    assert.ok(quality.failures.some((failure) => /expected status/i.test(failure)));
   });
 
   it("accepts denied approval as a completed natural approval loop without permission application", () => {
@@ -517,6 +578,132 @@ describe("mission tool-use e2e report", () => {
     result.timeline[result.timeline.length - 1] = {
       kind: "thought",
       text: [
+        "**Final Safe Closeout**",
+        "- **Requested action:** `browser.form.submit` targeting `http://127.0.0.1/approval-form`",
+        "- **Decision:** Denied by operator.",
+        "- **Execution status:** No browser submission ran; no side effect occurred.",
+        "- **Safe fallback:** The operator may re-inspect the local form or issue a new approval request with revised scope.",
+      ].join("\n"),
+      tMs: 2350,
+    };
+    result.final = result.timeline.at(-1)!;
+    const naturalNoSideEffectOccurredQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(naturalNoSideEffectOccurredQuality.failures, []);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
+        "**Safe Closeout - Approval Denied**",
+        "| Field | Value |",
+        "|---|---|",
+        "| **Requested action** | `browser.form.submit` |",
+        "| **Decision** | **DENIED** |",
+        "| **Side effect ran?** | **No** - no browser form submission was performed. |",
+        "| **Result verified?** | **Unverified** - the dry-run was never executed. |",
+        "",
+        "A permission query for a dry-run browser form submission to `http://127.0.0.1/approval-form` was submitted to the operator and denied.",
+        "No mutation, form post, or any side-effectful action occurred in any browser session.",
+        "Concrete safe fallback: re-submit a new permission request with revised action scope for operator review.",
+      ].join("\n"),
+      tMs: 2360,
+    };
+    result.final = result.timeline.at(-1)!;
+    const approvalFormUrlSubmittedToOperatorQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(approvalFormUrlSubmittedToOperatorQuality.failures, []);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
+        "**Safe Closeout - Approval Denied**",
+        "| Field | Value |",
+        "|---|---|",
+        "| **Requested action** | `browser.form.submit` to `http://127.0.0.1/approval-form` |",
+        "| **Decision** | Denied |",
+        "| **Side effects run** | None - no browser form was submitted |",
+        "",
+        "**Unexecuted result:** The dry-run form submission outcome remains unverified.",
+        "**Concrete safe fallback:** The operator may re-initiate the approval with a revised scope when ready to proceed.",
+      ].join("\n"),
+      tMs: 2365,
+    };
+    result.final = result.timeline.at(-1)!;
+    const noBrowserFormSubmittedQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(noBrowserFormSubmittedQuality.failures, []);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
+        "**Safe closeout**",
+        "| Item | Detail |",
+        "|---|---|",
+        "| **Requested action** | Dry-run browser form submission to `http://127.0.0.1/approval-form` |",
+        "| **Result** | **Denied** - the operator declined the approval request |",
+        "| **Side effect** | Did **not** execute; the form submission was never applied |",
+        "| **Safest next action** | Await further operator guidance before re-requesting permission or modifying the target form |",
+        "The approval workflow completed correctly: the permission was requested, the operator denied it, and no browser mutation occurred.",
+      ].join("\n"),
+      tMs: 2375,
+    };
+    result.final = result.timeline.at(-1)!;
+    const markdownTableCloseoutQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(markdownTableCloseoutQuality.failures, []);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
+        "**Final Safe Closeout - Approval Denied**",
+        "| Field | Value |",
+        "|---|---|",
+        "| **Requested action** | `browser.form.submit` (dry-run form submission) |",
+        "| **Decision** | **Denied** by `natural-mission-e2e` |",
+        "**Effect:** No browser form submission was performed. No side effect ran.",
+        "The unexecuted result is **unverified** because the action was blocked before execution.",
+        "**Concrete safe fallback:** The operator may re-submit the approval request with an amended scope for a fresh review.",
+      ].join("\n"),
+      tMs: 2385,
+    };
+    result.final = result.timeline.at(-1)!;
+    const browserFormSubmissionNotPerformedQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(browserFormSubmissionNotPerformedQuality.failures, []);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
         "**Approval denied - safe closeout confirmed.**",
         "| Field | Value |",
         "|---|---|",
@@ -688,6 +875,49 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(successStyleQuality.failures, []);
   });
 
+  it("rejects stale pending approval finals after approval has been applied", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-dry-run-action", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-approval-dry-run-action";
+    result.metrics.approvals = { requested: 1, decided: 1, applied: 1 };
+    result.timeline = [
+      {
+        kind: "approval",
+        text: "Applied approval for browser.form.submit.",
+        tMs: 1000,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.applied", status: "applied", approvalId: "approval-1" },
+      },
+      {
+        kind: "thought",
+        text: "Approval is pending. Once the operator responds, I will submit the dry-run form and report the evidence.",
+        tMs: 2000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.ok(quality.failures.includes("approval was applied but final answer still claims approval is pending"));
+  });
+
   it("accepts pending approval as a natural paused state without decision or permission application", () => {
     const result = fakeNaturalResult();
     const spec = buildNaturalScenarioSpec("natural-approval-pending-state", {
@@ -743,6 +973,10 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.completed, true);
     assert.equal(quality.stuckOrLoop, false);
     assert.equal(quality.approvalExercised, true);
+    assert.equal(quality.dimensionScores.taskCompletion, 2);
+    assert.equal(quality.dimensionScores.evidenceQuality, 2);
+    assert.ok(!quality.failureBuckets.includes("runtime_lifecycle"));
+    assert.ok(!quality.failureBuckets.includes("answer_quality"));
 
     result.timeline.push({
       kind: "approval",
@@ -792,8 +1026,10 @@ describe("mission tool-use e2e report", () => {
         alphaUrl: "http://127.0.0.1/local-alpha",
         betaUrl: "http://127.0.0.1/local-beta",
         slowUrl: "http://127.0.0.1/local-slow",
+        slowReleaseUrl: "http://127.0.0.1/local-slow-release",
         cancelResumeUrl: "http://127.0.0.1/local-cancel-resume",
         cancelResumeStateUrl: "http://127.0.0.1/local-cancel-state",
+        cancelResumeReleaseUrl: "http://127.0.0.1/local-cancel-release",
         approvalUrl: "http://127.0.0.1/local-approval",
         dynamicUrl: "http://127.0.0.1/local-dynamic",
         dashboardUrl: "http://127.0.0.1/local-dashboard",
@@ -806,6 +1042,7 @@ describe("mission tool-use e2e report", () => {
       {
         TURNKEYAI_NATURAL_ALPHA_URL: "http://shared.test/vendor-alpha",
         TURNKEYAI_NATURAL_BETA_URL: "http://shared.test/vendor-beta",
+        TURNKEYAI_NATURAL_PROVIDER_SEARCH_PRICING_URL: "http://shared.test/deepseek-provider-pricing",
         TURNKEYAI_NATURAL_DASHBOARD_URL: "http://shared.test/ops-dashboard",
         TURNKEYAI_NATURAL_APPROVAL_URL: "http://shared.test/approval-form",
         TURNKEYAI_NATURAL_SLOW_URL: "http://shared.test/slow-fixture",
@@ -823,6 +1060,78 @@ describe("mission tool-use e2e report", () => {
     assert.match(comparison.desc, /http:\/\/shared\.test\/vendor-alpha/);
     assert.match(comparison.desc, /http:\/\/shared\.test\/vendor-beta/);
 
+    const providerPricing = buildNaturalScenarioSpec("natural-provider-search-pricing", fixture);
+    assert.match(providerPricing.desc, /http:\/\/shared\.test\/deepseek-provider-pricing/);
+    assert.match(providerPricing.desc, /DeepSeek V4 Flash API provider note/);
+    assert.ok(providerPricing.requiredAnswerTerms.includes("OpenRouter"));
+    assert.ok(providerPricing.requiredAnswerTerms.includes("$0.28"));
+    const providerCoverage = evaluateNaturalSourceCoverage({
+      spec: providerPricing,
+      finalText: [
+        "DeepSeek V4 Flash provider note.",
+        "OpenRouter: ✅ Yes (via web_search); costs $0.28 input and $0.42 output.",
+        "Together: ❌ No search support; costs $0.20 input and $0.40 output.",
+        "Fireworks: ❌ No search support; costs $0.25 input and $0.45 output.",
+        "Recommendation: choose Together for lowest cost unless search support is required. Residual risk: local fixture evidence only.",
+      ].join(" "),
+      evidenceText:
+        "DeepSeek V4 Flash provider source: OpenRouter has a web_search option; Together and Fireworks require search to be supplied externally. Pricing $0.28/$0.42, $0.20/$0.40, $0.25/$0.45.",
+      evidenceEvents: 1,
+    });
+    assert.deepEqual(providerCoverage.answerPatterns.missing, []);
+
+    const chineseProviderCoverage = evaluateNaturalSourceCoverage({
+      spec: providerPricing,
+      finalText: [
+        "DeepSeek V4 Flash API Provider Note。",
+        "Together: input $0.20, output $0.40。",
+        "Fireworks: input $0.25, output $0.45。",
+        "OpenRouter: input $0.28, output $0.42；唯一明确标注支持 web_search。",
+        "风险：页面仅作为 local test evidence，生产决策仍需验证。",
+      ].join(" "),
+      evidenceText:
+        "DeepSeek V4 Flash provider source: OpenRouter has a web_search option; Together and Fireworks require search to be supplied externally. Pricing $0.28/$0.42, $0.20/$0.40, $0.25/$0.45.",
+      evidenceEvents: 1,
+    });
+    assert.deepEqual(chineseProviderCoverage.answerPatterns.missing, []);
+    assert.equal(chineseProviderCoverage.residualRiskVisible, true);
+    assert.deepEqual(chineseProviderCoverage.unsupportedClaims, []);
+
+    const productionFreshnessProviderCoverage = evaluateNaturalSourceCoverage({
+      spec: providerPricing,
+      finalText: [
+        "DeepSeek V4 Flash API Provider Note.",
+        "OpenRouter: Yes via web_search; input $0.28 and output $0.42.",
+        "Together: No search support; input $0.20 and output $0.40.",
+        "Fireworks: No search support; input $0.25 and output $0.45.",
+        "Source verbatim rows confirmed against page content.",
+        "Residual risk: production decision should verify provider docs for freshness.",
+      ].join(" "),
+      evidenceText:
+        "DeepSeek V4 Flash provider source: OpenRouter has a web_search option; Together and Fireworks require search to be supplied externally. Pricing $0.28/$0.42, $0.20/$0.40, $0.25/$0.45.",
+      evidenceEvents: 1,
+    });
+    assert.deepEqual(productionFreshnessProviderCoverage.answerPatterns.missing, []);
+    assert.deepEqual(productionFreshnessProviderCoverage.evidencePatterns.missing, []);
+    assert.deepEqual(productionFreshnessProviderCoverage.unsupportedClaims, []);
+
+    const unverifiedSearchProviderCoverage = evaluateNaturalSourceCoverage({
+      spec: providerPricing,
+      finalText: [
+        "DeepSeek V4 Flash provider note.",
+        "Together costs $0.20 input and $0.40 output.",
+        "Fireworks costs $0.25 input and $0.45 output.",
+        "OpenRouter costs $0.28 input and $0.42 output.",
+        "Search support remains unverified.",
+      ].join(" "),
+      evidenceText:
+        "DeepSeek V4 Flash provider source: OpenRouter has a web_search option; Together and Fireworks require search to be supplied externally. Pricing $0.28/$0.42, $0.20/$0.40, $0.25/$0.45.",
+      evidenceEvents: 1,
+    });
+    assert.deepEqual(unverifiedSearchProviderCoverage.unsupportedClaims, [
+      "unverified provider search pricing closeout",
+    ]);
+
     const browser = buildNaturalScenarioSpec("natural-browser-dynamic-page", fixture);
     assert.match(browser.desc, /http:\/\/shared\.test\/ops-dashboard/);
 
@@ -836,9 +1145,12 @@ describe("mission tool-use e2e report", () => {
 
     const timeout = buildNaturalScenarioSpec("natural-timeout-followup-continuation", fixture);
     assert.match(timeout.desc, /http:\/\/shared\.test\/slow-fixture/);
+    assert.equal(fixture.slowReleaseUrl, "http://shared.test/__slow-fixture-release");
 
     const cancelResume = buildNaturalScenarioSpec("natural-cancel-followup-continuation", fixture);
     assert.match(cancelResume.desc, /http:\/\/shared\.test\/cancel-resume/);
+    assert.equal(fixture.cancelResumeStateUrl, "http://shared.test/__cancel-resume-state");
+    assert.equal(fixture.cancelResumeReleaseUrl, "http://shared.test/__cancel-resume-release");
 
     const external = buildNaturalScenarioSpec("natural-browser-external-page-review", fixture);
     assert.match(external.desc, /https:\/\/news\.ycombinator\.com\//);
@@ -974,15 +1286,53 @@ describe("mission tool-use e2e report", () => {
       failureBuckets: [],
     });
     assert.equal(summary.final.bytes > 0, true);
+    assert.equal(summary.final.text, result.final.text);
     assert.equal(summary.final.excerpt.includes("recommended next action"), true);
+    assert.equal(summary.evidenceReplay?.schema, "turnkeyai.natural-mission-evidence-replay.v1");
+    assert.equal(summary.evidenceReplay?.finalText, result.final.text);
+    assert.equal(summary.evidenceReplay?.finalTextBytes, Buffer.byteLength(result.final.text, "utf8"));
+    assert.equal(summary.evidenceReplay?.timeline.count, result.timeline.length);
+    assert.equal(summary.evidenceReplay?.timeline.entries[1]?.runtime?.toolName, "sessions_spawn");
+    assert.equal(summary.evidenceReplay?.timeline.entries[1]?.runtime?.resultContent, result.timeline[1]?.runtime?.resultContent);
+  });
+
+  it("summarizes failed and timed-out tool diagnostics in natural reports", () => {
+    const result = fakeNaturalResult();
+    result.metrics.tool = { requested: 4, results: 4, failed: 1, cancelled: 0, timeouts: 1 };
+    result.timeline = [
+      ...result.timeline,
+      {
+        kind: "tool",
+        text: "Tool sessions_send failed: browser worker returned timeout before final screenshot.",
+        emph: "danger",
+        tMs: 3_500,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent: "browser worker timeout before final screenshot",
+        },
+      },
+    ];
+
+    const summary = summarizeNaturalMissionScenarioResult(result);
+
+    assert.deepEqual(summary.toolDiagnostics, [
+      {
+        toolName: "sessions_send",
+        phase: "result",
+        status: "failed",
+        text: "Tool sessions_send failed: browser worker returned timeout before final screenshot. browser worker timeout before final screenshot",
+      },
+    ]);
   });
 
   it("accepts a recovered failed tool result only when later same-tool evidence succeeds", () => {
     const result = fakeNaturalResult();
     const spec = buildNaturalScenarioSpec("natural-browser-followup-continuation", {
       alphaUrl: "http://127.0.0.1/vendor-alpha",
-      betaUrl: "http://127.0.0.1/vendor-beta",
-      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+    betaUrl: "http://127.0.0.1/vendor-beta",
+    providerSearchPricingUrl: "http://127.0.0.1/deepseek-provider-pricing",
+    dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
       cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
@@ -1092,6 +1442,47 @@ describe("mission tool-use e2e report", () => {
     );
     result.metrics.tool.results -= 1;
     result.metrics.qualityGate.evidenceEvents = 2;
+    result.metrics.qualityGate.checks = [
+      ...(result.metrics.qualityGate.checks ?? []).filter((check) => check.name !== "failure_free"),
+      {
+        name: "failure_free",
+        status: "warn",
+        detail:
+          "2 recovery/failed tool event(s) were closed out by a bounded timeout recovery final answer; keep the replay visible for follow-up.",
+      },
+    ];
+    const boundedCloseoutQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(boundedCloseoutQuality.failures, []);
+
+    result.metrics.qualityGate.checks = [
+      ...(result.metrics.qualityGate.checks ?? []).filter((check) => check.name !== "failure_free"),
+      {
+        name: "failure_free",
+        status: "fail",
+        detail:
+          "2 recovery/failed tool event(s) require attention.",
+      },
+    ];
+    const failureFreeOnlyAttentionQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(failureFreeOnlyAttentionQuality.failures, []);
+
+    result.metrics.qualityGate.checks = (result.metrics.qualityGate.checks ?? []).filter(
+      (check) => check.name !== "failure_free"
+    );
     const unrecoveredQuality = evaluateNaturalMissionQuality({
       spec,
       mission: result.mission,
@@ -1344,6 +1735,31 @@ describe("mission tool-use e2e report", () => {
   });
 
   it("builds a distinct natural E2E report envelope", () => {
+    const fixtureManifest = buildNaturalFixtureReportManifest({
+      server: undefined as never,
+      basicUrl: "http://127.0.0.1:51234/basic",
+      alphaUrl: "http://127.0.0.1:51234/vendor-alpha",
+      betaUrl: "http://127.0.0.1:51234/vendor-beta",
+      providerSearchPricingUrl: "http://127.0.0.1:51234/deepseek-v4-flash",
+      slowUrl: "http://127.0.0.1:51234/slow-fixture",
+      slowReleaseUrl: "http://127.0.0.1:51234/slow-release-fixture",
+      cancelResumeUrl: "http://127.0.0.1:51234/cancel-resume-fixture",
+      cancelResumeStateUrl: "http://127.0.0.1:51234/__cancel-resume-state",
+      cancelResumeReleaseUrl: "http://127.0.0.1:51234/cancel-resume-release-fixture",
+      approvalUrl: "http://127.0.0.1:51234/approval-form",
+      dynamicUrl: "http://127.0.0.1:51234/dynamic-fixture",
+      dashboardUrl: "http://127.0.0.1:51234/ops-dashboard",
+      complexBrowserUrl: "http://127.0.0.1:51234/complex-browser",
+      orchestrationUrl: "http://127.0.0.1:51234/product-orchestration",
+      bridgeUrl: "http://127.0.0.1:51234/product-bridge",
+      productSignalsUrl: "http://127.0.0.1:51234/product-signals",
+      asiawalkRouteUrl: "http://127.0.0.1:51234/asiawalk-route",
+      asiawalkBudgetUrl: "http://127.0.0.1:51234/asiawalk-budget",
+      asiawalkLiveUrl: "http://127.0.0.1:51234/asiawalk-live",
+      fixtureContentHashes: {
+        "http://<loopback-host>:<loopback-port>/ops-dashboard": "sha256:dashboard",
+      },
+    });
     const report = buildNaturalMissionE2eJsonReport({
       startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
       completedAt: Date.UTC(2026, 4, 30, 12, 0, 5),
@@ -1358,6 +1774,7 @@ describe("mission tool-use e2e report", () => {
       fixtureContentHashes: {
         "http://<loopback-host>:<loopback-port>/ops-dashboard": "sha256:dashboard",
       },
+      fixtureManifest,
     });
 
     assert.equal(report.kind, "turnkeyai.natural-mission-e2e.report");
@@ -1370,6 +1787,20 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.modelCatalogPath, "/tmp/models.local.json");
     assert.equal(report.timeoutPolicy?.scenarioTimeoutMs, 180_000);
     assert.equal(report.fixtureContentHashes?.["http://<loopback-host>:<loopback-port>/ops-dashboard"], "sha256:dashboard");
+    assert.equal(report.fixtureManifest?.lifecycle.serverScope, "mission-e2e-process");
+    assert.equal(
+      report.fixtureManifest?.lifecycle.replayRequirement,
+      "urls-must-be-reachable-before-reference-collection"
+    );
+    assert.equal(report.fixtureManifest?.urls.dashboardUrl, "http://127.0.0.1:51234/ops-dashboard");
+    assert.equal(
+      report.fixtureManifest?.comparableUrls.dashboardUrl,
+      "http://<loopback-host>:<loopback-port>/ops-dashboard"
+    );
+    assert.equal(
+      report.fixtureManifest?.fixtureContentHashes["http://<loopback-host>:<loopback-port>/ops-dashboard"],
+      "sha256:dashboard"
+    );
     assert.equal(report.promptPolicy.forbidsContractGateLanguage, true);
     assert.ok(report.promptPolicy.forbiddenPatterns.some((pattern) => pattern.includes("exactly once")));
     assert.ok(report.requiredQualitySignals.includes("source-backed-evidence"));
@@ -1469,6 +1900,51 @@ describe("mission tool-use e2e report", () => {
       completedScenarioCount: 1,
       error: "mission reached done before requesting approval",
     });
+    assert.deepEqual(report.interruptedScenarios, [
+      {
+        scenario: "natural-approval-dry-run-action",
+        completedScenarioCount: 1,
+        error: "mission reached done before requesting approval",
+      },
+    ]);
+  });
+
+  it("preserves multiple interrupted natural matrix scenarios for continue-on-failure collection", () => {
+    const passing = fakeNaturalResult();
+
+    const report = buildNaturalMissionPartialFailureJsonReport({
+      startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
+      completedAt: Date.UTC(2026, 4, 30, 12, 0, 7),
+      results: [passing],
+      interruptedScenarios: [
+        {
+          scenario: "natural-memory-pressure-flush",
+          error: "natural mission blocked before completion",
+        },
+        {
+          scenario: "natural-cancel-active-tool",
+          error: "mission did not complete within 240000ms",
+        },
+      ],
+    });
+
+    assert.equal(report.status, "failed");
+    assert.equal(report.failureCollectionMode, "partial-failure-collected");
+    assert.equal(report.scenarioCount, 1);
+    assert.equal(report.passedScenarios, 1);
+    assert.equal(report.failedScenarios, 0);
+    assert.deepEqual(report.interruptedScenarios, [
+      {
+        scenario: "natural-memory-pressure-flush",
+        completedScenarioCount: 1,
+        error: "natural mission blocked before completion",
+      },
+      {
+        scenario: "natural-cancel-active-tool",
+        completedScenarioCount: 1,
+        error: "mission did not complete within 240000ms",
+      },
+    ]);
   });
 
   it("fails natural quality on weak fallback answers and missing browser evidence", () => {
@@ -1564,6 +2040,64 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.includes("forbidden unsupported rendered queue depth"));
   });
 
+  it("does not give full natural completion credit when mission source coverage warns", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-asiawalk-multi-agent", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+      asiawalkRouteUrl: "http://127.0.0.1/asiawalk-route",
+      asiawalkBudgetUrl: "http://127.0.0.1/asiawalk-budget",
+      asiawalkLiveUrl: "http://127.0.0.1/asiawalk-live",
+    });
+    result.scenario = "natural-asiawalk-multi-agent";
+    result.metrics.tool = { requested: 3, results: 3, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 3, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.metrics.qualityGate.checks = [
+      { name: "final_answer", status: "pass", detail: "Lead final answer is present." },
+      {
+        name: "source_coverage",
+        status: "warn",
+        detail:
+          "Final answer does not cover every visible source label: AsiaWalk Route Stream, AsiaWalk Budget Stream, AsiaWalk Live Readiness Stream.",
+      },
+    ];
+    result.final.text = [
+      "AsiaWalk pilot recommendation: proceed with a Seoul, Taipei, and Tokyo pilot.",
+      "Verified route, budget, and live readiness facts are summarized from the source evidence.",
+      "Residual risk: production availability and partner confirmations remain unverified.",
+      "Next action: confirm operators and lock the final route before launch.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.status, "failed");
+    assert.equal(quality.finalAnswerHasEvidence, false);
+    assert.equal(quality.dimensionScores.taskCompletion, 1);
+    assert.equal(quality.dimensionScores.evidenceQuality, 0);
+    assert.ok(
+      quality.failures.some((failure) =>
+        failure.includes("mission quality gate source_coverage warn: Final answer does not cover every visible source label")
+      )
+    );
+    assert.ok(quality.failureBuckets.includes("answer_quality"));
+    assert.ok(quality.failureBuckets.includes("runtime_lifecycle"));
+  });
+
   it("counts recommendation wording as the recommend answer term without weakening evidence checks", () => {
     const result = fakeNaturalResult();
     const spec = {
@@ -1580,7 +2114,33 @@ describe("mission tool-use e2e report", () => {
       }),
       requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend", "risk"],
     };
-    result.metrics.qualityGate.evidenceEvents = 1;
+    result.metrics.tool = { requested: 2, results: 2, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 2, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned Vendor Alpha evidence.",
+        tMs: 1_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Vendor Alpha costs $19 per seat. Strength: browser automation. Risk: limited API integration catalog.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned Vendor Beta evidence.",
+        tMs: 2_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Vendor Beta costs $29 per workspace. Strength: approval workflow. Risk: browser control needs a separate connector.",
+        },
+      },
+    ];
     result.final.text = [
       "Vendor Alpha costs $19 per seat and has a risk around its limited API integration catalog.",
       "Vendor Beta costs $29 per workspace and its risk is that browser control needs a separate connector.",
@@ -1604,6 +2164,310 @@ describe("mission tool-use e2e report", () => {
     });
     assert.equal(quality.finalAnswerHasEvidence, true);
     assert.equal(quality.status, "passed");
+  });
+
+  it("treats provider option and limitation wording as decision-useful without weakening evidence checks", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-provider-search-pricing", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      providerSearchPricingUrl: "http://127.0.0.1/deepseek-provider-pricing",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.metrics.tool = { requested: 1, results: 1, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 1, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned DeepSeek V4 Flash provider evidence.",
+        tMs: 1_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "DeepSeek V4 Flash provider source: OpenRouter has a web_search option; Together and Fireworks require search to be supplied externally. Pricing $0.28/$0.42, $0.20/$0.40, $0.25/$0.45.",
+        },
+      },
+    ];
+    result.final.text = [
+      "## DeepSeek V4 Flash API Provider Note",
+      "Evidence source: http://127.0.0.1/deepseek-provider-pricing.",
+      "OpenRouter lists DeepSeek V4 Flash, supports web_search, and costs $0.28 input / $0.42 output per 1M tokens.",
+      "Together lists DeepSeek V4 Flash, has no provider-native search support, and costs $0.20 input / $0.40 output per 1M tokens.",
+      "Fireworks lists DeepSeek V4 Flash, has no provider-native search support, and costs $0.25 input / $0.45 output per 1M tokens.",
+      "Lowest-cost option: Together on both input and output tokens.",
+      "Search-support option: OpenRouter, because the source names a web_search option.",
+      "Main limitation for a production decision: this is local fixture evidence; verify provider docs for freshness before launch use.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.finalAnswerHasEvidence, true);
+    assert.equal(quality.finalAnswerUseful, true);
+    assert.ok(!quality.failures.includes("final answer is too thin or not decision-useful"));
+  });
+
+  it("counts go/no-go decisions as the recommend answer term without exact wording", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-comparison-research", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend", "risk"],
+    };
+    result.metrics.tool = { requested: 2, results: 2, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 2, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned Vendor Alpha evidence.",
+        tMs: 1_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Vendor Alpha costs $19 per seat. Strength: browser automation. Risk: limited API integration catalog.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned Vendor Beta evidence.",
+        tMs: 2_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Vendor Beta costs $29 per workspace. Strength: approval workflow. Risk: browser control needs a separate connector.",
+        },
+      },
+    ];
+    result.final.text = [
+      "Vendor Alpha costs $19 per seat and has a risk around its limited API integration catalog.",
+      "Vendor Beta costs $29 per workspace and its risk is that browser control needs a separate connector.",
+      "Go/No-Go: Conditional go for Alpha when the goal is a lower-cost browser automation trial; choose Beta when approval workflows matter more.",
+      "Residual risk: user scale and broader integration depth remain not verified from the supplied sources.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.sourceCoverage.answerTerms, {
+      covered: 6,
+      total: 6,
+      missing: [],
+    });
+    assert.equal(quality.finalAnswerHasEvidence, true);
+    assert.equal(quality.status, "passed");
+  });
+
+  it("does not treat concrete source-bounded estimates as placeholder uncertainty", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-comparison-research", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend", "risk"],
+    };
+    result.metrics.tool = { requested: 2, results: 2, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 2, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned Vendor Alpha evidence.",
+        tMs: 1_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Vendor Alpha costs $19 per seat. Estimated trial budget: $1,280 total. Risk: limited API integration catalog.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned Vendor Beta evidence.",
+        tMs: 2_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Vendor Beta costs $29 per workspace. Strength: approval workflow. Risk: browser control needs a separate connector.",
+        },
+      },
+    ];
+    result.final.text = [
+      "Vendor Alpha costs $19 per seat. Estimated trial budget: $1,280 total. Risk: limited API integration catalog.",
+      "Vendor Beta costs $29 per workspace. Risk: browser control needs a separate connector.",
+      "Recommendation: choose Alpha for the lower-cost browser automation trial.",
+      "Residual risk: local fixture evidence only.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("placeholder uncertainty"), false);
+  });
+
+  it("does not treat action-gated pending confirmation as placeholder uncertainty", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-asiawalk-multi-agent", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+      asiawalkRouteUrl: "http://127.0.0.1/asiawalk-route",
+      asiawalkBudgetUrl: "http://127.0.0.1/asiawalk-budget",
+      asiawalkLiveUrl: "http://127.0.0.1/asiawalk-live",
+    });
+    result.scenario = "natural-asiawalk-multi-agent";
+    result.metrics.tool = { requested: 3, results: 3, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 3, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "route source",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "Route: Seoul orientation walk, Taipei loop, Tokyo finale. Risk: evening crowd control.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "budget source",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "Budget: $1,280 total with $180 contingency. Risk: guide availability before deposits.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "live readiness source",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "Readiness: yellow. Live risks: rain risk in Taipei and metro maintenance in Tokyo.",
+        },
+      },
+    ];
+    result.final.text = [
+      "AsiaWalk pilot recommendation: Conditional GO.",
+      "Route shape: Seoul orientation walk, Taipei food-and-transit loop, and Tokyo neighborhood finale.",
+      "Budget: $1,280 total with a $180 contingency buffer.",
+      "Readiness risks: rain risk in Taipei, metro maintenance in Tokyo, and Tokyo evening crowd control.",
+      "Launch is held pending confirmation of Taipei indoor alternates, Tokyo transfer buffer, and guide availability before deposits.",
+      "Next action: confirm indoor alternates and lock guides before deposits.",
+      "Residual risk: local readiness fixture only.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("placeholder uncertainty"), false);
+    assert.equal(quality.failures.some((failure) => failure.includes("placeholder uncertainty")), false);
+  });
+
+  it("counts Chinese source-backed wording as verified answer evidence", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-followup-continuation", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      requiredAnswerTerms: ["Alpha", "$19", "risk", "verified"],
+    };
+    result.metrics.tool = { requested: 4, results: 4, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 1, continued: 1 };
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.final.text = [
+      "## Vendor Alpha — 决策备注",
+      "**来源：** http://127.0.0.1/vendor-alpha",
+      "**定价：** $19 per seat — 原文明确显示。",
+      "**风险：** API 集成目录规模仍然有限，原文明确列为 risk。",
+      "**建议：** 若用例以浏览器自动化为核心，则可继续评估 Alpha。",
+      "**Residual risk:** 仅覆盖本地来源，外部生产可用性未验证。",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.sourceCoverage.answerTerms, {
+      covered: 4,
+      total: 4,
+      missing: [],
+    });
   });
 
   it("fails natural quality when completed browser evidence is degraded or unverified", () => {
@@ -1696,6 +2560,7 @@ describe("mission tool-use e2e report", () => {
       "Visible items include navigation links such as new, past, comments, ask, show, jobs, submit, and login.",
       "Visible page evidence also includes comment and point cues on story rows, so the page purpose is user-ranked discussion rather than a static article.",
       "No blocking, captchas, or forced auth; page fully rendered.",
+      "Transport degradation checked: transport_failure not observed; lease conflict not observed; result truncation not observed; snapshot truncation not observed; browser transport degradation not observed.",
       "Verification status: Site blocked access | No - fully loaded; Redirected to another domain | No.",
       "Next action: treat this as a current browser-visible snapshot for triage or browsing context, not as durable research evidence.",
       "Residual risk: live external content can change; login behavior, vote actions, deeper scroll content, and interaction outcomes remain unverified.",
@@ -1711,6 +2576,7 @@ describe("mission tool-use e2e report", () => {
     });
 
     assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.equal(quality.weakAnswerSignals.includes("browser transport degraded"), false);
     assert.deepEqual(quality.failures, []);
     assert.equal(quality.status, "passed");
   });
@@ -2362,6 +3228,37 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
   });
 
+  it("accepts not-verifiable sections as visible residual-risk disclosure", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-followup-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.final.text = [
+      "Queue depth remains 11 with 3 SLA breaches, so Incident Commander ownership still applies.",
+      "What is not verifiable from the evidence: service names, affected SLA contract identifiers, breach durations, and historical trends are not present in the rendered page.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
   it("does not join a not-verified section heading with later browser screenshot facts", () => {
     const result = fakeNaturalResult();
     const spec = buildNaturalScenarioSpec("natural-comparison-research", {
@@ -2513,6 +3410,143 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.weakAnswerSignals.includes("browser evidence not verified"), false);
     assert.equal(quality.dimensionScores.timeoutCloseoutQuality, 2);
     assert.equal(quality.failureBuckets.includes("timeout_closeout"), false);
+  });
+
+  it("requires explicit browser bucket closeout when long delegation prompt asks for it", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-long-delegation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-long-delegation";
+    result.metrics.tool = { requested: 3, results: 3, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 3, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.metrics.browser = {
+      profileFallbacks: 0,
+      failureBuckets: [{ bucket: "transport_failure", count: 1, latestAtMs: 4_000 }],
+    };
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "orchestration result",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "The orchestration source verifies multi-agent decomposition and durable sub-session history.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "bridge result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "The browser bridge controls cover DOM, screenshots, artifacts, command-line setup, provider configuration, and the desktop boundary.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "signals browser call",
+        tMs: 2500,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "inspect product signals dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "signals browser result",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Rendered signal dashboard evidence recovered after transport_failure. Stuck missions: 6. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry.",
+        },
+      },
+    ];
+    result.final.text = [
+      "Recommendation: make Mission Control the default entry point for the next agent workbench release.",
+      "Why it matters: multi-agent decomposition and durable sub-session history let specialist agents produce decision-ready briefs.",
+      "Mission Control should be emphasized because the live signal dashboard shows Stuck missions: 6 and Weak answer rate: 24%.",
+      "Do not over-emphasize new browser features before evidence synthesis is reliable.",
+      "Risk: production telemetry remains unverified outside this local source.",
+    ].join(" ");
+
+    const missingCloseoutQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.equal(missingCloseoutQuality.status, "failed");
+    assert.ok(
+      missingCloseoutQuality.failures.some((failure) => failure.includes("unexpected browser failure bucket(s): transport_failure=1")),
+      JSON.stringify(missingCloseoutQuality.failures, null, 2)
+    );
+    assert.ok(missingCloseoutQuality.weakAnswerSignals.includes("browser transport degraded"));
+
+    result.final.text +=
+      " Browser limitation: transport_failure occurred during browser work. Treat the final answer as bounded to the evidence that was recovered; nothing mission-critical remains unverified from the local dashboard, but retry or continue the browser task if production telemetry matters.";
+
+    const explicitCloseoutQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.deepEqual(explicitCloseoutQuality.failures, []);
+    assert.equal(explicitCloseoutQuality.status, "passed");
+  });
+
+  it("does not treat source-bounded browser residual scope as failed browser evidence", () => {
+    const signals = findWeakEvidenceSignals(
+      [
+        "Rendered dashboard evidence: Mission Control, Stuck missions: 6, Weak-answer rate: 24%.",
+        "Residual risk: browser evidence for production telemetry outside the local fixture is not verified.",
+        "Next action: continue with real LLM scenario quality before release.",
+      ].join("\n"),
+      { browserEvidenceExpected: true },
+    );
+
+    assert.equal(signals.includes("browser evidence not verified"), false);
+  });
+
+  it("does not treat planning blocked language as browser access blockage", () => {
+    const signals = findWeakEvidenceSignals(
+      [
+        "AsiaWalk live readiness rendered dashboard: Overall readiness yellow; rain risk in Taipei; metro maintenance in Tokyo.",
+        "Product decision: go/no-go remains blocked pending guide confirmation.",
+      ].join("\n"),
+      { browserEvidenceExpected: true },
+    );
+
+    assert.equal(signals.includes("browser evidence blocked"), false);
+  });
+
+  it("still flags real browser access blockers", () => {
+    const signals = findWeakEvidenceSignals(
+      "Browser evidence blocked: Cloudflare Turnstile captcha prevented rendered page capture.",
+      { browserEvidenceExpected: true },
+    );
+
+    assert.equal(signals.includes("browser evidence blocked"), true);
   });
 
   it("accepts degraded fallback wording as visible residual-risk disclosure", () => {
@@ -2757,7 +3791,7 @@ describe("mission tool-use e2e report", () => {
       metrics: result.metrics,
       final: result.final,
     });
-    assert.ok(quality.weakAnswerSignals.includes("tool unavailable fallback"));
+    assert.deepEqual(quality.weakAnswerSignals, []);
     assert.deepEqual(quality.failures, []);
 
     result.final.text += " Based on my knowledge, the dashboard is probably fine.";
@@ -3759,10 +4793,15 @@ describe("mission tool-use e2e report", () => {
       resultContent: JSON.stringify({
         status: "completed",
         payload: {
+          sessionId: "browser-session-original",
           browserRecovery: {
             sessionId: "browser-session-recreated",
             resumeMode: "cold",
           },
+        },
+        browser_session: {
+          session_id: "browser-session-original",
+          resume_mode: "cold",
         },
         result:
           "Cold recreation performed. Target resolution: new_target. Rendered dashboard evidence shows Queue depth: 11, SLA breaches: 3, and Recommended owner: Incident Commander. Stale prior path: /tmp/browser-artifacts/browser-session-original/02-dashboard.png",
@@ -4428,7 +5467,28 @@ describe("mission tool-use e2e report", () => {
     });
     assert.deepEqual(quality.failures, []);
 
+    result.timeline.push({
+      kind: "recovery",
+      text: [
+        "Mission cancelled by the operator.",
+        "Active work was stopped before completion; verified evidence may be incomplete, unverified source checks remain, and the user can continue later if they want to resume.",
+      ].join(" "),
+      tMs: 3500,
+      runtime: { eventType: "mission.cancelled" },
+    });
+    result.final = result.timeline.at(-1)!;
+    const missionCancelledCloseoutQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(missionCancelledCloseoutQuality.failures, []);
+
     result.metrics.tool.cancelled = 0;
+    result.timeline = result.timeline.filter((event) => event.runtime?.["eventType"] !== "mission.cancelled");
+    result.final = result.timeline.at(-1)!;
     const missingCancellation = evaluateNaturalMissionQuality({
       spec,
       mission: result.mission,
@@ -4646,6 +5706,74 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
+
+    result.final.text = [
+      "**Release-risk note - http://127.0.0.1/slow-fixture**",
+      "",
+      "- **HTTP status:** 200",
+      "- **Content:** Page title \"TurnkeyAI Slow Mission E2E Fixture\"; fixture marker present; verified owner: Release Captain; verified risk: runbook gap before launch approval; mitigation: complete rollback rehearsal before release gate.",
+      "- **Release risk:** Moderate - the fixture records a runbook gap before launch approval and flags rollback rehearsal as required mitigation.",
+      "",
+      "**Residual risk / scope limits:** This is a fixture page, not a live production endpoint. No external-service health, latency, or availability data was verified against production infrastructure.",
+      "",
+      "**How the mission continued:** The initial explore session timed out at 15 s without evidence. The resume (`sessions_send`) re-fetched the same target and returned HTTP 200 with full fixture content, confirming the timeout was a transient delay rather than a connectivity failure.",
+    ].join("\n");
+    const naturalUnverifiedQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(naturalUnverifiedQuality.sourceCoverage.answerTerms, { covered: 3, total: 3, missing: [] });
+    assert.deepEqual(naturalUnverifiedQuality.failures, []);
+
+    result.final.text = [
+      "## Release-Risk Note: http://127.0.0.1/slow-fixture",
+      "### Verified Facts",
+      "- Verified owner: Release Captain",
+      "- Verified risk: runbook gap before launch approval",
+      "- Initial attempt: timed out at 20 seconds; resumed successfully on follow-up with full 200 response",
+      "### Residual Risk",
+      "- The endpoint responds slowly; first-contact latency exceeds a 20-second bounded window.",
+      "- No other risk dimensions were present in the fixture content.",
+      "### How the Timeout Limits the Conclusion",
+      "- No content, status, or risk data was missed; the resume recovered the same content the initial bounded window could not wait for.",
+      "### Recommendation",
+      "- Complete a rollback rehearsal before the release gate.",
+    ].join("\n");
+    const noMissingDataQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(noMissingDataQuality.sourceCoverage.answerTerms, { covered: 3, total: 3, missing: [] });
+    assert.deepEqual(noMissingDataQuality.failures, []);
+
+    result.final.text = [
+      "## Release-Risk Note - http://127.0.0.1/slow-fixture",
+      "### Verified Facts",
+      "- Endpoint returned HTTP 200 after resumed attempt.",
+      "- Owner: Release Captain.",
+      "- Risk identified by source: runbook gap before launch approval.",
+      "### Unverified Items",
+      "- Whether the earlier timeout was transient or reflects persistent latency under load is not confirmed.",
+      "### Residual Risk",
+      "- The earlier timeout remains a partial constraint on the conclusion.",
+      "### Recommendation",
+      "- A subsequent health check should confirm the endpoint is reliably responsive before the release gate.",
+    ].join("\n");
+    const resumedGuidanceQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(resumedGuidanceQuality.sourceCoverage.answerPatterns, { covered: 1, total: 1, missing: [] });
+    assert.deepEqual(resumedGuidanceQuality.failures, []);
 
     result.metrics.browser = {
       profileFallbacks: 0,
@@ -4927,6 +6055,38 @@ describe("mission tool-use e2e report", () => {
     ];
 
     assert.equal(extractTimedOutSessionKey(timeline), "wrk.timeout.2");
+  });
+
+  it("extracts the timed-out session key from failed tool progress detail", () => {
+    const timeline = [
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn progress: Sub-agent session timed out after 30s.",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "progress",
+          progressPhase: "failed",
+          progressDetail: JSON.stringify({
+            session_key: "wrk.timeout.progress",
+            status: "timeout",
+            timeout_seconds: 30,
+          }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn failed: sessions_spawn timed out after 30s.",
+        tMs: 2500,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "sessions_spawn timed out after 30s.",
+        },
+      },
+    ];
+
+    assert.equal(extractTimedOutSessionKey(timeline), "wrk.timeout.progress");
   });
 
   it("extracts a session key for the matching spawned agent", () => {

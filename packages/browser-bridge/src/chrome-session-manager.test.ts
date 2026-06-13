@@ -200,6 +200,56 @@ test("chrome session manager reuses one live persistent context per profile dir 
   ]);
 });
 
+test("chrome session manager opens a new target for a new session in a shared persistent context", async () => {
+  let newPageCount = 0;
+  const existingPage = {} as Page;
+  const newPage = {} as Page;
+  const fakeContext = {
+    pages() {
+      return [existingPage];
+    },
+    async newPage() {
+      newPageCount += 1;
+      return newPage;
+    },
+  } as unknown as BrowserContext;
+
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    browserSessionManager: {
+      async listTargets() {
+        throw new Error("new sessions without an active target should not list or attach existing targets");
+      },
+    } as never,
+    launchPersistentContext: async () => fakeContext,
+    createEphemeralContext: async () => fakeContext,
+  });
+  const internal = manager as unknown as {
+    resolvePageForTask(input: {
+      context: BrowserContext;
+      sessionId: string;
+      liveReuse: boolean;
+      actions: Array<{ kind: "open"; url: string }>;
+    }): Promise<{
+      page: Page;
+      resumeMode: string;
+      targetResolution: string;
+    }>;
+  };
+
+  const resolved = await internal.resolvePageForTask({
+    context: fakeContext,
+    sessionId: "browser-session-b",
+    liveReuse: true,
+    actions: [{ kind: "open", url: "http://127.0.0.1/product-bridge" }],
+  });
+
+  assert.equal(resolved.page, newPage);
+  assert.equal(resolved.resumeMode, "cold");
+  assert.equal(resolved.targetResolution, "new_target");
+  assert.equal(newPageCount, 1);
+});
+
 test("chrome session manager falls back to an isolated runtime profile when Chrome reports profile lock", async () => {
   let closeHandler: (() => void) | undefined;
   let closeCount = 0;
@@ -1266,6 +1316,14 @@ test("chrome session manager executes waitFor page conditions", async () => {
     },
     async waitForFunction(expression: string, _arg: unknown, options: { timeout?: number }) {
       assert.doesNotThrow(() => new Function(`return ${expression};`));
+      const matches = new Function("document", `return ${expression};`)({
+        title: "DONE",
+        body: {
+          innerText:
+            "Dry-run submitted locally after approval; no external mutation was performed.",
+        },
+      });
+      assert.equal(matches, true);
       waitedFunctions.push(`${expression.includes("document.title") ? "title" : "body"}:${options.timeout}`);
     },
     url() {
@@ -1310,14 +1368,14 @@ test("chrome session manager executes waitFor page conditions", async () => {
   });
   const bodyOutput = await internal.executeAction({
     ...base,
-    action: { kind: "waitFor", bodyTextPattern: "Submitted", timeoutMs: 3_000 },
+    action: { kind: "waitFor", bodyTextPattern: "dry-run submitted", timeoutMs: 3_000 },
   });
 
   assert.deepEqual(waitedUrls, ["timeout:1000"]);
   assert.deepEqual(waitedFunctions, ["title:2000", "body:3000"]);
   assert.equal(urlOutput.traceOutput?.urlPattern, "/done");
   assert.equal(titleOutput.traceOutput?.titlePattern, "Done");
-  assert.equal(bodyOutput.traceOutput?.bodyTextPattern, "Submitted");
+  assert.equal(bodyOutput.traceOutput?.bodyTextPattern, "dry-run submitted");
 });
 
 test("chrome session manager executes probe actions without exposing field values", async () => {

@@ -1,7 +1,7 @@
 # TurnkeyAI Mission Control Product Design
 
 > Status: proposed product direction, PR K0
-> Updated: 2026-05-17
+> Updated: 2026-06-08
 > Scope: user story, use case, information architecture, and base UE design for the user-facing TurnkeyAI workbench
 
 ## 1. Product Decision
@@ -17,7 +17,7 @@ The current Control Center is a useful runtime view, but its mental model is sti
 - Setup
 - Bridge
 - Tabs
-- Agent Connect
+- Setup
 - Diagnostics
 
 That layout explains the runtime. It does not explain the user's work.
@@ -72,7 +72,8 @@ They want to:
 
 ### P3. Agent Integrator
 
-Connects external agents such as Codex, Claude Code, Comet, Kimi, or custom OpenAPI clients.
+Connects external agent clients such as Codex, Claude Code, Kimi, or custom OpenAPI clients. Chromium-family
+browsers such as Chrome, Comet, Edge, and Chromium are browser transport targets that host the relay extension.
 
 They want to:
 
@@ -84,6 +85,16 @@ They want to:
 ### P4. Runtime Developer
 
 Still important, but not the default product lens. They use diagnostics, replay, and lower-level runtime pages.
+
+### P5. First-Time User
+
+They are not integrating anything yet. They need one clear answer: "Can I start a mission now?"
+
+They should see:
+
+- Start in this app as the recommended path.
+- Add another AI app only as an optional branch.
+- Add browser access only when a task needs logged-in pages, screenshots, or evidence.
 
 ## 4. Core Product Objects
 
@@ -115,19 +126,19 @@ The product should move from a daemon dashboard to a workbench.
 | `#/agents` | Agents | Agent roster, capabilities, active assignments, connection health. |
 | `#/context` | Context Sources | Browser, docs, desktop, files, APIs, and connected apps. |
 | `#/approvals` | Approvals | Pending user decisions across missions. |
-| `#/agent-connect` | Agent Connect | External agent setup, endpoint, token, presets, connection tests. |
-| `#/runtime` | Runtime | Bridge, transport, sessions, diagnostics, logs, replay links. |
-| `#/settings` | Settings | Tokens, policies, LLM providers, transport setup, local data paths. |
+| `#/agent-connect` | Setup | Start here, connect another AI app, or add browser access when needed. |
+| `#/runtime` | Diagnostics | Bridge, transport, sessions, diagnostics, logs, replay links. |
+| `#/settings` | Models | Model routes, policies, identity, and local data paths. |
 
 The current pages fold in as follows:
 
 | Current page | New home |
 | --- | --- |
-| Setup | Settings + first-run onboarding |
-| Bridge | Runtime + Context Sources / Browser |
+| Setup | First-run onboarding + Setup + Models |
+| Bridge | Setup + Diagnostics + Context evidence |
 | Tabs | Mission Detail / Browser context panel |
-| Agent Connect | Agent Connect |
-| Diagnostics | Runtime |
+| External agent setup | Setup |
+| Diagnostics | Diagnostics |
 
 ## 6. Primary User Stories
 
@@ -154,7 +165,7 @@ The current pages fold in as follows:
 
 - A mission has an ID, title, status, owner, created time, participating agents, work items, timeline, and artifact list.
 - The first screen after creation is Mission Detail, not a diagnostics page.
-- If no external agent is connected, the mission can still be created as a draft and the UI routes the user to Agent Connect.
+- If no external agent is connected, the mission can still run in this app. The UI routes to Setup only when the user chooses another AI app or browser access.
 
 ### US-2. Watch A Multi-Agent Mission Run
 
@@ -260,23 +271,33 @@ The current pages fold in as follows:
 - Timeout retries are user/caller-driven when action might have executed.
 - The user can export a diagnostics bundle from the recovery case.
 
-### US-7. Connect External Agents
+### US-7. Set Up A Use Path
 
-**Goal**: The user can connect Codex, Claude Code, Comet, Kimi, or a custom client without learning daemon routes first.
+**Goal**: The user can start work without learning daemon routes. External AI apps and browser access are optional.
 
-**Entry**: Agent Connect.
+**Entry**: Setup.
+
+**Information architecture**:
+
+- Recommended: Use this app. Primary action is starting a mission.
+- Optional AI app branch: Codex CLI, Claude Code, Kimi, and custom OpenAPI clients. They call `/bridge/command`.
+- Optional browser branch: Chrome, Comet, Edge, and Chromium. They host the relay extension and register tabs back to the daemon.
+- Diagnostic contract: live workers, native tools, connectors, APIs, and transport order stay behind disclosure unless the user asks for status.
+
+These dimensions are not peers. Browser targets must not be rendered as agent presets.
 
 **Flow**:
 
-1. User chooses a preset.
-2. UI shows endpoint, token scope, allowed capabilities, and copy-ready config.
-3. User tests the connection.
-4. Connected agent appears in Agents roster.
+1. User lands on "Use this app" and can start a mission immediately.
+2. If they pick another AI app, UI shows endpoint and token only.
+3. If they pick browser access, UI shows install/load/start steps only.
+4. Advanced details are available but not part of the default explanation.
 
 **Acceptance**:
 
 - Read tokens cannot expose mutation snippets.
 - Admin tokens warn the user to prefer operator scope for day-to-day agents.
+- The first viewport never lists internal runtime nouns such as capability contract, transport order, or bridge topology.
 - The configured agent can be assigned to a mission.
 
 ## 7. Mission Detail UE Design
@@ -544,8 +565,8 @@ Output:
 Goal: make the UI tell the right story before adding risky mutations.
 
 - Rename product surface from Control Center to Mission Control.
-- Add routes: Missions, Mission Detail, Agents, Context, Approvals, Runtime, Settings.
-- Move existing Bridge/Tabs/Diagnostics content under Runtime or Context.
+- Add routes: Missions, Mission Detail, Agents, Context, Approvals, Setup, Diagnostics, Models.
+- Move existing Bridge/Tabs/Diagnostics content under Diagnostics or Context.
 - Use mocked mission data where backend objects do not exist yet.
 
 ### K2. Mission Data Model
@@ -607,6 +628,6 @@ The bar is:
 2. Multiple agents can be represented as participants in that mission.
 3. Browser/document/desktop/file context appears as tools used by agents, not top-level product identity.
 4. The user can see progress, evidence, approvals, failures, and final artifacts in one mission workspace.
-5. Runtime details remain available for operators without dominating the main experience.
+5. Diagnostics remain available for operators without dominating the main experience.
 
 If the next UI arc does not move toward those five points, it is probably still too conservative.

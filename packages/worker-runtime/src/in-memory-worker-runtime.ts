@@ -304,9 +304,10 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       }
 
       const completedAt = this.now();
+      const nextStatus = resolveStatusAfterResult(result, session.state);
       session.state = {
         ...session.state,
-        status: resolveStatus(result),
+        status: nextStatus,
         updatedAt: completedAt,
         currentTaskId: input.activation.handoff.taskId,
         ...(result ? { lastResult: result } : {}),
@@ -347,6 +348,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       }
 
       const errorMessage = error instanceof Error ? error.message : "worker execution failed";
+      if (isPreservedTimeoutAbort(session.state, errorMessage)) {
+        return session.state.lastResult ?? null;
+      }
       const failedAt = this.now();
       session.state = {
         ...session.state,
@@ -395,7 +399,10 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     if (
       ["idle", "waiting_input", "waiting_external", "resumable"].includes(session.state.status) ||
       ((session.state.status === "done" || session.state.status === "cancelled") &&
-        input.packet.continuityMode === "resume-existing")
+        input.packet.continuityMode === "resume-existing") ||
+      (session.state.status === "failed" &&
+        input.packet.continuityMode === "resume-existing" &&
+        session.state.lastError?.retryable !== false)
     ) {
       return this.send({
         workerRunKey: input.workerRunKey,
@@ -418,7 +425,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     if (session.state.status !== "running" && session.state.status !== "resumable") {
       return session.state;
     }
-    session.executionToken += 1;
+    if (!input.preserveLateResult) {
+      session.executionToken += 1;
+    }
     session.activeAbortController?.abort(input.reason ?? "Worker interrupted.");
     delete session.activeAbortController;
 
@@ -766,6 +775,28 @@ function resolveStatus(result: WorkerExecutionResult | null): WorkerSessionState
   }
 
   return "done";
+}
+
+function resolveStatusAfterResult(
+  result: WorkerExecutionResult | null,
+  currentState: WorkerSessionState
+): WorkerSessionState["status"] {
+  if (
+    currentState.status === "resumable" &&
+    currentState.lastError?.code === "WORKER_TIMEOUT" &&
+    result?.status !== "partial"
+  ) {
+    return "resumable";
+  }
+  return resolveStatus(result);
+}
+
+function isPreservedTimeoutAbort(state: WorkerSessionState, errorMessage: string): boolean {
+  if (state.status !== "resumable" || state.lastError?.code !== "WORKER_TIMEOUT") {
+    return false;
+  }
+  const timeoutMessage = state.lastError.message.trim();
+  return timeoutMessage.length > 0 && (errorMessage === timeoutMessage || errorMessage.includes(timeoutMessage));
 }
 
 function mapWorkerResultPhase(

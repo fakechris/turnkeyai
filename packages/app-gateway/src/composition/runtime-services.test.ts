@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEFAULT_DAEMON_RUNTIME_LIMITS, resolveRequestEnvelopeLimitOverridesFromEnv } from "./runtime-services";
+import {
+  DEFAULT_DAEMON_RUNTIME_LIMITS,
+  LLM_SUB_AGENT_WORKER_KINDS,
+  resolveRequestEnvelopeLimitOverridesFromEnv,
+} from "./runtime-services";
 
 test("default daemon runtime limits keep outer role loops aligned with the native tool loop budget", () => {
   assert.equal(DEFAULT_DAEMON_RUNTIME_LIMITS.memberMaxIterations, 128);
@@ -24,4 +28,8 @@ test("daemon request envelope limit overrides read only positive integer env val
     }
   );
   assert.equal(resolveRequestEnvelopeLimitOverridesFromEnv({}), undefined);
+});
+
+test("daemon leaves explore on the direct worker path for public read-only fetches", () => {
+  assert.deepEqual([...LLM_SUB_AGENT_WORKER_KINDS], ["browser", "explore"]);
 });

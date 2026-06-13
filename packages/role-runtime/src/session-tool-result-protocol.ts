@@ -163,16 +163,18 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
   const browserProfileFallback = extractBrowserProfileFallbackSummary(payload);
   const browserFailureBuckets = extractBrowserFailureBucketSummary(payload);
   const nestedToolEvidence = extractNestedToolUseEvidenceSummary(payload);
-  const page = payload["page"];
-  if (page && typeof page === "object" && !Array.isArray(page)) {
-    const pageRecord = page as Record<string, unknown>;
+  const pages = extractEvidencePages(payload);
+  if (pages.length > 0) {
     const lines = [
       browserProfileFallback,
       browserFailureBuckets,
       nestedToolEvidence,
-      readString(pageRecord["finalUrl"]) ? `Final URL: ${readString(pageRecord["finalUrl"])}` : null,
-      readString(pageRecord["title"]) ? `Page title: ${readString(pageRecord["title"])}` : null,
-      readString(pageRecord["textExcerpt"]) ? `Excerpt: ${readString(pageRecord["textExcerpt"])}` : null,
+      ...pages.flatMap((pageRecord, index) => [
+        `Source ${index + 1}:`,
+        readString(pageRecord["finalUrl"]) ? `Final URL: ${readString(pageRecord["finalUrl"])}` : null,
+        readString(pageRecord["title"]) ? `Page title: ${readString(pageRecord["title"])}` : null,
+        readString(pageRecord["textExcerpt"]) ? `Excerpt: ${readString(pageRecord["textExcerpt"])}` : null,
+      ]),
     ].filter((line): line is string => Boolean(line));
     const summary = sanitizeEvidenceSummary(lines.join("\n"));
     if (summary) {
@@ -184,6 +186,41 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
       .filter(Boolean)
       .join("\n")
   );
+}
+
+function extractEvidencePages(payload: Record<string, unknown>): Array<Record<string, unknown>> {
+  const pages: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  const addPage = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return;
+    }
+    const page = value as Record<string, unknown>;
+    const key = readString(page["finalUrl"]) ?? readString(page["requestedUrl"]) ?? JSON.stringify(page).slice(0, 120);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    pages.push(page);
+  };
+
+  if (Array.isArray(payload["pages"])) {
+    for (const page of payload["pages"]) {
+      addPage(page);
+    }
+  }
+
+  if (Array.isArray(payload["sourceResults"])) {
+    for (const sourceResult of payload["sourceResults"]) {
+      if (!sourceResult || typeof sourceResult !== "object" || Array.isArray(sourceResult)) {
+        continue;
+      }
+      addPage((sourceResult as Record<string, unknown>)["page"]);
+    }
+  }
+
+  addPage(payload["page"]);
+  return pages;
 }
 
 export function sanitizeEvidenceSummary(value: string | null | undefined): string | null {

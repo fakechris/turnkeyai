@@ -40,7 +40,6 @@ export class DefaultHandoffPlanner implements HandoffPlanner {
         offsetEnd: match.index + match[0].length,
       });
     }
-
     return out;
   }
 

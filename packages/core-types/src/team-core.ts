@@ -168,6 +168,7 @@ export type RuntimeCloseKind =
   | "detached_target"
   | "lease_conflict"
   | "owner_mismatch"
+  | "wait_condition_timeout"
   | "transport_failure"
   | "unknown";
 export type RuntimeProgressKind = "transition" | "heartbeat" | "boundary";

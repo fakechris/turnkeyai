@@ -30,6 +30,7 @@ export const DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS = [
 
 export const DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS = [
   "natural-comparison-research",
+  "natural-provider-search-pricing",
   "natural-browser-dynamic-page",
   "natural-browser-dashboard-task",
   "natural-browser-external-page-review",
@@ -55,15 +56,18 @@ export const DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS = [
   "natural-timeout-followup-continuation",
   "natural-cancel-active-tool",
   "natural-cancel-followup-continuation",
+  "natural-asiawalk-multi-agent",
   "natural-long-delegation",
 ] as const;
 
 export const DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS = [
   "natural-comparison-research",
+  "natural-provider-search-pricing",
   "natural-browser-dynamic-page",
   "natural-followup-continuation",
   "natural-approval-dry-run-action",
   "natural-long-delegation",
+  "natural-asiawalk-multi-agent",
   "natural-timeout-followup-continuation",
   "natural-memory-recall",
 ] as const;

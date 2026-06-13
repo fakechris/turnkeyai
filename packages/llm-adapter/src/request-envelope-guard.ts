@@ -53,7 +53,7 @@ const OPENAI_SAFE_LIMITS: Partial<RequestEnvelopeLimits> = {
 };
 
 const ANTHROPIC_SAFE_LIMITS: Partial<RequestEnvelopeLimits> = {
-  maxToolCount: 12,
+  maxToolCount: 16,
   maxToolSchemaBytes: 56_000,
   maxToolResultCount: 10,
   maxToolResultBytes: 36_000,
