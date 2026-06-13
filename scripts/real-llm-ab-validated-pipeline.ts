@@ -1,10 +1,12 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   buildRealLlmAbMarkdownReport,
   validateRealLlmAbAcceptanceReport,
+  type RealLlmAbAcceptanceValidationOptions,
   type RealLlmAbRequiredSuite,
 } from "@turnkeyai/qc-runtime/real-llm-ab-acceptance";
 
@@ -19,6 +21,11 @@ import { buildRealLlmAbSpec, type RealLlmAbSpecBuildSuite } from "./real-llm-ab-
 import { buildRealLlmAbFairnessReportForSpec } from "./real-llm-ab-fairness";
 import { buildRealLlmAbAcceptanceReport } from "./real-llm-ab-report-build";
 
+const ACCIO_WORK_REFERENCE_APP = "accio-work-app-asar";
+const ACCIO_WORK_APP_ASAR_PATH = "/Applications/Accio.app/Contents/Resources/app.asar";
+const ACCIO_WORK_REFERENCE_RUNTIME_ROOT = "artifacts/reference-runtimes/accio-work-0.4.5";
+const ACCIO_WORK_REFERENCE_VERSION = "0.4.5";
+
 interface ValidatedPipelineOptions {
   naturalReportPath: string;
   referenceDir: string;
@@ -27,11 +34,15 @@ interface ValidatedPipelineOptions {
   referenceBaseUrl?: string;
   referenceToken?: string;
   referenceVariant: string;
+  accioWs?: boolean;
+  accioAgentId?: string;
+  accioWorkspacePath?: string;
   referenceTimeoutMs: number;
   referencePollMs: number;
   referenceApp: string;
   referenceBinary?: string;
   referenceRepoPath?: string;
+  referenceRuntimeRoot?: string;
   referenceVersion?: string;
   referenceCommit?: string;
   modelDifferenceNote?: string;
@@ -103,13 +114,22 @@ export function parseRealLlmAbValidatedPipelineArgs(
   let referenceBaseUrl: string | undefined;
   let referenceToken: string | undefined;
   let referenceVariant = "operator";
+  let accioWs = false;
+  let accioAgentId: string | undefined;
+  let accioWorkspacePath: string | undefined;
   let referenceTimeoutMs = 180_000;
   let referencePollMs = 2_000;
   let referenceApp = "reference-workbench";
   let referenceBinary: string | undefined;
   let referenceRepoPath: string | undefined;
+  let referenceRuntimeRoot: string | undefined;
   let referenceVersion: string | undefined;
   let referenceCommit: string | undefined;
+  let referenceAppExplicit = false;
+  let referenceBinaryExplicit = false;
+  let referenceRuntimeRootExplicit = false;
+  let referenceVersionExplicit = false;
+  let referenceCommitExplicit = false;
   let modelDifferenceNote: string | undefined;
   let check = false;
   for (let index = 0; index < args.length; index += 1) {
@@ -132,7 +152,7 @@ export function parseRealLlmAbValidatedPipelineArgs(
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
       if (!isRealLlmAbSpecBuildSuite(value)) {
-        throw new Error("--suite must be one of: core, browser-focused, browser-reliability, full-natural");
+        throw new Error("--suite must be one of: core, browser-focused, browser-reliability, full-natural, report-scenarios");
       }
       suite = value;
       index += 1;
@@ -153,6 +173,20 @@ export function parseRealLlmAbValidatedPipelineArgs(
       index += 1;
       continue;
     }
+    if (arg === "--accio-ws") {
+      accioWs = true;
+      continue;
+    }
+    if (arg === "--accio-agent-id") {
+      accioAgentId = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--accio-workspace-path") {
+      accioWorkspacePath = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
     if (arg === "--reference-timeout-ms") {
       referenceTimeoutMs = readPositiveInteger(readValue(args, index, arg), arg);
       index += 1;
@@ -165,11 +199,13 @@ export function parseRealLlmAbValidatedPipelineArgs(
     }
     if (arg === "--reference-app") {
       referenceApp = readValue(args, index, arg);
+      referenceAppExplicit = true;
       index += 1;
       continue;
     }
     if (arg === "--reference-binary") {
       referenceBinary = readValue(args, index, arg);
+      referenceBinaryExplicit = true;
       index += 1;
       continue;
     }
@@ -178,13 +214,21 @@ export function parseRealLlmAbValidatedPipelineArgs(
       index += 1;
       continue;
     }
+    if (arg === "--reference-runtime-root") {
+      referenceRuntimeRoot = readValue(args, index, arg);
+      referenceRuntimeRootExplicit = true;
+      index += 1;
+      continue;
+    }
     if (arg === "--reference-version") {
       referenceVersion = readValue(args, index, arg);
+      referenceVersionExplicit = true;
       index += 1;
       continue;
     }
     if (arg === "--reference-commit") {
       referenceCommit = readValue(args, index, arg);
+      referenceCommitExplicit = true;
       index += 1;
       continue;
     }
@@ -203,6 +247,19 @@ export function parseRealLlmAbValidatedPipelineArgs(
   if (!referenceDir) throw new Error("missing required --reference-dir <dir>");
   if (!workDir) throw new Error("missing required --work-dir <dir>");
   if (!suite) throw new Error("missing required --suite core");
+  const resolvedReferenceApp = accioWs && !referenceAppExplicit ? ACCIO_WORK_REFERENCE_APP : referenceApp;
+  const resolvedReferenceBinary =
+    accioWs && !referenceBinaryExplicit ? ACCIO_WORK_APP_ASAR_PATH : referenceBinary;
+  const resolvedReferenceRuntimeRoot =
+    accioWs && !referenceRuntimeRootExplicit
+      ? path.resolve(ACCIO_WORK_REFERENCE_RUNTIME_ROOT)
+      : referenceRuntimeRoot
+        ? path.resolve(referenceRuntimeRoot)
+        : undefined;
+  const resolvedReferenceVersion =
+    accioWs && !referenceVersionExplicit ? ACCIO_WORK_REFERENCE_VERSION : referenceVersion;
+  const resolvedReferenceCommit =
+    accioWs && !referenceCommitExplicit ? readAccioWorkAppAsarCommit() : referenceCommit;
   return {
     naturalReportPath,
     referenceDir,
@@ -211,13 +268,17 @@ export function parseRealLlmAbValidatedPipelineArgs(
     ...(referenceBaseUrl ? { referenceBaseUrl } : {}),
     ...(referenceToken ? { referenceToken } : {}),
     referenceVariant,
+    ...(accioWs ? { accioWs } : {}),
+    ...(accioAgentId ? { accioAgentId } : {}),
+    ...(accioWs || accioWorkspacePath ? { accioWorkspacePath: accioWorkspacePath ?? process.cwd() } : {}),
     referenceTimeoutMs,
     referencePollMs,
-    referenceApp,
-    ...(referenceBinary ? { referenceBinary } : {}),
+    referenceApp: resolvedReferenceApp,
+    ...(resolvedReferenceBinary ? { referenceBinary: resolvedReferenceBinary } : {}),
     ...(referenceRepoPath ? { referenceRepoPath } : {}),
-    ...(referenceVersion ? { referenceVersion } : {}),
-    ...(referenceCommit ? { referenceCommit } : {}),
+    ...(resolvedReferenceRuntimeRoot ? { referenceRuntimeRoot: resolvedReferenceRuntimeRoot } : {}),
+    ...(resolvedReferenceVersion ? { referenceVersion: resolvedReferenceVersion } : {}),
+    ...(resolvedReferenceCommit ? { referenceCommit: resolvedReferenceCommit } : {}),
     ...(modelDifferenceNote ? { modelDifferenceNote } : {}),
     check,
   };
@@ -228,7 +289,8 @@ export function buildRealLlmAbValidatedPipelineHelpText(): string {
     "TurnkeyAI real LLM A/B validated evidence pipeline",
     "",
     "Usage:",
-    "  npm run acceptance:ab:validated -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability|full-natural> --work-dir <dir> [--reference-base-url <url>] [--reference-token <token>] [--model-difference-note <text>] [--check]",
+    "  npm run acceptance:ab:validated -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability|full-natural|report-scenarios> --work-dir <dir> [--reference-base-url <url>] [--reference-token <token>] [--model-difference-note <text>] [--check]",
+    "  npm run acceptance:ab:validated -- --natural-report <path> --reference-dir <dir> --suite core --work-dir <dir> --reference-base-url http://127.0.0.1:4097 --accio-ws --accio-workspace-path <repo> --reference-app accio-work-app-asar --reference-binary /Applications/Accio.app/Contents/Resources/app.asar --reference-runtime-root <persistent-runtime-root> --reference-commit app.asar:<sha> [--check]",
     "",
     "The pipeline runs reference audit, optional reference collection, reference runtime health, same-scenario fairness, and A/B report validation in order.",
     "It writes local evidence artifacts into --work-dir. A failed result means capability comparison remains unproven.",
@@ -283,14 +345,15 @@ export async function runRealLlmAbValidatedPipeline(
 
   let referencePreflightGate: ValidatedPipelineReport["gates"]["referencePreflight"] = "not_run";
   if (options.referenceBaseUrl) {
-    const probePrompt = collectionTasks.tasks.find((task) => typeof task.prompt === "string" && task.prompt.trim())?.prompt;
     const preflight = await runReferencePreflight({
       baseUrl: options.referenceBaseUrl,
       ...(options.referenceToken ? { referenceToken: options.referenceToken } : {}),
       variant: options.referenceVariant,
+      ...(options.accioWs ? { accioWs: options.accioWs } : {}),
+      ...(options.accioAgentId ? { accioAgentId: options.accioAgentId } : {}),
+      ...(options.accioWorkspacePath ? { accioWorkspacePath: options.accioWorkspacePath } : {}),
       timeoutMs: Math.min(options.referenceTimeoutMs, 60_000),
       pollMs: options.referencePollMs,
-      ...(probePrompt ? { probePrompt } : {}),
     });
     writeJson(referencePreflightPath, preflight);
     referencePreflightGate = preflight.status;
@@ -314,11 +377,15 @@ export async function runRealLlmAbValidatedPipeline(
         baseUrl: options.referenceBaseUrl,
         ...(options.referenceToken ? { referenceToken: options.referenceToken } : {}),
         variant: options.referenceVariant,
+        ...(options.accioWs ? { accioWs: options.accioWs } : {}),
+        ...(options.accioAgentId ? { accioAgentId: options.accioAgentId } : {}),
+        ...(options.accioWorkspacePath ? { accioWorkspacePath: options.accioWorkspacePath } : {}),
         timeoutMs: options.referenceTimeoutMs,
         pollMs: options.referencePollMs,
         referenceApp: options.referenceApp,
         ...(options.referenceBinary ? { referenceBinary: options.referenceBinary } : {}),
         ...(options.referenceRepoPath ? { referenceRepoPath: options.referenceRepoPath } : {}),
+        ...(options.referenceRuntimeRoot ? { referenceRuntimeRoot: options.referenceRuntimeRoot } : {}),
         ...(options.referenceVersion ? { referenceVersion: options.referenceVersion } : {}),
         ...(options.referenceCommit ? { referenceCommit: options.referenceCommit } : {}),
         check: false,
@@ -403,12 +470,11 @@ export async function runRealLlmAbValidatedPipeline(
       const abReport = buildRealLlmAbAcceptanceReport(spec, { specDir: path.dirname(specPath) });
       writeJson(abReportPath, abReport);
       artifacts.abReportPath = abReportPath;
-      const markdown = buildRealLlmAbMarkdownReport(abReport, { requiredSuite: options.suite as RealLlmAbRequiredSuite });
+      const acceptanceOptions = acceptanceValidationOptionsForSuite(options.suite);
+      const markdown = buildRealLlmAbMarkdownReport(abReport, acceptanceOptions);
       writeText(abMarkdownPath, markdown.endsWith("\n") ? markdown : `${markdown}\n`);
       artifacts.abMarkdownPath = abMarkdownPath;
-      const validation = validateRealLlmAbAcceptanceReport(abReport, {
-        requiredSuite: options.suite as RealLlmAbRequiredSuite,
-      });
+      const validation = validateRealLlmAbAcceptanceReport(abReport, acceptanceOptions);
       abAcceptanceGate = validation.status;
       if (validation.status !== "passed") {
         failures.push(...validation.failures.map((failure) => `A/B acceptance: ${failure}`));
@@ -473,6 +539,10 @@ function applyPipelineComparisonNotes<T extends { scenarios: Array<Record<string
   };
 }
 
+function acceptanceValidationOptionsForSuite(suite: RealLlmAbSpecBuildSuite): RealLlmAbAcceptanceValidationOptions {
+  return suite === "report-scenarios" ? {} : { requiredSuite: suite as RealLlmAbRequiredSuite };
+}
+
 function buildFullReferenceHealthTasks(input: {
   finalAudit: ReturnType<typeof buildRealLlmAbReferenceAuditReport>;
   naturalReportPath: string;
@@ -530,7 +600,19 @@ function readPositiveInteger(value: string, arg: string): number {
 }
 
 function isRealLlmAbSpecBuildSuite(value: string): value is RealLlmAbSpecBuildSuite {
-  return value === "core" || value === "browser-focused" || value === "browser-reliability" || value === "full-natural";
+  return (
+    value === "core" ||
+    value === "browser-focused" ||
+    value === "browser-reliability" ||
+    value === "full-natural" ||
+    value === "report-scenarios"
+  );
+}
+
+function readAccioWorkAppAsarCommit(): string | undefined {
+  if (!existsSync(ACCIO_WORK_APP_ASAR_PATH)) return undefined;
+  const hash = createHash("sha256").update(readFileSync(ACCIO_WORK_APP_ASAR_PATH)).digest("hex");
+  return `app.asar:${hash}`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

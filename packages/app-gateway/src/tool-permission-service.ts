@@ -137,7 +137,11 @@ export function createMissionToolPermissionService(
         tMs: now,
         kind: "approval",
         actor: input.roleId,
-        text: `Requested approval · <b>${input.action}</b> · ${input.risk}`,
+        text: [
+          `Requested approval · <b>${input.action}</b> · ${input.risk}`,
+          "Waiting for operator decision; the action has not run and no browser side effect has been applied.",
+          "Approve to continue this exact action, or deny to close out without applying it.",
+        ].join(" "),
         emph: "warn",
         tags: ["needs_approval", input.requirement.scope],
         approvalId,

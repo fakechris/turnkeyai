@@ -267,6 +267,445 @@ describe("mission-routes", () => {
     }
   });
 
+  it("GET /missions/:id/timeline merges browser runtime progress without heartbeat noise", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      const mission: Mission = {
+        id: "msn.browser-progress",
+        shortId: "MSN-BROWSER",
+        title: "Browser progress mission",
+        desc: "Open a dynamic page.",
+        status: "working",
+        mode: "research",
+        modeLabel: "Research",
+        owner: "you",
+        ownerLabel: "You",
+        createdAt: new Date(1_000).toISOString(),
+        createdAtMs: 1_000,
+        agents: ["role-lead", "role-browser"],
+        progress: 0,
+        pendingApprovals: 0,
+        blockers: 0,
+        contextSummary: [],
+        threadId: "thread-browser-progress",
+      };
+      await deps.missionStore.putRaw(mission);
+      await deps.activityStore.append(timelineEvent("ev.user", mission.id, 1_000));
+      await deps.activityStore.append({
+        ...timelineEvent("ev.call", mission.id, 2_000),
+        kind: "tool",
+        text: "Calling sessions_spawn(agent_id=\"browser\")",
+        runtime: { toolName: "sessions_spawn", toolPhase: "call", toolCallId: "call-parent" },
+      });
+      await deps.activityStore.append({
+        ...timelineEvent("ev.result", mission.id, 8_000),
+        kind: "tool",
+        text: "Tool sessions_spawn returned rendered evidence.",
+        runtime: { toolName: "sessions_spawn", toolPhase: "result", toolCallId: "call-parent" },
+      });
+      deps.runtimeProgressStore = {
+        async listByThread(threadId: string, limit?: number): Promise<RuntimeProgressEvent[]> {
+          assert.equal(threadId, "thread-browser-progress");
+          assert.equal(limit, 500);
+          return [
+            {
+              progressId: "progress.worker.started",
+              threadId,
+              subjectKind: "worker_run",
+              subjectId: "worker:browser:task:TASK-1:call-parent",
+              phase: "started",
+              progressKind: "heartbeat",
+              workerType: "browser",
+              continuityState: "alive",
+              summary: "Worker browser started task TASK-1:call-parent",
+              recordedAt: 2_500,
+              taskId: "TASK-1:call-parent",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.open.started",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-browser-progress",
+              phase: "started",
+              progressKind: "boundary",
+              summary: "Tool call started: browser_open",
+              recordedAt: 3_000,
+              taskId: "TASK-1:call-parent",
+              roleId: "role-lead",
+              metadata: { toolName: "browser_open", toolCallId: "call-open" },
+            },
+            {
+              progressId: "progress.worker.heartbeat",
+              threadId,
+              subjectKind: "worker_run",
+              subjectId: "worker:browser:task:TASK-1:call-parent",
+              phase: "heartbeat",
+              progressKind: "heartbeat",
+              workerType: "browser",
+              continuityState: "alive",
+              summary: "Worker browser is still running task TASK-1:call-parent.",
+              recordedAt: 4_000,
+              taskId: "TASK-1:call-parent",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.provider.protocol",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-browser-progress",
+              phase: "completed",
+              progressKind: "boundary",
+              summary: "Provider tool protocol round 1 appended assistant tool call(s) and matching tool result message(s).",
+              recordedAt: 4_500,
+              taskId: "TASK-1:call-parent",
+              roleId: "role-lead",
+              metadata: { toolNames: ["browser_open"] },
+            },
+            {
+              progressId: "progress.open.observed",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-browser-progress",
+              phase: "completed",
+              progressKind: "boundary",
+              summary: "Browser observed The Internet.\nVisible text excerpt: Hello World!",
+              recordedAt: 5_000,
+              taskId: "TASK-1:call-parent",
+              roleId: "role-lead",
+              metadata: { toolName: "browser_open", toolCallId: "call-open" },
+            },
+          ];
+        },
+      };
+
+      const timeline = await runJson<ActivityEvent[]>(
+        deps,
+        "GET",
+        "/missions/msn.browser-progress/timeline?limit=20"
+      );
+
+      assert.deepEqual(
+        timeline.map((event) => event.id),
+        [
+          "ev.user",
+          "ev.call",
+          "runtime-progress:progress.worker.started",
+          "runtime-progress:progress.open.started",
+          "runtime-progress:progress.open.observed",
+          "ev.result",
+        ]
+      );
+      const browserEvents = timeline.filter((event) => event.kind === "browser");
+      assert.equal(browserEvents.length, 3);
+      assert.equal(browserEvents[0]?.runtime?.workerType, "browser");
+      assert.match(browserEvents[0]?.text ?? "", /Browser worker started/);
+      assert.equal(browserEvents[1]?.runtime?.toolName, "browser_open");
+      assert.equal(browserEvents[1]?.runtime?.progressId, "progress.open.started");
+      assert.match(browserEvents[2]?.text ?? "", /Hello World/);
+      assert.equal(timeline.some((event) => event.id.includes("heartbeat")), false);
+      assert.equal(timeline.some((event) => event.id.includes("provider.protocol")), false);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("GET /missions/:id/timeline keeps session tool progress after the matching call", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      const mission: Mission = {
+        id: "msn.tool-causality",
+        shortId: "MSN-TOOL",
+        title: "Tool causality mission",
+        desc: "Run an approval-gated browser task.",
+        status: "working",
+        mode: "research",
+        modeLabel: "Research",
+        owner: "you",
+        ownerLabel: "You",
+        createdAt: new Date(1_000).toISOString(),
+        createdAtMs: 1_000,
+        agents: ["role-lead", "role-browser"],
+        progress: 0,
+        pendingApprovals: 0,
+        blockers: 0,
+        contextSummary: [],
+        threadId: "thread-tool-causality",
+      };
+      await deps.missionStore.putRaw(mission);
+      await deps.activityStore.append(timelineEvent("ev.user", mission.id, 1_000));
+      await deps.activityStore.append({
+        ...timelineEvent("ev.progress.early", mission.id, 1_500),
+        kind: "tool",
+        text: "Tool sessions_spawn progress: Approval required before browser.form.submit.",
+        runtime: {
+          toolName: "sessions_spawn",
+          toolCallId: "call-session",
+          toolPhase: "progress",
+          progressPhase: "progress",
+        },
+      });
+      await deps.activityStore.append({
+        ...timelineEvent("ev.call.late", mission.id, 2_000),
+        kind: "tool",
+        text: "Calling sessions_spawn(agent_id=\"browser\")",
+        runtime: {
+          toolName: "sessions_spawn",
+          toolCallId: "call-session",
+          toolPhase: "call",
+          callInput: "{\"agent_id\":\"browser\"}",
+        },
+      });
+      await deps.activityStore.append({
+        ...timelineEvent("ev.result", mission.id, 3_000),
+        kind: "tool",
+        text: "Completed sessions_spawn.",
+        runtime: {
+          toolName: "sessions_spawn",
+          toolCallId: "call-session",
+          toolPhase: "result",
+          resultContent: "{\"status\":\"completed\"}",
+        },
+      });
+
+      const timeline = await runJson<ActivityEvent[]>(
+        deps,
+        "GET",
+        "/missions/msn.tool-causality/timeline?limit=20"
+      );
+
+      const ids = timeline.map((event) => event.id);
+      assert.ok(
+        ids.indexOf("ev.call.late") < ids.indexOf("ev.progress.early"),
+        `matching session progress should display after the tool call: ${ids.join(", ")}`
+      );
+      assert.ok(
+        ids.indexOf("ev.progress.early") < ids.indexOf("ev.result"),
+        `matching session progress should display before the result: ${ids.join(", ")}`
+      );
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("GET /missions/:id/timeline surfaces role and explore worker runtime progress", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      const mission: Mission = {
+        id: "msn.explore-progress",
+        shortId: "MSN-EXPLORE",
+        title: "Explore progress mission",
+        desc: "Compare two pages.",
+        status: "working",
+        mode: "research",
+        modeLabel: "Research",
+        owner: "you",
+        ownerLabel: "You",
+        createdAt: new Date(1_000).toISOString(),
+        createdAtMs: 1_000,
+        agents: ["role-lead", "role-explore"],
+        progress: 0,
+        pendingApprovals: 0,
+        blockers: 0,
+        contextSummary: [],
+        threadId: "thread-explore-progress",
+      };
+      await deps.missionStore.putRaw(mission);
+      await deps.activityStore.append(timelineEvent("ev.user", mission.id, 1_000));
+      deps.runtimeProgressStore = {
+        async listByThread(threadId: string, limit?: number): Promise<RuntimeProgressEvent[]> {
+          assert.equal(threadId, "thread-explore-progress");
+          assert.equal(limit, 500);
+          return [
+            {
+              progressId: "progress.dispatch.queued",
+              threadId,
+              subjectKind: "dispatch",
+              subjectId: "TASK-1",
+              phase: "waiting",
+              progressKind: "boundary",
+              heartbeatSource: "control_path",
+              statusReason: "dispatch_handoff_queued",
+              continuityState: "alive",
+              summary: "Queued work for role-lead.",
+              recordedAt: 1_250,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.dispatch.signaled",
+              threadId,
+              subjectKind: "dispatch",
+              subjectId: "TASK-1",
+              phase: "started",
+              progressKind: "boundary",
+              heartbeatSource: "control_path",
+              statusReason: "dispatch_role_loop_signaled",
+              continuityState: "alive",
+              summary: "Woke role-lead.",
+              recordedAt: 1_300,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.role.dequeued",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-explore-progress",
+              phase: "heartbeat",
+              progressKind: "boundary",
+              heartbeatSource: "control_path",
+              statusReason: "role_loop_dequeued",
+              continuityState: "alive",
+              summary: "Role role-lead dequeued task TASK-1",
+              recordedAt: 1_500,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.role.started",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-explore-progress",
+              phase: "started",
+              progressKind: "heartbeat",
+              heartbeatSource: "phase_transition",
+              continuityState: "alive",
+              summary: "Role role-lead started task TASK-1",
+              recordedAt: 2_000,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.role.long-heartbeat",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-explore-progress",
+              phase: "heartbeat",
+              progressKind: "heartbeat",
+              heartbeatSource: "long_running_tick",
+              continuityState: "alive",
+              summary: "Role role-lead is still working on task TASK-1.",
+              recordedAt: 3_000,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress:session-memory:thread-explore-progress:completed:3001",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "session-memory:thread-explore-progress",
+              phase: "completed",
+              progressKind: "boundary",
+              summary: "Session memory refreshed with 0 active task(s).",
+              recordedAt: 3_001,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.session.started",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-explore-progress",
+              phase: "started",
+              progressKind: "boundary",
+              heartbeatSource: "control_path",
+              continuityState: "alive",
+              summary: "Tool call started: sessions_spawn",
+              recordedAt: 4_000,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+              metadata: { toolName: "sessions_spawn", toolCallId: "call-a" },
+            },
+            {
+              progressId: "progress.worker.started",
+              threadId,
+              subjectKind: "worker_run",
+              subjectId: "worker:explore:task:TASK-1:call-a",
+              phase: "started",
+              progressKind: "heartbeat",
+              heartbeatSource: "phase_transition",
+              workerType: "explore",
+              continuityState: "alive",
+              summary: "Worker explore started task TASK-1:call-a",
+              recordedAt: 4_500,
+              taskId: "TASK-1:call-a",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.worker.completed",
+              threadId,
+              subjectKind: "worker_run",
+              subjectId: "worker:explore:task:TASK-1:call-a",
+              phase: "completed",
+              progressKind: "transition",
+              heartbeatSource: "phase_transition",
+              workerType: "explore",
+              continuityState: "resolved",
+              summary: "Explore worker fetched https://example.com/. Title: Example Domain.",
+              recordedAt: 5_000,
+              taskId: "TASK-1:call-a",
+              roleId: "role-lead",
+            },
+            {
+              progressId: "progress.provider.protocol",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-explore-progress",
+              phase: "completed",
+              progressKind: "boundary",
+              summary: "Provider tool protocol round 1 appended assistant tool call(s) and matching tool result message(s).",
+              recordedAt: 5_500,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+            },
+          ];
+        },
+      };
+
+      const timeline = await runJson<ActivityEvent[]>(
+        deps,
+        "GET",
+        "/missions/msn.explore-progress/timeline?limit=20"
+      );
+
+      assert.deepEqual(
+        timeline.map((event) => event.id),
+        [
+          "ev.user",
+          "runtime-progress:progress.dispatch.queued",
+          "runtime-progress:progress.dispatch.signaled",
+          "runtime-progress:progress.role.dequeued",
+          "runtime-progress:progress.role.started",
+          "runtime-progress:progress.session.started",
+          "runtime-progress:progress.worker.started",
+          "runtime-progress:progress.worker.completed",
+        ]
+      );
+      assert.deepEqual(
+        timeline.map((event) => event.text),
+        [
+          "ev.user",
+          "Queued the task for role-lead.",
+          "Woke role-lead to start work.",
+          "Lead picked up the task.",
+          "Lead started working.",
+          "Started sessions_spawn.",
+          "Research worker started.",
+          "Explore worker fetched https://example.com/. Title: Example Domain.",
+        ]
+      );
+      assert.equal(timeline.some((event) => event.id.includes("long-heartbeat")), false);
+      assert.equal(timeline.some((event) => event.id.includes("session-memory")), false);
+      assert.equal(timeline.some((event) => event.id.includes("provider.protocol")), false);
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it("GET /missions/:id/timeline rejects malformed cursors", async () => {
     const t = tmpDir();
     try {
@@ -864,10 +1303,10 @@ describe("mission-routes", () => {
         assert.equal(posts.length, 1);
         assert.ok(posts[0]!.content.includes("研究竞品"));
         assert.ok(posts[0]!.content.includes("5 款笔记"));
-        assert.deepEqual(ticks, []);
+        await waitUntil("initial mission mirror while post is still running", () => ticks.length >= 1);
         releasePost();
-        await waitUntil("initial mission tick", () => ticks.length === 1);
-        assert.deepEqual(ticks, [mission.id]);
+        await waitUntil("initial mission final mirror", () => ticks.length >= 2);
+        assert.ok(ticks.every((id) => id === mission.id));
       } finally {
         t.cleanup();
       }
@@ -965,6 +1404,9 @@ describe("mission-routes", () => {
         assert.match(posts[1]?.content ?? "", /already recorded permission\.result and permission\.applied/);
         assert.match(posts[1]?.content ?? "", /runtime permission cache is already applied/);
         assert.match(posts[1]?.content ?? "", /Do not call permission tools again/);
+        assert.match(posts[1]?.content ?? "", /sessions_spawn/);
+        assert.match(posts[1]?.content ?? "", /agent_id="browser"/);
+        assert.match(posts[1]?.content ?? "", /do not finalize with a pending-approval summary/i);
         assert.doesNotMatch(posts[1]?.content ?? "", /permission_applied/);
         await waitUntil("approval continuation tick", () => ticks.filter((id) => id === mission.id).length >= 2);
         const resumed = await deps.missionStore.get(mission.id);
@@ -1188,7 +1630,7 @@ describe("mission-routes", () => {
         assert.equal(decisionResponse.getStatus(), 200);
         await flushMicrotasks();
         assert.deepEqual(posts, []);
-        assert.deepEqual(ticks, []);
+        assert.ok(ticks.every((id) => id === mission.id));
         const latest = await deps.missionStore.get(mission.id);
         assert.equal(latest?.status, "done");
       } finally {
@@ -1328,6 +1770,7 @@ describe("mission-routes", () => {
         });
         const created = createResp.getJson() as { id: string; threadId: string };
         await flushMicrotasks();
+        const ticksAfterCreate = ticks.length;
         // Follow-up.
         const { res, getStatus, getJson } = createResponse();
         await handleMissionRoutes({
@@ -1342,13 +1785,12 @@ describe("mission-routes", () => {
         });
         assert.equal(getStatus(), 202);
         assert.deepEqual(getJson(), { accepted: true, missionId: created.id });
-        await waitUntil("follow-up bridge tick", () => ticks.length === 2);
+        await waitUntil("follow-up bridge tick", () => ticks.length > ticksAfterCreate);
         // Second post: the follow-up content lands on the linked thread.
         assert.equal(posts.length, 2);
         assert.equal(posts[1]!.threadId, created.threadId);
         assert.equal(posts[1]!.content, "继续看 macOS 平台支持");
-        // Bridge ticked twice — once after create, once after follow-up.
-        assert.deepEqual(ticks, [created.id, created.id]);
+        assert.ok(ticks.every((id) => id === created.id));
       } finally {
         t.cleanup();
       }
@@ -1863,15 +2305,17 @@ describe("mission-routes", () => {
         assert.equal(followUpResp.getStatus(), 202);
         assert.deepEqual(followUpResp.getJson(), { accepted: true, missionId: created.id });
         assert.equal(posts.length, 1, "slow follow-up must still be running after 202 accepted");
-        assert.deepEqual(ticks, [created.id]);
+        const ticksWhileFollowUpRunning = ticks.length;
+        assert.ok(ticksWhileFollowUpRunning >= 1);
+        assert.ok(ticks.every((id) => id === created.id));
 
         const release = releasePost;
         assert.ok(release, "expected the slow follow-up to be waiting");
         release();
-        await waitUntil("slow follow-up bridge tick", () => ticks.length === 2);
+        await waitUntil("slow follow-up bridge tick", () => ticks.length > ticksWhileFollowUpRunning);
         assert.equal(posts.length, 2);
         assert.equal(posts[1]!.content, "slow follow-up");
-        assert.deepEqual(ticks, [created.id, created.id]);
+        assert.ok(ticks.every((id) => id === created.id));
       } finally {
         t.cleanup();
       }

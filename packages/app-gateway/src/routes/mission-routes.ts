@@ -43,9 +43,12 @@ import type {
   MissionStore,
   WorkItemStore,
 } from "@turnkeyai/core-types/mission";
+
+const MISSION_BACKGROUND_MIRROR_INTERVAL_MS = 1000;
 import type {
   RoleLoopRunner,
   RoleRunStore,
+  RuntimeProgressEvent,
   RuntimeProgressStore,
   TeamMessage,
   TeamMessageStore,
@@ -759,7 +762,7 @@ export async function handleMissionRoutes(input: {
         return true;
       }
       if (wantsPage) {
-        const rawEvents = await deps.activityStore.listByMission(id, {
+        const rawEvents = await loadMissionTimelineEvents(deps, id, {
           limit: limit + 1,
           ...(cursor ? { before: cursor } : {}),
         });
@@ -776,7 +779,7 @@ export async function handleMissionRoutes(input: {
       sendJson(
         res,
         200,
-        await deps.activityStore.listByMission(id, {
+        await loadMissionTimelineEvents(deps, id, {
           limit,
           ...(cursor ? { before: cursor } : {}),
         })
@@ -815,6 +818,323 @@ export async function handleMissionRoutes(input: {
   }
 
   return false;
+}
+
+async function loadMissionTimelineEvents(
+  deps: MissionRouteDeps,
+  missionId: string,
+  options?: { limit?: number; before?: { tMs: number; id: string } }
+): Promise<ActivityEvent[]> {
+  if (!deps.runtimeProgressStore) {
+    const activityEvents = await deps.activityStore.listByMission(missionId, options);
+    return pageTimelineEvents(orderTimelineEventsForDisplay(activityEvents), options);
+  }
+  const mission = await deps.missionStore.get(missionId);
+  if (!mission?.threadId) {
+    const activityEvents = await deps.activityStore.listByMission(missionId, options);
+    return pageTimelineEvents(orderTimelineEventsForDisplay(activityEvents), options);
+  }
+  const [activityEvents, progressEvents] = await Promise.all([
+    deps.activityStore.listByMission(missionId, options),
+    deps.runtimeProgressStore.listByThread(mission.threadId, 500),
+  ]);
+  const merged = [
+    ...activityEvents,
+    ...progressEvents.flatMap((event) => buildTimelineEventFromRuntimeProgress(missionId, event)),
+  ];
+  return pageTimelineEvents(orderTimelineEventsForDisplay(merged), options);
+}
+
+function pageTimelineEvents(
+  ordered: ActivityEvent[],
+  options?: { limit?: number; before?: { tMs: number; id: string } }
+): ActivityEvent[] {
+  const visible = options?.before
+    ? ordered.filter((event) => compareTimelineEventToCursor(event, options.before!) < 0)
+    : ordered;
+  if (typeof options?.limit === "number" && options.limit > 0) {
+    return visible.slice(-options.limit);
+  }
+  return visible;
+}
+
+function orderTimelineEventsForDisplay(events: ActivityEvent[]): ActivityEvent[] {
+  const toolCallAnchors = new Map<string, number>();
+  for (const event of events) {
+    const runtime = event.runtime;
+    const toolCallId = runtime?.toolCallId;
+    if (!toolCallId || runtime?.toolPhase !== "call") continue;
+    const current = toolCallAnchors.get(toolCallId);
+    if (current === undefined || event.tMs < current) {
+      toolCallAnchors.set(toolCallId, event.tMs);
+    }
+  }
+  return [...events].sort((left, right) => {
+    const leftKey = timelineDisplaySortKey(left, toolCallAnchors);
+    const rightKey = timelineDisplaySortKey(right, toolCallAnchors);
+    return (
+      leftKey.tMs - rightKey.tMs ||
+      leftKey.phaseRank - rightKey.phaseRank ||
+      left.tMs - right.tMs ||
+      left.id.localeCompare(right.id)
+    );
+  });
+}
+
+function timelineDisplaySortKey(
+  event: ActivityEvent,
+  toolCallAnchors: ReadonlyMap<string, number>
+): { tMs: number; phaseRank: number } {
+  const toolCallId = event.runtime?.toolCallId;
+  const anchorTMs = toolCallId ? toolCallAnchors.get(toolCallId) : undefined;
+  const phaseRank = timelineToolPhaseRank(event);
+  if (anchorTMs !== undefined && phaseRank > 0 && event.tMs <= anchorTMs) {
+    return { tMs: anchorTMs + phaseRank / 1000, phaseRank };
+  }
+  return { tMs: event.tMs, phaseRank };
+}
+
+function timelineToolPhaseRank(event: ActivityEvent): number {
+  const runtime = event.runtime;
+  if (runtime?.toolPhase === "call") return 0;
+  if (runtime?.toolPhase === "progress") return 1;
+  if (runtime?.eventType === "permission.query") return 2;
+  if (runtime?.eventType === "permission.result") return 3;
+  if (runtime?.eventType === "permission.applied") return 4;
+  if (runtime?.toolPhase === "result") return 9;
+  return 5;
+}
+
+function buildTimelineEventFromRuntimeProgress(
+  missionId: string,
+  event: RuntimeProgressEvent
+): ActivityEvent[] {
+  const toolName = readRuntimeProgressToolName(event);
+  if (!shouldExposeRuntimeProgressOnTimeline(event, toolName)) {
+    return [];
+  }
+  const display = displayRuntimeProgressEvent(event, toolName);
+  const runtime: Record<string, string> = {
+    activitySourceId: `runtime-progress:${event.progressId}`,
+    progressId: event.progressId,
+    runtimeSource: "runtime_progress",
+    progressPhase: event.phase,
+    subjectKind: event.subjectKind,
+    subjectId: event.subjectId,
+  };
+  if (event.chainId) runtime.chainId = event.chainId;
+  if (event.spanId) runtime.spanId = event.spanId;
+  if (event.parentSpanId) runtime.parentSpanId = event.parentSpanId;
+  if (event.flowId) runtime.flowId = event.flowId;
+  if (event.taskId) runtime.taskId = event.taskId;
+  if (event.roleId) runtime.teamRole = event.roleId;
+  if (event.workerType) runtime.workerType = event.workerType;
+  if (toolName) runtime.toolName = toolName;
+  const toolCallId = readStringFromRecord(event.metadata, "toolCallId");
+  if (toolCallId) runtime.toolCallId = toolCallId;
+  const detail = readRecordFromRecord(event.metadata, "detail");
+  const sessionKey = readStringFromRecord(detail, "session_key");
+  if (sessionKey) runtime.sessionKey = sessionKey;
+  const browserSessionId = event.artifacts?.browserSessionId;
+  if (browserSessionId) runtime.browserSessionId = browserSessionId;
+
+  return [
+    {
+      id: `runtime-progress:${event.progressId}`,
+      missionId,
+      tMs: event.recordedAt,
+      kind: display.kind,
+      actor: display.actor,
+      text: display.text,
+      tags: [
+        "runtime-progress",
+        display.kind,
+        ...(toolName ? [toolName] : []),
+        event.phase,
+      ],
+      runtime,
+      ...(event.phase === "completed" ? { emph: "success" as const } : {}),
+      ...(event.phase === "failed" || event.phase === "cancelled" ? { emph: "danger" as const } : {}),
+    },
+  ];
+}
+
+function shouldExposeRuntimeProgressOnTimeline(event: RuntimeProgressEvent, toolName: string | null): boolean {
+  if (event.progressId.includes("session-memory") || event.summary.startsWith("Session memory ")) {
+    return false;
+  }
+  if (event.summary.startsWith("Scheduled session memory ")) {
+    return false;
+  }
+  if (event.summary.startsWith("Provider tool protocol round")) {
+    return false;
+  }
+  if (event.progressKind === "heartbeat" && event.heartbeatSource === "long_running_tick") {
+    return false;
+  }
+  if (event.subjectKind === "worker_run") {
+    return (
+      event.phase === "started" ||
+      event.phase === "completed" ||
+      event.phase === "failed" ||
+      event.phase === "cancelled"
+    );
+  }
+  if (event.subjectKind === "dispatch") {
+    return (
+      event.statusReason === "dispatch_handoff_queued" ||
+      event.statusReason === "dispatch_role_inbox_accepted" ||
+      event.statusReason === "dispatch_role_loop_signaled"
+    );
+  }
+  if (toolName) {
+    if (toolName.startsWith("browser_")) {
+      return isUsefulBrowserToolSummary(event.summary);
+    }
+    return event.summary.startsWith("Tool call started:") || event.summary.startsWith("Tool call completed:");
+  }
+  if (event.subjectKind === "role_run") {
+    return (
+      event.phase === "started" ||
+      event.phase === "completed" ||
+      event.statusReason === "role_loop_dequeued" ||
+      event.statusReason === "role_loop_hydrated"
+    );
+  }
+  return false;
+}
+
+function displayRuntimeProgressEvent(
+  event: RuntimeProgressEvent,
+  toolName: string | null
+): { kind: ActivityEvent["kind"]; actor: string; text: string } {
+  if (event.subjectKind === "worker_run") {
+    const worker = event.workerType ?? "worker";
+    return {
+      kind: worker === "browser" ? "browser" : "tool",
+      actor: worker === "browser" ? "browser" : event.roleId ?? "role-lead",
+      text: humanizeWorkerProgress(event, worker),
+    };
+  }
+  if (event.subjectKind === "dispatch") {
+    return {
+      kind: "thought",
+      actor: event.roleId ?? "role-lead",
+      text: humanizeDispatchProgress(event),
+    };
+  }
+  if (toolName) {
+    return {
+      kind: toolName.startsWith("browser_") ? "browser" : "tool",
+      actor: event.roleId ?? "role-lead",
+      text: humanizeToolProgress(event, toolName),
+    };
+  }
+  return {
+    kind: "thought",
+    actor: event.roleId ?? "role-lead",
+    text: humanizeRoleProgress(event),
+  };
+}
+
+function humanizeRoleProgress(event: RuntimeProgressEvent): string {
+  switch (event.statusReason) {
+    case "role_loop_dequeued":
+      return "Lead picked up the task.";
+    case "role_loop_hydrated":
+      return "Lead prepared the task context.";
+    default:
+      if (event.phase === "started") return "Lead started working.";
+      if (event.phase === "completed") return "Lead finished this turn.";
+      return event.summary;
+  }
+}
+
+function humanizeDispatchProgress(event: RuntimeProgressEvent): string {
+  const role = event.roleId ?? "Lead";
+  switch (event.statusReason) {
+    case "dispatch_handoff_queued":
+      return `Queued the task for ${role}.`;
+    case "dispatch_role_inbox_accepted":
+      return `${role} accepted the task.`;
+    case "dispatch_role_loop_signaled":
+      return `Woke ${role} to start work.`;
+    default:
+      return event.summary;
+  }
+}
+
+function humanizeToolProgress(event: RuntimeProgressEvent, toolName: string): string {
+  if (event.summary.startsWith("Browser observed") || event.summary.startsWith("Browser failure")) {
+    return event.summary;
+  }
+  if (event.phase === "started") return `Started ${toolName}.`;
+  if (event.phase === "completed") return `Completed ${toolName}.`;
+  if (event.phase === "failed") return `${toolName} failed.`;
+  if (event.phase === "cancelled") return `${toolName} was cancelled.`;
+  return event.summary;
+}
+
+function humanizeWorkerProgress(event: RuntimeProgressEvent, worker: string): string {
+  if (event.phase === "started") return `${labelWorker(worker)} started.`;
+  if (event.phase === "completed") return event.summary;
+  if (event.phase === "failed") return `${labelWorker(worker)} failed.`;
+  if (event.phase === "cancelled") return `${labelWorker(worker)} was cancelled.`;
+  return event.summary;
+}
+
+function labelWorker(worker: string): string {
+  if (worker === "explore") return "Research worker";
+  if (worker === "browser") return "Browser worker";
+  return `${worker} worker`;
+}
+
+function isUsefulBrowserToolSummary(summary: string): boolean {
+  return (
+    summary.startsWith("Tool call started: browser_") ||
+    summary.startsWith("Tool call completed: browser_") ||
+    summary.startsWith("Browser observed") ||
+    summary.startsWith("Browser failure")
+  );
+}
+
+function readRuntimeProgressToolName(event: RuntimeProgressEvent): string | null {
+  const toolName = readStringFromRecord(event.metadata, "toolName");
+  if (toolName) return toolName;
+  const toolNames = readArrayFromRecord(event.metadata, "toolNames").filter(
+    (item): item is string => typeof item === "string"
+  );
+  return toolNames.length === 1 ? toolNames[0]! : null;
+}
+
+function readRecordFromRecord(value: unknown, key: string): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = (value as Record<string, unknown>)[key];
+  return item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : null;
+}
+
+function readStringFromRecord(value: unknown, key: string): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = (value as Record<string, unknown>)[key];
+  return typeof item === "string" && item.trim().length > 0 ? item : null;
+}
+
+function readArrayFromRecord(value: unknown, key: string): unknown[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const item = (value as Record<string, unknown>)[key];
+  return Array.isArray(item) ? item : [];
+}
+
+function compareTimelineEvents(left: ActivityEvent, right: ActivityEvent): number {
+  return compareTimelineEventToCursor(left, { tMs: right.tMs, id: right.id });
+}
+
+function compareTimelineEventToCursor(
+  event: ActivityEvent,
+  cursor: { tMs: number; id: string }
+): number {
+  if (event.tMs !== cursor.tMs) return event.tMs - cursor.tMs;
+  return event.id.localeCompare(cursor.id);
 }
 
 async function cancelMissionRuntime(input: {
@@ -996,10 +1316,17 @@ function startMissionInBackground(input: {
       // Keep mission creation fast. The first user turn wakes the
       // coordination engine, which may call a real LLM or tool and must
       // not hold the "Create mission" request open.
-      await input.orchestrator.postUserMessage({
+      const postPromise = input.orchestrator.postUserMessage({
         threadId: input.threadId,
         content: input.content,
       });
+      const mirrorLoop = mirrorMissionWhilePostRuns({
+        orchestrator: input.orchestrator,
+        missionId: input.mission.id,
+        label: "initial",
+      });
+      await postPromise;
+      await mirrorLoop.stopAndFlush();
       await input.orchestrator.threadBridge.tickMission(input.mission.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1050,10 +1377,17 @@ function startMissionFollowUpInBackground(input: {
 }): void {
   void (async () => {
     try {
-      await input.orchestrator.postUserMessage({
+      const postPromise = input.orchestrator.postUserMessage({
         threadId: input.threadId,
         content: input.content,
       });
+      const mirrorLoop = mirrorMissionWhilePostRuns({
+        orchestrator: input.orchestrator,
+        missionId: input.mission.id,
+        label: "follow-up",
+      });
+      await postPromise;
+      await mirrorLoop.stopAndFlush();
       await input.orchestrator.threadBridge.tickMission(input.mission.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1093,6 +1427,44 @@ function startMissionFollowUpInBackground(input: {
       }
     }
   })();
+}
+
+function mirrorMissionWhilePostRuns(input: {
+  orchestrator: MissionOrchestratorDeps;
+  missionId: string;
+  label: string;
+}): { stopAndFlush(): Promise<void> } {
+  let stopped = false;
+  let inFlight: Promise<void> | null = null;
+  const tick = async () => {
+    try {
+      await input.orchestrator.threadBridge.tickMission(input.missionId);
+    } catch (error) {
+      console.warn("mission background mirror tick failed", {
+        missionId: input.missionId,
+        label: input.label,
+        error,
+      });
+    }
+  };
+  const interval = setInterval(() => {
+    if (stopped || inFlight) return;
+    inFlight = tick().finally(() => {
+      inFlight = null;
+    });
+  }, MISSION_BACKGROUND_MIRROR_INTERVAL_MS);
+  interval.unref?.();
+  inFlight = tick().finally(() => {
+    inFlight = null;
+  });
+  return {
+    async stopAndFlush() {
+      stopped = true;
+      clearInterval(interval);
+      await inFlight;
+      await tick();
+    },
+  };
 }
 
 function startApprovalDecisionContinuationInBackground(input: {
@@ -1149,7 +1521,7 @@ function buildApprovalDecisionContinuationMessage(input: {
   const outcome =
     input.decision === "approved"
       ? input.permissionApplied
-        ? "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied. Do not call permission tools again. Continue from the approved point: perform only the approved scoped action now and verify the result before the final answer."
+        ? "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied. Do not call permission tools again. Continue from the approved point: call sessions_spawn with agent_id=\"browser\" and a self-contained task to perform only the approved scoped action now. Verify the browser result before the final answer, and do not finalize with a pending-approval summary."
         : "The operator approved it. Continue from the paused approval point: call permission_result for this approval_id, call permission_applied, then perform only the approved scoped action."
       : [
           "The operator denied it.",

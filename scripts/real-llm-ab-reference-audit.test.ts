@@ -24,6 +24,25 @@ test("real LLM A/B reference audit parses args and help", () => {
       "--reference-dir",
       "/tmp/reference",
       "--suite",
+      "report-scenarios",
+      "--out",
+      "/tmp/audit.json",
+    ]),
+    {
+      naturalReportPath: "/tmp/natural.json",
+      referenceDir: "/tmp/reference",
+      suite: "report-scenarios",
+      outPath: "/tmp/audit.json",
+      check: false,
+    }
+  );
+  assert.deepEqual(
+    parseRealLlmAbReferenceAuditArgs([
+      "--natural-report",
+      "/tmp/natural.json",
+      "--reference-dir",
+      "/tmp/reference",
+      "--suite",
       "browser-focused",
       "--out",
       "/tmp/audit.json",
@@ -79,6 +98,31 @@ test("real LLM A/B reference audit passes only validated reference artifacts", (
       report.scenarios.map((scenario) => scenario.comparisonClassification),
       ["validated_comparison", "validated_comparison"]
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B reference audit supports report-scenarios without fixed suite coverage", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-audit-"));
+  try {
+    const fixture = writeFixture(dir);
+    const report = buildRealLlmAbReferenceAuditReport({
+      naturalReportPath: fixture.naturalReportPath,
+      referenceDir: fixture.referenceDir,
+      suite: "report-scenarios",
+      outPath: path.join(dir, "audit.json"),
+      generatedAtMs: 1,
+    });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.suite, "report-scenarios");
+    assert.equal(report.validatedComparisons, SCENARIOS.length);
+    assert.deepEqual(
+      report.scenarios.map((scenario) => scenario.scenarioId),
+      [...SCENARIOS]
+    );
+    assert.deepEqual(report.collectionTasks, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -354,17 +398,20 @@ function promptForScenario(scenario: string): string {
 function buildReferenceProvenance(prompt: string): Record<string, unknown> {
   return {
     provenance: {
-      referenceApp: "reference-workbench-fixture",
-      referenceBinary: "/tmp/reference-workbench-fixture",
-      referenceRepoPath: "/tmp/reference-workbench",
-      referenceVersion: "test",
-      referenceCommit: "0000000",
+      referenceApp: "accio-work-app-asar",
+      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
+      referenceRepoPath: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
+      referenceRuntimeRoot: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
+      referenceVersion: "0.4.5",
+      referenceCommit: "app.asar:test-sha",
       daemonUrl: "http://127.0.0.1:1",
-      apiEndpoint: "/messages",
-      modelCatalog: "models.test.json",
-      provider: "test-provider",
-      modelId: "test-model",
-      exactRequestPayload: { prompt },
+      apiEndpoint: "/websocket/connect",
+      modelCatalog: {
+        data: [{ provider: "minimax", modelList: [{ modelName: "MiniMax-M2.7-highspeed", isDefault: true }] }],
+      },
+      provider: "minimax",
+      modelId: "MiniMax-M2.7-highspeed",
+      exactRequestPayload: { transport: "accio-work-websocket-sendQuery", prompt },
       rawResponse: { finalText: "Reference completed the browser task with rendered evidence." },
       rawTranscript: { messages: [{ role: "user", content: prompt }] },
       rawToolCalls: [{ name: "browser_open" }],

@@ -60,7 +60,7 @@ export interface RecoveryCase {
   runtime: { transport: string; lastError: string; peer: string };
 }
 
-// ── Agent Connect presets ─────────────────────────────────────────────
+// ── Connection presets: external agent clients only ───────────────────
 export interface AgentPreset {
   id: string;
   name: string;
@@ -628,7 +628,6 @@ const RAW_MOCK = {
   presets: [
     { id: "claude-code", name: "Claude Code", note: "Local · operator scope", state: "connected", color: "info" },
     { id: "codex", name: "Codex (OpenAI)", note: "Local CLI bridge · operator", state: "connected", color: "accent" },
-    { id: "comet", name: "Comet", note: "Browser native · relay", state: "ready", color: "success" },
     { id: "kimi", name: "Kimi (Moonshot)", note: "OpenAPI client", state: "connected", color: "success" },
     { id: "custom", name: "Custom OpenAPI client", note: "Token-based · operator", state: "not-connected", color: "muted" },
   ],

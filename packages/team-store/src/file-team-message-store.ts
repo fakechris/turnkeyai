@@ -62,24 +62,38 @@ export class FileTeamMessageStore implements TeamMessageStore {
   }
 
   private async appendUnlocked(message: TeamMessage, existingProjection?: TeamMessage | null): Promise<void> {
-    const entryPath = this.entryFilePath(message.threadId, message);
     const byIdPath = this.byIdFilePath(message.id);
     const projection =
       existingProjection !== undefined ? existingProjection : await readJsonFile<TeamMessage>(byIdPath);
-    const shouldUpdateProjection = !projection || message.updatedAt >= projection.updatedAt;
+    const normalizedMessage =
+      projection?.threadId === message.threadId && message.createdAt !== projection.createdAt
+        ? { ...message, createdAt: projection.createdAt }
+        : message;
+    const entryPath = this.entryFilePath(normalizedMessage.threadId, normalizedMessage);
+    if (projection?.threadId === normalizedMessage.threadId && normalizedMessage.updatedAt < projection.updatedAt) {
+      return;
+    }
+    const shouldUpdateProjection = !projection || normalizedMessage.updatedAt >= projection.updatedAt;
+    const supersededEntryPath =
+      shouldUpdateProjection && projection?.threadId === normalizedMessage.threadId
+        ? this.entryFilePath(projection.threadId, projection)
+        : null;
 
     let entryWritten = false;
     try {
-      await writeJsonFileAtomic(entryPath, message);
+      await writeJsonFileAtomic(entryPath, normalizedMessage);
       entryWritten = true;
       if (shouldUpdateProjection) {
-        await writeJsonFileAtomic(byIdPath, message);
+        await writeJsonFileAtomic(byIdPath, normalizedMessage);
       }
     } catch (error) {
       if (entryWritten) {
         await removeFileIfExists(entryPath);
       }
       throw error;
+    }
+    if (supersededEntryPath && supersededEntryPath !== entryPath) {
+      await removeFileIfExists(supersededEntryPath);
     }
   }
 

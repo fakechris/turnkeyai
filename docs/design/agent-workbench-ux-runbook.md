@@ -1,7 +1,7 @@
 # Agent Workbench UX Runbook
 
 > Status: current product UX runbook
-> Updated: 2026-05-30
+> Updated: 2026-06-08
 > Scope: Control Center pages, mission replay order, quality-gate handling, approvals, context sources, runtime diagnostics, and local entry
 
 ## Purpose
@@ -9,6 +9,31 @@
 TurnkeyAI should feel like a mission workbench, not a browser dashboard. The
 Workbench exists so a user can start a goal, watch agent work, approve risky
 steps, inspect evidence, and understand why a task is done or needs attention.
+
+## Product Mental Model
+
+The UI follows the same high-level product logic observed in the installed
+Accio Work reference: users should see work, teams, permissions, context, and
+replay first; prompt harnesses, tool schemas, browser relay, and daemon
+diagnostics are supporting runtime layers. The Control Center must not expose
+implementation modules as if they were peer user choices.
+
+The core object model is:
+
+| Object | User meaning | UI home |
+| --- | --- | --- |
+| Mission | A goal with trace, evidence, approvals, final answer, and follow-up. | Missions / Mission Detail |
+| Agent / worker | Internal role or worker participating in a mission. | Agents |
+| Context source | Evidence or source material a mission can use. | Context |
+| Setup path | How the user wants to use TurnkeyAI: in this app, from another AI app, or with browser access. | Setup |
+| Browser access | Chrome, Comet, Edge, or Chromium helper used only when missions need logged-in pages or browser evidence. | Setup |
+| Diagnostics | Daemon health, transport state, logs, replay, acceptance gates, and recovery. | Diagnostics |
+| Models | Model catalog, policy defaults, identity, auth hints, and local paths. | Models |
+
+The default setup path is always "start a mission in this app." External AI
+apps and browser access are optional branches. Browser targets and agent
+clients are opposite ends of the daemon flow; they must never be rendered as one
+preset list.
 
 ## Entry Points
 
@@ -37,15 +62,15 @@ fragment. A bare `/app` URL is expected to show the `Auth token required` page.
 
 | Page | Route | Responsibility |
 | --- | --- | --- |
-| First Run | `#/onboarding` | Setup state, model readiness, browser transport, and initial product orientation. |
+| First Run | `#/onboarding` | One-time readiness checks before real missions. |
 | Missions | `#/missions` | Create, find, and resume mission-level work. |
 | Mission Detail | `#/mission/:id` | Primary workbench: trace, evidence, final answer, approvals, sessions, context, quality, and follow-up. |
 | Approvals | `#/approvals` | Cross-mission operator decisions for governed actions. |
 | Agents | `#/agents` | Agent roster, capability summaries, and assignment visibility. |
 | Context | `#/context` | Browser, document, file, and manual context source management. |
-| Agent Connect | `#/agent-connect` | External agent endpoint/token setup and capability hints. |
-| Runtime | `#/runtime` | Daemon health, mission health, browser/runtime diagnostics, logs, and release acceptance state. |
-| Settings | `#/settings` | Model catalog, browser bridge setup health, data paths, auth hints, and policy/config surfaces. |
+| Setup | `#/agent-connect` | Human-facing setup path: start here, connect another AI app, or add browser access. |
+| Diagnostics | `#/runtime` | Daemon health, mission health, browser/runtime diagnostics, logs, and release acceptance state. |
+| Models | `#/settings` | Model catalog, policy defaults, identity, data paths, auth hints, and local config surfaces. |
 
 ## Mission Detail Order
 
@@ -131,11 +156,11 @@ Mission Detail should show:
 - residual risk when evidence is incomplete or time-bounded
 
 Browser activity appears as mission evidence and trace events. Browser/CDP
-transport details stay secondary unless the user opens Runtime diagnostics.
+transport details stay secondary unless the user opens Diagnostics.
 
-## Runtime Page
+## Diagnostics Page
 
-Runtime is the operator page. It should answer:
+Diagnostics is the operator page. It should answer:
 
 - Is the daemon healthy?
 - Is auth configured?
@@ -151,22 +176,35 @@ Runtime is the operator page. It should answer:
 The Reconcile action is safe operator tooling for forcing mission/thread mirror
 passes when historical data or background runs need cleanup.
 
-## Settings Page
+## Setup Page
 
-Settings is the configuration-oriented companion to Runtime. It should answer:
+Setup is not a runtime map. It should answer one user question first:
+
+- How do I start using TurnkeyAI?
+
+Required IA:
+
+- First visible path: "Use this app" with a primary action to start a mission.
+- Optional branch: "Use another AI app" with endpoint and token fields.
+- Optional branch: "Use a browser" with helper install/load steps.
+- Advanced status stays behind disclosure, not in the default viewport.
+- Comet appears only as a browser choice, never as an AI app.
+- Capability display is diagnostic detail: if a tool cannot execute, the UI and
+  prompt-visible surface should not advertise it, but this contract should not
+  dominate the human setup flow.
+
+## Models Page
+
+Models is the configuration-oriented companion to Diagnostics. It should answer:
 
 - Which model chain will production missions use?
-- Is the browser bridge route configured and healthy?
-- Is the direct-CDP expert lane available, optional, or blocked by missing
-  endpoint setup?
-- Did recent browser work fall back because a persistent browser profile was
-  locked?
+- Which policy defaults and auth mode are in effect?
 - Which local validation commands should an operator run before trusting
-  browser-backed missions?
+  production missions?
+- Where are local data, config, logs, and model catalog files?
 
-Settings may show browser readiness from `/bridge/status` and
-`/diagnostics.readiness`, but it should not introduce transport mutation
-shortcuts until daemon-side admin-gated config routes exist.
+Models should not teach browser setup. That belongs to Setup.
+Models should not become a diagnostics dashboard. That belongs to Diagnostics.
 
 ## Smoke Coverage
 
@@ -179,7 +217,7 @@ shortcuts until daemon-side admin-gated config routes exist.
 - markdown rendering
 - desktop and mobile non-overlap
 - quality-gate status, detail, and follow-up guidance
-- approvals, context attach, settings model/browser health, runtime health, and
+- approvals, context attach, model readiness, diagnostics health, and
   reconcile action
 
 Run this before merging Control Center UX changes. Add assertions when a new

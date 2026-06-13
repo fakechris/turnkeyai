@@ -65,57 +65,57 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "parallel-governance-contract-dedupes-retried-audits-by-case"));
 });
 
-test("bounded regression harness runs all built-in cases", () => {
-  const result = runBoundedRegressionSuite();
+test("bounded regression harness runs all built-in cases", async () => {
+  const result = await runBoundedRegressionSuite();
   assert.equal(result.failedCases, 0);
   assert.equal(result.passedCases, result.totalCases);
 });
 
-test("bounded regression harness can filter cases", () => {
-  const result = runBoundedRegressionSuite(["recovery-fallback-downgrade"]);
+test("bounded regression harness can filter cases", async () => {
+  const result = await runBoundedRegressionSuite(["recovery-fallback-downgrade"]);
   assert.equal(result.totalCases, 1);
   assert.equal(result.results[0]?.caseId, "recovery-fallback-downgrade");
   assert.equal(result.results[0]?.status, "passed");
 });
 
-test("bounded regression harness can run the browser continuity case directly", () => {
-  const result = runBoundedRegressionSuite(["browser-recovery-cold-reopen-outcome"]);
+test("bounded regression harness can run the browser continuity case directly", async () => {
+  const result = await runBoundedRegressionSuite(["browser-recovery-cold-reopen-outcome"]);
   assert.equal(result.totalCases, 1);
   assert.equal(result.results[0]?.status, "passed");
 });
 
-test("bounded regression harness can run replay console browser continuity counts", () => {
-  const result = runBoundedRegressionSuite(["replay-console-browser-continuity-counts"]);
+test("bounded regression harness can run replay console browser continuity counts", async () => {
+  const result = await runBoundedRegressionSuite(["replay-console-browser-continuity-counts"]);
   assert.equal(result.totalCases, 1);
   assert.equal(result.results[0]?.status, "passed");
 });
 
-test("bounded regression harness can run the browser continuity long-chain case", () => {
-  const result = runBoundedRegressionSuite(["browser-continuity-hot-detach-reclaim-cold-reopen"]);
+test("bounded regression harness can run the browser continuity long-chain case", async () => {
+  const result = await runBoundedRegressionSuite(["browser-continuity-hot-detach-reclaim-cold-reopen"]);
   assert.equal(result.totalCases, 1);
   assert.equal(result.results[0]?.status, "passed");
 });
 
-test("bounded regression harness can run replay console workflow surface case", () => {
-  const result = runBoundedRegressionSuite(["replay-console-surfaces-workflow-state"]);
+test("bounded regression harness can run replay console workflow surface case", async () => {
+  const result = await runBoundedRegressionSuite(["replay-console-surfaces-workflow-state"]);
   assert.equal(result.totalCases, 1);
   assert.equal(result.results[0]?.status, "passed");
 });
 
-test("bounded regression harness can run relay workflow-log surface case", () => {
-  const result = runBoundedRegressionSuite(["relay-recovery-workflow-log-surfaces-peer-diagnostics"]);
+test("bounded regression harness can run relay workflow-log surface case", async () => {
+  const result = await runBoundedRegressionSuite(["relay-recovery-workflow-log-surfaces-peer-diagnostics"]);
   assert.equal(result.totalCases, 1);
   assert.equal(result.results[0]?.status, "passed");
 });
 
-test("bounded regression harness can run direct-cdp workflow-log surface case", () => {
-  const result = runBoundedRegressionSuite(["direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics"]);
+test("bounded regression harness can run direct-cdp workflow-log surface case", async () => {
+  const result = await runBoundedRegressionSuite(["direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics"]);
   assert.equal(result.totalCases, 1);
   assert.equal(result.results[0]?.status, "passed");
 });
 
-test("bounded regression harness can run governance and parallel operator cases", () => {
-  const result = runBoundedRegressionSuite([
+test("bounded regression harness can run governance and parallel operator cases", async () => {
+  const result = await runBoundedRegressionSuite([
     "parallel-flow-summary-highlights-shard-issues",
     "parallel-flow-summary-clears-attention-after-retry",
     "governance-summary-highlights-browser-fallback",
@@ -132,8 +132,8 @@ test("bounded regression harness can run governance and parallel operator cases"
   assert.equal(result.failedCases, 0);
 });
 
-test("bounded regression harness can run extended parallel and recovery chain cases", () => {
-  const result = runBoundedRegressionSuite([
+test("bounded regression harness can run extended parallel and recovery chain cases", async () => {
+  const result = await runBoundedRegressionSuite([
     "replay-bundle-exposes-recovery-operator-gate",
     "parallel-follow-up-summary-stays-open",
     "parallel-follow-up-summary-closes-after-recovery",
@@ -149,8 +149,8 @@ test("bounded regression harness can run extended parallel and recovery chain ca
   assert.equal(result.failedCases, 0);
 });
 
-test("bounded regression harness can run runtime validation cases", () => {
-  const result = runBoundedRegressionSuite([
+test("bounded regression harness can run runtime validation cases", async () => {
+  const result = await runBoundedRegressionSuite([
     "runtime-summary-aligns-manual-recovery-and-operator-attention",
     "runtime-summary-keeps-browser-recovered-chain-active",
     "runtime-summary-preserves-reconnect-window-before-stale",
@@ -174,8 +174,8 @@ test("bounded regression harness can run runtime validation cases", () => {
   assert.equal(result.failedCases, 0);
 });
 
-test("bounded regression harness can run scenario-parity governance and parallel cases", () => {
-  const result = runBoundedRegressionSuite([
+test("bounded regression harness can run scenario-parity governance and parallel cases", async () => {
+  const result = await runBoundedRegressionSuite([
     "parallel-three-shard-success-ready-to-merge",
     "parallel-flow-summary-clears-attention-after-retry",
     "parallel-flow-summary-highlights-shard-issues",
@@ -193,8 +193,8 @@ test("bounded regression harness can run scenario-parity governance and parallel
   assert.equal(result.failedCases, 0);
 });
 
-test("bounded regression harness can run phase1 closure cases", () => {
-  const result = runBoundedRegressionSuite([
+test("bounded regression harness can run phase1 closure cases", async () => {
+  const result = await runBoundedRegressionSuite([
     "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
     "transport-soak-validation-ops-surfaces-target-buckets",
     "operator-case-semantics-separate-active-manual-from-resolved-recent",

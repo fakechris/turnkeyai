@@ -62,6 +62,7 @@ interface MissionE2eReportShape {
 
 interface NaturalScenarioReportShape {
   scenario?: unknown;
+  prompt?: unknown;
   natural?: {
     status?: unknown;
     completed?: unknown;
@@ -100,6 +101,13 @@ interface NaturalScenarioReportShape {
     failureBuckets?: unknown;
   };
   metrics?: MissionScenarioReportShape["metrics"];
+  final?: {
+    text?: unknown;
+    excerpt?: unknown;
+  };
+  evidenceReplay?: {
+    finalText?: unknown;
+  };
 }
 
 const NATURAL_DIMENSION_SCORE_KEYS = [
@@ -407,9 +415,10 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
     };
   }
 
-  return scenarios.reduce<NaturalMissionReportSummary>(
+  const summary = scenarios.reduce<NaturalMissionReportSummary>(
     (summary, scenario) => {
-      const passing = scenario.natural?.status === "passed";
+      const replayFindings = auditNaturalScenarioReplayEvidence(scenario);
+      const passing = scenario.natural?.status === "passed" && replayFindings.length === 0;
       const scenarioId = readString(scenario.scenario);
       if (scenarioId) (summary.scenarioIds ??= []).push(scenarioId);
       summary.passedScenarios += passing ? 1 : 0;
@@ -461,7 +470,10 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       summary.dimensionScoreMax = (summary.dimensionScoreMax ?? 0) + NATURAL_DIMENSION_SCORE_KEYS.length * 2;
       summary.lowDimensionScores =
         (summary.lowDimensionScores ?? 0) + NATURAL_DIMENSION_SCORE_KEYS.filter((key) => dimensionScores[key] < 2).length;
-      summary.failureBuckets = mergeStringSet(summary.failureBuckets, failureBuckets);
+      summary.failureBuckets = mergeStringSet(
+        summary.failureBuckets,
+        replayFindings.length > 0 ? [...failureBuckets, "evidence_replay"] : failureBuckets
+      );
       if (scenarioId) {
         const sourceCoverage = scenario.natural?.sourceCoverage;
         (summary.scenarioProofs ??= []).push({
@@ -498,6 +510,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
           sourceEvidencePatternsMissing: readArrayLength(sourceCoverage?.evidencePatterns?.missing),
           dimensionScores,
           failureBuckets,
+          ...(replayFindings.length > 0 ? { replayFindings } : {}),
         });
       }
       return summary;
@@ -555,6 +568,10 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       scenarioProofs: [],
     }
   );
+  return {
+    ...summary,
+    status: summary.failedScenarios === 0 && summary.passedScenarios === summary.scenarioCount ? "passed" : "failed",
+  };
 }
 
 function isMissionE2eReportShape(value: unknown): value is MissionE2eReportShape {
@@ -647,6 +664,59 @@ function isToolUseScenarioReportShape(value: unknown): value is ToolUseScenarioR
   return typeof value === "object" && value !== null;
 }
 
+function auditNaturalScenarioReplayEvidence(scenario: NaturalScenarioReportShape): string[] {
+  if (!naturalScenarioRequiresBrowserFailureCloseout(scenario)) {
+    return [];
+  }
+
+  const browserFailureBuckets = readBrowserFailureBucketNames(scenario.metrics?.browser?.failureBuckets);
+  if (browserFailureBuckets.length === 0) {
+    return [];
+  }
+
+  const finalText = readNaturalScenarioFinalText(scenario);
+  if (!finalText) {
+    return [
+      `natural replay evidence missing full final text for browser failure closeout audit: ${browserFailureBuckets.join(", ")}`,
+    ];
+  }
+
+  if (!recoverableBrowserFailureCloseoutVisible(finalText)) {
+    return [
+      `natural replay final answer omitted required browser failure closeout: ${browserFailureBuckets.join(", ")}`,
+    ];
+  }
+  return [];
+}
+
+function naturalScenarioRequiresBrowserFailureCloseout(scenario: NaturalScenarioReportShape): boolean {
+  const prompt = readString(scenario.prompt);
+  if (!prompt) {
+    return false;
+  }
+  return (
+    /\b(?:transport_failure|lease conflict|result truncation|snapshot truncation|browser transport degradation)\b/i.test(
+      prompt
+    ) &&
+    /\b(?:explicitly name|state what evidence was recovered|what remains unverified|retry or continue|how to continue)\b/i.test(
+      prompt
+    )
+  );
+}
+
+function readNaturalScenarioFinalText(scenario: NaturalScenarioReportShape): string | null {
+  return readString(scenario.evidenceReplay?.finalText) ?? readString(scenario.final?.text);
+}
+
+function recoverableBrowserFailureCloseoutVisible(finalText: string): boolean {
+  return (
+    /\b(?:transport_failure|lease conflict|result truncation|snapshot truncation|browser transport degradation)\b/i.test(
+      finalText
+    ) &&
+    /\b(?:recovered|verified|evidence|unverified|not verified|retry|continue|next)\b/i.test(finalText)
+  );
+}
+
 function readNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
 }
@@ -693,6 +763,20 @@ function readBrowserFailureBucketCount(value: unknown): number {
     }
     return total + readNumber((item as { count?: unknown }).count);
   }, 0);
+}
+
+function readBrowserFailureBucketNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const buckets = value.flatMap((item) => {
+    if (typeof item !== "object" || item === null) {
+      return [];
+    }
+    const bucket = readString((item as { bucket?: unknown }).bucket);
+    return bucket && readNumber((item as { count?: unknown }).count) > 0 ? [bucket] : [];
+  });
+  return [...new Set(buckets)].sort();
 }
 
 function readQualityChecks(value: unknown): Array<{ name: string; status: string }> {

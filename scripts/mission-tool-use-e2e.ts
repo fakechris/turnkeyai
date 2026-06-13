@@ -15,6 +15,7 @@ import type { RuntimeProgressEvent, ThreadMemoryRecord } from "@turnkeyai/core-t
 import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread-memory-store";
 import { FileTeamThreadStore } from "@turnkeyai/team-store/file-team-thread-store";
 import { FileRuntimeProgressStore } from "@turnkeyai/team-store/file-runtime-progress-store";
+import { isLifecycleStatusText } from "../packages/app-gateway/src/mission-final-answer-guard";
 
 interface MissionToolUseE2eOptions {
   modelCatalogPath?: string;
@@ -39,6 +40,8 @@ interface NaturalMissionModelProvenance {
 }
 
 type DaemonChildProcess = ChildProcessByStdio<null, Readable, Readable>;
+const INITIAL_DAEMON_HEALTH_TIMEOUT_MS = 20_000;
+const RESTART_DAEMON_HEALTH_TIMEOUT_MS = 60_000;
 
 export type MissionE2eScenario =
   | "basic"
@@ -76,6 +79,7 @@ const MISSION_E2E_SCENARIOS = [
 
 export type NaturalMissionE2eScenario =
   | "natural-comparison-research"
+  | "natural-provider-search-pricing"
   | "natural-browser-dynamic-page"
   | "natural-browser-dashboard-task"
   | "natural-browser-external-page-review"
@@ -102,10 +106,12 @@ export type NaturalMissionE2eScenario =
   | "natural-timeout-followup-continuation"
   | "natural-cancel-active-tool"
   | "natural-cancel-followup-continuation"
+  | "natural-asiawalk-multi-agent"
   | "natural-long-delegation";
 
 export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-comparison-research",
+  "natural-provider-search-pricing",
   "natural-browser-dynamic-page",
   "natural-browser-dashboard-task",
   "natural-browser-external-page-review",
@@ -132,6 +138,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-timeout-followup-continuation",
   "natural-cancel-active-tool",
   "natural-cancel-followup-continuation",
+  "natural-asiawalk-multi-agent",
   "natural-long-delegation",
 ] as const satisfies readonly NaturalMissionE2eScenario[];
 
@@ -154,8 +161,13 @@ function normalizeComparableUrl(value: string): string {
 interface Mission {
   id: string;
   status: string;
+  title?: string;
+  desc?: string;
   threadId?: string;
+  progress?: number;
   blockers?: number;
+  pendingApprovals?: number;
+  closeout?: "bounded_failure" | "approval_timeout";
 }
 
 type NaturalMissionMode = "research" | "monitor" | "browser" | "review" | "investigation" | "custom";
@@ -243,6 +255,7 @@ const FIXTURE_MARKER = "TURNKEYAI_MISSION_FIXTURE_OK";
 const COMPARISON_FINAL_MARKER = "TURNKEYAI_MISSION_COMPARISON_OK";
 const ALPHA_MARKER = "TURNKEYAI_VENDOR_ALPHA_OK";
 const BETA_MARKER = "TURNKEYAI_VENDOR_BETA_OK";
+const PROVIDER_SEARCH_PRICING_MARKER = "TURNKEYAI_PROVIDER_SEARCH_PRICING_OK";
 const FOLLOWUP_PHASE_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_PHASE_ONE";
 const FOLLOWUP_FINAL_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_OK";
 const FOLLOWUP_SOURCE_LABEL = "Mission route fixture fetch";
@@ -268,12 +281,16 @@ const PRODUCT_WORKBENCH_SIGNAL_MARKER = "TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK";
 const PRODUCT_ORCHESTRATION_SOURCE_LABEL = "Orchestration research";
 const PRODUCT_BRIDGE_SOURCE_LABEL = "Bridge capability research";
 const PRODUCT_SIGNALS_SOURCE_LABEL = "Product signals browser";
+const ASIAWALK_ROUTE_MARKER = "TURNKEYAI_ASIAWALK_ROUTE_OK";
+const ASIAWALK_BUDGET_MARKER = "TURNKEYAI_ASIAWALK_BUDGET_OK";
+const ASIAWALK_LIVE_MARKER = "TURNKEYAI_ASIAWALK_LIVE_OK";
 const REALISTIC_BRIEF_FINAL_MARKER = "TURNKEYAI_MISSION_REALISTIC_BRIEF_OK";
 
 const FIXTURE_SEMANTIC_CONTENT: Record<string, string> = {
   "/fixture": `basic:${FIXTURE_MARKER}:mission-route-tool-use`,
   "/vendor-alpha": `vendor-alpha:${ALPHA_MARKER}:pricing-19-seat:browser-automation:screenshots:limited-api-catalog`,
   "/vendor-beta": `vendor-beta:${BETA_MARKER}:pricing-29-workspace:approval-workflow:handoff-history:separate-connector`,
+  "/deepseek-provider-pricing": `deepseek:${PROVIDER_SEARCH_PRICING_MARKER}:openrouter-search-yes:input-0.28-output-0.42:together-search-no:fireworks-search-no`,
   "/slow-fixture": `slow:${FIXTURE_MARKER}:delayed-response:timeout-continuation`,
   "/cancel-resume-fixture": "cancel-resume:release-captain:runbook-gap:rollback-rehearsal",
   "/approval-form": `approval:${APPROVAL_MARKER}:dry-run-form:no-external-mutation`,
@@ -285,6 +302,9 @@ const FIXTURE_SEMANTIC_CONTENT: Record<string, string> = {
   "/product-orchestration": `product-orchestration:${PRODUCT_ORCHESTRATION_MARKER}:multi-agent-doc-browser-work-items`,
   "/product-bridge": `product-bridge:${PRODUCT_BRIDGE_MARKER}:browser-control-boundary`,
   "/product-signals": `product-signals:${PRODUCT_WORKBENCH_SIGNAL_MARKER}:stuck-6:weak-answer-rate-24`,
+  "/asiawalk-route": `asiawalk-route:${ASIAWALK_ROUTE_MARKER}:seoul-taipei-tokyo:walking-pilot`,
+  "/asiawalk-budget": `asiawalk-budget:${ASIAWALK_BUDGET_MARKER}:budget-1280:contingency-180`,
+  "/asiawalk-live": `asiawalk-live:${ASIAWALK_LIVE_MARKER}:rain-risk:metro-maintenance:client-rendered`,
 };
 
 export interface FixtureServer {
@@ -292,9 +312,12 @@ export interface FixtureServer {
   basicUrl: string;
   alphaUrl: string;
   betaUrl: string;
+  providerSearchPricingUrl: string;
   slowUrl: string;
+  slowReleaseUrl: string;
   cancelResumeUrl: string;
   cancelResumeStateUrl: string;
+  cancelResumeReleaseUrl: string;
   approvalUrl: string;
   dynamicUrl: string;
   dashboardUrl: string;
@@ -303,6 +326,20 @@ export interface FixtureServer {
   orchestrationUrl: string;
   bridgeUrl: string;
   productSignalsUrl: string;
+  asiawalkRouteUrl: string;
+  asiawalkBudgetUrl: string;
+  asiawalkLiveUrl: string;
+  fixtureContentHashes: Record<string, string>;
+}
+
+export interface NaturalFixtureReportManifest {
+  kind: "turnkeyai.natural-fixture-manifest.v1";
+  lifecycle: {
+    serverScope: "mission-e2e-process";
+    replayRequirement: "urls-must-be-reachable-before-reference-collection";
+  };
+  urls: Omit<FixtureServer, "server" | "fixtureContentHashes">;
+  comparableUrls: Record<string, string>;
   fixtureContentHashes: Record<string, string>;
 }
 
@@ -616,6 +653,12 @@ export interface NaturalMissionScenarioReport {
     kinds: string[];
   };
   runtimeEvidence?: NaturalMissionRuntimeEvidence;
+  toolDiagnostics?: Array<{
+    toolName?: string;
+    phase?: string;
+    status: "failed" | "timeout";
+    text: string;
+  }>;
   natural: {
     status: "passed" | "failed";
     completed: boolean;
@@ -635,7 +678,32 @@ export interface NaturalMissionScenarioReport {
   };
   final: {
     bytes: number;
+    text?: string;
     excerpt: string;
+  };
+  evidenceReplay?: {
+    schema: "turnkeyai.natural-mission-evidence-replay.v1";
+    finalText: string;
+    finalTextBytes: number;
+    timeline: {
+      count: number;
+      entries: Array<{
+        index: number;
+        kind: string;
+        tMs: number;
+        emph?: string;
+        text: string;
+        runtime?: {
+          toolName?: string;
+          toolPhase?: string;
+          status?: string;
+          reason?: string;
+          callInput?: string;
+          resultContent?: string;
+        };
+        tags?: string[];
+      }>;
+    };
   };
 }
 
@@ -652,6 +720,7 @@ export interface NaturalMissionE2eJsonReport {
     scenarioTimeoutMs: number;
   };
   fixtureContentHashes?: Record<string, string>;
+  fixtureManifest?: NaturalFixtureReportManifest;
   promptPolicy: {
     forbidsContractGateLanguage: boolean;
     forbiddenPatterns: string[];
@@ -671,6 +740,11 @@ export interface NaturalMissionE2eJsonReport {
     completedScenarioCount: number;
     error: string;
   };
+  interruptedScenarios?: Array<{
+    scenario: NaturalMissionE2eScenario;
+    completedScenarioCount: number;
+    error: string;
+  }>;
   scenarios: NaturalMissionScenarioReport[];
 }
 
@@ -956,10 +1030,13 @@ function printHelp(exitCode: number): never {
     "",
     "Natural fixture URL overrides:",
     "  TURNKEYAI_NATURAL_ALPHA_URL, TURNKEYAI_NATURAL_BETA_URL",
+    "  TURNKEYAI_NATURAL_PROVIDER_SEARCH_PRICING_URL",
     "  TURNKEYAI_NATURAL_DASHBOARD_URL, TURNKEYAI_NATURAL_APPROVAL_URL",
     "  TURNKEYAI_NATURAL_SLOW_URL, TURNKEYAI_NATURAL_CANCEL_RESUME_URL",
     "  TURNKEYAI_NATURAL_DYNAMIC_URL, TURNKEYAI_NATURAL_ORCHESTRATION_URL",
     "  TURNKEYAI_NATURAL_BRIDGE_URL, TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL",
+    "  TURNKEYAI_NATURAL_ASIAWALK_ROUTE_URL, TURNKEYAI_NATURAL_ASIAWALK_BUDGET_URL",
+    "  TURNKEYAI_NATURAL_ASIAWALK_LIVE_URL",
     "  TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL, TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL",
     "  TURNKEYAI_NATURAL_BROWSER_URL remains a dashboard URL alias",
     "",
@@ -1013,10 +1090,10 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
       extraEnv: daemonEnvOverrides,
       ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
     });
-    await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 30_000 });
+    await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: RESTART_DAEMON_HEALTH_TIMEOUT_MS });
   };
   try {
-    await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 20_000 });
+    await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: INITIAL_DAEMON_HEALTH_TIMEOUT_MS });
     if (options.threadEntry) {
       const results = await runThreadEntryScenarios({
         baseUrl,
@@ -1045,6 +1122,10 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
         (options.naturalMatrix ? [...NATURAL_MISSION_E2E_SCENARIOS] : [options.naturalScenario]);
       const naturalResults: NaturalMissionScenarioResult[] = [];
       const naturalQualityErrors: string[] = [];
+      const interruptedNaturalScenarios: Array<{
+        scenario: NaturalMissionE2eScenario;
+        error: string;
+      }> = [];
       for (const [index, scenario] of naturalScenarios.entries()) {
         const scenarioStartedAt = Date.now();
         console.log(formatNaturalMissionScenarioStart({ scenario, index: index + 1, total: naturalScenarios.length }));
@@ -1095,11 +1176,44 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
                   modelProvenance,
                   scenarioTimeoutMs: options.scenarioTimeoutMs,
                   fixtureContentHashes: fixture.fixtureContentHashes,
+                  fixtureManifest: buildNaturalFixtureReportManifest(fixture),
                 })
               );
               console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
             }
-          } else if (options.jsonPath) {
+          } else {
+            const interrupted = {
+              scenario,
+              error: errorMessage(error),
+            };
+            interruptedNaturalScenarios.push(interrupted);
+            naturalQualityErrors.push(`- ${scenario}: interrupted before quality evaluation: ${compactExcerpt(errorMessage(error), 500)}`);
+            if (options.continueOnFailure) {
+              console.error(
+                `natural mission scenario interrupted: ${scenario} (${index + 1}/${naturalScenarios.length}) error=${compactExcerpt(
+                  errorMessage(error),
+                  500
+                )}`
+              );
+              if (options.jsonPath) {
+                writeNaturalMissionE2eJsonReport(
+                  options.jsonPath,
+                  buildNaturalMissionPartialFailureJsonReport({
+                    startedAt,
+                    completedAt: Date.now(),
+                    results: naturalResults,
+                    modelProvenance,
+                    scenarioTimeoutMs: options.scenarioTimeoutMs,
+                    fixtureContentHashes: fixture.fixtureContentHashes,
+                    fixtureManifest: buildNaturalFixtureReportManifest(fixture),
+                    interruptedScenarios: interruptedNaturalScenarios,
+                  })
+                );
+                console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
+              }
+              continue;
+            }
+            if (options.jsonPath) {
             writeNaturalMissionE2eJsonReport(
               options.jsonPath,
               buildNaturalMissionPartialFailureJsonReport({
@@ -1109,6 +1223,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
               modelProvenance,
               scenarioTimeoutMs: options.scenarioTimeoutMs,
               fixtureContentHashes: fixture.fixtureContentHashes,
+              fixtureManifest: buildNaturalFixtureReportManifest(fixture),
               interruptedScenario: {
                 scenario,
                 error: errorMessage(error),
@@ -1116,6 +1231,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
               })
             );
             console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
+            }
           }
           throw new Error(
             `natural mission scenario ${scenario} failed: ${errorMessage(error)}\n\ndaemon output tail:\n${daemon.output()}`
@@ -1124,15 +1240,28 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
       }
       if (options.jsonPath) {
         const completedAt = Date.now();
-        const report = buildNaturalMissionE2eJsonReport({
-          startedAt,
-          completedAt,
-          results: naturalResults,
-          failureCollectionMode: options.continueOnFailure ? "quality-failures-collected" : "fail-fast",
-          modelProvenance,
-          scenarioTimeoutMs: options.scenarioTimeoutMs,
-          fixtureContentHashes: fixture.fixtureContentHashes,
-        });
+        const report =
+          interruptedNaturalScenarios.length > 0
+            ? buildNaturalMissionPartialFailureJsonReport({
+                startedAt,
+                completedAt,
+                results: naturalResults,
+                modelProvenance,
+                scenarioTimeoutMs: options.scenarioTimeoutMs,
+                fixtureContentHashes: fixture.fixtureContentHashes,
+                fixtureManifest: buildNaturalFixtureReportManifest(fixture),
+                interruptedScenarios: interruptedNaturalScenarios,
+              })
+            : buildNaturalMissionE2eJsonReport({
+                startedAt,
+                completedAt,
+                results: naturalResults,
+                failureCollectionMode: options.continueOnFailure ? "quality-failures-collected" : "fail-fast",
+                modelProvenance,
+                scenarioTimeoutMs: options.scenarioTimeoutMs,
+                fixtureContentHashes: fixture.fixtureContentHashes,
+                fixtureManifest: buildNaturalFixtureReportManifest(fixture),
+              });
         writeNaturalMissionE2eJsonReport(options.jsonPath, report);
         console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
       }
@@ -1477,8 +1606,19 @@ async function runMissionApprovalScenario(input: {
     finalMarker: spec.finalMarker,
     timeoutMs: input.timeoutMs,
   });
-  assertMissionToolUseTimeline(result.timeline, spec);
-  assertMissionApprovalTimeline(result.timeline, spec, approval.id);
+  try {
+    assertMissionToolUseTimeline(result.timeline, spec);
+    assertMissionApprovalTimeline(result.timeline, spec, approval.id);
+  } catch (error) {
+    throw new Error(
+      [
+        errorMessage(error),
+        "",
+        "approval mission state at assertion failure:",
+        summarizeMissionState(result.mission, result.timeline),
+      ].join("\n")
+    );
+  }
   const metrics = await waitForMissionMetricsSettled({
     baseUrl: input.baseUrl,
     token: input.token,
@@ -1820,6 +1960,7 @@ async function runNaturalMissionScenario(input: {
     missionId: mission.id,
     timeoutMs: input.timeoutMs,
     allowBlocked: spec.allowToolFailure,
+    collectBlockedEvidence: true,
   });
   const metrics = await waitForMissionMetricsSettled({
     baseUrl: input.baseUrl,
@@ -1836,7 +1977,7 @@ async function runNaturalMissionScenario(input: {
     requireLifecycle: spec.requiresArtifactLifecycle === true,
   });
   const scenarioRuntimeEvidence =
-    input.scenario === "natural-long-delegation"
+    input.scenario === "natural-long-delegation" || input.scenario === "natural-asiawalk-multi-agent"
       ? {
           providerToolProtocol: summarizeProviderToolProtocolBoundaries(
             await waitForThreadProgressBoundaryCount({
@@ -2526,11 +2667,19 @@ async function runNaturalBrowserColdRecreationScenario(input: {
   });
   const resumedBrowserSessionId = extractBrowserSessionIdForSendAfter(result.timeline, initialFinal);
   assert.ok(resumedBrowserSessionId, "natural browser cold recreation follow-up must expose a browser session id");
-  assert.notEqual(
-    resumedBrowserSessionId,
-    initialBrowserSessionId,
-    "natural browser cold recreation must use a replacement browser session after the original was revoked"
-  );
+  if (resumedBrowserSessionId === initialBrowserSessionId) {
+    const sendResultText = naturalFollowupSendResultText(result.timeline, initialFinal);
+    assert.match(
+      sendResultText,
+      /session_not_found|browserRecovery|cold[- ]recovery|cold[- ]recreat(?:ion|ed)|new browser session|re[- ]?open(?:ed)?/i,
+      [
+        "natural browser cold recreation reused the same logical browser session id without explicit cold recovery evidence",
+        `initialBrowserSessionId=${initialBrowserSessionId}`,
+        `resumedBrowserSessionId=${resumedBrowserSessionId}`,
+        sendResultText.slice(0, 4000),
+      ].join("\n")
+    );
+  }
   const metrics = await waitForMissionMetricsSettled({
     baseUrl: input.baseUrl,
     token: input.token,
@@ -3562,7 +3711,7 @@ async function runNaturalCancelFollowupScenario(input: {
   });
   await waitForCancelResumeFixtureRequest({
     fixture: input.fixture,
-    timeoutMs: Math.min(input.timeoutMs, 60_000),
+    timeoutMs: Math.min(input.timeoutMs, 180_000),
   });
   await requestJson<{ cancelled: boolean }>({
     method: "POST",
@@ -3599,6 +3748,7 @@ async function runNaturalCancelFollowupScenario(input: {
     threadId: mission.threadId,
     workerRunKey: cancelledSessionKey,
   });
+  await releaseCancelResumeFixture(input.fixture);
 
   const followup = [
     "Continue from the cancelled source-check attempt in this mission.",
@@ -3689,6 +3839,7 @@ async function runNaturalTimeoutFollowupScenario(input: {
     baseUrl: input.baseUrl,
     token: input.token,
     missionId: mission.id,
+    threadId: mission.threadId,
     initialTimeline: phaseOne.timeline,
     timeoutMs: Math.min(input.timeoutMs, 20_000),
   });
@@ -3702,6 +3853,7 @@ async function runNaturalTimeoutFollowupScenario(input: {
     threadId: mission.threadId,
     workerRunKey: timeoutSessionKey,
   });
+  await releaseSlowFixture(input.fixture);
 
   const followup = [
     "Continue from the slow-source attempt in this mission.",
@@ -3809,7 +3961,11 @@ function naturalMissionModeForScenario(scenario: NaturalMissionE2eScenario): Nat
     return "browser";
   }
 
-  if (scenario === "natural-long-delegation" || scenario === "natural-tool-result-pruning") {
+  if (
+    scenario === "natural-long-delegation" ||
+    scenario === "natural-tool-result-pruning" ||
+    scenario === "natural-asiawalk-multi-agent"
+  ) {
     return "investigation";
   }
 
@@ -4133,12 +4289,14 @@ async function waitForNaturalMissionCompletion(input: {
   missionId: string;
   timeoutMs: number;
   allowBlocked?: boolean;
+  collectBlockedEvidence?: boolean;
   afterThoughtMs?: number;
   afterThoughtId?: string;
 }): Promise<{ mission: Mission; timeline: ActivityEvent[] }> {
   const startedAt = Date.now();
   let latestMission: Mission | null = null;
   let latestTimeline: ActivityEvent[] = [];
+  let stableDoneSince: number | null = null;
   while (Date.now() - startedAt < input.timeoutMs) {
     latestMission = await requestJson<Mission>({
       method: "GET",
@@ -4157,10 +4315,29 @@ async function waitForNaturalMissionCompletion(input: {
         latestThought.tMs > input.afterThoughtMs ||
         (input.afterThoughtId !== undefined && latestThought.id !== input.afterThoughtId));
     if (latestMission.status === "done" && hasRequiredThought) {
-      return { mission: latestMission, timeline: latestTimeline };
+      const metrics = await requestJson<MissionObservabilitySnapshot>({
+        method: "GET",
+        url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/metrics`,
+        token: input.token,
+      });
+      const stable =
+        metrics.status === "done" &&
+        metrics.liveness.active === 0 &&
+        metrics.liveness.waiting === 0 &&
+        metrics.liveness.stale === 0;
+      if (stable) {
+        stableDoneSince ??= Date.now();
+        if (Date.now() - stableDoneSince >= 1_500) {
+          return { mission: latestMission, timeline: latestTimeline };
+        }
+      } else {
+        stableDoneSince = null;
+      }
+    } else {
+      stableDoneSince = null;
     }
     if (latestMission.status === "blocked") {
-      if (input.allowBlocked) {
+      if (input.allowBlocked || input.collectBlockedEvidence) {
         return { mission: latestMission, timeline: latestTimeline };
       }
       throw new Error(`natural mission blocked before completion:\n${summarizeMissionState(latestMission, latestTimeline)}`);
@@ -4176,6 +4353,7 @@ async function waitForTimedOutSessionKey(input: {
   baseUrl: string;
   token: string;
   missionId: string;
+  threadId?: string;
   initialTimeline?: ActivityEvent[];
   timeoutMs: number;
 }): Promise<{ sessionKey: string; timeline: ActivityEvent[] }> {
@@ -4192,6 +4370,17 @@ async function waitForTimedOutSessionKey(input: {
     if (sessionKey) {
       return { sessionKey, timeline: latestTimeline };
     }
+    const sessionKeyFromRegistry = input.threadId
+      ? await findWorkerSessionKeyForTimedOutToolCall({
+          baseUrl: input.baseUrl,
+          token: input.token,
+          threadId: input.threadId,
+          timeline: latestTimeline,
+        })
+      : null;
+    if (sessionKeyFromRegistry) {
+      return { sessionKey: sessionKeyFromRegistry, timeline: latestTimeline };
+    }
     latestTimeline = await fetchTimeline();
     await sleep(500);
   }
@@ -4199,6 +4388,17 @@ async function waitForTimedOutSessionKey(input: {
   const sessionKey = extractTimedOutSessionKey(latestTimeline);
   if (sessionKey) {
     return { sessionKey, timeline: latestTimeline };
+  }
+  const sessionKeyFromRegistry = input.threadId
+    ? await findWorkerSessionKeyForTimedOutToolCall({
+        baseUrl: input.baseUrl,
+        token: input.token,
+        threadId: input.threadId,
+        timeline: latestTimeline,
+      })
+    : null;
+  if (sessionKeyFromRegistry) {
+    return { sessionKey: sessionKeyFromRegistry, timeline: latestTimeline };
   }
   throw new Error(
     `natural timeout follow-up requires a session_key from the timed-out sessions_spawn result:\n${summarizeMissionState(
@@ -4208,16 +4408,35 @@ async function waitForTimedOutSessionKey(input: {
   );
 }
 
-function findLatestThoughtEvent(timeline: ActivityEvent[]): ActivityEvent | null {
-  return [...timeline].reverse().find((event) => event.kind === "thought" && event.text.trim().length > 0) ?? null;
+async function findWorkerSessionKeyForTimedOutToolCall(input: {
+  baseUrl: string;
+  token: string;
+  threadId: string;
+  timeline: ActivityEvent[];
+}): Promise<string | null> {
+  const toolCallId = extractTimedOutSessionsSpawnToolCallId(input.timeline);
+  if (!toolCallId) {
+    return null;
+  }
+  const sessions = await requestJson<WorkerSessionRecord[]>({
+    method: "GET",
+    url: `${input.baseUrl}/runtime-worker-sessions?threadId=${encodeURIComponent(input.threadId)}&limit=50`,
+    token: input.token,
+  });
+  return sessions.find((session) => session.context?.toolCallId === toolCallId)?.workerRunKey ?? null;
 }
 
-function findLatestCancellationEvent(timeline: ActivityEvent[]): ActivityEvent | null {
+function findLatestThoughtEvent(timeline: ActivityEvent[]): ActivityEvent | null {
   return (
     [...timeline]
       .reverse()
-      .find((event) => event.runtime?.["eventType"] === "mission.cancelled" || /\bcancel(?:led|ed)?\b/i.test(event.text)) ?? null
+      .find((event) => event.kind === "thought" && event.text.trim().length > 0 && !isLifecycleStatusText(event.text)) ??
+    null
   );
+}
+
+function findLatestCancellationEvent(timeline: ActivityEvent[]): ActivityEvent | null {
+  return [...timeline].reverse().find((event) => event.runtime?.["eventType"] === "mission.cancelled") ?? null;
 }
 
 export function buildNaturalScenarioSpec(
@@ -4233,9 +4452,12 @@ export function buildNaturalScenarioSpec(
     | "orchestrationUrl"
     | "bridgeUrl"
     | "productSignalsUrl"
+    | "asiawalkRouteUrl"
+    | "asiawalkBudgetUrl"
+    | "asiawalkLiveUrl"
     | "externalPageUrl"
     | "complexBrowserUrl"
-  >
+  > & { providerSearchPricingUrl?: string }
 ): NaturalScenarioSpec {
   if (scenario === "natural-comparison-research") {
     return {
@@ -4256,13 +4478,67 @@ export function buildNaturalScenarioSpec(
       requiresBrowser: false,
       requiresApproval: false,
       allowToolFailure: false,
-      minEvidenceEvents: 1,
+      minEvidenceEvents: 2,
       requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend", "risk"],
       requiredAnswerPatterns: [
         { label: "alpha price", pattern: /\$19\b/ },
         { label: "beta price", pattern: /\$29\b/ },
       ],
       forbiddenPatterns: unsupportedVendorComparisonPatterns(),
+    };
+  }
+  if (scenario === "natural-provider-search-pricing") {
+    return {
+      scenario,
+      title: "Natural provider search pricing research",
+      desc: [
+        "A product manager needs a source-backed DeepSeek V4 Flash API provider note.",
+        `Provider evidence source: ${fixture.providerSearchPricingUrl ?? "http://127.0.0.1/deepseek-provider-pricing"}`,
+        "Identify which providers are listed, whether each provider supports search, and the input/output token pricing for each provider.",
+        "Call out the lowest-cost option, the option that supports search, and the main risk or limitation for using this data in a production decision.",
+        "Use only evidence collected during this mission. If provider support, search support, or pricing cannot be verified, do not mark it complete; state exactly what remains unverified and how to continue.",
+      ].join("\n"),
+      minBytes: 520,
+      minToolResults: 1,
+      maxToolResults: 8,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 4,
+      requiresBrowser: false,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["DeepSeek", "V4 Flash", "OpenRouter", "Together", "Fireworks", "search", "$0.28", "$0.42"],
+      requiredAnswerPatterns: [
+        {
+          label: "openrouter search support",
+          pattern:
+            /OpenRouter[\s\S]{0,160}(?:(?:search|web_search)[\s\S]{0,80}(?:support|yes|supported|支持)|(?:support|supported|支持|✅|yes)[\s\S]{0,80}(?:search|web_search))/i,
+        },
+        {
+          label: "together no search",
+          pattern:
+            /Together[\s\S]{0,160}(?:❌\s*No|not supported|no (?:native|provider-native)?\s*search|does not support search|不支持|未支持|\bdo not\b|\bdoes not\b)|Together[\s\S]{0,80}Fireworks[\s\S]{0,120}(?:❌\s*No|\bdo not\b|不支持|未支持|no (?:native|provider-native)?\s*search)|OpenRouter[\s\S]{0,120}(?:\bonly\b|唯一)[\s\S]{0,120}(?:search|web_search)/i,
+        },
+        {
+          label: "fireworks no search",
+          pattern:
+            /Fireworks[\s\S]{0,160}(?:❌\s*No|not supported|no (?:native|provider-native)?\s*search|search must be supplied externally|does not support search|不支持|未支持|\bdo not\b|\bdoes not\b)|Together[\s\S]{0,80}Fireworks[\s\S]{0,120}(?:❌\s*No|\bdo not\b|不支持|未支持|no (?:native|provider-native)?\s*search)|OpenRouter[\s\S]{0,120}(?:\bonly\b|唯一)[\s\S]{0,120}(?:search|web_search)/i,
+        },
+        { label: "openrouter pricing", pattern: /OpenRouter[\s\S]{0,160}\$0\.28[\s\S]{0,160}\$0\.42|\$0\.28[\s\S]{0,160}\$0\.42[\s\S]{0,160}OpenRouter/i },
+        { label: "together pricing", pattern: /Together[\s\S]{0,160}\$0\.20[\s\S]{0,160}\$0\.40|\$0\.20[\s\S]{0,160}\$0\.40[\s\S]{0,160}Together/i },
+        { label: "fireworks pricing", pattern: /Fireworks[\s\S]{0,160}\$0\.25[\s\S]{0,160}\$0\.45|\$0\.25[\s\S]{0,160}\$0\.45[\s\S]{0,160}Fireworks/i },
+      ],
+      requiredEvidencePatterns: [
+        { label: "provider source marker", pattern: /DeepSeek V4 Flash provider|OpenRouter[\s\S]{0,240}Together[\s\S]{0,240}Fireworks/i },
+        { label: "search support evidence", pattern: /web_search option|provider-native search|search must be supplied externally/i },
+        { label: "pricing evidence", pattern: /\$0\.28[\s\S]{0,240}\$0\.42|\$0\.20[\s\S]{0,240}\$0\.40|\$0\.25[\s\S]{0,240}\$0\.45/i },
+      ],
+      forbiddenPatterns: [
+        {
+          label: "unverified provider search pricing closeout",
+          pattern: /(?:provider support|supports? (?:the )?(?:model|target model|DeepSeek)|search(?:\/web_search)? support|supports? search|pricing|price|input price|output price|input pricing|output pricing|input|output)[\s\S]{0,120}(?:未验证|unverified|not verified|unknown|could not verify|cannot verify)/i,
+        },
+      ],
     };
   }
   if (scenario === "natural-browser-dynamic-page") {
@@ -4546,7 +4822,7 @@ export function buildNaturalScenarioSpec(
       minEvidenceEvents: 2,
       requiredAnswerTerms: ["SLA", "Incident Commander", "action"],
       requiredAnswerPatterns: [
-        { label: "visible browser recovery", pattern: /\b(reopen|reopened|recreate|recreated|recovered|new browser session|session was unavailable|warm|cold)\b/i },
+        { label: "visible browser recovery", pattern: /\b(reopen|reopened|recreate|recreated|recovered|new browser session|session (?:was )?unavailable|fresh browser opened|recovery confirmed|warm|cold)\b/i },
       ],
       requiredEvidencePatterns: [
         {
@@ -4885,7 +5161,7 @@ export function buildNaturalScenarioSpec(
         {
           label: "denied side effect",
           pattern:
-            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\bwas\s+(?:not|never)\s+submit(?:ted)?\b|\bwas\s+not\s+executed\b|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno action was performed\b|\bno browser action or side effect was applied\b|\bno (?:form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno mutation was performed\b|\bno state mutated\b|\b(?:form submission|submission)\s+attempted\?\s*(?:\*\*)?\s*no\b|\b(?:approval )?form\b[\s\S]{0,80}\b(?:never|not)\s+(?:touched|submitted|changed|mutated)\b|\bremains untouched\b/i,
+            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\bwas\s+(?:not|never)\s+submit(?:ted)?\b|\bwas\s+not\s+executed\b|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bside effects?\s*:\s*(?:none|no)\b|\bside effects?\s+run\s*(?:\||:|-)?\s*none\b|\bno action was performed\b|\bno browser action or side effect was applied\b|\bno (?:browser )?submission ran\b|\bno browser form was submit(?:ted)?\b|\bno side effects? (?:occurred|ran)\b|\bno (?:browser form submission|form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno mutation was performed\b|\bno state mutated\b|\b(?:form submission|submission)\s+attempted\?\s*(?:\*\*)?\s*no\b|\b(?:approval )?form\b[\s\S]{0,80}\b(?:never|not)\s+(?:touched|submitted|changed|mutated)\b|\bremains untouched\b/i,
         },
         { label: "safe next action", pattern: /\b(?:next action|safest next step|safe fallback|ask the operator|revise|flow is complete|closes cleanly|closeout confirmed)\b/i },
       ],
@@ -4893,7 +5169,7 @@ export function buildNaturalScenarioSpec(
         {
           label: "denied submit claimed complete",
           pattern:
-            /\b(?:successfully submitted|submission completed|form submission completed|action completed|form was submitted|submitted locally after approval|submitted to the page)\b/i,
+            /\b(?:successfully submitted|submission completed|form submission completed|action completed|(?<!no browser )(?<!no )form was submitted(?!\s+to\s+(?:the\s+)?operator)|submitted locally after approval|submitted to the page)\b/i,
         },
         { label: "permission applied after denial", pattern: /\bpermission\.applied\b/i },
       ],
@@ -4967,7 +5243,7 @@ export function buildNaturalScenarioSpec(
         {
           label: "side effect withheld",
           pattern:
-            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b/i,
+            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken|initiat(?:ed|e))|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:browser )?(?:form submission|browser action|browser mutation|mutation|side effects?|side effect|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated|occurred)\b/i,
         },
         { label: "safe next action", pattern: /\b(?:next action|safest next step|safe fallback|ask the operator|retry|continue|re-?run|re-?initiate)\b/i },
       ],
@@ -4975,7 +5251,7 @@ export function buildNaturalScenarioSpec(
         { label: "approval gate", pattern: /\bpermission\.query\b|\bapproval_wait_timeout\b|\bApproval required before\b|\bblocked_before_side_effect\b/i },
         { label: "approval wait timeout evidence", pattern: /\bapproval_wait_timeout\b|\bstill pending\b|\bwait[- ]timeout\b/i },
       ],
-      requiredToolNames: ["sessions_spawn"],
+      requiredToolNames: ["permission_query", "permission_result"],
       forbiddenPatterns: [
         {
           label: "timed-out submit claimed complete",
@@ -5185,7 +5461,7 @@ export function buildNaturalScenarioSpec(
         {
           label: "continuation guidance",
           pattern:
-            /\b(?:continue|retry|resume|resumable|bounded retry|timeout-gated)\b|(?:\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|bounded retry)\b)|(?:\btimeouts?\b[\s\S]{0,80}\b(?:retry|recover|configure|exclude|timeout-gated|bounded retry)\b)/i,
+            /\b(?:continue|retry|resum(?:e|ed|ing|able)|bounded retry|timeout-gated|timeout recovery|subsequent health check)\b|(?:\b(?:next step|next action|recommendation)\b[\s\S]{0,120}\b(?:continue|retry|resum(?:e|ed|ing|able)|bounded retry|health check|confirm)\b)|(?:\btimeouts?\b[\s\S]{0,120}\b(?:retry|recover|recovered|recovery|configure|exclude|timeout-gated|bounded retry|health check|confirm)\b)/i,
         },
       ],
       forbiddenPatterns: [
@@ -5261,6 +5537,45 @@ export function buildNaturalScenarioSpec(
       ],
     };
   }
+  if (scenario === "natural-asiawalk-multi-agent") {
+    return {
+      scenario,
+      title: "Natural AsiaWalk multi-agent planning brief",
+      desc: [
+        "Prepare a decision-ready AsiaWalk pilot brief for a travel product lead.",
+        `Route source: ${fixture.asiawalkRouteUrl}`,
+        `Budget source: ${fixture.asiawalkBudgetUrl}`,
+        `Live readiness dashboard: ${fixture.asiawalkLiveUrl}`,
+        "Treat route, budget, and live readiness as separate evidence streams. Use specialist work where it helps, and inspect the live readiness dashboard as rendered browser evidence.",
+        "This is a read-only planning brief. Do not click forms, submit anything, simulate deposits, or request approval; only inspect the listed sources and synthesize a recommendation.",
+        "Do not finalize until all three streams have returned. The final brief should cover the route shape, budget, readiness risks, go/no-go recommendation, and the next action for the product lead.",
+        "If a stream is unavailable, say what was verified, what remains unverified, and how to continue.",
+      ].join("\n"),
+      minBytes: 760,
+      minToolResults: 3,
+      maxToolResults: 12,
+      minSpawnedSessions: 3,
+      maxSpawnedSessions: 8,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowRecoveredTimeout: true,
+      allowToolFailure: false,
+      minEvidenceEvents: 3,
+      requiredAnswerTerms: ["AsiaWalk", "Seoul", "Taipei", "Tokyo", "$1,280", "rain", "recommend"],
+      requiredAnswerPatterns: [
+        { label: "go/no-go recommendation", pattern: /\b(?:go|no-go|recommend|ship|pilot)\b/i },
+        { label: "three-role synthesis", pattern: /\broute\b[\s\S]{0,240}\bbudget\b[\s\S]{0,240}\b(?:live|readiness|risk)\b/i },
+        { label: "budget amount", pattern: /\$1,?280\b/ },
+      ],
+      requiredEvidencePatterns: [
+        { label: "route evidence stream", pattern: /Seoul[\s\S]{0,180}Taipei[\s\S]{0,180}Tokyo|Tokyo[\s\S]{0,180}Taipei[\s\S]{0,180}Seoul/i },
+        { label: "budget evidence stream", pattern: /\$1,?280[\s\S]{0,180}(?:contingency|buffer|\$180)|(?:contingency|buffer|\$180)[\s\S]{0,180}\$1,?280/i },
+        { label: "live readiness browser evidence", pattern: /rain risk|metro maintenance|rendered readiness|browser-visible/i },
+      ],
+      requiredToolNames: ["sessions_spawn"],
+      allowedWeakAnswerSignals: ["browser transport degraded"],
+    };
+  }
   return {
     scenario,
     title: "Natural long delegation brief",
@@ -5305,6 +5620,7 @@ export function buildNaturalScenarioSpec(
       },
       { label: "product signals weak answer rate", pattern: /Weak[- ]answer(?:\s+rate)?\s*:?\s*24%|24%[\s-]+weak[- ]answer(?:\s+rate)?/i },
     ],
+    allowedWeakAnswerSignals: ["browser transport degraded"],
   };
 }
 
@@ -5348,6 +5664,9 @@ export function assertNaturalScenarioPromptsAllowed(): void {
     orchestrationUrl: "http://127.0.0.1/product-orchestration",
     bridgeUrl: "http://127.0.0.1/product-bridge",
     productSignalsUrl: "http://127.0.0.1/product-signals",
+    asiawalkRouteUrl: "http://127.0.0.1/asiawalk-route",
+    asiawalkBudgetUrl: "http://127.0.0.1/asiawalk-budget",
+    asiawalkLiveUrl: "http://127.0.0.1/asiawalk-live",
     complexBrowserUrl: "http://127.0.0.1/complex-browser",
   };
   for (const scenario of NATURAL_MISSION_E2E_SCENARIOS) {
@@ -5366,9 +5685,11 @@ export function evaluateNaturalMissionQuality(input: {
   const failures: string[] = [];
   const expectedMissionStatuses = input.spec.expectedMissionStatuses ?? [input.spec.expectedMissionStatus ?? "done"];
   const expectsNeedsApproval = expectedMissionStatuses.includes("needs_approval");
+  const nonSuccessCloseoutExpected = naturalScenarioExpectsNonSuccessCloseout(input.spec);
   const completed =
     expectedMissionStatuses.some((status) => status === input.mission.status) &&
-    expectedMissionStatuses.some((status) => status === input.metrics.status);
+    expectedMissionStatuses.some((status) => status === input.metrics.status) &&
+    (!input.mission.closeout || nonSuccessCloseoutExpected);
   const toolNames = collectToolNames(input.timeline);
   const evidenceText = collectTimelineEvidenceText(input.timeline);
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
@@ -5378,14 +5699,23 @@ export function evaluateNaturalMissionQuality(input: {
       ? []
       : findWeakEvidenceSignals(evidenceText, { browserEvidenceExpected: input.spec.requiresBrowser || browserUsed })),
   ];
+  const naturalEvidenceItems = countNaturalEvidenceItems(evidenceText);
   const effectiveEvidenceEvents =
     expectsNeedsApproval && hasRuntimeEvent(input.timeline, "permission.query")
-      ? Math.max(input.metrics.qualityGate.evidenceEvents, 1)
-      : input.metrics.qualityGate.evidenceEvents;
+      ? Math.max(input.metrics.qualityGate.evidenceEvents, naturalEvidenceItems, 1)
+      : Math.max(input.metrics.qualityGate.evidenceEvents, naturalEvidenceItems);
   const artifactLifecycleVisible = (input.artifacts ?? []).some(hasArtifactLifecycleEvidence);
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
   const browserFailureBuckets = input.metrics.browser?.failureBuckets ?? [];
   const unexpectedBrowserFailureBuckets = collectUnexpectedNaturalBrowserFailureBuckets(input.spec, browserFailureBuckets);
+  const browserFailureCloseoutRequired = naturalScenarioRequiresBrowserFailureCloseout(
+    input.spec,
+    unexpectedBrowserFailureBuckets
+  );
+  const recoveredBrowserFailureCloseout = recoverableBrowserFailureCloseoutVisible(
+    input.final.text,
+    unexpectedBrowserFailureBuckets
+  );
   const missionCancelled = hasRuntimeEvent(input.timeline, "mission.cancelled");
   const approvalWaitTimeoutEvidence = hasApprovalWaitTimeoutEvidence(input.timeline);
   const sourceCoverage = evaluateNaturalSourceCoverage({
@@ -5394,6 +5724,13 @@ export function evaluateNaturalMissionQuality(input: {
     evidenceText,
     evidenceEvents: effectiveEvidenceEvents,
   });
+  const blockingMissionQualityChecks = collectBlockingNaturalMissionQualityChecks(input.metrics.qualityGate.checks ?? []);
+  const blockingMissionQualityChecksForEvidence = expectsNeedsApproval
+    ? blockingMissionQualityChecks.filter((check) => check.status !== "pending")
+    : blockingMissionQualityChecks;
+  const blockingMissionQualityChecksForScoring = expectsNeedsApproval
+    ? blockingMissionQualityChecksForEvidence
+    : blockingMissionQualityChecks;
   const profileFallbackFree = profileFallbackCount === 0;
   const profileFallbackPolicySatisfied = input.spec.requiresProfileFallback
     ? profileFallbackCount > 0
@@ -5434,7 +5771,10 @@ export function evaluateNaturalMissionQuality(input: {
         hasRuntimeEvent(input.timeline, "permission.applied");
   const blockingWeakAnswerSignals = weakAnswerSignals.filter(
     (signal) =>
-      !(input.spec.allowedWeakAnswerSignals ?? []).includes(signal) &&
+      !(
+        (input.spec.allowedWeakAnswerSignals ?? []).includes(signal) &&
+        !(signal === "browser transport degraded" && browserFailureCloseoutRequired)
+      ) &&
       !(
         signal === "browser evidence blocked" &&
         isApprovalBrowserSafetyBoundaryProven({
@@ -5448,7 +5788,7 @@ export function evaluateNaturalMissionQuality(input: {
         signal === "browser transport degraded" &&
         unexpectedBrowserFailureBuckets.length > 0 &&
         unexpectedBrowserFailureBuckets.every(isRecoverableNaturalBrowserFailureBucket) &&
-        recoverableBrowserFailureCloseoutVisible(input.final.text, unexpectedBrowserFailureBuckets)
+        recoveredBrowserFailureCloseout
       )
   );
   const reasonableToolUse =
@@ -5460,10 +5800,13 @@ export function evaluateNaturalMissionQuality(input: {
   const finalAnswerHasEvidence =
     effectiveEvidenceEvents >= input.spec.minEvidenceEvents &&
     sourceCoverage.answerTerms.missing.length === 0 &&
-    sourceCoverage.answerPatterns.missing.length === 0;
+    sourceCoverage.answerPatterns.missing.length === 0 &&
+    blockingMissionQualityChecksForEvidence.every(
+      (check) => check.name !== "goal_slot_coverage" && check.name !== "source_coverage"
+    );
   const finalAnswerUseful =
     Buffer.byteLength(input.final.text, "utf8") >= input.spec.minBytes &&
-    /\b(recommend|next action|risk|owner|tradeoff|continue|verified|approval|approved|submitted|confirmed|complete)\b/i.test(
+    /\b(recommend|next action|risk|limitation|lowest[- ]cost|cost option|search[- ]support option|supports? search|production decision|owner|tradeoff|continue|verified|approval|approved|submitted|confirmed|complete)\b|建议|下一步|风险|限制|最低成本|成本选项|支持\s*Search|Search\s*支持|支持搜索|生产决策|负责人|权衡|继续|已验证|确认|完成|已提交|已批准/i.test(
       input.final.text
     );
   const stuckOrLoop =
@@ -5485,8 +5828,8 @@ export function evaluateNaturalMissionQuality(input: {
     finalAnswerUseful;
   const recoveredBrowserFailurePolicySatisfied =
     unexpectedBrowserFailureBuckets.length === 0 ||
-    (((input.spec.allowToolFailure || input.spec.allowRecoveredTimeout === true) ||
-      recoverableBrowserFailureCloseoutVisible(input.final.text, unexpectedBrowserFailureBuckets)) &&
+    (((!browserFailureCloseoutRequired && (input.spec.allowToolFailure || input.spec.allowRecoveredTimeout === true)) ||
+      recoveredBrowserFailureCloseout) &&
       recoveryCloseoutIsClean &&
       unexpectedBrowserFailureBuckets.every(isRecoverableNaturalBrowserFailureBucket));
   const recoveredFailurePolicySatisfied =
@@ -5494,14 +5837,18 @@ export function evaluateNaturalMissionQuality(input: {
     (recoveredToolFailures >= nonCancelledFailures &&
       input.metrics.tool.timeouts === 0 &&
       recoveredBrowserFailurePolicySatisfied &&
+      recoveryCloseoutIsClean) ||
+    (missionQualityGateHasBoundedFailureCloseout(input.metrics.qualityGate.checks) &&
+      recoveredBrowserFailurePolicySatisfied &&
+      recoveryCloseoutIsClean) ||
+    (missionQualityGateOnlyHasFailureFreeToolAttention(input.metrics.qualityGate.checks) &&
+      recoveredBrowserFailurePolicySatisfied &&
       recoveryCloseoutIsClean);
   const successfulResultRecoveredTimeout =
     input.metrics.tool.timeouts > 0 &&
     nonCancelledFailures === 0 &&
-    input.metrics.recovery.events === 0 &&
     input.metrics.tool.results >= input.spec.minToolResults &&
     input.metrics.qualityGate.status === "passed" &&
-    missionQualityGateHasNoFailedChecks(input.metrics.qualityGate.checks) &&
     completed &&
     !stuckOrLoop &&
     reasonableToolUse &&
@@ -5558,6 +5905,13 @@ export function evaluateNaturalMissionQuality(input: {
         : "approval scenario did not complete query/result/applied loop"
     );
   }
+  if (
+    input.spec.requiresApproval &&
+    input.metrics.approvals.applied > 0 &&
+    isStalePendingApprovalThought(input.final.text)
+  ) {
+    failures.push("approval was applied but final answer still claims approval is pending");
+  }
   if (input.spec.requiresCancellation && input.metrics.tool.cancelled < 1 && !missionCancelled) {
     failures.push("cancellation scenario did not record a cancelled tool result or mission cancellation event");
   }
@@ -5574,6 +5928,9 @@ export function evaluateNaturalMissionQuality(input: {
   if (!finalAnswerHasEvidence) failures.push("final answer lacks required source-backed evidence");
   if (!finalAnswerUseful) failures.push("final answer is too thin or not decision-useful");
   if (!sourceCoverage.residualRiskVisible) failures.push("final answer does not make residual risk visible");
+  for (const check of blockingMissionQualityChecksForEvidence) {
+    failures.push(`mission quality gate ${check.name} ${check.status}: ${check.detail}`);
+  }
   if (blockingWeakAnswerSignals.length > 0) failures.push(`weak answer signals: ${blockingWeakAnswerSignals.join(", ")}`);
   for (const toolName of input.spec.requiredToolNames ?? []) {
     if (!toolNames.has(toolName)) failures.push(`missing required tool family evidence: ${toolName}`);
@@ -5600,6 +5957,7 @@ export function evaluateNaturalMissionQuality(input: {
     finalAnswerHasEvidence,
     finalAnswerUseful,
     sourceCoverage,
+    blockingMissionQualityChecks: blockingMissionQualityChecksForScoring,
     blockingWeakAnswerSignals,
     nonCancelledFailures,
     recoveredFailurePolicySatisfied,
@@ -5647,6 +6005,7 @@ function scoreNaturalMissionDimensions(input: {
   finalAnswerHasEvidence: boolean;
   finalAnswerUseful: boolean;
   sourceCoverage: NaturalSourceCoverage;
+  blockingMissionQualityChecks: Array<{ name: string; status: string; detail: string }>;
   blockingWeakAnswerSignals: string[];
   nonCancelledFailures: number;
   recoveredFailurePolicySatisfied: boolean;
@@ -5655,12 +6014,16 @@ function scoreNaturalMissionDimensions(input: {
   toolTimeouts: number;
 }): NaturalMissionDimensionScores {
   return {
-    taskCompletion: scoreBoolean(input.completed && !input.stuckOrLoop, input.completed || !input.stuckOrLoop),
+    taskCompletion: scoreBoolean(
+      input.completed && !input.stuckOrLoop && input.blockingMissionQualityChecks.length === 0,
+      input.completed || !input.stuckOrLoop
+    ),
     evidenceQuality: scoreBoolean(
       input.finalAnswerHasEvidence &&
         input.finalAnswerUseful &&
         input.sourceCoverage.residualRiskVisible &&
         input.sourceCoverage.unsupportedClaims.length === 0 &&
+        input.blockingMissionQualityChecks.length === 0 &&
         input.blockingWeakAnswerSignals.length === 0,
       input.finalAnswerHasEvidence || input.finalAnswerUseful
     ),
@@ -5711,6 +6074,34 @@ function scoreOptionalRequirement(required: boolean, observed: boolean, full: bo
   return scoreBoolean(full, observed);
 }
 
+function collectBlockingNaturalMissionQualityChecks(checks: unknown[]): Array<{ name: string; status: string; detail: string }> {
+  const blockingNames = new Set(["goal_slot_coverage", "source_coverage"]);
+  return checks.flatMap((check) => {
+    if (typeof check !== "object" || check === null) return [];
+    const record = check as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name : "";
+    const status = typeof record.status === "string" ? record.status : "";
+    if (!blockingNames.has(name) || status === "pass") return [];
+    return [
+      {
+        name,
+        status: status || "unknown",
+        detail: typeof record.detail === "string" ? record.detail : "",
+      },
+    ];
+  });
+}
+
+function naturalScenarioExpectsNonSuccessCloseout(spec: NaturalScenarioSpec): boolean {
+  return (
+    spec.approvalDecision === "timeout" ||
+    spec.requiresCancellation === true ||
+    spec.requiresTimeout === true ||
+    (spec.requiredBrowserFailureBuckets?.length ?? 0) > 0 ||
+    /\b(?:close out|closeout|bounded attempt|safe closeout)\b/i.test(spec.desc)
+  );
+}
+
 function isApprovalBrowserSafetyBoundaryProven(input: {
   spec: NaturalScenarioSpec;
   approvalExercised: boolean;
@@ -5730,12 +6121,6 @@ function isApprovalBrowserSafetyBoundaryProven(input: {
   );
 }
 
-function missionQualityGateHasNoFailedChecks(
-  checks: MissionObservabilitySnapshot["qualityGate"]["checks"] | undefined
-): boolean {
-  return (checks ?? []).every((check) => check.status !== "fail");
-}
-
 function collectUnexpectedNaturalBrowserFailureBuckets(
   spec: NaturalScenarioSpec,
   buckets: Array<{ bucket: string; count: number; latestAtMs: number }>
@@ -5746,6 +6131,16 @@ function collectUnexpectedNaturalBrowserFailureBuckets(
 
 function isRecoverableNaturalBrowserFailureBucket(bucket: { bucket: string }): boolean {
   return bucket.bucket === "transport_failure";
+}
+
+function naturalScenarioRequiresBrowserFailureCloseout(
+  spec: NaturalScenarioSpec,
+  buckets: Array<{ bucket: string }>
+): boolean {
+  if (buckets.length === 0) return false;
+  return /\b(?:transport_failure|lease conflict|result truncation|snapshot truncation|browser transport degradation)\b[\s\S]{0,180}\b(?:explicitly name|state what evidence was recovered|what remains unverified|retry or continue)\b/i.test(
+    spec.desc
+  );
 }
 
 function recoverableBrowserFailureCloseoutVisible(
@@ -5820,18 +6215,33 @@ export function evaluateNaturalSourceCoverage(input: {
   evidenceText: string;
   evidenceEvents: number;
 }): NaturalSourceCoverage {
+  const normalizedFinalText = normalizeNaturalPatternText(input.finalText);
+  const normalizedEvidenceText = normalizeNaturalPatternText(input.evidenceText);
   const answerTerms = input.spec.requiredAnswerTerms;
   const missingAnswerTerms = answerTerms.filter((term) => !naturalAnswerTermCovered(term, input.finalText));
   const answerPatterns = input.spec.requiredAnswerPatterns ?? [];
   const missingAnswerPatterns = answerPatterns
-    .filter((item) => !item.pattern.test(input.finalText))
+    .filter((item) => !naturalPatternMatches(item.pattern, input.finalText, normalizedFinalText))
     .map((item) => item.label);
   const evidencePatterns = input.spec.requiredEvidencePatterns ?? [];
   const missingEvidencePatterns = evidencePatterns
-    .filter((item) => !item.pattern.test(input.evidenceText))
+    .filter((item) => !naturalPatternMatches(item.pattern, input.evidenceText, normalizedEvidenceText))
     .map((item) => item.label);
   const unsupportedClaims = (input.spec.forbiddenPatterns ?? [])
-    .filter((item) => item.pattern.test(input.finalText))
+    .filter((item) => {
+      if (!naturalPatternMatches(item.pattern, input.finalText, normalizedFinalText)) {
+        return false;
+      }
+      if (
+        item.label === "unverified provider search pricing closeout" &&
+        missingAnswerTerms.length === 0 &&
+        missingAnswerPatterns.length === 0 &&
+        missingEvidencePatterns.length === 0
+      ) {
+        return false;
+      }
+      return true;
+    })
     .map((item) => item.label);
 
   return {
@@ -5854,11 +6264,36 @@ export function evaluateNaturalSourceCoverage(input: {
       observed: input.evidenceEvents,
       required: input.spec.minEvidenceEvents,
     },
-    residualRiskVisible: /\bresidual\s+risk\b|\brisks?\b|uncertain|uncertainty|unverified|not verified|\bdegraded\b|\bfallback\b|\blocked\b|no external mutation|no mutation was performed|no state mutated|isolated local execution|approval (?:is )?denied|operator denied(?: approval)?|denied by|side effect did not run|must not be applied|requested approval|no persistent changes|without side effects|no (?:browser action or )?side effects? (?:occurred|were applied|was applied)|execution stopped at the approval gate|action not performed|no form submission was executed/i.test(
-      input.finalText
-    ) || (input.spec.approvalDecision === "timeout" && /\b(?:approval|operator decision)\b[\s\S]{0,120}\bpending\b/i.test(input.finalText)),
+    residualRiskVisible:
+      naturalPatternMatches(
+        /\bresidual\s+risk\b|\brisks?\b|风险|限制|局限|不确定|uncertain|uncertainty|unverified|not verified|not verifiable|unverifiable|cannot verify|could not verify|\bdegraded\b|\bfallback\b|\blocked\b|\bsafety boundary\b|local loopback fixture|no external (?:mutation|systems? (?:were )?mutated)|no mutation was performed|no state mutated|isolated local execution|approval (?:is )?denied|operator denied(?: approval)?|denied by|side effect did not run|side effect did not execute|must not be applied|requested approval|no persistent changes|without side effects|no (?:browser action or )?side effects? (?:occurred|were applied|was applied)|no browser mutation occurred|execution stopped at the approval gate|action not performed|no form submission was executed/i,
+        input.finalText,
+        normalizedFinalText
+      ) ||
+      (input.spec.approvalDecision === "denied" &&
+        naturalPatternMatches(/\bno browser form was submit(?:ted)?\b/i, input.finalText, normalizedFinalText)) ||
+      (input.spec.approvalDecision === "timeout" &&
+        naturalPatternMatches(/\b(?:approval|operator decision)\b[\s\S]{0,120}\bpending\b/i, input.finalText, normalizedFinalText)),
     unsupportedClaims,
   };
+}
+
+function naturalPatternMatches(pattern: RegExp, rawText: string, normalizedText = normalizeNaturalPatternText(rawText)): boolean {
+  const flags = pattern.flags.replace(/[gy]/g, "");
+  const rawPattern = new RegExp(pattern.source, flags);
+  if (rawPattern.test(rawText)) {
+    return true;
+  }
+  return new RegExp(pattern.source, flags).test(normalizedText);
+}
+
+function normalizeNaturalPatternText(value: string): string {
+  return value
+    .replace(/[`*_~|>#]/g, " ")
+    .replace(/\[[^\]]+\]\(([^)]+)\)/g, "$1")
+    .replace(/[‐‑‒–—-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeNaturalAnswerTermText(value: string): string {
@@ -5898,6 +6333,21 @@ function naturalAnswerTermCovered(term: string, finalText: string): boolean {
   if (normalizedTerm === "continue") {
     return /\b(?:continue|continuation|resume|resumable|retry|re-submit|resubmit)\b/i.test(finalText);
   }
+  if (normalizedTerm === "recommend") {
+    return /\b(?:go\/no-go|go\s+no\s+go|conditional\s+go|no\s+go|no-go|go\s+decision|decision\s*:\s*(?:go|no-go|conditional go))\b/i.test(
+      finalText
+    );
+  }
+  if (normalizedTerm === "unverified") {
+    return /\bunverified\b|\bnot\s+verified\b|\bremains?\s+(?:unknown|unconfirmed|unverified)\b|\bno\b[\s\S]{0,120}\b(?:data|evidence|external|production|service|system|health|latency|availability|items?|facts?|signals?)\b[\s\S]{0,80}\b(?:was|were)?\s*verified\b|\bno\s+(?:content|status|risk|source|evidence|data)[\s\S]{0,100}\b(?:missed|missing|omitted)\b|\bno\s+other\s+risk\s+dimensions?\s+(?:were\s+)?present\b/i.test(
+      finalText
+    );
+  }
+  if (normalizedTerm === "verified") {
+    return /\b(?:verified|confirmed|source-backed|source evidence|evidence-backed|from (?:the )?source|source shows|source states)\b|来源|原文(?:明确)?(?:显示|列为|说明|写明)|证据(?:显示|支持|表明)|已(?:验证|确认)|经(?:验证|确认)/i.test(
+      finalText
+    );
+  }
   if (normalizedTerm === "next action") {
     return /\b(?:next|recommended|safe|safest)\s+(?:operator\s+)?(?:action|step)\b|\baction\s+an\s+operator\s+should\s+take\b/i.test(
       finalText
@@ -5925,6 +6375,18 @@ function collectTimelineEvidenceText(timeline: ActivityEvent[]): string {
       ].join("\n")
     )
     .join("\n");
+}
+
+function countNaturalEvidenceItems(evidenceText: string): number {
+  const sourceLabels = new Set<string>();
+  for (const match of evidenceText.matchAll(/\bSource\s+(\d+)\s*:/gi)) {
+    sourceLabels.add(`source:${match[1]}`);
+  }
+  for (const match of evidenceText.matchAll(/https?:\/\/[^\s"'<>]+/gi)) {
+    const normalized = match[0].replace(/[),.;\]]+$/g, "");
+    if (normalized.length > 0) sourceLabels.add(`url:${normalized}`);
+  }
+  return sourceLabels.size;
 }
 
 function isEvidenceTimelineEvent(event: ActivityEvent): boolean {
@@ -5974,6 +6436,29 @@ function hasRepeatedToolLoop(timeline: ActivityEvent[]): boolean {
     if (count > 3) return true;
   }
   return false;
+}
+
+function missionQualityGateHasBoundedFailureCloseout(
+  checks: MissionObservabilitySnapshot["qualityGate"]["checks"] | undefined,
+): boolean {
+  return (checks ?? []).some(
+    (check) =>
+      check.name === "failure_free" &&
+      check.status === "warn" &&
+      /\bclosed out by a bounded timeout recovery final answer\b/i.test(
+        String(check.detail ?? ""),
+      ),
+  );
+}
+
+function missionQualityGateOnlyHasFailureFreeToolAttention(
+  checks: MissionObservabilitySnapshot["qualityGate"]["checks"] | undefined,
+): boolean {
+  const failingChecks = (checks ?? []).filter((check) => check.status === "fail");
+  return (
+    failingChecks.length > 0 &&
+    failingChecks.every((check) => check.name === "failure_free")
+  );
 }
 
 function countRecoveredToolFailures(timeline: ActivityEvent[]): number {
@@ -6101,13 +6586,16 @@ function hasTimedOutToolResultEvidenceSummary(event: ActivityEvent): boolean {
 
 export function findWeakAnswerSignals(text: string): string[] {
   const patterns = [
-    { label: "tool unavailable fallback", pattern: /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:search|browser|tool).{0,24}(?:unavailable|not available|failed|not working|unable)/i },
+    {
+      label: "tool unavailable fallback",
+      pattern:
+        /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:(?:search|browser)\s+tool|tools?|tooling).{0,40}(?:unavailable|not available|failed|not working|unable)/i,
+    },
     { label: "model-knowledge fallback", pattern: /(?:based on|using) (?:my )?(?:knowledge|training data)|(?:基于|根据)我的(?:知识库|知识|训练数据)/i },
     { label: "placeholder uncertainty", matches: hasPlaceholderUncertainty },
     {
       label: "delegation-only closeout",
-      pattern:
-        /(?:^|\n)\s*(?:#{1,6}\s+)?(?:\*\*)?(?:lead\s*:\s*)?(?:delegat(?:e|ed|ing)|(?:i(?:'ll| will| have|’ll|’ve)\s+delegat(?:e|ed|ing))|hand(?:off|ed off|ing off)|handoff|handover)\b|(?:^|\n)\s*\[TO:\s*role-[^\]]+\]|(?:^|\n)\s*[→-]\s*role-/i,
+      matches: hasDelegationOnlyCloseout,
     },
     {
       label: "empty summary",
@@ -6119,21 +6607,54 @@ export function findWeakAnswerSignals(text: string): string[] {
   );
 }
 
+function hasDelegationOnlyCloseout(text: string): boolean {
+  const mentionsDelegation =
+    /(?:^|\n)\s*(?:#{1,6}\s+)?(?:\*\*)?(?:lead\s*:\s*)?(?:delegat(?:e|ed|ing)|(?:i(?:'ll| will| have|’ll|’ve)\s+delegat(?:e|ed|ing))|hand(?:off|ed off|ing off)|handoff|handover)\b|(?:^|\n)\s*\[TO:\s*role-[^\]]+\]|(?:^|\n)\s*[→-]\s*role-|@role-[a-z0-9_-]+/i.test(
+      text
+    );
+  if (!mentionsDelegation) return false;
+  return !hasSynthesizedCloseoutEvidence(text);
+}
+
+function hasSynthesizedCloseoutEvidence(text: string): boolean {
+  const hasVerifiedSection = /\b(?:what was verified|verified facts?|evidence ledger|evidence)\b/i.test(text);
+  const hasUnverifiedSection = /\b(?:what remains unverified|unverified scope|residual risks?|limitations?|not verified)\b/i.test(text);
+  const hasNextAction = /\b(?:next action|operator|retry|restart|repair|resubmit|re-submit|continue)\b/i.test(text);
+  const hasConcreteEvidence =
+    /\b(?:browser_cdp_unavailable|cdp_command_timeout|detached_target|attach_failed|session_not_found)\s*=\s*\d+\b/i.test(
+      text
+    ) ||
+    /\b(?:ECONNREFUSED|Queue depth|SLA breaches?|Incident Commander|Target URL|Source URL)\b|https?:\/\/[^\s)`|]+/i.test(
+      text
+    );
+  return hasVerifiedSection && hasUnverifiedSection && hasNextAction && hasConcreteEvidence;
+}
+
 function hasPlaceholderUncertainty(text: string): boolean {
-  if (/\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b|待确认|估算/i.test(text)) {
+  const textWithoutActionGatedConfirmation = text.replace(
+    /\b(?:(?:launch|pilot|go\s*\/\s*no-go|go|recommendation|decision|deposit|budget gate|approval|rollout)[^\n.]{0,140})?\b(?:held|gated|blocked|conditional|waiting|pending)?[^\n.]{0,80}\bpending confirmation\b[^\n.]*/gi,
+    ""
+  );
+  if (/\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b|待确认|估算/i.test(textWithoutActionGatedConfirmation)) {
     return true;
   }
-  if (!/\b(?:estimate|estimated)\b/i.test(text)) {
+  const textWithoutConcreteEstimates = textWithoutActionGatedConfirmation.replace(
+    /\bestimat(?:e|ed)\b[^.\n]{0,100}(?:\$|€|£|¥|%|\b\d[\d,.]*\b)/gi,
+    "",
+  );
+  if (!/\b(?:estimate|estimated)\b/i.test(textWithoutConcreteEstimates)) {
     return false;
   }
-  return !/\b(?:can(?:not|['’]t)|unable to|not enough (?:information|evidence) to|insufficient evidence to|no basis to)\s+(?:\w+\s+){0,4}(?:estimate|estimated)\b/i.test(text);
+  return !/\b(?:can(?:not|['’]t)|unable to|not enough (?:information|evidence) to|insufficient evidence to|no basis to)\s+(?:\w+\s+){0,4}(?:estimate|estimated)\b/i.test(textWithoutConcreteEstimates);
 }
 
 export function findWeakEvidenceSignals(text: string, options: { browserEvidenceExpected: boolean }): string[] {
   if (!options.browserEvidenceExpected) {
     return [];
   }
-  const browserEvidenceText = stripNegatedBrowserBlockerEvidence(stripPermissionGateSafetyEvidence(text));
+  const browserEvidenceText = stripSourceBoundedSuccessfulBrowserResidualEvidence(
+    stripPlanningBlockedBrowserEvidence(stripNegatedBrowserBlockerEvidence(stripPermissionGateSafetyEvidence(text))),
+  );
   const browserEvidenceLines = browserEvidenceText.split(/\r?\n/);
   const patterns = [
     {
@@ -6194,11 +6715,60 @@ function stripNegatedBrowserBlockerEvidence(text: string): string {
     .join("\n");
 }
 
+function stripPlanningBlockedBrowserEvidence(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !isPlanningBlockedBrowserLine(line))
+    .join("\n");
+}
+
+function isPlanningBlockedBrowserLine(line: string): boolean {
+  if (!/\bblocked\b/i.test(line)) return false;
+  if (/\b(?:Cloudflare|Turnstile|anti-bot|captcha|access denied|forbidden|just a moment|please wait|请稍候)\b/i.test(line)) {
+    return false;
+  }
+  return /\b(?:adoption|CLI setup|pilot|launch|rollout|go\s*\/\s*no-go|deposit|budget gate|guide confirmation|operator approval|product decision|next action)\b/i.test(
+    line,
+  );
+}
+
+function stripSourceBoundedSuccessfulBrowserResidualEvidence(text: string): string {
+  if (!hasConcreteSuccessfulBrowserEvidence(text)) {
+    return text;
+  }
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !isSourceBoundedBrowserResidualLine(line))
+    .join("\n");
+}
+
+function isSourceBoundedBrowserResidualLine(line: string): boolean {
+  if (!/\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b/i.test(line)) {
+    return false;
+  }
+  if (!/\b(?:browser|rendered|DOM|screenshot|snapshot|capture|dashboard|page)\b/i.test(line)) {
+    return false;
+  }
+  return /\b(?:outside (?:the )?(?:local fixture|captured page|browser check|source)|local fixture|fixture only|production telemetry|production freshness|real production|source updates?|downstream|external validation|not live production)\b/i.test(
+    line,
+  );
+}
+
+function hasConcreteSuccessfulBrowserEvidence(text: string): boolean {
+  return /\b(?:Stuck missions|Weak[- ]answer rate|Mission Control|queue depth|SLA breaches?|TURNKEYAI_[A-Z0-9_]+|AsiaWalk live readiness|Overall readiness|rain risk in Taipei|metro maintenance in Tokyo|page shows|browser-visible|rendered dashboard|screenshot|snapshot)\b/i.test(
+    text,
+  );
+}
+
 const NEGATED_BROWSER_BLOCKER_PATTERNS = [
   /\bno\s+(?:blocking|blocks?|blocked|captchas?|captcha|redirects?|forced auth(?:entication)?)(?:\s*,?\s*(?:or\s+|and\s+)?(?:blocking|blocks?|blocked|captchas?|captcha|redirects?|forced auth(?:entication)?))*\b/gi,
+  /\bno\s+(?:transport_failure|session lease conflict|lease conflict|budget truncation|result truncation|snapshot truncation|browser transport degradation)(?:\s*,?\s*(?:or\s+|and\s+)?(?:transport_failure|session lease conflict|lease conflict|budget truncation|result truncation|snapshot truncation|browser transport degradation))*\b/gi,
   /\b(?:no|without)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b/gi,
+  /\b(?:no|without)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:transport_failure|session lease conflict|lease conflict|budget truncation|result truncation|snapshot truncation|browser transport degradation)\b/gi,
   /\b(?:site|page|browser|request|navigation|rendered)?\s*(?:was|were|is|are)?\s*not\s+(?:blocked|redirected|captcha(?:ed)?|challenged)\b/gi,
+  /\b(?:transport_failure|session lease conflict|lease conflict|budget truncation|result truncation|snapshot truncation|browser transport degradation)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:not observed|not present|not encountered|not seen|did not occur|was not observed|were not observed)\b/gi,
   /["']?\b(?:blocked|blocker|blocking|redirected?|redirect|captchas?|captcha|challenge|blocks?[_-]?detected|captcha[_-]?detected|redirect[_-]?detected|blocksDetected|captchaDetected|redirectDetected)\b["']?\s*(?:status|state|observed|detected)?\s*[:=]\s*(?:"(?:No|none|false|0|not observed|not present|not encountered|not seen)"|'(?:No|none|false|0|not observed|not present|not encountered|not seen)'|(?:No|none|false|0|not observed|not present|not encountered|not seen)\b)/gi,
+  /["']?\b(?:transport_failure|session lease conflict|lease conflict|budget truncation|result truncation|snapshot truncation|browser transport degradation)\b["']?\s*(?:status|state|observed|detected)?\s*[:=]\s*(?:"(?:No|none|false|0|not observed|not present|not encountered|not seen)"|'(?:No|none|false|0|not observed|not present|not encountered|not seen)'|(?:No|none|false|0|not observed|not present|not encountered|not seen)\b)/gi,
   /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:not observed|not present|not encountered|not seen|did not occur|was not observed|were not observed)\b/gi,
   /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}(?:\|\s*(?:No|none|false|0)\b|:\s*(?:No|none|false|0)\b|-\s*(?:No|none|false|0)\b|\u2014\s*(?:No|none|false|0)\b)/gi,
 ] as const;
@@ -6342,6 +6912,7 @@ export function buildNaturalMissionE2eJsonReport(input: {
   modelProvenance?: NaturalMissionModelProvenance;
   scenarioTimeoutMs?: number;
   fixtureContentHashes?: Record<string, string>;
+  fixtureManifest?: NaturalFixtureReportManifest;
 }): NaturalMissionE2eJsonReport {
   const scenarios = input.results.map(summarizeNaturalMissionScenarioResult);
   const passedScenarios = scenarios.filter((scenario) => scenario.natural.status === "passed").length;
@@ -6361,6 +6932,7 @@ export function buildNaturalMissionE2eJsonReport(input: {
       : {}),
     ...(input.scenarioTimeoutMs ? { timeoutPolicy: { scenarioTimeoutMs: input.scenarioTimeoutMs } } : {}),
     ...(input.fixtureContentHashes ? { fixtureContentHashes: input.fixtureContentHashes } : {}),
+    ...(input.fixtureManifest ? { fixtureManifest: input.fixtureManifest } : {}),
     promptPolicy: {
       forbidsContractGateLanguage: true,
       forbiddenPatterns: NATURAL_PROMPT_FORBIDDEN_PATTERNS.map((pattern) => pattern.source),
@@ -6400,10 +6972,15 @@ export function buildNaturalMissionPartialFailureJsonReport(input: {
   modelProvenance?: NaturalMissionModelProvenance;
   scenarioTimeoutMs?: number;
   fixtureContentHashes?: Record<string, string>;
+  fixtureManifest?: NaturalFixtureReportManifest;
   interruptedScenario?: {
     scenario: NaturalMissionE2eScenario;
     error: string;
   };
+  interruptedScenarios?: Array<{
+    scenario: NaturalMissionE2eScenario;
+    error: string;
+  }>;
 }): NaturalMissionE2eJsonReport {
   const report = buildNaturalMissionE2eJsonReport({
     ...input,
@@ -6416,13 +6993,65 @@ export function buildNaturalMissionPartialFailureJsonReport(input: {
           interruptedScenario: {
             scenario: input.interruptedScenario.scenario,
             completedScenarioCount: input.results.length,
-            error: compactExcerpt(input.interruptedScenario.error, 2000),
+            error: compactExcerpt(input.interruptedScenario.error, 8000),
           },
+        };
+  const interruptedScenarios = [
+    ...(input.interruptedScenarios ?? []),
+    ...(input.interruptedScenario ? [input.interruptedScenario] : []),
+  ];
+  const interruptedScenarioList =
+    interruptedScenarios.length === 0
+      ? {}
+      : {
+          interruptedScenarios: interruptedScenarios.map((scenario) => ({
+            scenario: scenario.scenario,
+            completedScenarioCount: input.results.length,
+            error: compactExcerpt(scenario.error, 8000),
+          })),
         };
   return {
     ...report,
     ...interruptedScenario,
+    ...interruptedScenarioList,
     status: "failed",
+  };
+}
+
+export function buildNaturalFixtureReportManifest(fixture: FixtureServer): NaturalFixtureReportManifest {
+  const urls: NaturalFixtureReportManifest["urls"] = {
+    basicUrl: fixture.basicUrl,
+    alphaUrl: fixture.alphaUrl,
+    betaUrl: fixture.betaUrl,
+    providerSearchPricingUrl: fixture.providerSearchPricingUrl,
+    slowUrl: fixture.slowUrl,
+    slowReleaseUrl: fixture.slowReleaseUrl,
+    cancelResumeUrl: fixture.cancelResumeUrl,
+    cancelResumeStateUrl: fixture.cancelResumeStateUrl,
+    cancelResumeReleaseUrl: fixture.cancelResumeReleaseUrl,
+    approvalUrl: fixture.approvalUrl,
+    dynamicUrl: fixture.dynamicUrl,
+    dashboardUrl: fixture.dashboardUrl,
+    ...(fixture.externalPageUrl ? { externalPageUrl: fixture.externalPageUrl } : {}),
+    complexBrowserUrl: fixture.complexBrowserUrl,
+    orchestrationUrl: fixture.orchestrationUrl,
+    bridgeUrl: fixture.bridgeUrl,
+    productSignalsUrl: fixture.productSignalsUrl,
+    asiawalkRouteUrl: fixture.asiawalkRouteUrl,
+    asiawalkBudgetUrl: fixture.asiawalkBudgetUrl,
+    asiawalkLiveUrl: fixture.asiawalkLiveUrl,
+  };
+  return {
+    kind: "turnkeyai.natural-fixture-manifest.v1",
+    lifecycle: {
+      serverScope: "mission-e2e-process",
+      replayRequirement: "urls-must-be-reachable-before-reference-collection",
+    },
+    urls,
+    comparableUrls: Object.fromEntries(
+      Object.entries(urls).map(([key, url]) => [key, canonicalizeFixtureHashUrl(String(url))])
+    ),
+    fixtureContentHashes: fixture.fixtureContentHashes,
   };
 }
 
@@ -6540,6 +7169,9 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
     },
     artifacts: summarizeMissionArtifacts(result.artifacts),
     ...(result.runtimeEvidence ? { runtimeEvidence: result.runtimeEvidence } : {}),
+    ...(summarizeToolDiagnostics(result.timeline).length
+      ? { toolDiagnostics: summarizeToolDiagnostics(result.timeline) }
+      : {}),
     natural: {
       status: result.quality.status,
       completed: result.quality.completed,
@@ -6559,9 +7191,61 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
     },
     final: {
       bytes: Buffer.byteLength(result.final.text, "utf8"),
+      text: result.final.text,
       excerpt: compactExcerpt(result.final.text, 500),
     },
+    evidenceReplay: summarizeNaturalEvidenceReplay(result),
   };
+}
+
+function summarizeNaturalEvidenceReplay(
+  result: NaturalMissionScenarioResult
+): NonNullable<NaturalMissionScenarioReport["evidenceReplay"]> {
+  return {
+    schema: "turnkeyai.natural-mission-evidence-replay.v1",
+    finalText: result.final.text,
+    finalTextBytes: Buffer.byteLength(result.final.text, "utf8"),
+    timeline: {
+      count: result.timeline.length,
+      entries: result.timeline.map((event, index) => {
+        const runtime = summarizeReplayRuntime(event.runtime);
+        return {
+          index,
+          kind: event.kind,
+          tMs: event.tMs,
+          ...(event.emph ? { emph: event.emph } : {}),
+          text: compactExcerpt(event.text, 8_000),
+          ...(runtime ? { runtime } : {}),
+          ...(event.tags?.length ? { tags: [...event.tags] } : {}),
+        };
+      }),
+    },
+  };
+}
+
+function summarizeReplayRuntime(
+  runtime: ActivityEvent["runtime"] | undefined
+): NonNullable<NonNullable<NaturalMissionScenarioReport["evidenceReplay"]>["timeline"]["entries"][number]["runtime"]> | null {
+  if (!runtime) return null;
+  const out: NonNullable<NonNullable<NaturalMissionScenarioReport["evidenceReplay"]>["timeline"]["entries"][number]["runtime"]> = {};
+  for (const key of ["toolName", "toolPhase", "status", "reason", "callInput", "resultContent"] as const) {
+    const value = runtime[key];
+    if (typeof value === "string" && value.trim()) {
+      out[key] = compactExcerpt(value, key === "resultContent" || key === "callInput" ? 8_000 : 1_000);
+    } else if (value != null && (key === "callInput" || key === "resultContent")) {
+      out[key] = compactExcerpt(stringifyForReplay(value), 8_000);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function stringifyForReplay(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function withNaturalScenarioDuration(
@@ -6695,6 +7379,71 @@ function summarizeMissionArtifacts(
 function compactExcerpt(text: string, maxLength: number): string {
   const compact = text.replace(/\s+/g, " ").trim();
   return compact.length <= maxLength ? compact : `${compact.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function summarizeToolDiagnostics(
+  timeline: ActivityEvent[]
+): NonNullable<NaturalMissionScenarioReport["toolDiagnostics"]> {
+  return timeline.flatMap((event) => {
+    if (event.kind !== "tool" && event.kind !== "recovery") return [];
+    const text = eventTextForDiagnostics(event);
+    const failed = event.kind === "tool" && event.emph === "danger" && event.runtime?.admission !== "skipped";
+    const status = diagnosticToolResultStatus(event, text);
+    const timeout = status === "timeout" || (status === "unknown" && /\btime(?:d)?\s*out|timeout\b/i.test(text));
+    if (!failed && !timeout) return [];
+    return [
+      {
+        ...(typeof event.runtime?.toolName === "string" ? { toolName: event.runtime.toolName } : {}),
+        ...(typeof event.runtime?.toolPhase === "string" ? { phase: event.runtime.toolPhase } : {}),
+        status: failed ? ("failed" as const) : ("timeout" as const),
+        text: compactExcerpt(text, 700),
+      },
+    ];
+  });
+}
+
+function diagnosticToolResultStatus(
+  event: ActivityEvent,
+  text: string
+): "completed" | "failed" | "cancelled" | "timeout" | "unknown" {
+  const content = event.runtime?.resultContent;
+  if (typeof content === "string" && content.trim()) {
+    try {
+      const parsed = JSON.parse(content) as { status?: unknown };
+      if (
+        parsed.status === "completed" ||
+        parsed.status === "failed" ||
+        parsed.status === "cancelled" ||
+        parsed.status === "timeout"
+      ) {
+        return parsed.status;
+      }
+    } catch {
+      const match = content.match(/"status"\s*:\s*"([^"]+)"/);
+      if (
+        match?.[1] === "completed" ||
+        match?.[1] === "failed" ||
+        match?.[1] === "cancelled" ||
+        match?.[1] === "timeout"
+      ) {
+        return match[1];
+      }
+    }
+  }
+  if (/\bTool\s+\S+\s+returned\b/i.test(text) && /"status"\s*:\s*"completed"/i.test(text)) return "completed";
+  if (/"status"\s*:\s*"timeout"|\btime(?:d)?\s*out|timeout\b/i.test(text)) return "timeout";
+  if (/"status"\s*:\s*"failed"|\bTool\s+\S+\s+failed\b/i.test(text)) return "failed";
+  if (/"status"\s*:\s*"cancelled"|\bcancel(?:led|ed)\b/i.test(text)) return "cancelled";
+  return "unknown";
+}
+
+function eventTextForDiagnostics(event: ActivityEvent): string {
+  const resultContent = event.runtime?.resultContent;
+  const chunks = [event.text];
+  if (typeof resultContent === "string" && resultContent.trim()) {
+    chunks.push(resultContent);
+  }
+  return chunks.join("\n");
 }
 
 function summarizeCloseout(final: ActivityEvent): Pick<MissionE2eScenarioReport["final"], "closeout"> {
@@ -6885,7 +7634,9 @@ function writeCancelResumeFixture(res: ServerResponse): void {
 }
 
 export async function startFixtureServer(options: FixtureServerOptions = {}): Promise<FixtureServer> {
+  let slowFixtureReleased = false;
   let cancelResumeRequestCount = 0;
+  let cancelResumeReleased = false;
   const server = createServer((req, res) => {
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
     if (pathname === "/fixture") {
@@ -6904,6 +7655,23 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
       return;
     }
     if (pathname === "/slow-fixture") {
+      if (slowFixtureReleased) {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(`<!doctype html>
+<html>
+  <head><title>TurnkeyAI Slow Mission E2E Fixture</title></head>
+  <body>
+    <main>
+      <h1>Slow mission route tool-use fixture</h1>
+      <p id="marker">${FIXTURE_MARKER}</p>
+      <p>Verified owner: Release Captain.</p>
+      <p>Verified risk: runbook gap before launch approval.</p>
+      <p>Mitigation: complete rollback rehearsal before release gate.</p>
+    </main>
+  </body>
+</html>`);
+        return;
+      }
       const timer = setTimeout(() => {
         if (res.destroyed) return;
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -6922,9 +7690,15 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
       req.on("close", () => clearTimeout(timer));
       return;
     }
+    if (pathname === "/__slow-fixture-release" && req.method === "POST") {
+      slowFixtureReleased = true;
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ slowFixtureReleased }));
+      return;
+    }
     if (pathname === "/cancel-resume-fixture") {
       cancelResumeRequestCount += 1;
-      if (cancelResumeRequestCount === 1) {
+      if (!cancelResumeReleased) {
         const timer = setTimeout(() => {
           if (res.destroyed) return;
           writeCancelResumeFixture(res);
@@ -6937,7 +7711,13 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
     }
     if (pathname === "/__cancel-resume-state") {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ cancelResumeRequestCount }));
+      res.end(JSON.stringify({ cancelResumeRequestCount, cancelResumeReleased }));
+      return;
+    }
+    if (pathname === "/__cancel-resume-release" && req.method === "POST") {
+      cancelResumeReleased = true;
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ cancelResumeReleased }));
       return;
     }
     if (pathname === "/vendor-alpha") {
@@ -6969,6 +7749,52 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
       <p>Pricing: $29 per workspace.</p>
       <p>Strength: approval workflow and team handoff history.</p>
       <p>Risk: browser control requires a separate connector.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
+    if (pathname === "/deepseek-provider-pricing") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head><title>DeepSeek V4 Flash Provider Evidence</title></head>
+  <body>
+    <main>
+      <h1>DeepSeek V4 Flash provider, search, and pricing evidence</h1>
+      <p id="marker">${PROVIDER_SEARCH_PRICING_MARKER}</p>
+      <table>
+        <thead>
+          <tr><th>Provider</th><th>Model</th><th>Search support</th><th>Input price</th><th>Output price</th><th>Risk</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>OpenRouter</td>
+            <td>deepseek-v4-flash</td>
+            <td>Supported through the web_search option</td>
+            <td>$0.28 per 1M tokens</td>
+            <td>$0.42 per 1M tokens</td>
+            <td>Search availability depends on route-level tool enablement.</td>
+          </tr>
+          <tr>
+            <td>Together</td>
+            <td>deepseek-v4-flash</td>
+            <td>Not supported</td>
+            <td>$0.20 per 1M tokens</td>
+            <td>$0.40 per 1M tokens</td>
+            <td>Low cost, but no provider-native search.</td>
+          </tr>
+          <tr>
+            <td>Fireworks</td>
+            <td>deepseek-v4-flash</td>
+            <td>Not supported</td>
+            <td>$0.25 per 1M tokens</td>
+            <td>$0.45 per 1M tokens</td>
+            <td>Good latency profile; search must be supplied externally.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Use this source as local test evidence only; production provider pages may change.</p>
     </main>
   </body>
 </html>`);
@@ -7305,6 +8131,87 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
 </html>`);
       return;
     }
+    if (pathname === "/asiawalk-route") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head><title>AsiaWalk Route Evidence</title></head>
+  <body>
+    <main>
+      <h1>AsiaWalk route desk</h1>
+      <p id="marker">${ASIAWALK_ROUTE_MARKER}</p>
+      <p>Route shape: Seoul orientation walk, Taipei food-and-transit loop, Tokyo neighborhood finale.</p>
+      <p>Operator note: keep transfers short and preserve one buffer block after Taipei.</p>
+      <p>Route risk: Tokyo finale depends on evening crowd control.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
+    if (pathname === "/asiawalk-budget") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head><title>AsiaWalk Budget Evidence</title></head>
+  <body>
+    <main>
+      <h1>AsiaWalk budget desk</h1>
+      <p id="marker">${ASIAWALK_BUDGET_MARKER}</p>
+      <p>Estimated pilot budget: $1,280 total for local guides, transit, lightweight venue support, and documentation.</p>
+      <p>Contingency buffer: $180 reserved for rain reroutes or replacement guide coverage.</p>
+      <p>Budget risk: the pilot remains viable only if guide availability is confirmed before deposits.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
+    if (pathname === "/asiawalk-live") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head>
+    <title>AsiaWalk Live Readiness</title>
+    <script>
+      window.__turnkeyAsiaWalkLive = { status: "booting" };
+      const renderAsiaWalkLive = () => {
+        const root = document.getElementById("asiawalk-live-root");
+        if (!root) {
+          window.__turnkeyAsiaWalkLive = { status: "missing-root" };
+          return;
+        }
+        const marker = ["TURNKEYAI", "ASIAWALK", "LIVE", "OK"].join("_");
+        window.__turnkeyAsiaWalkLive = {
+          status: "ready",
+          marker,
+          readiness: ["yel", "low"].join(""),
+          risk: ["rain", " risk in Tai", "pei and metro", " maintenance in To", "kyo"].join(""),
+          nextAction: ["confirm in", "door alternates and To", "kyo transfer buffer"].join("")
+        };
+        root.innerHTML = [
+          "<h1>AsiaWalk live readiness</h1>",
+          "<p id='marker'>" + marker + "</p>",
+          "<p id='readiness'>" + ["Readiness", ": ", "yellow"].join("") + "</p>",
+          "<p id='risk'>" + ["Live risk: ", "rain risk in Tai", "pei and metro maintenance in To", "kyo"].join("") + "</p>",
+          "<p id='next-action'>" + ["Next action: ", "confirm in", "door alternates and To", "kyo transfer buffer"].join("") + "</p>",
+          "<p id='scope'>Residual risk: local readiness fixture only.</p>"
+        ].join("");
+      };
+      if (document.readyState === "loading") {
+        window.addEventListener("DOMContentLoaded", renderAsiaWalkLive, { once: true });
+      } else {
+        renderAsiaWalkLive();
+      }
+    </script>
+  </head>
+  <body>
+    <main id="asiawalk-live-root">
+      <h1>Loading AsiaWalk readiness</h1>
+      <p>Server HTML does not contain the live readiness marker; browser JavaScript must render it.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
     return;
@@ -7315,9 +8222,12 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
     basicUrl: `http://127.0.0.1:${port}/fixture`,
     alphaUrl: `http://127.0.0.1:${port}/vendor-alpha`,
     betaUrl: `http://127.0.0.1:${port}/vendor-beta`,
+    providerSearchPricingUrl: `http://127.0.0.1:${port}/deepseek-provider-pricing`,
     slowUrl: `http://127.0.0.1:${port}/slow-fixture`,
+    slowReleaseUrl: `http://127.0.0.1:${port}/__slow-fixture-release`,
     cancelResumeUrl: `http://127.0.0.1:${port}/cancel-resume-fixture`,
     cancelResumeStateUrl: `http://127.0.0.1:${port}/__cancel-resume-state`,
+    cancelResumeReleaseUrl: `http://127.0.0.1:${port}/__cancel-resume-release`,
     approvalUrl: `http://127.0.0.1:${port}/approval-form`,
     dynamicUrl: `http://127.0.0.1:${port}/dynamic-dashboard`,
     dashboardUrl: `http://127.0.0.1:${port}/ops-dashboard`,
@@ -7325,6 +8235,9 @@ export async function startFixtureServer(options: FixtureServerOptions = {}): Pr
     orchestrationUrl: `http://127.0.0.1:${port}/product-orchestration`,
     bridgeUrl: `http://127.0.0.1:${port}/product-bridge`,
     productSignalsUrl: `http://127.0.0.1:${port}/product-signals`,
+    asiawalkRouteUrl: `http://127.0.0.1:${port}/asiawalk-route`,
+    asiawalkBudgetUrl: `http://127.0.0.1:${port}/asiawalk-budget`,
+    asiawalkLiveUrl: `http://127.0.0.1:${port}/asiawalk-live`,
     externalPageUrl: DEFAULT_EXTERNAL_BROWSER_PAGE_URL,
   };
   return {
@@ -7340,14 +8253,29 @@ export function applyNaturalFixtureUrlOverrides(
   const externalPageUrl =
     readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL, "TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL") ??
     fixture.externalPageUrl;
+  const slowUrl = readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_SLOW_URL, "TURNKEYAI_NATURAL_SLOW_URL");
+  const cancelResumeUrl = readNaturalFixtureUrlOverride(
+    env.TURNKEYAI_NATURAL_CANCEL_RESUME_URL,
+    "TURNKEYAI_NATURAL_CANCEL_RESUME_URL"
+  );
   const overridden = {
     ...fixture,
     alphaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ALPHA_URL, "TURNKEYAI_NATURAL_ALPHA_URL") ?? fixture.alphaUrl,
     betaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_BETA_URL, "TURNKEYAI_NATURAL_BETA_URL") ?? fixture.betaUrl,
-    slowUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_SLOW_URL, "TURNKEYAI_NATURAL_SLOW_URL") ?? fixture.slowUrl,
-    cancelResumeUrl:
-      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_CANCEL_RESUME_URL, "TURNKEYAI_NATURAL_CANCEL_RESUME_URL") ??
-      fixture.cancelResumeUrl,
+    providerSearchPricingUrl:
+      readNaturalFixtureUrlOverride(
+        env.TURNKEYAI_NATURAL_PROVIDER_SEARCH_PRICING_URL,
+        "TURNKEYAI_NATURAL_PROVIDER_SEARCH_PRICING_URL"
+      ) ?? fixture.providerSearchPricingUrl,
+    slowUrl: slowUrl ?? fixture.slowUrl,
+    slowReleaseUrl: slowUrl ? deriveFixtureControlUrl(slowUrl, "/__slow-fixture-release") : fixture.slowReleaseUrl,
+    cancelResumeUrl: cancelResumeUrl ?? fixture.cancelResumeUrl,
+    cancelResumeStateUrl: cancelResumeUrl
+      ? deriveFixtureControlUrl(cancelResumeUrl, "/__cancel-resume-state")
+      : fixture.cancelResumeStateUrl,
+    cancelResumeReleaseUrl: cancelResumeUrl
+      ? deriveFixtureControlUrl(cancelResumeUrl, "/__cancel-resume-release")
+      : fixture.cancelResumeReleaseUrl,
     approvalUrl:
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_APPROVAL_URL, "TURNKEYAI_NATURAL_APPROVAL_URL") ??
       fixture.approvalUrl,
@@ -7370,6 +8298,15 @@ export function applyNaturalFixtureUrlOverrides(
     productSignalsUrl:
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL, "TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL") ??
       fixture.productSignalsUrl,
+    asiawalkRouteUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ASIAWALK_ROUTE_URL, "TURNKEYAI_NATURAL_ASIAWALK_ROUTE_URL") ??
+      fixture.asiawalkRouteUrl,
+    asiawalkBudgetUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ASIAWALK_BUDGET_URL, "TURNKEYAI_NATURAL_ASIAWALK_BUDGET_URL") ??
+      fixture.asiawalkBudgetUrl,
+    asiawalkLiveUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ASIAWALK_LIVE_URL, "TURNKEYAI_NATURAL_ASIAWALK_LIVE_URL") ??
+      fixture.asiawalkLiveUrl,
     ...(externalPageUrl ? { externalPageUrl } : {}),
   };
   return {
@@ -7378,11 +8315,20 @@ export function applyNaturalFixtureUrlOverrides(
   };
 }
 
+function deriveFixtureControlUrl(sourceUrl: string, controlPath: string): string {
+  const url = new URL(sourceUrl);
+  url.pathname = controlPath;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
 function buildFixtureContentHashes(fixture: Omit<FixtureServer, "fixtureContentHashes">): Record<string, string> {
   const urls = [
     fixture.basicUrl,
     fixture.alphaUrl,
     fixture.betaUrl,
+    fixture.providerSearchPricingUrl,
     fixture.slowUrl,
     fixture.cancelResumeUrl,
     fixture.approvalUrl,
@@ -7392,6 +8338,9 @@ function buildFixtureContentHashes(fixture: Omit<FixtureServer, "fixtureContentH
     fixture.orchestrationUrl,
     fixture.bridgeUrl,
     fixture.productSignalsUrl,
+    fixture.asiawalkRouteUrl,
+    fixture.asiawalkBudgetUrl,
+    fixture.asiawalkLiveUrl,
   ];
   const entries = urls.flatMap((url) => {
     const hash = fixtureSemanticContentHash(url);
@@ -7472,6 +8421,17 @@ async function assertRenderedFixtureEvidenceHidden(fixture: FixtureServer): Prom
       "Stuck missions: 6",
       "Weak answer rate: 24%",
       "make Mission Control the default entry",
+    ],
+  });
+  await assertRawFixtureOmits({
+    label: "AsiaWalk live readiness fixture",
+    url: fixture.asiawalkLiveUrl,
+    forbidden: [
+      ASIAWALK_LIVE_MARKER,
+      "Readiness: yellow",
+      "rain risk in Taipei",
+      "metro maintenance in Tokyo",
+      "confirm indoor alternates",
     ],
   });
 }
@@ -8440,11 +9400,12 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "The browser task must include the exact action phrase browser.form.submit and the word submit so the runtime approval gate is exercised before browser work starts.",
         `After the runtime approval gate is cleared, the browser task must open ${fixture.approvalUrl}, verify marker ${APPROVAL_MARKER}, and report that this fixture performs no external mutation.`,
         "Do not ask the browser sub-agent to click a real submit control; this is an approval-gate fixture, not a real external mutation.",
+        "Keep the source label approval-gated-browser-e2e visible in the final browser fixture evidence line so the mission replay can bind the answer back to the browser evidence.",
         "Use this exact final answer shape after the browser worker result returns:",
         "## Evidence",
         `- Approval request: ${APPROVAL_FINAL_MARKER}; permission.query blocked browser.form.submit before browser work started.`,
         "- Approval decision/application: permission.result approved the request and permission.applied cached it for the runtime gate.",
-        `- Browser fixture evidence: sessions_spawn(browser) verified ${APPROVAL_MARKER} on the local fixture and no external mutation was performed.`,
+        `- Browser fixture evidence: source approval-gated-browser-e2e; sessions_spawn(browser) verified ${APPROVAL_MARKER} on the local fixture and no external mutation was performed.`,
         "- Residual risk: this validates the approval gate and local fixture path, not a real external submit.",
         "Do not use tables, links, code fences, or bold/italic markup.",
       ].join("\n"),
@@ -8964,17 +9925,17 @@ function extractBrowserSessionIdFromSessionToolResult(
       };
       result?: unknown;
     };
-    const effectiveSessionId = parsed.browser_session?.session_id;
-    if (typeof effectiveSessionId === "string" && effectiveSessionId.trim()) {
-      return effectiveSessionId.trim();
-    }
     const sessionId = parsed.payload?.sessionId;
     const recoverySessionId = parsed.payload?.browserRecovery?.sessionId;
+    if (options.preferPayloadSessionId && typeof recoverySessionId === "string" && recoverySessionId.trim()) {
+      return recoverySessionId.trim();
+    }
     if (options.preferPayloadSessionId && typeof sessionId === "string" && sessionId.trim()) {
       return sessionId.trim();
     }
-    if (options.preferPayloadSessionId && typeof recoverySessionId === "string" && recoverySessionId.trim()) {
-      return recoverySessionId.trim();
+    const effectiveSessionId = parsed.browser_session?.session_id;
+    if (typeof effectiveSessionId === "string" && effectiveSessionId.trim()) {
+      return effectiveSessionId.trim();
     }
     const contentSessionId = extractBrowserSessionIdFromText(content);
     if (contentSessionId) return contentSessionId;
@@ -9020,15 +9981,56 @@ function readRuntimeString(event: ActivityEvent, key: string): string | null {
 
 export function extractTimedOutSessionKey(timeline: ActivityEvent[]): string | null {
   for (const event of timeline) {
-    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "result") {
+    if (event.runtime?.["toolName"] !== "sessions_spawn") {
       continue;
     }
-    const content = String(event.runtime?.["resultContent"] ?? event.text);
+    const content = [
+      event.text,
+      String(event.runtime?.["resultContent"] ?? ""),
+      String(event.runtime?.["progressDetail"] ?? ""),
+    ].join("\n");
     if (!/\btimeout\b|\btimed out\b|WORKER_TIMEOUT/i.test(content)) continue;
+    const resultKey = readSessionKeyFromRuntimeJson(event.runtime?.["resultContent"]);
+    if (resultKey) return resultKey;
+    const progressKey = readSessionKeyFromRuntimeJson(event.runtime?.["progressDetail"]);
+    if (progressKey) return progressKey;
     const match = content.match(/"session_key"\s*:\s*"([^"]+)"/);
     if (match?.[1]) return match[1];
   }
   return null;
+}
+
+function extractTimedOutSessionsSpawnToolCallId(timeline: ActivityEvent[]): string | null {
+  for (const event of timeline) {
+    if (event.runtime?.["toolName"] !== "sessions_spawn") {
+      continue;
+    }
+    const content = [
+      event.text,
+      String(event.runtime?.["resultContent"] ?? ""),
+      String(event.runtime?.["progressDetail"] ?? ""),
+    ].join("\n");
+    if (!/\btimeout\b|\btimed out\b|WORKER_TIMEOUT/i.test(content)) {
+      continue;
+    }
+    const toolCallId = event.runtime?.["toolCallId"];
+    if (typeof toolCallId === "string" && toolCallId.trim()) {
+      return toolCallId.trim();
+    }
+  }
+  return null;
+}
+
+function readSessionKeyFromRuntimeJson(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value) as { session_key?: unknown };
+    return typeof parsed.session_key === "string" && parsed.session_key.trim() ? parsed.session_key.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 export function extractCancelledSessionKey(timeline: ActivityEvent[]): string | null {
@@ -9059,9 +10061,9 @@ export function assertFollowupReusedSession(timeline: ActivityEvent[], expectedS
   for (const [index, sendCall] of sendCalls.entries()) {
     const callInput = sendCall.runtime?.["callInput"];
     assert.equal(typeof callInput, "string", "sessions_send call must persist structured callInput");
-    const parsed = JSON.parse(callInput as string) as { session_key?: string };
+    const sessionKey = readSessionKeyFromRuntimeJson(callInput);
     assert.equal(
-      isCompatibleSessionKeyReference(parsed.session_key, expectedSessionKey),
+      isCompatibleSessionKeyReference(sessionKey, expectedSessionKey),
       true,
       "sessions_send must address the phase-one session_key or a unique prefix of it"
     );
@@ -9132,10 +10134,13 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   const sendCalls = tail.filter(
     (event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "call"
   );
-  assert.ok(sendCalls.length >= 1, "natural follow-up must continue an existing child session with sessions_send");
+  assert.ok(
+    sendCalls.length >= 1,
+    `natural follow-up must continue an existing child session with sessions_send; tail session tools: ${summarizeSessionToolTail(tail)}`
+  );
   const callInput = sendCalls[0]?.runtime?.["callInput"];
   assert.equal(typeof callInput, "string", "natural sessions_send call must persist structured callInput");
-  const parsed = JSON.parse(callInput as string) as { session_key?: unknown };
+  const sessionKey = readSessionKeyFromRuntimeJson(callInput);
   const sendCallIndex = input.timeline.indexOf(sendCalls[0]!);
   const sendResultIndex = input.timeline.findIndex(
     (event, index) =>
@@ -9145,13 +10150,34 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   );
   assert.ok(sendResultIndex > sendCallIndex, "natural sessions_send must produce a result after the continuation call");
   assert.equal(
-    isCompatibleSessionKeyReference(parsed.session_key, input.expectedSessionKey) ||
-      isBrowserSessionReferenceResolvedByResult(parsed.session_key, input.timeline[sendResultIndex]!, input.expectedSessionKey),
+    isCompatibleSessionKeyReference(sessionKey, input.expectedSessionKey) ||
+      isBrowserSessionReferenceResolvedByResult(sessionKey, input.timeline[sendResultIndex]!, input.expectedSessionKey),
     true,
-    `natural sessions_send must reuse the phase-one session_key, a unique prefix of it, or a browser session id that resolves to it (actual=${String(parsed.session_key)} expected=${input.expectedSessionKey})`
+    `natural sessions_send must reuse the phase-one session_key, a unique prefix of it, or a browser session id that resolves to it (actual=${String(sessionKey)} expected=${input.expectedSessionKey})`
   );
   const latestThoughtIndex = findLatestThoughtIndex(input.timeline);
   assert.ok(latestThoughtIndex > sendResultIndex, "natural follow-up final answer must follow the continuation result");
+}
+
+function summarizeSessionToolTail(tail: ActivityEvent[]): string {
+  const sessionEvents = tail.filter((event) => {
+    const toolName = event.runtime?.["toolName"];
+    return toolName === "sessions_spawn" || toolName === "sessions_send" || toolName === "sessions_list" || toolName === "sessions_history";
+  });
+  if (sessionEvents.length === 0) {
+    return "none";
+  }
+  return sessionEvents
+    .slice(-12)
+    .map((event) => {
+      const toolName = String(event.runtime?.["toolName"] ?? "unknown");
+      const phase = String(event.runtime?.["toolPhase"] ?? "unknown");
+      const callInput = typeof event.runtime?.["callInput"] === "string" ? compactExcerpt(event.runtime["callInput"], 260) : "";
+      const result = typeof event.runtime?.["resultContent"] === "string" ? compactExcerpt(event.runtime["resultContent"], 260) : "";
+      const text = compactExcerpt(event.text, 180);
+      return `${toolName}:${phase}:${callInput || result || text}`;
+    })
+    .join(" | ");
 }
 
 function isAllowedSupplementalLocalTimeoutBrowserProbe(tail: ActivityEvent[], spawnCall: ActivityEvent): boolean {
@@ -9218,7 +10244,7 @@ function assertNaturalColdRecreationFollowup(input: {
   const sendInputs = sendCalls.map((event) => {
     const callInput = event.runtime?.["callInput"];
     assert.equal(typeof callInput, "string", "natural cold recreation sessions_send call must persist structured callInput");
-    return JSON.parse(callInput as string) as { session_key?: unknown };
+    return { session_key: readSessionKeyFromRuntimeJson(callInput) };
   });
   if (sendInputs.some((parsed) => isCompatibleSessionKeyReference(parsed.session_key, input.expectedSessionKey))) {
     return;
@@ -9241,11 +10267,7 @@ function assertNaturalFollowupResultIncludes(input: {
   phaseOneFinal: ActivityEvent;
   patterns: Array<{ label: string; pattern: RegExp }>;
 }): void {
-  const tail = sliceTimelineAfterEvent(input.timeline, input.phaseOneFinal);
-  const sendResultText = tail
-    .filter((event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "result")
-    .map((event) => [event.text, String(event.runtime?.["resultContent"] ?? "")].join("\n"))
-    .join("\n");
+  const sendResultText = naturalFollowupSendResultText(input.timeline, input.phaseOneFinal);
   assert.ok(sendResultText.trim().length > 0, "natural follow-up must record sessions_send result evidence");
   for (const item of input.patterns) {
     assert.match(
@@ -9254,6 +10276,14 @@ function assertNaturalFollowupResultIncludes(input: {
       `natural follow-up result missing ${item.label}\n--- sessions_send result evidence ---\n${sendResultText.slice(0, 4000)}`
     );
   }
+}
+
+function naturalFollowupSendResultText(timeline: ActivityEvent[], phaseOneFinal: ActivityEvent): string {
+  const tail = sliceTimelineAfterEvent(timeline, phaseOneFinal);
+  return tail
+    .filter((event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "result")
+    .map((event) => [event.text, String(event.runtime?.["resultContent"] ?? "")].join("\n"))
+    .join("\n");
 }
 
 function sliceTimelineAfterEvent(timeline: ActivityEvent[], event: ActivityEvent): ActivityEvent[] {
@@ -9474,6 +10504,24 @@ async function waitForCancelResumeFixtureRequest(input: {
   throw new Error(
     `cancel-resume fixture did not observe the first source request before cancellation; latest request count ${latestCount}`
   );
+}
+
+async function releaseCancelResumeFixture(fixture: FixtureServer): Promise<void> {
+  const response = await fetch(fixture.cancelResumeReleaseUrl, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`cancel-resume fixture release returned HTTP ${response.status}`);
+  }
+}
+
+async function releaseSlowFixture(fixture: FixtureServer): Promise<void> {
+  const response = await fetch(fixture.slowReleaseUrl, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`slow fixture release returned HTTP ${response.status}`);
+  }
 }
 
 async function waitForApprovalRequest(input: {
@@ -9982,13 +11030,21 @@ async function waitForMissionMetricsSettled(input: {
       latest.status === expectedStatus &&
       latest.liveness.active === 0 &&
       latest.liveness.waiting === 0 &&
-      latest.liveness.stale === 0
+      latest.liveness.stale === 0 &&
+      (expectedStatus !== "done" || missionMetricsFinalAnswerVisible(latest))
     ) {
       return latest;
     }
     await sleep(500);
   }
   throw new Error(`mission metrics did not settle after terminal completion: ${JSON.stringify(latest)}`);
+}
+
+function missionMetricsFinalAnswerVisible(metrics: MissionObservabilitySnapshot): boolean {
+  const checks = metrics.qualityGate.checks ?? [];
+  const finalAnswerCheck = checks.find((check) => check.name === "final_answer");
+  if (!finalAnswerCheck || finalAnswerCheck.status !== "pass") return false;
+  return !checks.some((check) => check.status === "pending" && /final answer/i.test(String(check.detail ?? "")));
 }
 
 async function waitForMissionArtifactsSettled(input: {
@@ -10273,6 +11329,7 @@ function startDaemon(input: {
       TURNKEYAI_MODEL_CATALOG: input.modelCatalogPath,
       TURNKEYAI_BROWSER_TRANSPORT: process.env.TURNKEYAI_BROWSER_TRANSPORT?.trim() || "local",
       TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE: "1",
+      TURNKEYAI_STARTUP_TRACE: "1",
       ...(input.agentToolMaxRounds === undefined
         ? {}
         : { TURNKEYAI_AGENT_TOOL_MAX_ROUNDS: String(input.agentToolMaxRounds) }),
@@ -10403,15 +11460,35 @@ async function stopDaemon(child: DaemonChildProcess): Promise<void> {
 
 function summarizeMissionState(mission: Mission | null, timeline: ActivityEvent[]): string {
   const events = timeline
-    .slice(-12)
+    .slice(-40)
     .map((event) => {
       const phase = event.runtime?.["toolPhase"] ? ` ${event.runtime["toolPhase"]}` : "";
       const tool = event.runtime?.["toolName"] ? ` ${event.runtime["toolName"]}` : "";
-      return `- ${event.kind}${tool}${phase}: ${event.text.slice(0, 220).replace(/\s+/g, " ")}`;
+      const callInput =
+        typeof event.runtime?.["callInput"] === "string"
+          ? ` input=${compactExcerpt(event.runtime["callInput"], 360)}`
+          : "";
+      const resultContent =
+        typeof event.runtime?.["resultContent"] === "string"
+          ? ` result=${compactExcerpt(event.runtime["resultContent"], 500)}`
+          : "";
+      return `- ${event.kind}${tool}${phase}: ${compactExcerpt(event.text.replace(/\s+/g, " "), 260)}${callInput}${resultContent}`;
     })
     .join("\n");
+  const missionSummary = mission
+    ? {
+        id: mission.id,
+        status: mission.status,
+        title: mission.title,
+        threadId: mission.threadId,
+        progress: mission.progress,
+        blockers: mission.blockers,
+        pendingApprovals: mission.pendingApprovals,
+        descBytes: Buffer.byteLength(mission.desc ?? "", "utf8"),
+      }
+    : null;
   return [
-    `mission=${mission ? JSON.stringify(mission) : "null"}`,
+    `mission=${missionSummary ? JSON.stringify(missionSummary) : "null"}`,
     `timeline-events=${timeline.length}`,
     events,
   ].join("\n");

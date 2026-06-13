@@ -4,6 +4,7 @@ import test from "node:test";
 import { LLMGateway } from "./gateway";
 import {
   RequestEnvelopeOverflowError,
+  assertRequestEnvelopeWithinLimits,
   buildProviderRequestEnvelopeOverflowError,
   buildRequestEnvelopeDiagnostics,
   isProviderSizeLikeFailure,
@@ -85,6 +86,38 @@ test("request envelope limits resolve per protocol/provider with stricter media 
   assert.ok(openaiLimits.maxInlineImageBytes > anthropicLimits.maxInlineImageBytes);
   assert.ok(openaiLimits.maxToolSchemaBytes > anthropicLimits.maxToolSchemaBytes);
   assert.ok(openaiLimits.maxMultimodalPartCount > anthropicLimits.maxMultimodalPartCount);
+});
+
+test("anthropic-compatible envelope allows the full native tool runtime schema", () => {
+  const diagnostics = assertRequestEnvelopeWithinLimits(
+    {
+      modelId: "minimax-m2",
+      messages: [
+        { role: "system", content: "You are Lead." },
+        { role: "user", content: "Fetch https://example.com with tools." },
+      ],
+      tools: Array.from({ length: 13 }, (_, index) => ({
+        name: `tool_${index}`,
+        description: "test tool",
+        inputSchema: {
+          type: "object",
+          properties: {
+            value: { type: "string" },
+          },
+        },
+      })),
+      toolChoice: "auto",
+    },
+    undefined,
+    {
+      protocol: "anthropic-compatible",
+      providerId: "minimax",
+      model: "MiniMax-M2.7-highspeed",
+    }
+  );
+
+  assert.equal(diagnostics.toolCount, 13);
+  assert.deepEqual(diagnostics.overLimitKeys, []);
 });
 
 test("gateway blocks oversized request envelopes before the protocol client runs", async () => {

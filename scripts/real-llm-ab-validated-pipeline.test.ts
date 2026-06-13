@@ -15,6 +15,13 @@ import {
 const SCENARIOS = ["natural-browser-external-page-review", "natural-browser-complex-page-review"] as const;
 const FIXTURE_URL = "http://127.0.0.1:8765/dashboard?case=validated-pipeline";
 const FIXTURE_CONTENT_HASH = "sha256-validated-pipeline-fixture";
+const REFERENCE_APP = "accio-work-app-asar";
+const REFERENCE_BINARY = "/Applications/Accio.app/Contents/Resources/app.asar";
+const REFERENCE_RUNTIME_ROOT = "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5";
+const REFERENCE_VERSION = "0.4.5";
+const REFERENCE_COMMIT = "app.asar:test-sha";
+const MODEL_PROVIDER = "minimax";
+const MODEL_ID = "MiniMax-M2.7-highspeed";
 
 test("real LLM A/B validated pipeline parses args and help", () => {
   assert.deepEqual(
@@ -54,6 +61,7 @@ test("real LLM A/B validated pipeline parses args and help", () => {
   assert.deepEqual(parseRealLlmAbValidatedPipelineArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbValidatedPipelineHelpText(), /validated evidence pipeline/);
   assert.match(buildRealLlmAbValidatedPipelineHelpText(), /full-natural/);
+  assert.match(buildRealLlmAbValidatedPipelineHelpText(), /--accio-ws/);
   assert.throws(
     () =>
       parseRealLlmAbValidatedPipelineArgs([
@@ -70,7 +78,126 @@ test("real LLM A/B validated pipeline parses args and help", () => {
   );
 });
 
-test("real LLM A/B validated pipeline passes reference token through preflight and collection", async () => {
+test("real LLM A/B validated pipeline parses Accio Work app.asar reference mode", () => {
+  assert.deepEqual(
+    parseRealLlmAbValidatedPipelineArgs([
+      "--natural-report",
+      "/tmp/natural.json",
+      "--reference-dir",
+      "/tmp/reference",
+      "--suite",
+      "report-scenarios",
+      "--work-dir",
+      "/tmp/work",
+    ]),
+    {
+      naturalReportPath: "/tmp/natural.json",
+      referenceDir: "/tmp/reference",
+      suite: "report-scenarios",
+      workDir: "/tmp/work",
+      referenceVariant: "operator",
+      referenceTimeoutMs: 180000,
+      referencePollMs: 2000,
+      referenceApp: "reference-workbench",
+      check: false,
+    }
+  );
+  const accioDefaults = parseRealLlmAbValidatedPipelineArgs([
+    "--natural-report",
+    "/tmp/natural.json",
+    "--reference-dir",
+    "/tmp/reference",
+    "--suite",
+    "core",
+    "--work-dir",
+    "/tmp/work",
+    "--reference-base-url",
+    "http://127.0.0.1:4097",
+    "--accio-ws",
+    "--accio-workspace-path",
+    "/Users/chris/workspace/turnkeyai",
+  ]);
+  assert.deepEqual(
+    {
+      ...accioDefaults,
+      ...(typeof accioDefaults === "object" && !("help" in accioDefaults) ? { referenceCommit: undefined } : {}),
+    },
+    {
+      naturalReportPath: "/tmp/natural.json",
+      referenceDir: "/tmp/reference",
+      suite: "core",
+      workDir: "/tmp/work",
+      referenceBaseUrl: "http://127.0.0.1:4097",
+      referenceVariant: "operator",
+      accioWs: true,
+      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceTimeoutMs: 180000,
+      referencePollMs: 2000,
+      referenceApp: "accio-work-app-asar",
+      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: path.resolve("artifacts/reference-runtimes/accio-work-0.4.5"),
+      referenceVersion: "0.4.5",
+      referenceCommit: undefined,
+      check: false,
+    }
+  );
+  if (existsSync("/Applications/Accio.app/Contents/Resources/app.asar")) {
+    assert.match(
+      "help" in accioDefaults ? "" : (accioDefaults.referenceCommit ?? ""),
+      /^app\.asar:[a-f0-9]{64}$/
+    );
+  }
+  assert.deepEqual(
+    parseRealLlmAbValidatedPipelineArgs([
+      "--natural-report",
+      "/tmp/natural.json",
+      "--reference-dir",
+      "/tmp/reference",
+      "--suite",
+      "core",
+      "--work-dir",
+      "/tmp/work",
+      "--reference-base-url",
+      "http://127.0.0.1:4097",
+      "--accio-ws",
+      "--accio-agent-id",
+      "DID-F456DA-2B0D4C",
+      "--accio-workspace-path",
+      "/Users/chris/workspace/turnkeyai",
+      "--reference-app",
+      "accio-work-app-asar",
+      "--reference-binary",
+      "/Applications/Accio.app/Contents/Resources/app.asar",
+      "--reference-runtime-root",
+      "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
+      "--reference-version",
+      "0.4.5",
+      "--reference-commit",
+      "app.asar:eba7d3bad65cd35ac4c5ec37dafdfa70dc2e9a2d9a92cc163b32ace10828d1a9",
+    ]),
+    {
+      naturalReportPath: "/tmp/natural.json",
+      referenceDir: "/tmp/reference",
+      suite: "core",
+      workDir: "/tmp/work",
+      referenceBaseUrl: "http://127.0.0.1:4097",
+      referenceVariant: "operator",
+      accioWs: true,
+      accioAgentId: "DID-F456DA-2B0D4C",
+      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceTimeoutMs: 180000,
+      referencePollMs: 2000,
+      referenceApp: "accio-work-app-asar",
+      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
+      referenceVersion: "0.4.5",
+      referenceCommit: "app.asar:eba7d3bad65cd35ac4c5ec37dafdfa70dc2e9a2d9a92cc163b32ace10828d1a9",
+      check: false,
+    }
+  );
+});
+
+test("real LLM A/B validated pipeline runs token-authenticated collection without accepting generic provenance", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-validated-"));
   const server = createMockReferenceDaemon({ mode: "healthy", authToken: "secret-reference-token" });
   try {
@@ -86,27 +213,33 @@ test("real LLM A/B validated pipeline passes reference token through preflight a
       referenceVariant: "operator",
       referenceTimeoutMs: 2_000,
       referencePollMs: 10,
-      referenceApp: "reference-workbench",
-      referenceBinary: "/tmp/reference-daemon",
-      referenceRepoPath: "/tmp/reference-workbench",
+      referenceApp: REFERENCE_APP,
+      referenceBinary: REFERENCE_BINARY,
+      referenceRepoPath: REFERENCE_RUNTIME_ROOT,
+      referenceRuntimeRoot: REFERENCE_RUNTIME_ROOT,
       referenceVersion: "test",
-      referenceCommit: "0000000",
+      referenceCommit: REFERENCE_COMMIT,
       modelDifferenceNote: "authenticated reference daemon fixture uses a different configured model id",
       check: false,
     });
 
-    assert.equal(report.status, "passed");
+    assert.equal(report.status, "failed");
     assert.equal(report.collectionRequired, true);
     assert.equal(report.collectionAttempted, true);
     assert.equal(report.gates.referencePreflight, "passed");
-    assert.equal(report.gates.collection, "passed");
-    assert.equal(report.gates.referenceHealth, "passed");
+    assert.equal(report.gates.collection, "failed");
+    assert.equal(report.gates.finalAudit, "failed");
+    assert.equal(report.gates.referenceHealth, "not_run");
+    assert.ok(report.failures.includes("reference collection did not complete successfully"));
+    assert.ok(report.failures.includes("reference audit did not validate the comparison evidence"));
     const collection = JSON.parse(readFileSync(report.artifacts.collectionReportPath!, "utf8")) as {
       collected?: unknown;
       failed?: unknown;
+      taskCount?: unknown;
     };
-    assert.equal(collection.collected, 1);
-    assert.equal(collection.failed, 0);
+    assert.equal(collection.taskCount, 1);
+    assert.equal(collection.collected, 0);
+    assert.equal(collection.failed, 1);
   } finally {
     await close(server);
     rmSync(dir, { recursive: true, force: true });
@@ -164,10 +297,41 @@ test("real LLM A/B validated pipeline passes only when every gate passes", async
   }
 });
 
+test("real LLM A/B validated pipeline validates report-scenarios without fixed suite coverage", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-validated-"));
+  try {
+    const fixture = writeFixture(dir);
+    const report = await runRealLlmAbValidatedPipeline({
+      naturalReportPath: fixture.naturalReportPath,
+      referenceDir: fixture.referenceDir,
+      workDir: fixture.workDir,
+      suite: "report-scenarios",
+      referenceVariant: "operator",
+      referenceTimeoutMs: 180_000,
+      referencePollMs: 2_000,
+      referenceApp: "reference-workbench",
+      check: false,
+    });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.suite, "report-scenarios");
+    assert.equal(report.gates.abAcceptance, "passed");
+    const spec = JSON.parse(readFileSync(report.artifacts.specPath!, "utf8")) as {
+      scenarios?: Array<{ scenarioId?: unknown }>;
+    };
+    assert.deepEqual(
+      spec.scenarios?.map((scenario) => scenario.scenarioId),
+      [...SCENARIOS]
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B validated pipeline records explicit model differences in the generated spec", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-validated-"));
   try {
-    const fixture = writeFixture(dir, { referenceModelId: "different-reference-model" });
+    const fixture = writeFixture(dir);
     const report = await runRealLlmAbValidatedPipeline({
       naturalReportPath: fixture.naturalReportPath,
       referenceDir: fixture.referenceDir,
@@ -176,8 +340,8 @@ test("real LLM A/B validated pipeline records explicit model differences in the 
       referenceVariant: "operator",
       referenceTimeoutMs: 180_000,
       referencePollMs: 2_000,
-      referenceApp: "reference-workbench",
-      modelDifferenceNote: "same provider family, intentionally different model ids for this methodology run",
+      referenceApp: REFERENCE_APP,
+      modelDifferenceNote: "same provider and model; explicit note retained for methodology traceability",
       check: false,
     });
 
@@ -187,7 +351,7 @@ test("real LLM A/B validated pipeline records explicit model differences in the 
     };
     assert.equal(
       spec.scenarios?.[0]?.modelComparison?.differenceNote,
-      "same provider family, intentionally different model ids for this methodology run"
+      "same provider and model; explicit note retained for methodology traceability"
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -297,7 +461,7 @@ test("real LLM A/B validated pipeline skips collection when preflight fails", as
   }
 });
 
-test("real LLM A/B validated pipeline preflights the first collection scenario prompt", async () => {
+test("real LLM A/B validated pipeline uses a neutral preflight probe instead of the first collection prompt", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-validated-"));
   const server = createMockReferenceDaemon({ mode: "scenarioDelegation" });
   try {
@@ -318,18 +482,19 @@ test("real LLM A/B validated pipeline preflights the first collection scenario p
 
     assert.equal(report.status, "failed");
     assert.equal(report.collectionRequired, true);
-    assert.equal(report.collectionAttempted, false);
-    assert.equal(report.gates.referencePreflight, "failed");
-    assert.equal(report.gates.collection, "not_run");
-    assert.ok(report.failures.includes("reference collection skipped because reference preflight failed"));
+    assert.equal(report.collectionAttempted, true);
+    assert.equal(report.gates.referencePreflight, "passed");
+    assert.equal(report.gates.collection, "failed");
+    assert.ok(!report.failures.includes("reference collection skipped because reference preflight failed"));
+    assert.ok(report.failures.includes("reference collection did not complete successfully"));
     const preflight = JSON.parse(readFileSync(report.artifacts.referencePreflightPath!, "utf8")) as {
       status?: unknown;
       finalText?: unknown;
       rootCauseBuckets?: unknown[];
     };
-    assert.equal(preflight.status, "failed");
-    assert.match(String(preflight.finalText ?? ""), /Delegate to: role-explore/);
-    assert.ok(preflight.rootCauseBuckets?.includes("delegation_not_executed"));
+    assert.equal(preflight.status, "passed");
+    assert.doesNotMatch(String(preflight.finalText ?? ""), /Delegate to: role-explore/);
+    assert.ok(!preflight.rootCauseBuckets?.includes("delegation_not_executed"));
   } finally {
     await close(server);
     rmSync(dir, { recursive: true, force: true });
@@ -378,8 +543,8 @@ function writeFixture(
     JSON.stringify({
       kind: "turnkeyai.natural-mission-e2e.report",
       status: "passed",
-      provider: "test-provider",
-      modelId: "test-model",
+      provider: MODEL_PROVIDER,
+      modelId: MODEL_ID,
       modelEntryId: "test-model-entry",
       timeoutPolicy: { scenarioTimeoutMs: 360_000 },
       fixtureContentHashes: { [FIXTURE_URL]: FIXTURE_CONTENT_HASH },
@@ -430,7 +595,7 @@ function writeFixture(
   for (const [index, scenario] of SCENARIOS.entries()) {
     if (options.omitLastReference && index === SCENARIOS.length - 1) continue;
     const prompt = promptForScenario(scenario);
-    const referenceModelId = options.referenceModelId ?? "test-model";
+    const referenceModelId = options.referenceModelId ?? MODEL_ID;
     writeFileSync(
       path.join(referenceDir, `${scenario}.json`),
       JSON.stringify({
@@ -440,20 +605,20 @@ function writeFixture(
         durationMs: 12_000,
         timedOut: false,
         provenance: {
-          referenceApp: "reference-workbench-fixture",
-          referenceBinary: "/tmp/reference-workbench-fixture",
-          referenceRepoPath: "/tmp/reference-workbench",
-          referenceVersion: "test",
-          referenceCommit: "0000000",
+          referenceApp: REFERENCE_APP,
+          referenceBinary: REFERENCE_BINARY,
+          referenceRepoPath: REFERENCE_RUNTIME_ROOT,
+          referenceRuntimeRoot: REFERENCE_RUNTIME_ROOT,
+          referenceVersion: REFERENCE_VERSION,
+          referenceCommit: REFERENCE_COMMIT,
           daemonUrl: "http://127.0.0.1:1",
-          apiEndpoint: "/messages",
+          apiEndpoint: "/websocket/connect",
           modelCatalog: {
-            defaultModelId: "test",
-            models: [{ id: "test", providerId: "test-provider", model: referenceModelId, configured: true }],
+            data: [{ provider: MODEL_PROVIDER, modelList: [{ modelName: referenceModelId, isDefault: true }] }],
           },
-          provider: "test-provider",
+          provider: MODEL_PROVIDER,
           modelId: referenceModelId,
-          exactRequestPayload: { prompt },
+          exactRequestPayload: { transport: "accio-work-websocket-sendQuery", prompt },
           timeout: { timeoutMs: 180_000, pollMs: 2_000 },
           rawResponse: { finalText: referenceFinalText(scenario) },
           rawTranscript: { messages: [{ role: "user", content: prompt }, { role: "assistant", content: referenceFinalText(scenario) }] },

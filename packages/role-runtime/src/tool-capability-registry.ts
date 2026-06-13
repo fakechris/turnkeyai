@@ -5,17 +5,19 @@ export const SESSION_TOOL_NAMES = ["sessions_spawn", "sessions_send", "sessions_
 export const PERMISSION_TOOL_NAMES = ["permission_query", "permission_result", "permission_applied"] as const;
 export const MEMORY_TOOL_NAMES = ["memory_search", "memory_get"] as const;
 export const TASK_TOOL_NAMES = ["tasks_list", "tasks_create", "tasks_update"] as const;
+export const WEB_TOOL_NAMES = ["web_fetch"] as const;
 export type SessionToolName = (typeof SESSION_TOOL_NAMES)[number];
 export type PermissionToolName = (typeof PERMISSION_TOOL_NAMES)[number];
 export type MemoryToolName = (typeof MEMORY_TOOL_NAMES)[number];
 export type TaskToolName = (typeof TASK_TOOL_NAMES)[number];
-export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName | TaskToolName;
+export type WebToolName = (typeof WEB_TOOL_NAMES)[number];
+export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName | TaskToolName | WebToolName;
 
 export interface ToolCapabilityRecord {
   name: NativeToolName;
   definition: LLMToolDefinition;
-  executorKind: "worker-session" | "permission" | "memory" | "task";
-  promptGroup: "sessions" | "permissions" | "memory" | "tasks";
+  executorKind: "worker-session" | "permission" | "memory" | "task" | "web";
+  promptGroup: "sessions" | "permissions" | "memory" | "tasks" | "web";
 }
 
 export interface ToolPromptHarnessInput {
@@ -72,10 +74,21 @@ export function createNativeToolCapabilityRegistry(input: {
   permissionsEnabled?: boolean;
   memoryEnabled?: boolean;
   tasksEnabled?: boolean;
+  webFetchEnabled?: boolean;
   maxSessionToolTimeoutSeconds?: number;
 } = {}): ToolCapabilityRegistry {
   const workerKinds = normalizeWorkerKinds(input.availableWorkerKinds);
   const records: ToolCapabilityRecord[] = [];
+  if (input.webFetchEnabled) {
+    records.push(
+      ...buildWebToolDefinitions().map((definition) => ({
+        name: definition.name as NativeToolName,
+        definition,
+        executorKind: "web" as const,
+        promptGroup: "web" as const,
+      }))
+    );
+  }
   if (workerKinds.length > 0) {
     records.push(
       ...buildSessionToolDefinitions(workerKinds, {
@@ -124,6 +137,30 @@ export function createNativeToolCapabilityRegistry(input: {
     workerKinds,
     records,
   });
+}
+
+export function buildWebToolDefinitions(): LLMToolDefinition[] {
+  return [
+    {
+      name: "web_fetch",
+      description:
+        "Fetch a public HTTP(S) page directly and return structured title/text evidence. Use this before spawning explore for a known public URL when rendered/browser-visible evidence is not required. Do not use for localhost, private-network, authenticated, interactive, visual, JS-rendered, or browser-session pages.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          url: { type: "string", description: "Public http or https URL to fetch." },
+          max_chars: {
+            type: "number",
+            minimum: 200,
+            maximum: 4000,
+            description: "Optional maximum extracted text characters to return. Defaults to 1200.",
+          },
+        },
+        required: ["url"],
+      },
+    },
+  ];
 }
 
 export function buildTaskToolDefinitions(): LLMToolDefinition[] {
@@ -386,6 +423,10 @@ function renderToolPromptHarness(input: {
     sections.push(renderDelegationSection(input.availableWorkerKinds, input.seat));
   }
 
+  if (WEB_TOOL_NAMES.some((name) => enabled.has(name))) {
+    sections.push(renderWebFetchSection());
+  }
+
   if (PERMISSION_TOOL_NAMES.some((name) => enabled.has(name))) {
     sections.push(renderPermissionSection());
   }
@@ -403,6 +444,16 @@ function renderToolPromptHarness(input: {
   }
 
   return sections.filter(Boolean).join("\n\n");
+}
+
+function renderWebFetchSection(): string {
+  return [
+    "## Direct Web Fetch",
+    "- For a known public HTTP(S) URL that does not require rendered, visual, authenticated, interactive, localhost, private-network, internal, dashboard, or user-session evidence, use web_fetch before spawning a sub-agent.",
+    "- web_fetch is source evidence, not browser evidence. If the task asks what a user sees, requires screenshots, or depends on JavaScript-rendered content, use the browser worker instead.",
+    "- Cite the returned final_url/requested_url and treat blocked, non-200, or low-content results as incomplete evidence that needs another tool path.",
+    "- When a fetched root/docs page exposes navigation text, prefer following the visible nav/link target or searching that exact site+label over guessing URL paths. After two 404/401 guesses on one host, stop guessing paths and switch to site search, provider search, or browser.",
+  ].join("\n");
 }
 
 function renderTaskSection(): string {
@@ -436,7 +487,11 @@ function renderGeneralToolUsageSection(): string {
     "- If you approach the execution limit, stop calling tools and synthesize only from tool results already present in the conversation.",
     "- Every non-trivial task needs a verification step before final delivery.",
     "- For research or comparison tasks, maintain an evidence ledger: source URL/name, source type, exact fact verified, and remaining uncertainty.",
+    "- For recovery or continuation work, never use placeholder words such as not verified, unverified, unknown, missing, or 未验证 as search queries. Search the original entity names, provider names, official domains, and requested fact labels instead.",
+    "- For public docs/pricing/API research, start from official root/model/pricing pages when known; if the root page reveals a nav label such as Models & Pricing, use that label to locate the linked page instead of inventing likely paths.",
     "- Do not turn homepage or marketing copy into unsupported claims about user scale, community feedback, code quality, or update frequency. If a metric is not verified from credible sources, write not verified.",
+    "- Do not add DNS/IP resolution, IANA allocation details, production-environment bans, real-service claims, security-scanner claims, or abuse-risk claims unless those exact facts appear in the gathered evidence.",
+    "- If evidence says 'Avoid use in operations', quote that wording or state that operational use is outside the verified scope; do not upgrade it into a broader production-environment or real-service ban.",
     "- A final answer must be structurally complete. If the answer would be cut off, produce a shorter complete answer with a source ledger and explicitly mark missing details.",
     "- When the user/task specifies an exact final answer skeleton, output only that skeleton. Do not add status preambles like 'All tool calls returned' or 'Producing the final answer'.",
     "- For exact-skeleton answers, keep each requested bullet compact, usually one sentence, while preserving required markers, facts, and residual risk.",

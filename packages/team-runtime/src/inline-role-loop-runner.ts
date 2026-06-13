@@ -136,12 +136,30 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
           return;
         }
 
-        await this.roleRunCoordinator.incrementIteration(runKey);
-        await this.roleRunCoordinator.ack(runKey, handoff.taskId);
-        await this.onHandoffAck({
+        this.recordRoleBoundaryProgress({
+          runState: current,
           flowId: handoff.flowId,
           taskId: handoff.taskId,
+          summary: `Role ${current.roleId} dequeued task ${handoff.taskId}`,
+          statusReason: "role_loop_dequeued",
         });
+        await this.roleRunCoordinator.incrementIteration(runKey);
+        this.recordRoleBoundaryProgress({
+          runState: current,
+          flowId: handoff.flowId,
+          taskId: handoff.taskId,
+          summary: `Role ${current.roleId} incremented iteration for task ${handoff.taskId}`,
+          statusReason: "role_loop_iteration_incremented",
+        });
+        await this.roleRunCoordinator.ack(runKey, handoff.taskId);
+        this.recordRoleBoundaryProgress({
+          runState: current,
+          flowId: handoff.flowId,
+          taskId: handoff.taskId,
+          summary: `Role ${current.roleId} acked run task ${handoff.taskId}`,
+          statusReason: "role_loop_run_acked",
+        });
+        this.ackHandoffEdgeAfterRoleRunAck(current, handoff);
 
         const flow = await this.flowLedgerStore.get(handoff.flowId);
         const thread = await this.teamThreadStore.get(handoff.threadId);
@@ -153,6 +171,13 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
         if (!refreshedRun) {
           return;
         }
+        this.recordRoleBoundaryProgress({
+          runState: refreshedRun,
+          flowId: flow.flowId,
+          taskId: handoff.taskId,
+          summary: `Role ${refreshedRun.roleId} hydrated task ${handoff.taskId}`,
+          statusReason: "role_loop_hydrated",
+        });
 
         await this.recordRoleProgress({
           runState: refreshedRun,
@@ -203,14 +228,6 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
         }
 
         if (roleResult.status === "ok" && roleResult.message) {
-          await this.recordRoleProgress({
-            runState: refreshedRun,
-            flowId: flow.flowId,
-            taskId: handoff.taskId,
-            phase: "completed",
-            summary: `Role ${refreshedRun.roleId} completed task ${handoff.taskId}`,
-            continuityState: "resolved",
-          });
           await this.onRoleReply({
             flow,
             thread,
@@ -218,6 +235,14 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
             handoff,
             message: roleResult.message,
             ...(roleResult.messages?.length ? { messages: roleResult.messages } : {}),
+          });
+          await this.recordRoleProgress({
+            runState: refreshedRun,
+            flowId: flow.flowId,
+            taskId: handoff.taskId,
+            phase: "completed",
+            summary: `Role ${refreshedRun.roleId} completed task ${handoff.taskId}`,
+            continuityState: "resolved",
           });
           continue;
         }
@@ -316,6 +341,76 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
       taskId: input.taskId,
       roleId: input.runState.roleId,
       ...(input.statusReason ? { statusReason: input.statusReason } : {}),
+    });
+  }
+
+  private recordRoleBoundaryProgress(input: {
+    runState: RoleRunState;
+    flowId: string;
+    taskId: string;
+    summary: string;
+    statusReason: string;
+  }): void {
+    if (!this.runtimeProgressRecorder) {
+      return;
+    }
+    const recordedAt = Date.now();
+    const chainId = `flow:${input.flowId}`;
+    void this.runtimeProgressRecorder.record({
+      progressId: `progress:role:${input.runState.runKey}:boundary:${input.statusReason}:${recordedAt}`,
+      threadId: input.runState.threadId,
+      chainId,
+      spanId: `role:${input.runState.runKey}`,
+      parentSpanId: `dispatch:${input.taskId}`,
+      subjectKind: "role_run",
+      subjectId: input.runState.runKey,
+      phase: "heartbeat",
+      progressKind: "boundary",
+      heartbeatSource: "control_path",
+      continuityState: "alive",
+      responseTimeoutAt: recordedAt + ACTIVE_RESPONSE_TIMEOUT_MS,
+      summary: input.summary,
+      recordedAt,
+      flowId: input.flowId,
+      taskId: input.taskId,
+      roleId: input.runState.roleId,
+      statusReason: input.statusReason,
+    }).catch((error) => {
+      console.error("role boundary progress recording failed", {
+        runKey: input.runState.runKey,
+        flowId: input.flowId,
+        taskId: input.taskId,
+        statusReason: input.statusReason,
+        error,
+      });
+    });
+  }
+
+  private ackHandoffEdgeAfterRoleRunAck(runState: RoleRunState, handoff: HandoffEnvelope): void {
+    // The role-run ack is the execution gate. The flow edge ack is an
+    // observability/state convergence write and can be slow when runtime-chain
+    // status recording or polling reconciliation is busy. Do not block prompt
+    // hydration or the first tool call on that write; role replies can still
+    // advance the edge to responded/closed, and this ack is idempotent if it
+    // arrives first.
+    void this.onHandoffAck({
+      flowId: handoff.flowId,
+      taskId: handoff.taskId,
+    }).then(() => {
+      this.recordRoleBoundaryProgress({
+        runState,
+        flowId: handoff.flowId,
+        taskId: handoff.taskId,
+        summary: `Role ${runState.roleId} acked flow edge for task ${handoff.taskId}`,
+        statusReason: "role_loop_edge_acked",
+      });
+    }).catch((error) => {
+      console.error("handoff edge ack failed after role-run ack", {
+        runKey: runState.runKey,
+        flowId: handoff.flowId,
+        taskId: handoff.taskId,
+        error,
+      });
     });
   }
 

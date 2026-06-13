@@ -73,9 +73,9 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
     <div className="page">
       <div className="page-head">
         <div>
-          <h2>Missions</h2>
+          <h2>History</h2>
           <div className="sub">
-            本地多 Agent 工作台 · 你给目标，TurnkeyAI 协调 agents 完成、留痕。
+            Previous chats and work in progress.
             {!missions.isLive && (
               <span className="mono faint" style={{ marginLeft: 8, fontSize: 11 }}>· offline fallback</span>
             )}
@@ -92,7 +92,7 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
             disabled={!canCreateMission}
             title={canCreateMission ? undefined : OPERATOR_ACTION_SCOPE_HINT}
           >
-            <Icon name="plus" size={13} /> New mission
+            <Icon name="plus" size={13} /> New chat
           </button>
         </div>
       </div>
@@ -199,11 +199,10 @@ function EmptyMissionsState({
         gap: 16,
       }}
     >
-      <div style={{ fontSize: 14, fontWeight: 600 }}>No missions yet.</div>
+      <div style={{ fontSize: 14, fontWeight: 600 }}>No chats yet.</div>
       <div className="muted" style={{ maxWidth: 520, fontSize: 12.5, lineHeight: 1.6 }}>
-        Create a mission to give the agent team a goal. The coordinator
-        breaks it down and dispatches work; you watch progress and follow
-        up from the mission's detail page.
+        Start from Chat. TurnkeyAI will do the work, ask when it needs permission,
+        and save the result here.
       </div>
       <div className="row" style={{ gap: 8 }}>
         <button
@@ -213,7 +212,7 @@ function EmptyMissionsState({
           disabled={!canCreateMission}
           title={canCreateMission ? undefined : OPERATOR_ACTION_SCOPE_HINT}
         >
-          <Icon name="plus" size={13} /> Create your first mission
+          <Icon name="plus" size={13} /> Start your first chat
         </button>
         {canBootstrap && (
           <button

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -117,6 +117,57 @@ test("file team message store prefers newer append-only entries over legacy dupl
   }
 });
 
+test("file team message store replaces superseded journal entry for same message id", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-replace-"));
+
+  try {
+    const store = new FileTeamMessageStore({ rootDir });
+    await store.append({
+      id: "task-1:tool-round:1:assistant",
+      threadId: "thread-1",
+      role: "assistant",
+      name: "Lead",
+      content: "",
+      toolStatus: "pending",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    await store.append({
+      id: "task-1:tool-round:1:assistant",
+      threadId: "thread-1",
+      role: "assistant",
+      name: "Lead",
+      content: "",
+      toolStatus: "completed",
+      createdAt: 20,
+      updatedAt: 20,
+    });
+    await store.append({
+      id: "task-1:tool-round:1:assistant",
+      threadId: "thread-1",
+      role: "assistant",
+      name: "Lead",
+      content: "",
+      toolStatus: "pending",
+      createdAt: 5,
+      updatedAt: 5,
+    });
+
+    const messages = await store.list("thread-1");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0]?.toolStatus, "completed");
+    assert.equal(messages[0]?.createdAt, 10);
+    assert.equal(messages[0]?.updatedAt, 20);
+
+    const entryDir = path.join(rootDir, "threads", encodeURIComponent("thread-1"), "entries");
+    const entries = (await readdir(entryDir)).filter((entry) => entry.endsWith(".json"));
+    assert.equal(entries.length, 1);
+    assert.match(entries[0] ?? "", /0000000000000010-0000000000000020-task-1%3Atool-round%3A1%3Aassistant\.json/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("file team message store backfills by-id projection from legacy thread records on read", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-backfill-"));
 
@@ -180,6 +231,56 @@ test("file team message store appendIfAbsent is idempotent for redelivered messa
     const messages = await store.list("thread-1");
     assert.equal(messages.length, 1);
     assert.equal(messages[0]?.content, "hello");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file team message store preserves original createdAt when refreshing an existing message id", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-refresh-created-at-"));
+
+  try {
+    const store = new FileTeamMessageStore({ rootDir });
+    await store.append({
+      id: "tool-round-1",
+      threadId: "thread-1",
+      role: "assistant",
+      name: "Lead",
+      content: "",
+      createdAt: 100,
+      updatedAt: 100,
+      metadata: { nativeToolUse: true },
+      toolStatus: "pending",
+    });
+    await store.append({
+      id: "final-1",
+      threadId: "thread-1",
+      role: "assistant",
+      name: "Lead",
+      content: "Final answer.",
+      createdAt: 200,
+      updatedAt: 200,
+    });
+    await store.append({
+      id: "tool-round-1",
+      threadId: "thread-1",
+      role: "assistant",
+      name: "Lead",
+      content: "",
+      createdAt: 300,
+      updatedAt: 300,
+      metadata: { nativeToolUse: true },
+      toolStatus: "completed",
+    });
+
+    const refreshed = await store.get("tool-round-1");
+    assert.equal(refreshed?.createdAt, 100);
+    assert.equal(refreshed?.updatedAt, 300);
+    assert.equal(refreshed?.toolStatus, "completed");
+    assert.deepEqual(
+      (await store.list("thread-1")).map((message) => message.id),
+      ["tool-round-1", "final-1"]
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

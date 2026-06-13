@@ -62,6 +62,8 @@ test("LLMSubAgentWorkerHandler runs a private worker tool before returning a fin
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /2-4 high-quality official or primary sources/i);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /Preserve exact product\/entity names/i);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /Do not append guessed categories/i);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /Do not use placeholder words from a partial answer/i);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /After two 404\/401 guesses on one host/i);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /Stop once the requested answer has enough primary-source evidence/i);
   assert.equal(
     ((result?.payload as { metadata?: { toolUse?: { toolCallCount?: number } } }).metadata?.toolUse?.toolCallCount),
@@ -295,6 +297,7 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   assert.deepEqual(toolNames, [
     "browser_open",
     "browser_snapshot",
+    "browser_wait_for",
     "browser_act",
     "browser_scroll",
     "browser_console",
@@ -578,6 +581,98 @@ test("LLMSubAgentWorkerHandler does not retry mutating private browser partial t
   assert.equal(result?.status, "completed");
   assert.equal(bridgeCalls.length, 1);
   assert.deepEqual(bridgeCalls[0]?.actions?.map((action) => action.kind), ["hover", "snapshot"]);
+});
+
+test("LLMSubAgentWorkerHandler adds waitFor text after dynamic browser clicks", async () => {
+  const bridgeCalls: Array<{
+    actions?: Array<{ kind: string; bodyTextPattern?: string; timeoutMs?: number; note?: string }>;
+  }> = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_act", {
+        action: "click",
+        text: "Start",
+      });
+    }
+    return textResult("Hello World verified.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        bridgeCalls.push(input);
+        return browserResult({
+          finalUrl: "https://the-internet.herokuapp.com/dynamic_loading/1",
+          textExcerpt: "Hello World!",
+          traceKinds: input.actions.map((action) => action.kind),
+          artifactIds: ["hello-world-snapshot"],
+        });
+      },
+    }),
+  });
+  const input = buildInvocationInput("browser");
+
+  const result = await handler.run({
+    ...input,
+    packet: {
+      ...input.packet,
+      taskPrompt:
+        'Open https://the-internet.herokuapp.com/dynamic_loading/1. Click "Start", wait for the page to display "Hello World!", then report the visible text.',
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalls.length, 1);
+  assert.deepEqual(bridgeCalls[0]?.actions?.map((action) => action.kind), ["click", "waitFor", "snapshot"]);
+  assert.equal(bridgeCalls[0]?.actions?.[1]?.bodyTextPattern, "Hello World!");
+  assert.equal(bridgeCalls[0]?.actions?.[1]?.timeoutMs, 30_000);
+  assert.equal(bridgeCalls[0]?.actions?.[2]?.note, "after-wait-hello-world");
+});
+
+test("LLMSubAgentWorkerHandler does not report recovered waitFor text timeouts as browser transport failures", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_act", {
+        action: "click",
+        text: "Start",
+        wait_for_text: "Dry-run submitted locally after approval",
+      });
+    }
+    return textResult("Dry-run submitted locally after approval; no external mutation was performed.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        return browserResult({
+          title: "Approval Gate Fixture",
+          finalUrl: "http://127.0.0.1:60451/approval-form",
+          textExcerpt:
+            "Approval gate fixture TURNKEYAI_APPROVAL_FIXTURE_OK Dry-run submitted locally after approval; no external mutation was performed.",
+          traceKinds: ["click", "waitFor", "snapshot"],
+          traceStatuses: ["ok", "failed", "ok"],
+          traceErrorMessages: ["", "page.waitForFunction: Timeout 30000ms exceeded.", ""],
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  const toolEntry = result?.sessionHistoryEntries?.find((entry) => entry.role === "tool" && entry.toolName === "browser_act");
+  const payload = toolEntry?.payload as { failureBuckets?: unknown } | undefined;
+  assert.equal(payload?.failureBuckets, undefined);
+  assert.doesNotMatch(toolEntry?.content ?? "", /transport_failure/);
+  assert.match(toolEntry?.content ?? "", /Dry-run submitted locally after approval/);
 });
 
 test("LLMSubAgentWorkerHandler captures read-only browser evidence when the browser planner fails before tool use", async () => {
@@ -1239,6 +1334,59 @@ test("LLMSubAgentWorkerHandler returns a tool error for malformed private browse
   assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /requires an object input/);
 });
 
+test("LLMSubAgentWorkerHandler derives private refId click labels from prior browser snapshots", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const bridgeActions: BrowserTaskResult["trace"][number]["kind"][][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const toolResultCount = input.messages.filter((message) => message.role === "tool").length;
+    if (toolResultCount === 0) {
+      return toolCallResult("tool-1", "browser_snapshot", { note: "before-click" });
+    }
+    if (toolResultCount === 1) {
+      return toolCallResult("tool-2", "browser_act", {
+        action: "click",
+        refId: "ref-2",
+        wait_for_text: "Hello World!",
+      });
+    }
+    return textResult("Clicked the Start button and waited for Hello World.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        bridgeActions.push(input.actions.map((action) => action.kind));
+        return browserResult({
+          traceKinds: ["snapshot"],
+          interactives: [{ refId: "ref-2", tagName: "button", role: "button", label: "Start" }],
+        });
+      },
+      async sendSession(input) {
+        bridgeActions.push(input.actions.map((action) => action.kind));
+        return browserResult({
+          traceKinds: ["click", "waitFor", "snapshot"],
+          textExcerpt: "Hello World!",
+          interactives: [{ refId: "ref-2", tagName: "button", role: "button", label: "Start" }],
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(bridgeActions, [["snapshot"], ["click", "waitFor", "snapshot"]]);
+  const clickToolContent = readToolContent(
+    gatewayInputs[2]?.messages.find((message) => message.role === "tool" && message.toolCallId === "tool-2")?.content ?? ""
+  );
+  assert.match(clickToolContent, /"status": "completed"/);
+  assert.doesNotMatch(clickToolContent, /requires visible text/i);
+});
+
 test("LLMSubAgentWorkerHandler requires visible text before private refId clicks", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let bridgeCalled = false;
@@ -1629,6 +1777,7 @@ function browserResult(input: {
   traceErrorMessages?: string[];
   screenshotPaths?: string[];
   artifactIds?: string[];
+  interactives?: BrowserTaskResult["page"]["interactives"];
 }): BrowserTaskResult {
   return {
     sessionId: input.sessionId ?? "browser-session-1",
@@ -1643,7 +1792,7 @@ function browserResult(input: {
       title: input.title ?? "Example",
       textExcerpt: input.textExcerpt ?? "Example page text.",
       statusCode: 200,
-      interactives: [{ refId: "ref-1", tagName: "A", role: "link", label: "More" }],
+      interactives: input.interactives ?? [{ refId: "ref-1", tagName: "A", role: "link", label: "More" }],
     },
     screenshotPaths: input.screenshotPaths ?? [],
     artifactIds: input.artifactIds ?? [],

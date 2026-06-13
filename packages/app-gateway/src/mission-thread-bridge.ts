@@ -3,14 +3,9 @@
 // thread for messages that haven't been mirrored onto the mission
 // timeline yet, append the missing ones.
 //
-// Why polling instead of an event subscription: the team-runtime
-// engine persists assistant/tool messages directly via teamMessageStore
-// (see CoordinationEngine.ensureMessagePersisted) without firing a
-// rich message.posted event that carries the messageId. Subscribing to
-// TeamEventBus alone would miss the agent replies — which is exactly
-// the thing the user wants to watch. Polling is simple, complete, and
-// resilient to daemon restarts (the cursor is the activity log
-// itself).
+// Runtime role replies now publish message.posted events, so daemon event
+// subscribers can call tickThread for fast UI/lifecycle convergence. Polling
+// remains the durable catch-up path across daemon restarts and missed events.
 //
 // Idempotency: each ActivityEvent records `runtime.messageId`. On
 // every tick we read the existing activity events and skip any source
@@ -18,11 +13,11 @@
 // duplicates events, and a missed tick just means the next tick picks
 // up the backlog.
 //
-// Cost: O(M × (T + A + W)) per tick where M = missions with threadId,
-// T = messages per thread, A = activity events per mission, and W =
-// worker sessions when lifecycle reconciliation is enabled. K3.5 demo
-// workloads keep these small. Revisit with per-thread indexes/cursors
-// when missions run long-form.
+// Cost: O(M × (T + A + W)) per tick where M = missions selected for the
+// pass, T = messages per thread, A = activity events per mission, and W =
+// worker sessions when lifecycle reconciliation is enabled. The pass
+// prioritizes active/recent missions so a large backlog of old mission files
+// cannot starve the mission the user is watching.
 
 import path from "node:path";
 
@@ -51,6 +46,7 @@ import {
   evaluateMissionCompletion,
   type MissionCompletionRecovery,
 } from "./mission-completion-evaluator";
+import { evaluateMissionGoalSlotCoverage } from "./mission-goal-slot-coverage";
 
 export interface MissionThreadBridgeOptions {
   // `findByThreadId` is no longer needed at this layer (we resolve
@@ -59,9 +55,9 @@ export interface MissionThreadBridgeOptions {
   // into mocks for no benefit.
   missionStore: MissionThreadBridgeMissionStore;
   roleRunStore?: Pick<RoleRunStore, "listByThread">;
-  workerSessionStore?: Pick<WorkerSessionStore, "list">;
+  workerSessionStore?: Pick<WorkerSessionStore, "list" | "listByThread">;
   teamMessageStore: Pick<TeamMessageStore, "list">;
-  activityStore: Pick<ActivityEventStore, "append" | "listByMission">;
+  activityStore: Pick<ActivityEventStore, "append" | "listByMission" | "replaceAll">;
   artifactStore?: Pick<ArtifactStore, "put" | "listByMission">;
   browserArtifactStore?: Pick<BrowserArtifactStore, "get">;
   newEventId: () => string;
@@ -69,6 +65,23 @@ export interface MissionThreadBridgeOptions {
   /** Max messages to scan per thread per tick. K3.5 demo threads stay
    *  small; this guards against pathologically long backlogs. */
   perThreadLimit?: number;
+  /** Max linked missions to scan per interval tick. Active/recent missions
+   *  are prioritized before this cap is applied. */
+  maxMissionsPerTick?: number;
+  /** Max automatic continuations after a lead final answer fails goal-slot coverage. */
+  maxIncompleteFinalFollowUps?: number;
+  postLateWorkerCompletionFollowUp?: (input: {
+    mission: Mission;
+    threadId: string;
+    workerSession: WorkerSessionRecord;
+    content: string;
+  }) => Promise<void>;
+  postIncompleteFinalFollowUp?: (input: {
+    mission: Mission;
+    threadId: string;
+    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>;
+    content: string;
+  }) => Promise<void>;
   logger?: { warn(message: string, context?: Record<string, unknown>): void };
 }
 
@@ -90,6 +103,12 @@ export interface MissionThreadBridge {
    */
   tickMission(missionId: string): Promise<number>;
   /**
+   * Scan missions linked to a specific team-runtime thread. Daemon event
+   * subscribers use this to mirror fresh role/tool output immediately without
+   * polling every mission.
+   */
+  tickThread?(threadId: string): Promise<Array<{ missionId: string; appended: number }>>;
+  /**
    * Begin the background interval. Returns an unsubscribe handle.
    * Safe to call multiple times — first call wins; subsequent calls
    * return no-op stops to avoid timer fan-out on accidental
@@ -103,6 +122,18 @@ export function createMissionThreadBridge(
 ): MissionThreadBridge {
   const logger = options.logger ?? defaultLogger;
   const perThreadLimit = options.perThreadLimit ?? 500;
+  const maxMissionsPerTick =
+    typeof options.maxMissionsPerTick === "number" &&
+    Number.isFinite(options.maxMissionsPerTick) &&
+    options.maxMissionsPerTick > 0
+      ? Math.floor(options.maxMissionsPerTick)
+      : DEFAULT_MAX_MISSIONS_PER_TICK;
+  const maxIncompleteFinalFollowUps =
+    typeof options.maxIncompleteFinalFollowUps === "number" &&
+    Number.isFinite(options.maxIncompleteFinalFollowUps) &&
+    options.maxIncompleteFinalFollowUps >= 0
+      ? Math.floor(options.maxIncompleteFinalFollowUps)
+      : DEFAULT_MAX_INCOMPLETE_FINAL_FOLLOW_UPS;
   let interval: NodeJS.Timeout | null = null;
 
   // codex K3.5: per-mission serialization of mirror() runs. Two
@@ -148,10 +179,15 @@ export function createMissionThreadBridge(
     // expanded into N tool events + 1 final answer doesn't collide
     // with itself on the next tick.
     const mirroredSourceIds = new Set<string>();
+    const mirroredToolResultEvents = new Map<string, ActivityEvent>();
     for (const event of existing) {
       const sourceId = event.runtime?.activitySourceId;
       if (typeof sourceId === "string" && sourceId.length > 0) {
         mirroredSourceIds.add(sourceId);
+      }
+      const toolResultKey = toolResultSemanticKey(event);
+      if (toolResultKey) {
+        mirroredToolResultEvents.set(toolResultKey, event);
       }
     }
 
@@ -161,6 +197,8 @@ export function createMissionThreadBridge(
     // parallelize; this cuts a tick that has N new events from
     // O(N * file-flush-latency) to ~one file-flush worth of latency.
     const toAppend: ActivityEvent[] = [];
+    const pendingToolResultKeyIndexes = new Map<string, number>();
+    const toolResultReplacements = new Map<string, ActivityEvent>();
     const consumedMessageIds = new Set<string>();
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index]!;
@@ -183,9 +221,43 @@ export function createMissionThreadBridge(
         if (typeof sourceId === "string" && mirroredSourceIds.has(sourceId)) {
           continue;
         }
+        const toolResultKey = toolResultSemanticKey(event);
+        const mirroredToolResultEvent = toolResultKey ? mirroredToolResultEvents.get(toolResultKey) : undefined;
+        if (toolResultKey && mirroredToolResultEvent) {
+          if (
+            options.activityStore.replaceAll &&
+            shouldPreferToolResultEvent(event, mirroredToolResultEvent)
+          ) {
+            toolResultReplacements.set(toolResultKey, {
+              ...event,
+              id: mirroredToolResultEvent.id,
+            });
+          }
+          if (sourceId) mirroredSourceIds.add(sourceId);
+          continue;
+        }
+        if (toolResultKey && pendingToolResultKeyIndexes.has(toolResultKey)) {
+          const existingIndex = pendingToolResultKeyIndexes.get(toolResultKey)!;
+          const existingEvent = toAppend[existingIndex];
+          if (existingEvent && shouldPreferToolResultEvent(event, existingEvent)) {
+            toAppend[existingIndex] = event;
+          }
+          if (sourceId) mirroredSourceIds.add(sourceId);
+          continue;
+        }
         toAppend.push(event);
         if (sourceId) mirroredSourceIds.add(sourceId);
+        if (toolResultKey) {
+          pendingToolResultKeyIndexes.set(toolResultKey, toAppend.length - 1);
+        }
       }
+    }
+    if (toolResultReplacements.size > 0 && options.activityStore.replaceAll) {
+      const replaced = existing.map((event) => {
+        const key = toolResultSemanticKey(event);
+        return key ? toolResultReplacements.get(key) ?? event : event;
+      });
+      await options.activityStore.replaceAll(mission.id, replaced);
     }
     let appended = 0;
     if (toAppend.length > 0) {
@@ -205,8 +277,44 @@ export function createMissionThreadBridge(
       }
     }
     await registerMissionArtifacts(mission, messages);
-    await reconcileMissionLifecycle(mission, threadId, messages);
+    const events = [...existing, ...toAppend];
+    const workerSessions = await listWorkerSessions(threadId, messages, events);
+    await recoverLateWorkerCompletions(mission, threadId, events, workerSessions);
+    await reconcileMissionLifecycle(mission, threadId, messages, workerSessions);
     return appended;
+  }
+
+  function toolResultSemanticKey(event: ActivityEvent): string | null {
+    const runtime = event.runtime;
+    if (!runtime || event.kind !== "tool" || runtime.toolPhase !== "result") {
+      return null;
+    }
+    const threadId = runtime.threadId;
+    const toolName = runtime.toolName;
+    const toolCallId = runtime.toolCallId;
+    if (!threadId || !toolName || !toolCallId) {
+      return null;
+    }
+    return `${threadId}:${toolName}:${toolCallId}:result`;
+  }
+
+  function shouldPreferToolResultEvent(candidate: ActivityEvent, current: ActivityEvent): boolean {
+    return toolResultCompletenessScore(candidate) > toolResultCompletenessScore(current);
+  }
+
+  function toolResultCompletenessScore(event: ActivityEvent): number {
+    const resultContent = event.runtime?.resultContent ?? "";
+    let score = Buffer.byteLength(resultContent || event.text, "utf8");
+    if (resultContent.includes("\"protocol\"") && resultContent.includes("turnkeyai.session_tool_result.v1")) {
+      score += 100_000;
+    }
+    if (event.runtime?.sourceLabel) {
+      score += 1_000;
+    }
+    if (event.emph === "danger") {
+      score += 100;
+    }
+    return score;
   }
 
   async function registerMissionArtifacts(
@@ -256,25 +364,51 @@ export function createMissionThreadBridge(
   async function reconcileMissionLifecycle(
     mission: Mission,
     threadId: string,
-    messages: TeamMessage[]
+    messages: TeamMessage[],
+    workerSessions: WorkerSessionRecord[] | "unknown" | undefined
   ): Promise<void> {
     const roleRuns = await listRoleRuns(threadId);
     const decision = evaluateMissionCompletion({
       mission,
       messages,
       roleRuns,
-      workerSessions: await listWorkerSessions(threadId),
+      workerSessions,
     });
     if (decision.action !== "update") return;
-    await updateMissionLifecycle(mission, decision.patch);
+    await updateMissionLifecycle(mission, decision.patch, {
+      allowDoneReopen:
+        decision.reason === "incomplete_final_answer" ||
+        decision.reason === "active_execution" ||
+        decision.reason === "awaiting_work",
+    });
     if (decision.recovery) {
-      await appendMissionRecoveryEvent(mission.id, threadId, decision.recovery);
+      const recoveryAppended = await appendMissionRecoveryEvent(mission.id, threadId, decision.recovery);
+      if (
+        recoveryAppended &&
+        decision.recovery.kind === "incomplete_final_answer" &&
+        (await shouldPostIncompleteFinalFollowUp(mission.id, decision.recovery)) &&
+        options.postIncompleteFinalFollowUp
+      ) {
+        const posted = await postIncompleteFinalFollowUp(mission, threadId, decision.recovery);
+        if (posted) {
+          await updateMissionLifecycle(
+            mission,
+            {
+              status: "working",
+              blockers: 0,
+              progress: Math.min(mission.progress, 0.95),
+            },
+            { allowDoneReopen: true }
+          );
+        }
+      }
     }
   }
 
   async function updateMissionLifecycle(
     mission: Mission,
-    patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout">>
+    patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout">>,
+    lifecycleOptions: { allowDoneReopen?: boolean } = {}
   ): Promise<void> {
     try {
       const latest = (await options.missionStore.get(mission.id)) ?? mission;
@@ -282,6 +416,7 @@ export function createMissionThreadBridge(
         latest.status === "done" && patch.status === "needs_approval" && latest.pendingApprovals > 0;
       if (
         !canReopenDoneForPendingApproval &&
+        !(lifecycleOptions.allowDoneReopen && latest.status === "done") &&
         (latest.status === "done" || latest.status === "archived" || latest.status === "draft")
       ) {
         return;
@@ -320,9 +455,17 @@ export function createMissionThreadBridge(
     }
   }
 
-  async function listWorkerSessions(threadId: string): Promise<WorkerSessionRecord[] | "unknown" | undefined> {
+  async function listWorkerSessions(
+    threadId: string,
+    messages: TeamMessage[],
+    events: ActivityEvent[]
+  ): Promise<WorkerSessionRecord[] | "unknown" | undefined> {
     if (!options.workerSessionStore) return undefined;
+    if (!hasSessionToolActivity(messages) && !hasSessionActivityEvent(events)) return [];
     try {
+      if (typeof options.workerSessionStore.listByThread === "function") {
+        return await options.workerSessionStore.listByThread(threadId);
+      }
       const sessions = await options.workerSessionStore.list();
       return sessions.filter((session) => session.context?.threadId === threadId);
     } catch (error) {
@@ -334,24 +477,249 @@ export function createMissionThreadBridge(
     }
   }
 
+  function hasSessionToolActivity(messages: TeamMessage[]): boolean {
+    return messages.some((message) => {
+      if (isSessionToolName(message.name)) return true;
+      if (message.toolCalls?.some((call) => isSessionToolName(call.name))) return true;
+      if (message.toolProgress?.some((progress) => isSessionToolName(progress.toolName))) return true;
+      return false;
+    });
+  }
+
+  function isSessionToolName(toolName: string | undefined): boolean {
+    return toolName === "sessions_spawn" || toolName === "sessions_send" || toolName === "sessions_history";
+  }
+
+  function hasSessionActivityEvent(events: ActivityEvent[]): boolean {
+    return events.some((event) => {
+      if (event.kind !== "tool") return false;
+      if (isSessionToolName(event.runtime?.toolName)) return true;
+      return event.tags?.some((tag) => isSessionToolName(tag)) ?? false;
+    });
+  }
+
+  async function recoverLateWorkerCompletions(
+    mission: Mission,
+    threadId: string,
+    events: ActivityEvent[],
+    workerSessions: WorkerSessionRecord[] | "unknown" | undefined
+  ): Promise<void> {
+    if (!workerSessions || workerSessions === "unknown") return;
+
+    for (const workerSession of workerSessions) {
+      if (!isLateCompletedWorkerSession(workerSession, events)) continue;
+      if (hasLateWorkerCompletionRecovery(events, workerSession)) continue;
+      await appendLateWorkerCompletionEvent(mission.id, threadId, workerSession);
+      await reopenMissionForLateWorkerCompletion(mission);
+      if (options.postLateWorkerCompletionFollowUp) {
+        await postLateWorkerCompletionFollowUp(mission, threadId, workerSession);
+      }
+    }
+  }
+
+  function isLateCompletedWorkerSession(
+    workerSession: WorkerSessionRecord,
+    events: ActivityEvent[]
+  ): boolean {
+    if (workerSession.state.status !== "done" || !workerSession.state.lastResult) {
+      return false;
+    }
+    return hasFailedOrTimedOutSessionToolResult(events, workerSession);
+  }
+
+  function hasFailedOrTimedOutSessionToolResult(
+    events: ActivityEvent[],
+    workerSession: WorkerSessionRecord,
+    afterMs = Number.NEGATIVE_INFINITY
+  ): boolean {
+    const linkedToolCallIds = new Set<string>();
+    const contextToolCallId = workerSession.context?.toolCallId;
+    if (contextToolCallId) {
+      linkedToolCallIds.add(contextToolCallId);
+    }
+    for (const event of events) {
+      const runtime = event.runtime;
+      if (event.kind !== "tool" || runtime?.toolPhase !== "call") continue;
+      if (runtime.toolName !== "sessions_send" && runtime.toolName !== "sessions_history") continue;
+      if (sessionToolCallTargetsWorker(runtime.callInput, workerSession.workerRunKey)) {
+        const toolCallId = runtime.toolCallId;
+        if (toolCallId) linkedToolCallIds.add(toolCallId);
+      }
+    }
+    if (linkedToolCallIds.size === 0) return false;
+
+    return events.some((event) => {
+      const runtime = event.runtime;
+      if (event.tMs <= afterMs) return false;
+      if (event.kind !== "tool" || runtime?.toolPhase !== "result") return false;
+      if (!runtime.toolCallId || !linkedToolCallIds.has(runtime.toolCallId)) return false;
+      if (
+        runtime.toolName !== "sessions_spawn" &&
+        runtime.toolName !== "sessions_send" &&
+        runtime.toolName !== "sessions_history"
+      ) {
+        return false;
+      }
+      return isFailedOrTimedOutSessionToolResult(event);
+    });
+  }
+
+  function sessionToolCallTargetsWorker(callInput: string | undefined, workerRunKey: string): boolean {
+    if (!callInput) return false;
+    const parsed = safeJsonParse(callInput);
+    if (!isRecord(parsed)) return callInput.includes(workerRunKey);
+    return parsed["session_key"] === workerRunKey || parsed["worker_run_key"] === workerRunKey;
+  }
+
+  function isFailedOrTimedOutSessionToolResult(event: ActivityEvent): boolean {
+    if (event.emph === "danger") return true;
+    const result = `${event.runtime?.resultContent ?? ""}\n${event.text ?? ""}`;
+    const structuredStatus = readSessionToolResultStatus(result);
+    if (structuredStatus) {
+      return structuredStatus !== "completed";
+    }
+    return /\b(?:timed out|failed|cancelled|canceled|Tool call failed)\b/i.test(result) ||
+      /\btimeout\b/i.test(result) && !/\b(?:within|before|no|none|without)\s+(?:the\s+)?timeout\b/i.test(result);
+  }
+
+  function readSessionToolResultStatus(result: string): string | null {
+    const parsed = safeJsonParse(result);
+    if (!isRecord(parsed)) return null;
+    if (parsed["protocol"] !== "turnkeyai.session_tool_result.v1") return null;
+    const status = parsed["status"];
+    return typeof status === "string" ? status : null;
+  }
+
+  function hasLateWorkerCompletionRecovery(events: ActivityEvent[], workerSession: WorkerSessionRecord): boolean {
+    const recoveryEvents = events.filter(
+      (event) =>
+        event.kind === "recovery" &&
+        event.runtime?.eventType === "mission.worker_late_completion" &&
+        event.runtime?.workerRunKey === workerSession.workerRunKey
+    );
+    if (recoveryEvents.length === 0) return false;
+    const latestRecoveryMs = Math.max(...recoveryEvents.map((event) => event.tMs));
+    return !hasFailedOrTimedOutSessionToolResult(events, workerSession, latestRecoveryMs);
+  }
+
+  async function appendLateWorkerCompletionEvent(
+    missionId: string,
+    threadId: string,
+    workerSession: WorkerSessionRecord
+  ): Promise<void> {
+    const summary = summarizeLateWorkerCompletion(workerSession);
+    try {
+      await options.activityStore.append({
+        id: `mission-worker-late-completion:${missionId}:${encodeURIComponent(workerSession.workerRunKey)}:${workerSession.state.updatedAt}`,
+        missionId,
+        tMs: options.clock.now(),
+        kind: "recovery",
+        actor: "system",
+        text: `mission.worker_late_completion: ${summary}`,
+        tags: ["worker_late_completion", workerSession.state.workerType],
+        runtime: {
+          eventType: "mission.worker_late_completion",
+          threadId,
+          workerRunKey: workerSession.workerRunKey,
+          workerType: workerSession.state.workerType,
+          workerUpdatedAt: String(workerSession.state.updatedAt),
+          ...(workerSession.context?.toolCallId ? { toolCallId: workerSession.context.toolCallId } : {}),
+          ...(workerSession.context?.label ? { label: workerSession.context.label } : {}),
+        },
+      });
+    } catch (error) {
+      logger.warn("late worker completion event append failed", {
+        missionId,
+        workerRunKey: workerSession.workerRunKey,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  async function reopenMissionForLateWorkerCompletion(mission: Mission): Promise<void> {
+    try {
+      const latest = (await options.missionStore.get(mission.id)) ?? mission;
+      if (latest.status === "archived" || latest.status === "draft") return;
+      if (latest.status === "working" && latest.blockers === 0) return;
+      await options.missionStore.putRaw({
+        ...latest,
+        status: "working",
+        blockers: 0,
+        progress: Math.min(latest.progress, 0.95),
+      });
+    } catch (error) {
+      logger.warn("late worker completion mission reopen failed", {
+        missionId: mission.id,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  async function postLateWorkerCompletionFollowUp(
+    mission: Mission,
+    threadId: string,
+    workerSession: WorkerSessionRecord
+  ): Promise<void> {
+    try {
+      await options.postLateWorkerCompletionFollowUp!({
+        mission,
+        threadId,
+        workerSession,
+        content: buildLateWorkerCompletionFollowUp(workerSession),
+      });
+    } catch (error) {
+      logger.warn("late worker completion follow-up post failed", {
+        missionId: mission.id,
+        workerRunKey: workerSession.workerRunKey,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  function buildLateWorkerCompletionFollowUp(workerSession: WorkerSessionRecord): string {
+    const label = workerSession.context?.label ? ` (${workerSession.context.label})` : "";
+    return [
+      `System recovery: sub-agent session ${workerSession.workerRunKey}${label} finished after an earlier session tool timeout/failure.`,
+      "Continue the original mission using this late evidence. Incorporate the result into the answer, verify any still-missing goal slots, and do not mark the mission complete until the required slots are answered or explicitly blocked.",
+      `Late worker summary: ${summarizeLateWorkerCompletion(workerSession)}`,
+      "Use sessions_history for this session if the summary is not enough.",
+    ].join("\n");
+  }
+
+  function summarizeLateWorkerCompletion(workerSession: WorkerSessionRecord): string {
+    const summary =
+      workerSession.state.lastResult?.summary ??
+      workerSession.state.continuationDigest?.summary ??
+      stringifyUnknown(workerSession.state.lastResult?.payload);
+    return capText(typeof summary === "string" && summary.trim() ? summary.trim() : "Worker completed with no summary.", 1_200);
+  }
+
   async function appendMissionRecoveryEvent(
     missionId: string,
     threadId: string,
     recovery: MissionCompletionRecovery
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (recovery.kind === "incomplete_final_answer") {
-      await appendMissionIncompleteFinalEvent(missionId, threadId, recovery);
-      return;
+      return appendMissionIncompleteFinalEvent(missionId, threadId, recovery);
     }
-    await appendMissionStalledEvent(missionId, threadId, recovery);
+    return appendMissionStalledEvent(missionId, threadId, recovery);
   }
 
   async function appendMissionStalledEvent(
     missionId: string,
     threadId: string,
     stalled: Extract<MissionCompletionRecovery, { kind: "stalled_tool_turn" }>
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
+      if (
+        await hasExistingRecoveryEvent(missionId, {
+          eventType: "mission.stalled_no_final_answer",
+          messageId: stalled.message.id,
+          status: stalled.status,
+        })
+      ) {
+        return false;
+      }
       await options.activityStore.append({
         id: `mission-stalled:${missionId}:${stalled.message.id}:${options.clock.now()}`,
         missionId,
@@ -368,12 +736,14 @@ export function createMissionThreadBridge(
           toolStatus: stalled.status,
         },
       });
+      return true;
     } catch (error) {
       logger.warn("mission stalled event append failed", {
         missionId,
         messageId: stalled.message.id,
         error: errorMessage(error),
       });
+      return false;
     }
   }
 
@@ -381,8 +751,17 @@ export function createMissionThreadBridge(
     missionId: string,
     threadId: string,
     incomplete: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
+      if (
+        await hasExistingRecoveryEvent(missionId, {
+          eventType: "mission.incomplete_final_answer",
+          messageId: incomplete.message.id,
+          reason: incomplete.reason,
+        })
+      ) {
+        return false;
+      }
       const runtime: Record<string, string> = {
         eventType: "mission.incomplete_final_answer",
         threadId,
@@ -404,12 +783,220 @@ export function createMissionThreadBridge(
         tags: ["mission_incomplete_final", incomplete.reason],
         runtime,
       });
+      return true;
     } catch (error) {
       logger.warn("mission incomplete final event append failed", {
         missionId,
         messageId: incomplete.message.id,
         error: errorMessage(error),
       });
+      return false;
+    }
+  }
+
+  async function shouldPostIncompleteFinalFollowUp(
+    missionId: string,
+    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>
+  ): Promise<boolean> {
+    if (recovery.reason !== "goal_slots_unverified") return false;
+    if (maxIncompleteFinalFollowUps <= 0) return false;
+    const attempt = await countIncompleteFinalRecoveryEvents(missionId, recovery.reason);
+    return attempt <= maxIncompleteFinalFollowUps;
+  }
+
+  async function postIncompleteFinalFollowUp(
+    mission: Mission,
+    threadId: string,
+    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>
+  ): Promise<boolean> {
+    try {
+      const attempt = await countIncompleteFinalRecoveryEvents(mission.id, recovery.reason);
+      await options.postIncompleteFinalFollowUp!({
+        mission,
+        threadId,
+        recovery,
+        content: buildIncompleteFinalFollowUp(mission, recovery, attempt, maxIncompleteFinalFollowUps),
+      });
+      return true;
+    } catch (error) {
+      logger.warn("incomplete final follow-up post failed", {
+        missionId: mission.id,
+        messageId: recovery.message.id,
+        reason: recovery.reason,
+        error: errorMessage(error),
+      });
+      return false;
+    }
+  }
+
+  function buildIncompleteFinalFollowUp(
+    mission: Mission,
+    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>,
+    attempt: number,
+    maxAttempts: number
+  ): string {
+    const slotGuidance = summarizeRecoverySlotGuidance(recovery.goalText, recovery.message.content);
+    const approvalRewriteOnly = isApprovalGatedBrowserRewriteOnlyRecovery(recovery.goalText, recovery.message.content);
+    const lines = [
+      "System recovery: the previous final answer did not satisfy required goal slots.",
+      `Automatic recovery attempt ${attempt} of ${maxAttempts}.`,
+      approvalRewriteOnly
+        ? slotGuidance
+          ? `Continue the original mission by rewriting the final answer from existing permission and browser evidence only; missing or unverified final-answer slots: ${slotGuidance}.`
+          : "Continue the original mission by rewriting the final answer from existing permission and browser evidence only."
+        : slotGuidance
+          ? `Continue the original mission instead of closing it. Use available tools to verify only the missing or unverified core slots requested by the original mission: ${slotGuidance}.`
+          : "Continue the original mission instead of closing it. Use available tools to verify only the missing or unverified core slots requested by the original mission.",
+      "Do not introduce provider/search/model-support columns unless the original mission explicitly requested provider, search/web_search, or model-support evidence.",
+      "Do not search for placeholder words from the failed answer such as '未验证', 'not verified', 'unknown', or 'missing'. Search the original entity/provider names and official domains instead.",
+      "Do not repeat the same partial answer as final. If accessible sources are genuinely exhausted, provide a blocked closeout that lists the exact pages/tools attempted, what each proved, and what remains missing.",
+    ];
+    if (approvalRewriteOnly) {
+      lines.push(
+        "This recovery is for approval-gated browser closeout wording. The previous answer already described native permission.query/permission.result/permission.applied and browser evidence.",
+        "Do not call sessions_spawn, sessions_send, permission tools, or browser tools again just to repair the final wording. Do not repeat browser.form.submit or any browser side effect.",
+        "Use the existing timeline/tool evidence and return the missing required marker/slots, or mark blocked if that native evidence is genuinely absent."
+      );
+    }
+    if (isSlowSourceReleaseRiskRecovery(recovery.goalText)) {
+      lines.push(
+        "This recovery is for a slow-source release-risk note, not a provider comparison. Do not use pricing, strengths, provider-support, model-support, or vendor-comparison table columns.",
+        "Resume or retry the same slow source-check context. The required release-risk slots are: verified source/status, owner, risk, mitigation, what remains unverified, residual risk, and how to continue or retry.",
+        "If the released source still cannot be read within the remaining budget, close out as blocked/partial with timeout evidence instead of inventing pricing or strengths."
+      );
+    }
+    if (attempt >= maxAttempts) {
+      lines.push(
+        "This is the last automatic recovery attempt for this mission. Use at most five additional tool calls total. Pick the highest-value official/source pages for the missing slots; do not broaden to new providers unless the original prompt explicitly required them. If the missing slots still cannot be verified within that budget, stop with a bounded blocked closeout instead of producing another incomplete final answer."
+      );
+    }
+    lines.push(`Previous incomplete answer signals: ${summarizeIncompleteFinalForRecovery(recovery.message.content)}`);
+    return lines.join("\n");
+  }
+
+  function isApprovalGatedBrowserRewriteOnlyRecovery(goalText: string, finalText: string): boolean {
+    const combined = `${goalText}\n${finalText}`;
+    return (
+      /\b(?:browser\.form\.submit|form submission|approval[- ]gated|approval gate|permission\.query|permission\.result|permission\.applied)\b/i.test(
+        combined
+      ) &&
+      /\b(?:permission\.query|permission\.result|permission\.applied|approval request|approval decision|browser fixture evidence|sessions_spawn|browser\.form\.submit)\b/i.test(
+        finalText
+      )
+    );
+  }
+
+  function isSlowSourceReleaseRiskRecovery(goalText: string): boolean {
+    return (
+      /\b(?:slow source|slow-source|slow fixture|slow-fixture|source-check|source check)\b/i.test(goalText) &&
+      /\b(?:release-risk|release risk|risk note|bounded attempt|timeout|timed out|resume|continue|follow-up|followup)\b/i.test(goalText)
+    );
+  }
+
+  function summarizeRecoverySlotGuidance(goalText: string, finalText: string): string {
+    const coverage = evaluateMissionGoalSlotCoverage({ goalText, finalText });
+    if (coverage.issues.length === 0) return "";
+    return coverage.issues
+      .map((issue) => `${issue.label} (${issue.reason})`)
+      .join(", ");
+  }
+
+  function summarizeIncompleteFinalForRecovery(content: string): string {
+    const signals: string[] = [];
+    const normalized = content.replace(/\s+/g, " ").trim();
+    if (/\b(?:not verified|unverified|unknown|missing)\b/i.test(normalized) || /未验证|无法验证|缺少|未访问/.test(normalized)) {
+      signals.push("The answer contained unverified placeholders; treat them as missing slots, not search terms.");
+    }
+    const urls = extractUrls(normalized).slice(0, 8);
+    if (urls.length > 0) {
+      signals.push(`URLs already mentioned: ${urls.join(", ")}`);
+    }
+    const sourceLabels = extractSourceLabels(content).slice(0, 6);
+    if (sourceLabels.length > 0) {
+      signals.push(`Source labels already mentioned: ${sourceLabels.join(", ")}`);
+    }
+    if (signals.length === 0) {
+      signals.push(capText(normalized, 500));
+    }
+    return capText(signals.join(" "), 900);
+  }
+
+  function extractUrls(content: string): string[] {
+    const matches = content.match(/https?:\/\/[^\s)\]}>"'`]+/g) ?? [];
+    return uniqueStrings(matches.map((url) => url.replace(/[.,;:]+$/, "")));
+  }
+
+  function extractSourceLabels(content: string): string[] {
+    const labels: string[] = [];
+    const tableRows = content.split(/\n+/).filter((line) => /^\s*\|/.test(line) && /\|\s*$/.test(line));
+    for (const row of tableRows) {
+      const firstCell = row.split("|").map((cell) => cell.trim()).filter(Boolean)[0];
+      if (
+        firstCell &&
+        !/^[-:]+$/.test(firstCell) &&
+        !/provider|source|证据|来源|维度/i.test(firstCell) &&
+        !/^https?:\/\//i.test(firstCell) &&
+        !/^(?:✅|❌|not verified|未验证|unknown|—|-)/i.test(firstCell)
+      ) {
+        labels.push(firstCell);
+      }
+    }
+    return uniqueStrings(labels);
+  }
+
+  function uniqueStrings(values: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of values) {
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  }
+
+  async function hasExistingRecoveryEvent(
+    missionId: string,
+    expected: { eventType: string; messageId: string; reason?: string; status?: string }
+  ): Promise<boolean> {
+    try {
+      const events = await options.activityStore.listByMission(missionId);
+      return events.some((event) => {
+        if (event.kind !== "recovery") return false;
+        if (event.runtime?.eventType !== expected.eventType) return false;
+        if (event.runtime?.messageId !== expected.messageId) return false;
+        if (expected.reason !== undefined && event.runtime?.reason !== expected.reason) return false;
+        if (expected.status !== undefined && event.runtime?.toolStatus !== expected.status) return false;
+        return true;
+      });
+    } catch (error) {
+      logger.warn("mission recovery dedupe scan failed", {
+        missionId,
+        error: errorMessage(error),
+      });
+      return false;
+    }
+  }
+
+  async function countIncompleteFinalRecoveryEvents(
+    missionId: string,
+    reason: string
+  ): Promise<number> {
+    try {
+      const events = await options.activityStore.listByMission(missionId);
+      return events.filter((event) => {
+        if (event.kind !== "recovery") return false;
+        if (event.runtime?.eventType !== "mission.incomplete_final_answer") return false;
+        return event.runtime?.reason === reason;
+      }).length;
+    } catch (error) {
+      logger.warn("mission incomplete final recovery count failed", {
+        missionId,
+        reason,
+        error: errorMessage(error),
+      });
+      return maxIncompleteFinalFollowUps;
     }
   }
 
@@ -417,6 +1004,26 @@ export function createMissionThreadBridge(
     const mission = await safeFindMission(missionId);
     if (!mission || !mission.threadId) return 0;
     return mirror(mission, mission.threadId);
+  }
+
+  async function tickThread(threadId: string): Promise<Array<{ missionId: string; appended: number }>> {
+    let missions: Mission[];
+    try {
+      missions = await options.missionStore.list();
+    } catch (error) {
+      logger.warn("mission list failed for thread mirror", {
+        threadId,
+        error: errorMessage(error),
+      });
+      return [];
+    }
+    const linked = missions.filter((mission): mission is Mission & { threadId: string } => mission.threadId === threadId);
+    const results: Array<{ missionId: string; appended: number }> = [];
+    for (const mission of linked) {
+      const appended = await mirror(mission, threadId);
+      results.push({ missionId: mission.id, appended });
+    }
+    return results;
   }
 
   async function safeFindMission(missionId: string): Promise<Mission | null> {
@@ -441,9 +1048,12 @@ export function createMissionThreadBridge(
       logger.warn("mission list failed", { error: errorMessage(error) });
       return [];
     }
-    const linked = missions.filter((m): m is Mission & { threadId: string } =>
-      typeof m.threadId === "string" && m.threadId.length > 0
-    );
+    const linked = missions
+      .filter((m): m is Mission & { threadId: string } =>
+        typeof m.threadId === "string" && m.threadId.length > 0
+      )
+      .sort(compareMissionTickPriority)
+      .slice(0, maxMissionsPerTick);
     const results: Array<{ missionId: string; appended: number }> = [];
     // Sequential — these are small. Parallel would race on the activity
     // log append per mission, which is JSONL-append-safe today but the
@@ -473,7 +1083,33 @@ export function createMissionThreadBridge(
     };
   }
 
-  return { tickAll, tickMission, start };
+  return { tickAll, tickMission, tickThread, start };
+}
+
+const DEFAULT_MAX_MISSIONS_PER_TICK = 50;
+const DEFAULT_MAX_INCOMPLETE_FINAL_FOLLOW_UPS = 2;
+const ACTIVE_MISSION_STATUSES = new Set<Mission["status"]>([
+  "planning",
+  "working",
+  "needs_approval",
+  "blocked",
+]);
+
+function compareMissionTickPriority(left: Mission, right: Mission): number {
+  const leftActive = ACTIVE_MISSION_STATUSES.has(left.status);
+  const rightActive = ACTIVE_MISSION_STATUSES.has(right.status);
+  if (leftActive !== rightActive) {
+    return leftActive ? -1 : 1;
+  }
+  return missionSortTime(right) - missionSortTime(left);
+}
+
+function missionSortTime(mission: Mission): number {
+  if (typeof mission.createdAtMs === "number" && Number.isFinite(mission.createdAtMs)) {
+    return mission.createdAtMs;
+  }
+  const parsed = Date.parse(mission.createdAt);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function readStringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -583,6 +1219,7 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
 
   const events: ActivityEvent[] = [];
   const splitToolResults = input.splitToolResults ?? new Map<string, TeamMessage>();
+  let latestSplitToolResultAt: number | null = null;
   const toolUse =
     extractNativeToolUseTrace(message, {
       includeResults: !isNativeSplitToolEnvelope(message) || splitToolResults.size === 0,
@@ -668,11 +1305,15 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
           emittedResultCallIds.add(matchingResult.toolCallId);
           stepIndex += 1;
         } else if (splitResultMessage) {
+          latestSplitToolResultAt = Math.max(
+            latestSplitToolResultAt ?? splitResultMessage.createdAt,
+            splitResultMessage.createdAt,
+          );
           events.push(
             buildSplitToolResultEvent({
               ...input,
               message: splitResultMessage,
-              tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
+              tMs: splitResultMessage.createdAt,
               call,
               roundNumber: round.round,
               sourceLabel: readToolCallSourceLabel(call.input),
@@ -722,6 +1363,9 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
         text: message.content,
         sourceSuffix: "assistant",
         tags: ["thread", "assistant"],
+        ...(latestSplitToolResultAt !== null
+          ? { tMs: Math.max(message.createdAt, latestSplitToolResultAt + 1) }
+          : {}),
       })
     );
   }
@@ -925,6 +1569,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function stringifyUnknown(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function capText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
 function readNumber(value: unknown, key: string): number | null {
   if (!isRecord(value)) return null;
   const item = value[key];
@@ -939,6 +1606,7 @@ interface BuildPlainEventInput {
   text: string;
   sourceSuffix: string;
   tags: string[];
+  tMs?: number;
 }
 
 function buildPlainEvent(input: BuildPlainEventInput): ActivityEvent {
@@ -956,7 +1624,7 @@ function buildPlainEvent(input: BuildPlainEventInput): ActivityEvent {
   return {
     id: input.newEventId(),
     missionId: input.missionId,
-    tMs: input.message.createdAt,
+    tMs: input.tMs ?? input.message.createdAt,
     kind: input.kind,
     actor,
     text: input.text,

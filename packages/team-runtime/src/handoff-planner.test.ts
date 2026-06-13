@@ -50,6 +50,92 @@ test("handoff planner resolves known role mentions", async () => {
   assert.deepEqual(decision.targetRoleIds, ["operator"]);
 });
 
+test("handoff planner ignores bare role-id mentions", async () => {
+  const planner = new DefaultHandoffPlanner();
+  const thread: TeamThread = {
+    threadId: "thread-1",
+    teamId: "team-1",
+    teamName: "Demo",
+    leadRoleId: "role-lead",
+    roles: [
+      { roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" },
+      { roleId: "role-browser", name: "Browser", seat: "member", runtime: "local" },
+    ],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const flow: FlowLedger = {
+    flowId: "flow-1",
+    threadId: thread.threadId,
+    rootMessageId: "msg-1",
+    mode: "serial",
+    status: "running",
+    currentStageIndex: 0,
+    activeRoleIds: [],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    nextExpectedRoleId: "role-lead",
+    hopCount: 0,
+    maxHops: 5,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const decision = await planner.validateMentionTargets(thread, {
+    flow,
+    sourceRoleId: "role-lead",
+    messageId: "msg-2",
+    content: "@role-browser",
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.deepEqual(decision.targetRoleIds, []);
+});
+
+test("handoff planner does not treat email domains as bare role mentions", async () => {
+  const planner = new DefaultHandoffPlanner();
+  const thread: TeamThread = {
+    threadId: "thread-1",
+    teamId: "team-1",
+    teamName: "Demo",
+    leadRoleId: "role-lead",
+    roles: [{ roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const flow: FlowLedger = {
+    flowId: "flow-1",
+    threadId: thread.threadId,
+    rootMessageId: "msg-1",
+    mode: "serial",
+    status: "running",
+    currentStageIndex: 0,
+    activeRoleIds: [],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    hopCount: 0,
+    maxHops: 5,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const decision = await planner.validateMentionTargets(thread, {
+    flow,
+    sourceRoleId: "role-lead",
+    messageId: "msg-2",
+    content: "Contact support@example.com for the handoff notes.",
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.deepEqual(decision.targetRoleIds, []);
+});
+
 test("handoff planner rejects targets that exceed per-role hop limit", async () => {
   const planner = new DefaultHandoffPlanner({ maxPerRoleHopCount: 1 });
   const thread: TeamThread = {

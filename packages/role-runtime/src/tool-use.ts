@@ -233,6 +233,8 @@ export function createWorkerSessionToolExecutor(options: {
   toolPermissionService?: ToolPermissionService;
   taskToolService?: TaskToolService;
   memoryResolver?: Pick<RoleMemoryResolver, "retrieveMemory" | "getMemory">;
+  webFetchEnabled?: boolean;
+  fetchFn?: typeof fetch;
 }): RoleToolExecutor {
   const { workerRuntime } = options;
   const toolCapabilityRegistry =
@@ -245,6 +247,7 @@ export function createWorkerSessionToolExecutor(options: {
       permissionsEnabled: Boolean(options.toolPermissionService),
       memoryEnabled: Boolean(options.memoryResolver),
       tasksEnabled: Boolean(options.taskToolService),
+      webFetchEnabled: options.webFetchEnabled === true,
     });
   const definitions = toolCapabilityRegistry.definitions();
   const executableWorkerKinds = new Set(toolCapabilityRegistry.availableWorkerKinds());
@@ -281,6 +284,8 @@ export function createWorkerSessionToolExecutor(options: {
           return executeSessionsList(workerRuntime, input);
         case "sessions_history":
           return executeSessionsHistory(workerRuntime, input);
+        case "web_fetch":
+          return executeWebFetch(input, options.fetchFn ?? fetch);
         case "permission_query":
           return executePermissionQuery(input, options.toolPermissionService);
         case "permission_result":
@@ -307,6 +312,66 @@ export function createWorkerSessionToolExecutor(options: {
       }
     },
   };
+}
+
+async function executeWebFetch(
+  input: RoleToolExecutionInput,
+  fetchFn: typeof fetch
+): Promise<RoleToolExecutionResult> {
+  const rawUrl = requiredString(input.call.input.url);
+  if (!rawUrl) {
+    return errorResult(input.call, "web_fetch requires url");
+  }
+  const maxChars = clampWebFetchMaxChars(input.call.input.max_chars);
+  let safeUrl: string;
+  try {
+    safeUrl = validatePublicWebFetchUrl(rawUrl);
+  } catch (error) {
+    return errorResult(input.call, error instanceof Error ? error.message : "invalid web_fetch URL");
+  }
+
+  try {
+    const startedAt = Date.now();
+    const { response, finalUrl } = await webFetchWithRedirects(fetchFn, safeUrl, input.signal);
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = await response.text();
+    const page = parseFetchedPage({
+      requestedUrl: safeUrl,
+      finalUrl,
+      statusCode: response.status,
+      contentType,
+      body,
+      maxChars,
+    });
+    const completedAt = Date.now();
+    return {
+      toolCallId: input.call.id,
+      toolName: input.call.name,
+      ...(response.ok ? {} : { isError: true }),
+      content: JSON.stringify(page, null, 2),
+      progress: [
+        {
+          phase: response.ok ? "completed" : "failed",
+          toolName: input.call.name,
+          summary: response.ok
+            ? `Fetched public page ${page.final_url}.`
+            : `web_fetch returned HTTP ${response.status} for ${page.final_url}.`,
+          detail: {
+            requested_url: page.requested_url,
+            final_url: page.final_url,
+            status: page.status,
+            status_code: page.status_code,
+            title: page.title,
+            content_type: page.content_type,
+            elapsed_ms: completedAt - startedAt,
+          },
+        },
+      ],
+      raw: page,
+    };
+  } catch (error) {
+    return errorResult(input.call, error instanceof Error ? error.message : "web_fetch failed");
+  }
 }
 
 async function executeMemorySearch(
@@ -400,6 +465,10 @@ async function executePermissionQuery(
   const rationale = requiredString(input.call.input.rationale);
   if (!action || !title || !risk || !level || !scope || !rationale) {
     return errorResult(input.call, "permission_query requires action, title, risk, level, scope, and rationale");
+  }
+  const readOnlyMismatch = rejectReadOnlyPermissionQuery(input, action, scope);
+  if (readOnlyMismatch) {
+    return readOnlyMismatch;
   }
   const role = input.activation.thread.roles.find((item) => item.roleId === input.activation.runState.roleId);
   const workerType = parseWorkerKind(input.call.input.worker_kind);
@@ -548,7 +617,9 @@ async function maybeGateBrowserSideEffect(input: {
   if (input.workerType !== "browser") {
     return null;
   }
-  const risk = classifyBrowserSideEffect(input.instruction);
+  const risk =
+    classifyBrowserSideEffect(input.instruction) ??
+    classifyParentRequiredBrowserSideEffect(input.input.packet.taskPrompt, input.instruction);
   if (!risk) {
     return null;
   }
@@ -809,13 +880,22 @@ function classifyBrowserSideEffect(
   instruction: string
 ): { action: string; scope: "mutate" | "publish" | "credential"; title: string; risk: string } | null {
   const normalized = instruction.toLowerCase();
-  if (/\b(password|2fa|mfa|otp|credential|api key|secret|token)\b/.test(normalized)) {
+  if (hasCredentialAccessSignal(normalized)) {
     return {
       action: "browser.credential.access",
       scope: "credential",
       title: "Use browser credentials",
       risk: "May expose or use account credentials or authentication secrets.",
     };
+  }
+  if (
+    isExplicitReadOnlyBrowserInspectionInstruction(normalized) ||
+    isReadOnlyBrowserSourceEvidenceInstruction(normalized)
+  ) {
+    return null;
+  }
+  if (isReadOnlySourceUrlTaskWithoutExplicitPublishIntent(normalized)) {
+    return null;
   }
   if (
     /\b(post publicly|go live)\b/.test(normalized) ||
@@ -894,6 +974,275 @@ function classifyBrowserSideEffect(
     };
   }
   return null;
+}
+
+function classifyParentRequiredBrowserSideEffect(
+  parentTaskPrompt: string,
+  instruction: string
+): { action: string; scope: "mutate"; title: string; risk: string } | null {
+  const parent = parentTaskPrompt.toLowerCase();
+  const child = instruction.toLowerCase();
+  if (!/\b(?:browser\.form\.submit|form submission|submit(?:ting)?|dry[- ]run)\b/.test(parent)) {
+    return null;
+  }
+  const parentRequiresApprovalAction =
+    /\bactually\s+carry\b[\s\S]{0,180}\b(?:approval gate|operator approval|operator review|browser action|form submission)\b/.test(parent) ||
+    /\bcarry\b[\s\S]{0,120}\b(?:dry[- ]run|form submission|browser action)\b[\s\S]{0,120}\b(?:approval gate|operator approval|operator review)\b/.test(parent) ||
+    /\brequest approval before applying\b[\s\S]{0,160}\b(?:browser action|form submission|submit|side[- ]effect)\b/.test(parent) ||
+    /\bafter the runtime approval gate is cleared\b[\s\S]{0,180}\b(?:browser task|browser worker|submit|form submission|browser\.form\.submit)\b/.test(parent) ||
+    /\bruntime approval gate\b[\s\S]{0,160}\b(?:exercised|cleared|applied)\b/.test(parent);
+  if (!parentRequiresApprovalAction) {
+    return null;
+  }
+  if (isBrowserInspectionOnlyBeforeApproval(child)) {
+    return null;
+  }
+  if (
+    !/\b(?:approval[- ]gated|approval form|approval fixture|browser\.form\.submit|form submission|submit(?:ting)?|dry[- ]run)\b/.test(
+      child
+    )
+  ) {
+    return null;
+  }
+  return {
+    action: "browser.form.submit",
+    scope: "mutate",
+    title: "Approve browser mutation",
+    risk: "May change account state, submit data, or trigger an external action.",
+  };
+}
+
+function isBrowserInspectionOnlyBeforeApproval(text: string): boolean {
+  return (
+    /\b(?:pre[- ]approval\s+)?(?:browser\s+)?inspection only\b/.test(text) ||
+    (/\b(?:inspect|observe|review|open|snapshot|screenshot|visible|rendered)\b[\s\S]{0,220}\b(?:before|without|until)\b[\s\S]{0,120}\b(?:approval|permission|submission|submit|side[- ]effect|mutation)\b/.test(
+      text
+    ) &&
+      /\b(?:do not|don't|no|without|blocked until|remains blocked until)\b[\s\S]{0,180}\b(?:submit|submission|click the submit|mutat(?:e|ion)|side[- ]effect|save|apply)\b/.test(
+        text
+      ))
+  );
+}
+
+function hasCredentialAccessSignal(input: string): boolean {
+  const normalized = input.replace(
+    /\b(?:do not|don't|no)\b[^.;\n]{0,100}\b(?:credentials?|api keys?|secrets?|tokens?)\b/g,
+    " "
+  );
+  return (
+    /\b(password|2fa|mfa|otp|credential|credentials|api key|secret)\b/.test(normalized) ||
+    /\b(?:auth|access|bearer|session|refresh|login|credential|secret)\s+token\b/.test(normalized) ||
+    /\btoken\b[\s\S]{0,40}\b(?:auth|access|bearer|session|refresh|login|credential|secret)\b/.test(normalized)
+  );
+}
+
+function rejectReadOnlyPermissionQuery(
+  input: RoleToolExecutionInput,
+  action: string,
+  scope: "navigate" | "mutate" | "publish" | "credential"
+): RoleToolExecutionResult | null {
+  if (!action.startsWith("browser.") || scope === "navigate") {
+    return null;
+  }
+  const primaryContext = buildPermissionQueryPrimaryTaskContext(input).toLowerCase();
+  if (
+    primaryContext &&
+    hasReadOnlySourceWorkSignal(primaryContext) &&
+    !hasExplicitBrowserSideEffectIntent(primaryContext)
+  ) {
+    return errorResult(
+      input.call,
+      `permission_query rejected: ${action} is a browser side-effect request, but the current task context is read-only/source-bounded. Continue with read-only evidence collection or final synthesis instead of creating an approval.`
+    );
+  }
+  const context = buildPermissionQueryTaskContext(input).toLowerCase();
+  if (!context || !hasReadOnlySourceWorkSignal(context) || hasExplicitBrowserSideEffectIntent(context)) {
+    return null;
+  }
+  return errorResult(
+    input.call,
+    `permission_query rejected: ${action} is a browser side-effect request, but the current task context is read-only/source-bounded. Continue with read-only evidence collection or final synthesis instead of creating an approval.`
+  );
+}
+
+function buildPermissionQueryPrimaryTaskContext(input: RoleToolExecutionInput): string {
+  return [
+    input.packet.taskPrompt,
+    input.packet.outputContract,
+    getInstructions(input.activation.handoff.payload),
+    getRelayBrief(input.activation.handoff.payload),
+  ]
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .join("\n");
+}
+
+function buildPermissionQueryTaskContext(input: RoleToolExecutionInput): string {
+  const payload = input.activation.handoff.payload;
+  return [
+    input.packet.systemPrompt,
+    input.packet.taskPrompt,
+    input.packet.outputContract,
+    getInstructions(payload),
+    getRelayBrief(payload),
+    ...getRecentMessages(payload).map((item) => item.content),
+  ]
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .join("\n");
+}
+
+function hasReadOnlySourceWorkSignal(input: string): boolean {
+  return (
+    /\bread[- ]only\b/.test(input) ||
+    /\bsource[- ](?:backed|bounded)\b/.test(input) ||
+    /\b(?:review|research|inspect|revisit|notes|evidence|decision note|synthesi[sz]e|summari[sz]e|comparison|pricing|strength|risk)\b/.test(
+      input
+    )
+  );
+}
+
+function hasExplicitBrowserSideEffectIntent(input: string): boolean {
+  const normalized = input.replace(
+    /\b(?:do not|don't|no)\b[^.;\n]{0,160}\b(?:click|submit|form|forms|deposit|deposits|purchase|buy|order|book|reserve|save|update|delete|remove|archive|mutation|side[- ]effect|approval|permission)\b/g,
+    " "
+  );
+  return (
+    /\b(?:operator review|operator approval|operator decision|dry[- ]run|dry run)\b/.test(normalized) ||
+    /\b(?:permission|approval)\b[\s\S]{0,100}\b(?:form|submit|browser action|browser mutation|mutation|side[- ]effect)\b/.test(normalized) ||
+    /\b(?:form|submit|browser action|browser mutation|mutation|side[- ]effect)\b[\s\S]{0,100}\b(?:permission|approval)\b/.test(normalized) ||
+    /\bapproval[- ]gated\b[\s\S]{0,80}\b(?:form|submit|browser action|mutation|side[- ]effect)\b/.test(normalized) ||
+    /\b(?:form|submit|submitted|send|save|create|update|delete|remove|archive|checkout|purchase|buy|order|book|reserve|invite|accept|reject|cancel|publish|deploy|go live)\b/.test(
+      normalized
+    )
+  );
+}
+
+function isExplicitReadOnlyBrowserInspectionInstruction(input: string): boolean {
+  return (
+    /\bread[- ]only\b/.test(input) &&
+    /\b(?:only\s+(?:inspect|open|review|read|observe)|inspect\s+the\s+listed\s+sources|synthesize\s+a\s+recommendation|no\s+mutations?\s+performed|strictly\s+read[- ]only)\b/.test(
+      input,
+    ) &&
+    /\b(?:do\s+not|don't|no)\b[\s\S]{0,180}\b(?:click|submit|form|deposit|purchase|buy|order|book|reserve|save|update|delete|remove|archive|mutation|side[- ]effect|approval)\b/.test(
+      input,
+    )
+  );
+}
+
+function isReadOnlyBrowserSourceEvidenceInstruction(input: string): boolean {
+  if (!/https?:\/\//i.test(input)) {
+    return false;
+  }
+  if (
+    !/\b(?:open|navigate|fetch|extract|collect|review|inspect|read|compare|research|summari[sz]e|report|identify|verify)\b/.test(
+      input
+    )
+  ) {
+    return false;
+  }
+  if (
+    !/\b(?:source|sources|evidence|pricing|price|risk|strength|recommendation|vendor|url|page|pages|browser-visible|rendered)\b/.test(
+      input
+    )
+  ) {
+    return false;
+  }
+  return !hasDefiniteBrowserSideEffectCommand(input);
+}
+
+function isReadOnlySourceUrlTaskWithoutExplicitPublishIntent(input: string): boolean {
+  return (
+    /https?:\/\//i.test(input) &&
+    hasReadOnlySourceWorkSignal(input) &&
+    /\b(?:source|evidence|pricing|price|provider|search|risk|strength|review|research|compare|comparison|extract)\b/i.test(
+      input
+    ) &&
+    !hasExplicitPublishIntent(input)
+  );
+}
+
+function hasExplicitPublishIntent(input: string): boolean {
+  const normalized = input.replace(
+    /\b(?:do not|don't|no)\b[^.;\n]{0,180}\b(?:publish|release|deploy|go live|post publicly)\b/g,
+    " "
+  );
+  return (
+    /\bpost publicly\b|\bgo live\b/.test(normalized) ||
+    /\bpublish\s+(?:this|the|a|an|draft|post|article|page|change|changes|build|version|release|announcement|note|notes)\b/.test(
+      normalized
+    ) ||
+    /\bdeploy\s+(?:this|the|a|an|change|changes|build|version|release)\b/.test(normalized) ||
+    /\brelease\s+(?:this|the|a|an|draft|post|article|page|change|changes|build|version|announcement|note|notes)\b/.test(
+      normalized
+    )
+  );
+}
+
+function hasDefiniteBrowserSideEffectCommand(input: string): boolean {
+  const normalized = input.replace(
+    /\b(?:do not|don't|no)\b[^.;\n]{0,180}\b(?:click|submit|form|forms|publish|release|deploy|deposit|deposits|purchase|buy|order|book|reserve|save|update|delete|remove|archive|mutation|side[- ]effect|approval|permission)\b/g,
+    " "
+  );
+  if (/\bgo live\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(?:click|press|select|activate)\b[\s\S]{0,80}\b(?:submit|send|save|publish|delete|remove|checkout|purchase|buy|order|book|reserve|approve|accept|reject|cancel|deploy|release)\b/.test(normalized)) {
+    return true;
+  }
+  return hasBrowserActionVerb(
+    normalized,
+    [
+      "submit",
+      "send",
+      "save",
+      "create",
+      "update",
+      "delete",
+      "remove",
+      "archive",
+      "checkout",
+      "purchase",
+      "buy",
+      "order",
+      "book",
+      "reserve",
+      "invite",
+      "approve",
+      "accept",
+      "reject",
+      "cancel",
+      "publish",
+      "deploy",
+      "release",
+    ],
+    [
+      "answer",
+      "summary",
+      "findings",
+      "report",
+      "review",
+      "recommendation",
+      "recommendations",
+      "result",
+      "results",
+      "date",
+      "time",
+      "version",
+      "history",
+      "status",
+      "notes",
+      "metadata",
+      "frequency",
+      "schedule",
+      "cadence",
+      "information",
+      "info",
+      "details",
+      "count",
+      "counts",
+      "risk",
+      "risks",
+    ]
+  );
 }
 
 function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers: string[]): boolean {
@@ -1242,9 +1591,20 @@ function resolveEffectiveSessionSpawnWorkerKind(input: {
 
 function shouldRoutePublicReadOnlySourceTaskToExplore(task: string): boolean {
   const normalized = task.toLowerCase();
+  if (hasLocalReadOnlySourceSignal(normalized) && !hasHardBrowserRequiredSignal(normalized)) return true;
   if (!hasPublicReadOnlySourceSignal(normalized)) return false;
   if (hasBrowserRequiredSignal(normalized)) return false;
   return true;
+}
+
+function hasLocalReadOnlySourceSignal(input: string): boolean {
+  return (
+    /\b(?:localhost|127\.0\.0\.1|\[::1\]|::1)\b/i.test(input) &&
+    /\b(?:source pages?|pricing|price|url extraction|read-only url|fetch|extract|retrieve|research|review|compare|comparison|evidence)\b/i.test(
+      input
+    ) &&
+    /https?:\/\//i.test(input)
+  );
 }
 
 function hasPublicReadOnlySourceSignal(input: string): boolean {
@@ -1257,6 +1617,12 @@ function hasPublicReadOnlySourceSignal(input: string): boolean {
 
 function hasBrowserRequiredSignal(input: string): boolean {
   return /\b(?:authenticated|login|logged in|account|session|interactive|click|fill|submit|submission|form|approval|dry-run|dry run|operator review|side effect|side-effect|mutation|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|client-side|rendered dashboard|dashboard|as a user would see|browser session|active browser)\b/i.test(
+    input
+  );
+}
+
+function hasHardBrowserRequiredSignal(input: string): boolean {
+  return /\b(?:authenticated|login|logged in|account|password|2fa|mfa|otp|credential|api key|secret|token|interactive|click|fill|submit|submission|form|approval|dry-run|dry run|operator review|side effect|side-effect|mutation|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|client-side|rendered dashboard|dashboard|as a user would see)\b/i.test(
     input
   );
 }
@@ -1470,7 +1836,7 @@ async function executeSessionsSend(
       taskId: input.activation.handoff.taskId,
       sessionKey,
       result: state.lastResult,
-      context: record.context,
+      ...(record.context ? { context: record.context } : {}),
       label,
     });
   }
@@ -2305,7 +2671,7 @@ async function sendWorkerWithOptionalTimeout(
     typeof hardTimeoutGraceMs === "number" && Number.isFinite(hardTimeoutGraceMs) && hardTimeoutGraceMs >= 0
       ? Math.floor(hardTimeoutGraceMs)
       : DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS;
-  const abortWatcher = createWorkerAbortWatcher(workerRuntime, input, abortSignal, graceMs);
+  const abortWatcher = createWorkerAbortWatcher(workerRuntime, input, sendPromise, abortSignal, graceMs);
   if (timeoutMs === null) {
     try {
       return await Promise.race([
@@ -2318,44 +2684,64 @@ async function sendWorkerWithOptionalTimeout(
     }
   }
   let softTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  let hardTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  let hardTimeoutFired = false;
+  let softTimeoutFired = false;
+  const foregroundSendPromise = sendPromise.then(
+    (result) =>
+      softTimeoutFired
+        ? new Promise<WorkerExecutionResult | null>(() => undefined)
+        : result,
+    (error) => {
+      if (softTimeoutFired) {
+        return new Promise<WorkerExecutionResult | null>(() => undefined);
+      }
+      throw error;
+    },
+  );
   const timeoutPromise = new Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT>((resolve) => {
     softTimeoutHandle = setTimeout(() => {
-      hardTimeoutHandle = setTimeout(() => {
-        hardTimeoutFired = true;
-        void workerRuntime
-          .interrupt({ workerRunKey: input.workerRunKey, reason: timeoutReason })
-          .then(() => runWorkerTimeoutSummaryPass(workerRuntime, input, timeoutReason, graceMs))
-          .catch((error) => {
-            console.error("worker timeout interrupt failed", {
-              workerRunKey: input.workerRunKey,
-              error,
-            });
-            return null;
-          })
-          .then(() => resolve(WORKER_TOOL_TIMEOUT));
-      }, graceMs);
+      softTimeoutFired = true;
+      void workerRuntime
+        .interrupt({ workerRunKey: input.workerRunKey, reason: timeoutReason, preserveLateResult: true })
+        .then(() => raceTimeoutSummary(sendPromise, graceMs))
+        .then(async (lateResult) => {
+          const cooperativePartial = preserveLateTimeoutPartial(lateResult);
+          if (cooperativePartial) {
+            return cooperativePartial;
+          }
+          await runWorkerTimeoutSummaryPass(workerRuntime, input, timeoutReason, graceMs);
+          return null;
+        })
+        .catch((error) => {
+          console.error("worker timeout interrupt failed", {
+            workerRunKey: input.workerRunKey,
+            error,
+          });
+          return null;
+        })
+        .then((lateResult) => resolve(lateResult ?? WORKER_TOOL_TIMEOUT));
     }, timeoutMs);
   });
   try {
     return await Promise.race([
-      sendPromise,
+      foregroundSendPromise,
       timeoutPromise,
       ...(cancellationPromise ? [cancellationPromise] : []),
       ...(abortWatcher ? [abortWatcher.promise] : []),
     ]);
   } finally {
     abortWatcher?.dispose();
-    if (!hardTimeoutFired) {
+    if (!softTimeoutFired) {
       if (softTimeoutHandle) {
         clearTimeout(softTimeoutHandle);
       }
-      if (hardTimeoutHandle) {
-        clearTimeout(hardTimeoutHandle);
-      }
     }
   }
+}
+
+function preserveLateTimeoutPartial(
+  lateResult: WorkerExecutionResult | null,
+): WorkerExecutionResult | null {
+  return lateResult?.status === "partial" ? lateResult : null;
 }
 
 async function sendWorkerWithOptionalCancellation(
@@ -2415,11 +2801,12 @@ function createWorkerAbortWatcher(
     toolCallId?: string;
     resumeExisting?: boolean;
   },
+  sendPromise: Promise<WorkerExecutionResult | null>,
   signal: AbortSignal | undefined,
   graceMs: number
 ):
   | {
-      promise: Promise<typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED>;
+      promise: Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED>;
       dispose(): void;
     }
   | null {
@@ -2427,10 +2814,14 @@ function createWorkerAbortWatcher(
     return null;
   }
   let onAbort: (() => void) | null = null;
-  const runAbort = async (): Promise<typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> => {
+  const runAbort = async (): Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> => {
     const reason = readAbortReason(signal, "Tool call aborted.");
     if (isToolLoopWallClockAbort(reason)) {
-      await workerRuntime.interrupt({ workerRunKey: input.workerRunKey, reason });
+      await workerRuntime.interrupt({ workerRunKey: input.workerRunKey, reason, preserveLateResult: true });
+      const lateResult = await raceTimeoutSummary(sendPromise, graceMs);
+      if (lateResult) {
+        return lateResult;
+      }
       await runWorkerTimeoutSummaryPass(workerRuntime, input, reason, graceMs);
       return WORKER_TOOL_TIMEOUT;
     }
@@ -2444,9 +2835,9 @@ function createWorkerAbortWatcher(
     });
     return WORKER_TOOL_CANCELLED;
   };
-  const promise: Promise<typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> = signal.aborted
+  const promise: Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> = signal.aborted
     ? runAbort().catch(recoverAbortFailure)
-    : new Promise<typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED>((resolve) => {
+    : new Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED>((resolve) => {
         onAbort = () => {
           void runAbort()
             .catch(recoverAbortFailure)
@@ -2507,7 +2898,7 @@ async function raceTimeoutSummary(
   summaryGraceMs: number
 ): Promise<WorkerExecutionResult | null> {
   const graceMs =
-    typeof summaryGraceMs === "number" && Number.isFinite(summaryGraceMs) && summaryGraceMs > 0
+    typeof summaryGraceMs === "number" && Number.isFinite(summaryGraceMs) && summaryGraceMs >= 0
       ? Math.floor(summaryGraceMs)
       : DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS;
   summaryPromise.catch(() => {
@@ -2672,7 +3063,14 @@ function parseToolTimeoutMs(value: unknown, maxTimeoutMs?: number): number | nul
 }
 
 function resolveToolTimeoutMs(value: unknown, workerKind: WorkerKind, maxTimeoutMs?: number): number {
-  return parseToolTimeoutMs(value, maxTimeoutMs) ?? boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs);
+  const explicitTimeoutMs = parseToolTimeoutMs(value, maxTimeoutMs);
+  if (explicitTimeoutMs !== null) {
+    return explicitTimeoutMs;
+  }
+  return boundDefaultToolTimeoutMs(
+    defaultToolTimeoutMs(workerKind),
+    maxTimeoutMs
+  );
 }
 
 function resolveToolTimeoutMsForTask(input: {
@@ -2795,6 +3193,147 @@ function formatTimeoutSeconds(timeoutMs: number | null): string {
   }
   const seconds = timeoutMs / 1_000;
   return `${Number(seconds.toFixed(3))}s`;
+}
+
+function clampWebFetchMaxChars(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 1200;
+  }
+  return Math.max(200, Math.min(4000, Math.floor(value)));
+}
+
+async function webFetchWithRedirects(
+  fetchFn: typeof fetch,
+  inputUrl: string,
+  signal: AbortSignal | undefined,
+  redirectCount = 0
+): Promise<{ response: Response; finalUrl: string }> {
+  if (signal?.aborted) {
+    throw new Error(typeof signal.reason === "string" ? signal.reason : "web_fetch cancelled");
+  }
+  const response = await fetchFn(inputUrl, {
+    redirect: "manual",
+    headers: {
+      "user-agent": "turnkeyai/0.1 web_fetch",
+      accept: "text/html, text/plain, application/xhtml+xml, application/xml;q=0.9, */*;q=0.5",
+    },
+    ...(signal ? { signal } : {}),
+  });
+  if (response.status >= 300 && response.status < 400) {
+    if (redirectCount >= 3) {
+      throw new Error(`too many redirects for ${inputUrl}`);
+    }
+    const location = response.headers.get("location");
+    if (!location) {
+      throw new Error(`redirect without location for ${inputUrl}`);
+    }
+    const nextUrl = validatePublicWebFetchUrl(new URL(location, inputUrl).toString());
+    return webFetchWithRedirects(fetchFn, nextUrl, signal, redirectCount + 1);
+  }
+  return { response, finalUrl: inputUrl };
+}
+
+function parseFetchedPage(input: {
+  requestedUrl: string;
+  finalUrl: string;
+  statusCode: number;
+  contentType: string;
+  body: string;
+  maxChars: number;
+}): {
+  status: "ok" | "http_error";
+  requested_url: string;
+  final_url: string;
+  status_code: number;
+  content_type: string;
+  title: string;
+  text_excerpt: string;
+} {
+  const titleMatch = input.body.match(/<title[^>]*>([^<]+)<\/title>/i);
+  const text = stripFetchedHtml(input.body).slice(0, input.maxChars);
+  return {
+    status: input.statusCode >= 200 && input.statusCode < 300 ? "ok" : "http_error",
+    requested_url: input.requestedUrl,
+    final_url: input.finalUrl,
+    status_code: input.statusCode,
+    content_type: input.contentType,
+    title: decodeBasicHtmlEntities(titleMatch?.[1]?.trim() ?? ""),
+    text_excerpt: decodeBasicHtmlEntities(text),
+  };
+}
+
+function stripFetchedHtml(input: string): string {
+  return input
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<(?:br|\/p|\/div|\/li|\/h[1-6])\s*\/?>/gi, "\n")
+    .replace(/<(?:p|div|li|h[1-6])[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function decodeBasicHtmlEntities(input: string): string {
+  return input
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ");
+}
+
+function validatePublicWebFetchUrl(inputUrl: string): string {
+  const parsed = new URL(inputUrl);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`unsupported web_fetch URL protocol: ${parsed.protocol}`);
+  }
+
+  const hostname = normalizeWebFetchHostname(parsed.hostname);
+  if (
+    hostname === "localhost" ||
+    hostname === "::1" ||
+    hostname.startsWith("127.") ||
+    hostname.endsWith(".local") ||
+    hostname === "0.0.0.0" ||
+    hostname === "169.254.169.254" ||
+    hostname.startsWith("10.") ||
+    hostname.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname) ||
+    hostname.startsWith("169.254.") ||
+    hostname.startsWith("fe80:") ||
+    hostname.startsWith("fc") ||
+    hostname.startsWith("fd")
+  ) {
+    throw new Error(`blocked web_fetch URL host: ${hostname}`);
+  }
+  return parsed.toString();
+}
+
+function normalizeWebFetchHostname(hostname: string): string {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return parseWebFetchIpv4MappedIpv6Host(normalized) ?? normalized;
+}
+
+function parseWebFetchIpv4MappedIpv6Host(hostname: string): string | null {
+  const dotted = hostname.match(/^(?:::ffff:|::)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted?.[1]) {
+    return dotted[1];
+  }
+
+  const hex = hostname.match(/^(?:::ffff:|::ffff:0:|::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!hex?.[1] || !hex[2]) {
+    return null;
+  }
+  const high = Number.parseInt(hex[1], 16);
+  const low = Number.parseInt(hex[2], 16);
+  if (!Number.isFinite(high) || !Number.isFinite(low)) {
+    return null;
+  }
+  return `${(high >> 8) & 255}.${high & 255}.${(low >> 8) & 255}.${low & 255}`;
 }
 
 function nonNegativeInteger(value: unknown): number | null {

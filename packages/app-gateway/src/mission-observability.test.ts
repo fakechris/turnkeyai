@@ -43,6 +43,39 @@ test("buildMissionObservabilitySnapshot summarizes mission tool/session quality 
   assert.equal(snapshot.qualityGate.evidenceEvents, 1);
 });
 
+test("buildMissionObservabilitySnapshot treats mission closeout as non-clean completion", () => {
+  const mission = baseMission({ status: "done", closeout: "bounded_failure" });
+  const events: ActivityEvent[] = [
+    event("user-1", "plan", 1_000, "user", "Check whether the local source is reachable."),
+    tool("call-1", 1_200, "call", "sessions_spawn", "call-browser", "Calling sessions_spawn"),
+    tool(
+      "result-1",
+      1_700,
+      "result",
+      "sessions_spawn",
+      "call-browser",
+      "Tool sessions_spawn returned browser runtime evidence: CDP endpoint unavailable."
+    ),
+    event(
+      "final-1",
+      "thought",
+      2_000,
+      "role-lead",
+      [
+        "The browser runtime could not be reached.",
+        "What was verified: the target URL was recorded.",
+        "What remains unverified: live source freshness.",
+        "Next action: retry after repairing browser automation.",
+      ].join(" ")
+    ),
+  ];
+
+  const snapshot = buildMissionObservabilitySnapshot({ mission, events, nowMs: 3_000 });
+
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "mission_closeout")?.status, "warn");
+});
+
 test("buildMissionObservabilitySnapshot surfaces skipped timeout and missing residual risk", () => {
   const mission = baseMission({ status: "done" });
   const skipped = tool("result-skipped", 2_500, "result", "sessions_spawn", "call-skip", "Skipped by budget.");
@@ -69,6 +102,120 @@ test("buildMissionObservabilitySnapshot surfaces skipped timeout and missing res
   assert.equal(snapshot.sessions.continued, 1);
   assert.equal(snapshot.qualityGate.status, "blocked");
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "residual_risk")?.status, "warn");
+});
+
+test("buildMissionObservabilitySnapshot does not count completed session results as timeout from stale text", () => {
+  const mission = baseMission({ status: "done" });
+  const result = tool(
+    "result-completed",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-browser",
+    "Tool sessions_spawn returned: completed browser result; earlier timeout wording is historical."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 5_000,
+    events: [
+      tool("call-browser", 1_000, "call", "sessions_spawn", "call-browser", "Calling sessions_spawn"),
+      {
+        ...result,
+        runtime: {
+          ...result.runtime,
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "completed",
+            agent_id: "browser",
+            final_content: "Approval form page evidence was captured after approval.",
+          }),
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        "Final answer with verified browser evidence and residual risk."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.tool.timeouts, 0);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot ignores stale incomplete-final recovery after mission is done", () => {
+  const mission = baseMission({
+    status: "done",
+    desc: "请使用可用工具获取 https://example.com 的页面内容，然后只回答三项：1) 页面标题；2) 页面最核心的一句话；3) 你使用的证据 URL。",
+  });
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 7_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "1) 页面标题：**Example Domain**",
+          "",
+          '2) 页面最核心的一句话：**"This domain is for use in documentation examples without needing permission. Avoid use in operations."**',
+          "",
+          "3) 证据 URL：**https://example.com/**",
+        ].join("\n")
+      ),
+      {
+        ...event("recovery-1", "recovery", 6_000, "system", "mission.incomplete_final_answer timeout recovery"),
+        emph: "danger",
+        runtime: {
+          eventType: "mission.incomplete_final_answer",
+          reason: "truncated_markdown",
+          messageId: "final-1",
+        },
+      },
+    ],
+  });
+
+  assert.notEqual(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.recovery.events, 0);
+  assert.equal(snapshot.tool.timeouts, 0);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot does not penalize concise answers when the mission requests them", () => {
+  const mission = baseMission({
+    status: "done",
+    desc: "请使用可用工具获取 https://example.com 的页面内容，然后只回答三项：1) 页面标题；2) 页面最核心的一句话；3) 你使用的证据 URL。必须调用工具，不要只凭常识回答。",
+  });
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 6_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", mission.desc),
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence from https://example.com."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "1) 页面标题：**Example Domain**",
+          "2) 页面最核心的一句话：**This domain is for use in documentation examples without needing permission.**",
+          "3) 证据 URL：**https://example.com/**",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "residual_risk")?.status, "pass");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "answer_substance")?.status, "pass");
 });
 
 test("buildMissionObservabilitySnapshot downgrades recovered timeout failures to attention", () => {
@@ -160,6 +307,88 @@ test("buildMissionObservabilitySnapshot recognizes source-bounded transport time
     snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.detail ?? "",
     /bounded timeout recovery/
   );
+});
+
+test("buildMissionObservabilitySnapshot accepts authorized bounded timeout closeout with no gathered response", () => {
+  const mission = baseMission({
+    status: "done",
+    title: "Natural timeout follow-up continuation",
+    desc: [
+      "Evaluate this slow source for a release-risk note.",
+      "Slow source: http://127.0.0.1:60382/slow-fixture",
+      "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available and explain how to continue.",
+    ].join("\n"),
+  });
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", mission.desc),
+      {
+        ...tool("result-timeout", 3_000, "result", "sessions_spawn", "call-timeout", "sessions_spawn timed out with evidence_available=true."),
+        emph: "danger" as const,
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "## Release-Risk Assessment: slow-fixture",
+          "**Connection status**: Timeout — no response received within 30s bounded attempt.",
+          "**Evidence gathered**: None — session paused before completing fetch or content capture.",
+          "**Unverified items**: HTTP status, headers, body, and release-risk content remain unverified.",
+          "**How to continue**: retry the same source-check with a longer timeout before using it for release gating.",
+          "Residual risk: source-bounded timeout evidence only.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts table-shaped authorized bounded timeout closeouts", () => {
+  const mission = baseMission({
+    status: "done",
+    title: "Natural timeout follow-up continuation",
+    desc: [
+      "Evaluate this slow source for a release-risk note.",
+      "Slow source: http://127.0.0.1:60382/slow-fixture",
+      "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available and explain how to continue.",
+    ].join("\n"),
+  });
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", mission.desc),
+      {
+        ...tool("result-timeout", 3_000, "result", "sessions_spawn", "call-timeout", "sessions_spawn timed out with evidence_available=true."),
+        emph: "danger" as const,
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "## Source Evaluation - Release-Risk Note",
+          "| Field | Value |",
+          "|---|---|",
+          "| Source | `http://127.0.0.1:60382/slow-fixture` |",
+          "| Status | Timed out after a bounded 30 s attempt |",
+          "| Content received | None - no headers, body, or error details captured |",
+          "| Owner | Not verified |",
+          "| Mitigation | Retry the same source-check with a longer bounded timeout before release use |",
+          "Residual risk: release-risk facts remain source-bounded because the endpoint did not respond.",
+          "How to continue: resume this same source-check context or retry with an increased timeout.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
 });
 
 test("buildMissionObservabilitySnapshot keeps active missions running while final answer is pending", () => {
@@ -293,6 +522,843 @@ test("buildMissionObservabilitySnapshot accepts a final answer after all prior t
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot does not treat lifecycle status text as a final answer", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare the two vendor pages and cite evidence."),
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 3_000, "result", "sessions_spawn", "call-a", "Browser evidence collected."),
+      event("status-1", "thought", 4_000, "role-lead", "Lead finished this turn."),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, undefined);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "fail");
+});
+
+test("buildMissionObservabilitySnapshot does not treat dispatch wake text as a final answer", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare the two vendor pages and cite evidence."),
+      event("status-1", "thought", 2_000, "role-lead", "Woke role-lead to start work."),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, undefined);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "fail");
+});
+
+test("buildMissionObservabilitySnapshot accepts final answers when a tool result is timestamped before its call", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Fetch and cite the browser page."),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "web_fetch",
+        "call-1",
+        "Tool web_fetch returned Example Domain evidence from https://example.com/."
+      ),
+      tool("call-1", 2_001, "call", "web_fetch", "call-1", "Calling web_fetch."),
+      event(
+        "final-after-result",
+        "thought",
+        3_000,
+        "role-lead",
+        [
+          "| URL | title | key quote | evidence method |",
+          "|---|---|---|---|",
+          '| https://example.com/ | Example Domain | "This domain is for use in documentation examples without needing permission." | HTTP 200 page content extraction |',
+          "",
+          "Residual risk: the page may change after this run.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, "final-after-result");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot counts multi-source session payload pages as separate evidence", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare Vendor Alpha and Vendor Beta from both source pages."),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          payload: {
+            pages: [
+              {
+                finalUrl: "http://127.0.0.1:65210/vendor-alpha",
+                title: "Vendor Alpha Evidence",
+                textExcerpt: "Pricing: $19 per seat.",
+              },
+              {
+                finalUrl: "http://127.0.0.1:65210/vendor-beta",
+                title: "Vendor Beta Evidence",
+                textExcerpt: "Pricing: $29 per workspace.",
+              },
+            ],
+            sourceResults: [
+              { status: "completed", label: "http://127.0.0.1:65210/vendor-alpha" },
+              { status: "completed", label: "http://127.0.0.1:65210/vendor-beta" },
+            ],
+          },
+          result: "Explore worker fetched 2 of 2 sources.",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        "Vendor Alpha is $19 per seat and Vendor Beta is $29 per workspace. Recommendation: choose Alpha, with residual risk around source freshness."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.evidenceEvents, 2);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "evidence_backed")?.status, "pass");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot counts compacted multi-source evidence summaries", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare Vendor Alpha and Vendor Beta from both source pages."),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary: [
+            "Source 1:",
+            "Final URL: http://127.0.0.1:65210/vendor-alpha",
+            "Page title: Vendor Alpha Evidence",
+            "Excerpt: Pricing: $19 per seat.",
+            "Source 2:",
+            "Final URL: http://127.0.0.1:65210/vendor-beta",
+            "Page title: Vendor Beta Evidence",
+            "Excerpt: Pricing: $29 per workspace.",
+          ].join("\n"),
+          result: "Explore worker fetched 2 of 2 sources.",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        "Vendor Alpha is $19 per seat and Vendor Beta is $29 per workspace. Recommendation: choose Alpha, with residual risk around source freshness."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.evidenceEvents, 2);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot does not require quoted excerpts for generic evidence-bounded requests", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Compare Vendor Alpha and Vendor Beta.",
+      desc: "Use only evidence you collected during this mission.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare Vendor Alpha and Vendor Beta. Use only evidence you collected during this mission."),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary: [
+            "Source 1:",
+            "Page title: Vendor Alpha Evidence",
+            "Excerpt: Pricing: $19 per seat.",
+            "Source 2:",
+            "Page title: Vendor Beta Evidence",
+            "Excerpt: Pricing: $29 per workspace.",
+          ].join("\n"),
+          result: "Explore worker fetched 2 of 2 sources.",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        "Vendor Alpha is $19 per seat and Vendor Beta is $29 per workspace. Recommendation: choose Alpha; residual risk is source freshness."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts rendered browser evidence with bounded residual risk", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Review this operations dashboard as a user would see it in the browser.",
+      desc: "The useful evidence may be rendered by client-side JavaScript after the HTML loads. Summarize the operational state, escalation trigger, owner, recommended next action, and residual risk.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event(
+        "user-1",
+        "plan",
+        1_000,
+        "user",
+        "Review this operations dashboard as a user would see it in the browser. The useful evidence may be rendered by client-side JavaScript after the HTML loads."
+      ),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary: "Browser observed Operations Dashboard Fixture. Visible text excerpt: Queue depth: 11 SLA breaches: 3.",
+          result: "Browser worker completed rendered dashboard review.",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "Rendering: Client-side JavaScript confirmed via browser DOM. Screenshot captured.",
+          "Operational state: queue depth 11 and 3 SLA breaches exceed thresholds.",
+          "Recommended next action: page the on-call immediately. Owner: Incident Commander.",
+          "Residual risk: backend health is not verified from browser view alone, and real-time data freshness is not confirmed.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts rendered facts with bounded screenshot and DOM limitations", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Natural browser CDP timeout closeout",
+      desc: [
+        "Review the operations dashboard at http://127.0.0.1:54581/ops-dashboard as a user would see it in the browser.",
+        "Capture the rendered page content, including JavaScript-rendered metrics, status indicators, and operational data visible to a user.",
+        "Take a screenshot if possible.",
+      ].join("\n"),
+    }),
+    nowMs: 7_000,
+    events: [
+      tool("result-1", 2_000, "result", "sessions_spawn", "call-1", "Browser worker returned rendered dashboard evidence with cdp_command_timeout=2."),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "## Browser CDP Timeout Closeout",
+          "Page Title: Operations Dashboard Fixture.",
+          "What Was Verified: browser-rendered dashboard evidence captured visible text and metrics.",
+          "Triage status: TURNKEYAI_DASHBOARD_TRIAGE_OK.",
+          "Queue depth: 11.",
+          "SLA breaches: 3.",
+          "Escalation threshold: queue depth above 5 or SLA breaches above 0.",
+          "Recommended owner: Incident Commander.",
+          "Screenshot artifact not captured due to CDP command timeout on snapshot.",
+          "Full DOM/tree traversal blocked by repeated CDP timeouts.",
+          "Additional widgets, charts, drill-down tables, or lazy-loaded panels below the initial viewport cannot be confirmed.",
+          "Residual risk: browser evidence is bounded to the verified visible dashboard facts.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts authorized bounded browser failure closeouts for rendered browser slots", () => {
+  const desc = [
+    "Review the operations dashboard at http://127.0.0.1:53117/ops-dashboard as a user would see it in the browser.",
+    "Capture the rendered page content, including JavaScript-rendered metrics, status indicators, and operational data visible to a user.",
+    "If the browser target detaches while capturing the rendered page, close out with what was verified, what remains unverified, and the next action an operator should take.",
+  ].join("\n");
+  const finalText = [
+    "## Browser Detached Target - Closeout",
+    "**Source:** `http://127.0.0.1:53117/ops-dashboard`",
+    "### (1) What was verified",
+    "- The URL `http://127.0.0.1:53117/ops-dashboard` was contacted three times; all attempts produced a `detached_target` error before any page content or DOM snapshot could be retrieved.",
+    "### (2) What remains unverified",
+    "- All operations dashboard content, metrics, tables, status indicators, UI elements, and client-side rendered JavaScript are not verified.",
+    "### (3) Next action an operator should take",
+    "- Diagnose why the browser target is detaching on that local endpoint, then re-run this dashboard review task once the browser runtime is stable.",
+  ].join("\n");
+
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      closeout: "bounded_failure",
+      title: "Natural browser detached target closeout",
+      desc,
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", desc),
+      tool("result-1", 3_000, "result", "sessions_spawn", "call-browser", "Browser worker returned detached_target=2 failure evidence."),
+      event("final-1", "thought", 5_000, "role-lead", finalText),
+    ],
+  });
+
+  const goalSlotCheck = snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage");
+  assert.equal(goalSlotCheck?.status, "pass");
+  assert.match(
+    goalSlotCheck?.detail ?? "",
+    /mission-authorized bounded browser failure|All goal-critical slots inferred/u
+  );
+});
+
+test("buildMissionObservabilitySnapshot accepts goal-authorized browser failure closeouts without a closeout tag", () => {
+  const desc = [
+    "Review this operations dashboard as a user would see it in the browser.",
+    "Dashboard: http://127.0.0.1:65172/ops-dashboard",
+    "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+    "If the browser target detaches while capturing the rendered page, close out with what was verified, what remains unverified, and the next action an operator should take.",
+  ].join("\n");
+  const finalText = [
+    "**What was verified:** None - the browser target detached before any page content could be captured.",
+    "",
+    "**What remains unverified:** Page title, metrics/KPIs, tables, data panels, status indicators, error messages, and layout - the entire rendered view of `http://127.0.0.1:65172/ops-dashboard` is unverified.",
+    "",
+    "**Root cause:** The browser automation layer is non-functional in this session; the `detached_target` error appears in 9 separate attempts and is not a transient network condition against the target URL.",
+    "",
+    "**Next action for operator:** Restart the browser sub-agent session or clear the browser automation state before retrying. The page itself may be accessible once a healthy browser subprocess is available.",
+  ].join("\n");
+
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Natural browser detached target closeout",
+      desc,
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", desc),
+      tool("result-1", 3_000, "result", "sessions_spawn", "call-browser", "Browser worker returned detached_target=9 failure evidence."),
+      event("final-1", "thought", 5_000, "role-lead", finalText),
+    ],
+  });
+
+  const goalSlotCheck = snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage");
+  assert.equal(goalSlotCheck?.status, "pass");
+  assert.match(
+    goalSlotCheck?.detail ?? "",
+    /mission-authorized bounded browser failure|All goal-critical slots inferred/u
+  );
+});
+
+test("buildMissionObservabilitySnapshot still blocks rendered browser failures without a bounded closeout", () => {
+  const desc = [
+    "Review the operations dashboard at http://127.0.0.1:53117/ops-dashboard as a user would see it in the browser.",
+    "Capture the rendered page content, including JavaScript-rendered metrics, status indicators, and operational data visible to a user.",
+  ].join("\n");
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Natural browser detached target closeout",
+      desc,
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", desc),
+      tool("result-1", 3_000, "result", "sessions_spawn", "call-browser", "Browser worker returned detached_target=2 failure evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "What was verified: the browser target detached before page content was captured.",
+          "What remains unverified: rendered dashboard content is not verified.",
+          "Next action: diagnose the browser target and retry.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "fail");
+});
+
+test("buildMissionObservabilitySnapshot accepts approved dry-run post-submit page evidence", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Natural approval dry-run action",
+      desc: [
+        "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+        "Actually carry the safe local dry-run through the approval gate.",
+        "The browser task must verify the rendered post-submit page state.",
+      ].join("\n"),
+    }),
+    nowMs: 7_000,
+    events: [
+      event(
+        "user-1",
+        "plan",
+        1_000,
+        "user",
+        "Open the local approval form and carry the safe dry-run through the approval gate with rendered browser evidence."
+      ),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary:
+            "Browser observed approval form. Visible text excerpt: Dry-run submitted locally after approval; no external mutation was performed.",
+          result: "Browser worker completed approval form submission evidence.",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "| Item | Detail |",
+          "|------|--------|",
+          "| Approved action | `browser.form.submit` on `http://127.0.0.1:56469/approval-form` |",
+          "| Pre-submit page state | `Dry-run has not been submitted.` |",
+          "| Post-submit page state | `Dry-run submitted locally after approval; no external mutation was performed.` |",
+          "| Fixture marker | `TURNKEYAI_APPROVAL_FIXTURE_OK` |",
+          "Residual risk: this verifies only the local dry-run fixture; external mutation scope was not exercised or verified.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot ignores automatic recovery prompts when inferring goal slots", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Natural browser dynamic page",
+      desc: [
+        "Review this operations dashboard as a user would see it in the browser.",
+        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+        "Summarize the operational state, escalation trigger, owner, recommended next action, and residual risk.",
+      ].join("\n"),
+    }),
+    nowMs: 7_000,
+    events: [
+      event(
+        "user-1",
+        "plan",
+        1_000,
+        "user",
+        "Review this operations dashboard as a user would see it in the browser. The useful evidence may be rendered by client-side JavaScript after the HTML loads."
+      ),
+      event(
+        "user-recovery",
+        "plan",
+        3_000,
+        "user",
+        [
+          "System recovery: the previous final answer did not satisfy required goal slots.",
+          "Automatic recovery attempt 1 of 2.",
+          "Continue the original mission instead of closing it.",
+          "Do not introduce provider/search/model-support columns unless the original mission explicitly requested provider, search/web_search, or model-support evidence.",
+        ].join("\n")
+      ),
+      tool(
+        "result-1",
+        4_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary: "Browser observed Operations Dashboard Fixture. Visible text excerpt: Queue depth: 11 SLA breaches: 3.",
+          result: "Browser worker completed rendered dashboard review.",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Rendering: fully rendered browser evidence was captured.",
+          "Operational state: queue depth 11 and 3 SLA breaches exceed thresholds.",
+          "Escalation trigger: queue depth above 5 and SLA breaches above 0.",
+          "Recommended next action: page the on-call immediately. Owner: Incident Commander.",
+          "Residual risk: fixture evidence only; production freshness remains unverified.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  const goalSlotCheck = snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage");
+  assert.equal(goalSlotCheck?.status, "pass");
+  assert.doesNotMatch(goalSlotCheck?.detail ?? "", /provider support|search support/i);
+});
+
+test("buildMissionObservabilitySnapshot accepts source-bounded residual risk after completed long-delegation browser evidence", () => {
+  const mission = baseMission({
+    status: "done",
+    title: "Natural long delegation brief",
+    desc: [
+      "Prepare a product-ready brief about the next agent workbench release.",
+      "Research source: http://127.0.0.1/product-orchestration",
+      "Capability source: http://127.0.0.1/product-bridge",
+      "Live signal dashboard: http://127.0.0.1/product-signals",
+      "These are three independent evidence streams. Use specialist work where it helps, and use browser-visible evidence for the live signal dashboard.",
+      "Do not finalize until all three evidence streams have returned. The live signal dashboard must be inspected as rendered browser evidence, not raw HTML.",
+      "The final brief should tell a product leader what to build next, why it matters, what not to over-emphasize, and what risk remains.",
+    ].join("\n"),
+  });
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", mission.desc),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary: "Product orchestration evidence: multi-agent decomposition with durable sub-session history.",
+        })
+      ),
+      tool(
+        "result-2",
+        3_000,
+        "result",
+        "sessions_spawn",
+        "call-2",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary: "Product bridge evidence: browser bridge controls command-line setup, provider configuration, DOM, screenshots, and artifacts.",
+        })
+      ),
+      tool(
+        "result-3",
+        4_000,
+        "result",
+        "sessions_spawn",
+        "call-3",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary: "Rendered browser evidence from live signal dashboard: Mission Control, Stuck missions: 6, Weak-answer rate: 24%.",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "All three evidence streams have returned.",
+          "## Completed Browser Evidence",
+          "- Product orchestration: multi-agent decomposition with durable sub-session history.",
+          "- Product bridge: browser bridge controls command-line setup, provider configuration, DOM, screenshots, and artifacts.",
+          "- Live signal dashboard rendered in browser: Mission Control, Stuck missions: 6, Weak-answer rate: 24%.",
+          "## Product recommendation",
+          "Build the next release around stuck-mission recovery, weak-answer reduction, and visible browser evidence replay.",
+          "## Residual risk",
+          "This is source-bounded evidence from local fixture pages, not live production. Production adoption, customer impact, and post-run source updates were not audited production evidence.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  const goalSlotCheck = snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage");
+  assert.equal(goalSlotCheck?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts unverified production-only risk after completed product brief evidence", () => {
+  const mission = baseMission({
+    status: "done",
+    title: "Natural long delegation brief",
+    desc: [
+      "Prepare a product-ready brief about the next agent workbench release.",
+      "Research source: http://127.0.0.1/product-orchestration",
+      "Capability source: http://127.0.0.1/product-bridge",
+      "Live signal dashboard: http://127.0.0.1/product-signals",
+      "These are three independent evidence streams. Use specialist work where it helps, and use browser-visible evidence for the live signal dashboard.",
+      "The final brief should tell a product leader what to build next, why it matters, what not to over-emphasize, and what risk remains.",
+    ].join("\n"),
+  });
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", mission.desc),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        completedSessionResultContent("worker:explore:orchestration", "Product orchestration evidence: multi-agent decomposition.")
+      ),
+      tool(
+        "result-2",
+        3_000,
+        "result",
+        "sessions_spawn",
+        "call-2",
+        completedSessionResultContent("worker:explore:bridge", "Product bridge evidence: browser bridge controls and artifacts.")
+      ),
+      tool(
+        "result-3",
+        4_000,
+        "result",
+        "sessions_spawn",
+        "call-3",
+        completedSessionResultContent(
+          "worker:browser:signals",
+          "Rendered browser evidence from live signal dashboard: Mission Control, Stuck missions: 6, Weak-answer rate: 24%."
+        )
+      ),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "All three evidence streams have returned.",
+          "Product orchestration: multi-agent decomposition.",
+          "Product bridge: browser bridge controls and artifacts.",
+          "Live signal dashboard rendered browser evidence: Mission Control, Stuck missions: 6, Weak-answer rate: 24%.",
+          "Recommendation: make Mission Control the default entry point.",
+          "Residual risk: customer adoption, production telemetry, and post-run source updates remain unverified outside this local fixture evidence.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  const goalSlotCheck = snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage");
+  assert.equal(goalSlotCheck?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot blocks final answers that contradict numeric evidence values", () => {
+  const mission = baseMission({
+    status: "done",
+    title: "Natural long delegation brief",
+    desc: [
+      "Prepare a product-ready brief about the next agent workbench release.",
+      "Live signal dashboard: http://127.0.0.1/product-signals",
+      "The final brief must explicitly include Mission Control, Stuck missions, Weak answer rate, and the signal-dashboard recommended next action when those values are present.",
+    ].join("\n"),
+  });
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", mission.desc),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        completedSessionResultContent(
+          "worker:browser:signals",
+          "Rendered browser evidence from live signal dashboard: Mission Control, Stuck missions: 6, Weak answer rate: 24%, Recommended next action: make Mission Control the default entry."
+        )
+      ),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Mission Control should be the default entry.",
+          "Signals: Stuck missions: 24, Weak answer rate: 24%.",
+          "Recommended next action: make Mission Control the default entry.",
+          "Residual risk: local fixture evidence only.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  const valueCheck = snapshot.qualityGate.checks.find((check) => check.name === "evidence_value_consistency");
+  assert.equal(valueCheck?.status, "fail");
+  assert.match(valueCheck?.detail ?? "", /Stuck missions final=24, evidence=6/);
+});
+
+test("buildMissionObservabilitySnapshot accepts verified pricing with bounded unverified sub-scope", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Review Vendor Alpha pricing, strength, and risk.",
+      desc: "Focus on pricing, strength, and risk, and keep source labels visible in the answer.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Review Vendor Alpha pricing, strength, and risk."),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-1",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          evidence_summary: "Source 1:\nPage title: Vendor Alpha Evidence\nExcerpt: Pricing: $19 per seat. Strength: browser automation. Risk: API integration catalog is still limited.",
+          result: "Explore worker fetched Vendor Alpha.",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "**Vendor Alpha — Source-Backed Review**",
+          "Pricing: $19 per seat.",
+          "Strength: browser automation and traceable screenshots.",
+          "Risk: API integration catalog is still limited.",
+          "Not verified: seat minimums, billing cycle, feature tiers, SLA terms, security posture, or roadmap.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts a concrete price with unverified pricing sub-scope notes", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Review Vendor Alpha pricing, strength, and risk.",
+      desc: "Focus on pricing, strength, and risk, and keep source labels visible in the answer.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Review Vendor Alpha pricing, strength, and risk."),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "**Vendor Alpha — Product Lead Review**",
+          "**Pricing**",
+          "- $19 per seat. [Source 1]",
+          "**Strengths**",
+          "- Browser automation and traceable screenshots.",
+          "**Risks**",
+          "- API integration catalog is still limited.",
+          "**Notes for comparison**",
+          "- No enterprise/annual plans, usage tiers, or feature-gated tiers verified from source. Billing model (per-seat flat) is the only confirmed pricing detail.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts verified workspace pricing with unconfirmed seat equivalence", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Compare Vendor Alpha and Vendor Beta pricing, strengths, risks, and tradeoff.",
+      desc: "Return a recommendation that compares pricing, strengths, risks, and the tradeoff that matters most.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "### Pricing",
+          "- Vendor Alpha: $19 per seat.",
+          "- Vendor Beta: $29 per workspace (seat-count equivalence not confirmed).",
+          "### Risks",
+          "- Vendor Alpha: API integration catalog is still limited.",
+          "- Vendor Beta: Browser control requires a separate connector.",
+          "### Recommendation",
+          "Choose Vendor Alpha when browser automation and price matter most; choose Vendor Beta when approval workflow matters more.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot still blocks explicitly unverified pricing", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Review Vendor Alpha pricing.",
+      desc: "Focus on pricing.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Review Vendor Alpha pricing."),
+      event("final-1", "thought", 4_000, "role-lead", "Pricing: not verified."),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "fail");
+});
+
 test("buildMissionObservabilitySnapshot marks stale runtime progress as blocked", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "working" }),
@@ -394,6 +1460,30 @@ test("buildMissionObservabilitySnapshot ignores near-final active heartbeat afte
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "runtime_liveness")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot ignores pre-closeout active heartbeat after terminal blocked mission without final answer", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "blocked" }),
+    nowMs: 20_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Review the slow source and stop if cancelled."),
+      tool("call-1", 4_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      {
+        ...event("recovery-1", "recovery", 6_000, "system", "mission.cancelled: active source check was cancelled."),
+        emph: "danger",
+        runtime: { eventType: "mission.cancelled" },
+      },
+    ],
+    progressEvents: [
+      progress("worker:explore:cancelled", "worker_run", "started", "alive", 5_500, 30_000, "Worker started.", "task-1"),
+    ],
+  });
+
+  assert.equal(snapshot.liveness.active, 0);
+  assert.equal(snapshot.liveness.waiting, 0);
+  assert.equal(snapshot.liveness.stale, 0);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "runtime_liveness")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot still treats a newer task after a terminal task as active", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "working" }),
@@ -484,6 +1574,238 @@ test("buildMissionObservabilitySnapshot flags weak tool-backed final answers", (
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot blocks done missions whose requested provider search pricing slots are unverified", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: "调研 deepseek v4 flash api，有哪些 provider 支持 search，价格怎么样",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned partial evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "基于 source evidence，我只能给出一个部分结论。",
+          "| 核心项 | 状态 |",
+          "|---|---|",
+          "| 各 provider 具体输入/输出 token 价格 | 未验证 |",
+          "| 支持 search 功能的 provider 列表 | 未验证 |",
+          "| Search 专项费用或功能差异 | 未验证 |",
+          "Residual risk: core provider data remains incomplete.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "fail");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.detail ?? "",
+    /provider support.*search support.*pricing/s
+  );
+});
+
+test("buildMissionObservabilitySnapshot blocks timeout closeouts with blocked provider search pricing slots", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: "调研 DeepSeek V4 Flash API：有哪些 provider 支持 search，价格怎么样。",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      {
+        ...tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "sessions_spawn timed out."),
+        emph: "danger" as const,
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "**DeepSeek V4 Flash - Provider/Search/Pricing Verification**",
+          "| Provider | Model Name | Search Support | Input Price | Output Price | Evidence |",
+          "|----------|------------|----------------|-------------|--------------|----------|",
+          "| OpenRouter | - | **blocked** | **blocked** | **blocked** | - |",
+          "| Together AI | - | **blocked** | **blocked** | **blocked** | - |",
+          "**Status: blocked.** The research session timed out before any provider data was gathered.",
+          "No pricing, model names, or search-support details could be verified.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "fail");
+});
+
+test("buildMissionObservabilitySnapshot passes goal slot coverage when provider search pricing are concrete", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: "调研 deepseek v4 flash api，有哪些 provider 支持 search，价格怎么样",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned provider evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Based on verified source evidence, provider support is concrete: OpenRouter supports web search, Together and Fireworks do not expose search for this model.",
+          "Pricing: OpenRouter input $0.07/M tokens and output $0.28/M tokens; Together input $0.08/M tokens and output $0.30/M tokens.",
+          "The comparison is evidence-backed, names the providers, covers search support, and residual risk is limited to source updates after this run.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts Chinese provider table with source-bounded residual scope", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: "调研 DeepSeek V4 Flash API：有哪些 provider 支持 search，价格怎么样。",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned provider evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "**DeepSeek V4 Flash API Provider Note**",
+          "| Provider | 是否明确支持 DeepSeek V4 Flash | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+          "|---|---|---|---|---|",
+          "| OpenRouter | 是 | 是，通过 web_search 选项 | $0.28/1M tokens | $0.42/1M tokens |",
+          "| Together | 是 | 不支持 search | $0.20/1M tokens | $0.35/1M tokens |",
+          "| Fireworks | 是 | 是，支持 web_search | $0.18/1M tokens | $0.30/1M tokens |",
+          "Residual risk: production freshness and provider docs outside the captured source were not verified after this run.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts Chinese DeepSeek provider tables with production-doc residual scope", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: "A product manager needs a source-backed DeepSeek V4 Flash API provider note. Identify providers, search support, input/output token pricing, and the main risk or limitation for production decisions.",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned provider evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "## DeepSeek V4 Flash API Provider Note",
+          "**Source status:** HTTP 200, content rendered; text consistent across 3 browser snapshots",
+          "| Provider | 是否明确支持 DeepSeek V4 Flash | 是否明确支持 search/web_search | 输入价格 | 输出价格 | 证据 URL | 关键原文摘录 |",
+          "|---|---|---|---|---|---|---|",
+          "| OpenRouter | 是 | 是，Supported through the web_search option | $0.28 / 1M tokens | $0.42 / 1M tokens | http://127.0.0.1:58981/deepseek-provider-pricing | OpenRouter row |",
+          "| Together | 是 | 不支持 search；search must be supplied externally | $0.20 / 1M tokens | $0.40 / 1M tokens | http://127.0.0.1:58981/deepseek-provider-pricing | Together row |",
+          "| Fireworks | 是 | 不支持 search；search must be supplied externally | $0.25 / 1M tokens | $0.45 / 1M tokens | http://127.0.0.1:58981/deepseek-provider-pricing | Fireworks row |",
+          "主要限制 / Residual risk: 这些价格和 search 支持来自本次 localhost source；生产决策前仍需到官方文档验证后续更新和文档新鲜度。",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts source-backed provider search facts with cross-verification caveat", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: "A product manager needs a source-backed DeepSeek V4 Flash API provider note. Identify providers, search support, input/output token pricing, and the main risk or limitation for production decisions.",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned provider evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "**DeepSeek V4 Flash API Provider Note**",
+          "| Provider | Search support | Input price | Output price |",
+          "|---|---|---|---|",
+          "| OpenRouter | Supported via web_search option | $0.28 | $0.42 |",
+          "| Together | Not supported | $0.20 | $0.40 |",
+          "| Fireworks | Not supported | $0.25 | $0.45 |",
+          "Main production risk: this source is a local test endpoint, so production provider pages may change.",
+          "Residual unverified gap: Together's stated non-support for search and Fireworks' latency claim are taken from the same single source and have not been independently confirmed.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps DeepSeek localhost pricing label to source-backed provider note", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: "A product manager needs a source-backed DeepSeek V4 Flash API provider note.",
+    }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool("result-1", 3_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned provider evidence."),
+        evidence: [
+          {
+            kind: "extract" as const,
+            id: "ev-deepseek-pricing",
+            label: "Verify DeepSeek pricing from localhost source",
+          },
+        ],
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "**DeepSeek V4 Flash API Provider Note**",
+          "**Source**: `http://127.0.0.1:58956/deepseek-provider-pricing`.",
+          "| provider | 是否明确支持 DeepSeek V4 Flash | 是否明确支持 search/web_search | 输入价格 | 输出价格 | 证据 URL |",
+          "|---|---|---|---|---|---|",
+          "| OpenRouter | 支持 | 支持 web_search | $0.28 / 1M tokens | $0.42 / 1M tokens | http://127.0.0.1:58956/deepseek-provider-pricing |",
+          "Residual risk: production freshness outside this local source was not verified after this run.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot warns when final answer misses a visible evidence source", () => {
   const alpha = {
     ...tool("result-alpha", 3_000, "result", "sessions_spawn", "call-alpha", "Alpha source returned evidence."),
@@ -550,7 +1872,194 @@ test("buildMissionObservabilitySnapshot passes source coverage when all evidence
     ],
   });
 
-  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot ignores internal raw-fetch labels for source coverage", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool("result-alpha", 3_000, "result", "sessions_spawn", "call-alpha", "Alpha source returned evidence."),
+        evidence: [
+          { kind: "extract", id: "ev-alpha", label: "Vendor Alpha" },
+          { kind: "extract", id: "ev-alpha-raw", label: "Vendor Alpha Raw Fetch" },
+        ],
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Based on verified source evidence from Vendor Alpha, the recommendation is evidence-backed.",
+          "Pricing is $19 per seat; residual risk is limited to source updates after this run.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps approved form-submit evidence label to user-facing action text", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool(
+          "result-submit",
+          3_000,
+          "result",
+          "sessions_send",
+          "call-submit",
+          "Browser worker executed the approved form submit."
+        ),
+        runtime: {
+          ...tool("result-submit", 3_000, "result", "sessions_send", "call-submit", "").runtime,
+          sourceLabel: "execute approved form submit",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Approved action: browser.form.submit at the approval form.",
+          "Post-submission browser state was captured and the dry-run stayed local.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps approval form inspection label to form evidence", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool(
+          "result-inspect",
+          3_000,
+          "result",
+          "sessions_spawn",
+          "call-inspect",
+          "Browser worker inspected the approval form."
+        ),
+        evidence: [{ kind: "snapshot", id: "ev-inspect", label: "Inspect approval form" }],
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "The approval form was identified before submission.",
+          "Form evidence: note input and Submit dry-run button were visible.",
+          "Residual risk is limited to the local approval gate fixture.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps dry-run form submission execute label to approved submit evidence", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool(
+          "result-submit",
+          3_000,
+          "result",
+          "sessions_spawn",
+          "call-submit",
+          "Browser worker executed the approved dry-run form submit."
+        ),
+        evidence: [{ kind: "snapshot", id: "ev-submit", label: "dry-run form submission execute" }],
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Approved action: browser.form.submit on the approval form.",
+          "Submission executed: Submit dry-run button clicked with submit=true.",
+          "Dry-run submitted locally after approval; no external mutation was performed.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps search-support verification label to provider support facts", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool(
+          "result-search",
+          3_000,
+          "result",
+          "sessions_spawn",
+          "call-search",
+          "Provider page returned search support details."
+        ),
+        runtime: {
+          ...tool("result-search", 3_000, "result", "sessions_spawn", "call-search", "").runtime,
+          sourceLabel: "search-support-verification",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "| Provider | 是否明确支持 search/web_search |",
+          "|---|---|",
+          "| OpenRouter | 明确支持 web_search |",
+          "| Together | 明确不支持 search |",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats refine as a generic source-label task verb", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool("result-refine", 3_000, "result", "sessions_send", "call-refine", "Decision note returned."),
+        evidence: [{ kind: "extract", id: "ev-refine", label: "Refine to Decision Note" }],
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Vendor Alpha decision note: pricing is $19 per seat, with source-bounded residual risk."
+      ),
+    ],
+  });
+
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
 });
 
@@ -607,6 +2116,290 @@ test("buildMissionObservabilitySnapshot accepts natural source-label stems witho
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot accepts independent researcher labels when final answer names role and URL", () => {
+  const researcherA = tool(
+    "result-researcher-a",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-a",
+    completedSessionResultContent("worker:explore:a", "Researcher A returned Example Domain evidence.")
+  );
+  const researcherB = tool(
+    "result-researcher-b",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-b",
+    completedSessionResultContent("worker:explore:b", "Researcher B returned IANA Example Domains evidence.")
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: [
+        "请把这个任务交给两个独立研究员并分别取证。",
+        "研究员 A 只检查 https://example.com/，研究员 B 只检查 https://www.iana.org/help/example-domains。",
+        "最后合并成一个两行表格和一句话比较这两个页面的关系。",
+      ].join("\n"),
+    }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...researcherA,
+        runtime: {
+          ...researcherA.runtime,
+          sourceLabel: "Researcher A - example.com",
+        },
+      },
+      {
+        ...researcherB,
+        runtime: {
+          ...researcherB.runtime,
+          sourceLabel: "Researcher B - iana example-domains",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "| 来源 | URL | title | 关键原文 | 证据方式 |",
+          "| 研究员 A | https://example.com/ | Example Domain | This domain is for use in documentation examples without needing permission. | HTTP GET |",
+          "| 研究员 B | https://www.iana.org/help/example-domains | Example Domains | a number of domains such as example.com and example.org are maintained for documentation purposes | HTTP GET |",
+          "iana.org 的 Example Domains 页面是权威说明，example.com 是实际示例页面。",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "residual_risk")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot blocks independent researcher answers when sessions did not complete", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: [
+        "请把这个任务交给两个独立研究员并分别取证。",
+        "研究员 A 只检查 https://example.com/，研究员 B 只检查 https://www.iana.org/help/example-domains。",
+        "最后合并成一个两行表格和一句话比较这两个页面的关系。",
+      ].join("\n"),
+    }),
+    nowMs: 6_000,
+    events: [
+      tool(
+        "result-researcher-a",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-a",
+        sessionResultContent("worker:explore:a", "failed", "Researcher A failed before collecting evidence.")
+      ),
+      tool(
+        "result-researcher-b",
+        3_000,
+        "result",
+        "sessions_spawn",
+        "call-b",
+        sessionResultContent("worker:explore:b", "partial", "Researcher B timed out with partial notes.")
+      ),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "| 来源 | URL | title | 关键原文 | 证据方式 |",
+          "| 研究员 A | https://example.com/ | Example Domain | quote | HTTP GET |",
+          "| 研究员 B | https://www.iana.org/help/example-domains | Example Domains | quote | HTTP GET |",
+          "两个页面证据一致。",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "fail");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.detail ?? "",
+    /delegated research.*missing/
+  );
+});
+
+test("buildMissionObservabilitySnapshot fails title-only missions that request a final conclusion but omit it", () => {
+  const prompt = [
+    "请把这个任务交给两个独立研究员并分别取证。",
+    "研究员 A 只检查 https://example.com/，研究员 B 只检查 https://www.iana.org/help/example-domains。",
+    "最后合并成一个两行表格，列出研究员、URL、标题、关键原文摘录和关系。",
+    "最后再给一句话结论。",
+  ].join("\n");
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      title: prompt,
+      desc: "",
+      status: "done",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("result-researcher-a", 2_000, "result", "sessions_spawn", "call-a", completedSessionResultContent("worker:explore:a", "Researcher A returned Example Domain evidence.")),
+      tool("result-researcher-b", 3_000, "result", "sessions_spawn", "call-b", completedSessionResultContent("worker:explore:b", "Researcher B returned IANA Example Domains evidence.")),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "| 研究员 | URL | 页面标题 | 关键原文摘录 | 关系 |",
+          "|---|---|---|---|---|",
+          "| 研究员 A | https://example.com/ | Example Domain | This domain is for use in documentation examples without needing permission. | 具体示例页面 |",
+          "| 研究员 B | https://www.iana.org/help/example-domains | Example Domains | example.com and example.org are maintained for documentation purposes. | 权威说明页面 |",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "fail");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.detail ?? "",
+    /final conclusion.*missing/
+  );
+});
+
+test("buildMissionObservabilitySnapshot passes title-only final-conclusion requests when conclusion is explicit", () => {
+  const prompt = [
+    "请把这个任务交给两个独立研究员并分别取证。",
+    "研究员 A 只检查 https://example.com/，研究员 B 只检查 https://www.iana.org/help/example-domains。",
+    "最后合并成一个两行表格，并最后再给一句话结论。",
+  ].join("\n");
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      title: prompt,
+      desc: "",
+      status: "done",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("result-researcher-a", 2_000, "result", "sessions_spawn", "call-a", completedSessionResultContent("worker:explore:a", "Researcher A returned Example Domain evidence.")),
+      tool("result-researcher-b", 3_000, "result", "sessions_spawn", "call-b", completedSessionResultContent("worker:explore:b", "Researcher B returned IANA Example Domains evidence.")),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "| 研究员 | URL | 页面标题 | 关键原文摘录 | 关系 |",
+          "|---|---|---|---|---|",
+          "| 研究员 A | https://example.com/ | Example Domain | This domain is for use in documentation examples without needing permission. | 具体示例页面 |",
+          "| 研究员 B | https://www.iana.org/help/example-domains | Example Domains | example.com and example.org are maintained for documentation purposes. | 权威说明页面 |",
+          "",
+          "结论：IANA 页面是权威说明，example.com 是该说明落地的具体示例域名页面。",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot uses the latest follow-up goal for risk and quoted evidence coverage", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      title:
+        "请交给研究员 A 只检查 https://example.com/，研究员 A 必须返回最终 URL、页面 title、关键原文、取证方式。",
+      desc: "",
+      status: "done",
+    }),
+    nowMs: 8_000,
+    events: [
+      event(
+        "user-1",
+        "plan",
+        1_000,
+        "user",
+        "请交给研究员 A 只检查 https://example.com/，研究员 A 必须返回最终 URL、页面 title、关键原文、取证方式。"
+      ),
+      tool("call-a", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn for 研究员 A."),
+      tool(
+        "result-a",
+        3_000,
+        "result",
+        "sessions_spawn",
+        "call-a",
+        "This domain is for use in documentation examples without needing permission. Avoid use in operations."
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        "| URL | title | 关键原文 | 证据方式 |\n|---|---|---|---|\n| https://example.com/ | Example Domain | This domain is for use in documentation examples without needing permission. | HTTP fetch |"
+      ),
+      event(
+        "user-2",
+        "plan",
+        5_000,
+        "user",
+        "继续刚才研究员 A 的同一条研究线索。基于上一轮 evidence 写一个三点 decision note：1. 这个页面可以用于什么；2. 使用时最重要的限制或风险是什么；3. 引用上一轮研究员 A 的关键原文作为证据。"
+      ),
+      event(
+        "final-2",
+        "thought",
+        6_000,
+        "role-lead",
+        [
+          "## Decision Note",
+          "1. 这个页面可以用于文档示例。",
+          "2. 使用时最重要的限制或风险：未验证（证据未说明任何使用限制或风险）。",
+          '3. 证据：> "This domain is for use in documentation examples without needing permission."',
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "fail");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.detail ?? "",
+    /risk or limitation.*unverified/
+  );
+});
+
+test("buildMissionObservabilitySnapshot accepts markdown-bold final-conclusion labels", () => {
+  const prompt = "最后合并成一个两行表格，并最后再给一句话结论。";
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      title: prompt,
+      desc: "",
+      status: "done",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("result-researcher-a", 2_000, "result", "sessions_spawn", "call-a", "Researcher A returned Example Domain evidence."),
+      tool("result-researcher-b", 3_000, "result", "sessions_spawn", "call-b", "Researcher B returned IANA Example Domains evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "| 研究员 | URL | 页面标题 | 关键原文摘录 | 关系 |",
+          "|---|---|---|---|---|",
+          "| 研究员 A | https://example.com/ | Example Domain | This domain is for use in documentation examples without needing permission. | 具体示例页面 |",
+          "| 研究员 B | https://www.iana.org/help/example-domains | Example Domains | example.com and example.org are maintained for documentation purposes. | 权威说明页面 |",
+          "",
+          "**结论：** IANA 页面是权威说明，example.com 是该说明落地的具体示例域名页面。",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot treats review as a generic source-label suffix", () => {
   const alphaResult = tool(
     "result-alpha",
@@ -650,6 +2443,968 @@ test("buildMissionObservabilitySnapshot treats review as a generic source-label 
         [
           "Vendor Alpha and Vendor Beta were both verified from source evidence.",
           "The recommendation names residual risk and avoids unsupported claims.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats browser inspection as a generic source-label suffix", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-alpha",
+    "Vendor Alpha browser inspection returned evidence."
+  );
+  const betaResult = tool(
+    "result-beta",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-beta",
+    "Vendor Beta source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha browser inspection",
+        },
+      },
+      {
+        ...betaResult,
+        runtime: {
+          ...betaResult.runtime,
+          sourceLabel: "Vendor Beta",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Source: http://127.0.0.1/vendor-alpha. Vendor Alpha pricing is $19 per seat.",
+          "Vendor Beta was also verified, and residual risk remains source updates after this local run.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats browser capture as a generic source-label suffix", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-alpha",
+    "Vendor Alpha browser capture returned evidence."
+  );
+  const betaResult = tool(
+    "result-beta",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-beta",
+    "Vendor Beta source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha browser capture",
+        },
+      },
+      {
+        ...betaResult,
+        runtime: {
+          ...betaResult.runtime,
+          sourceLabel: "Vendor Beta",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Source: http://127.0.0.1/vendor-alpha. Vendor Alpha pricing is $19 per seat.",
+          "Vendor Beta was also verified, and residual risk remains source updates after this local run.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats browser render as a generic source-label suffix", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-alpha",
+    "Vendor Alpha browser render returned evidence."
+  );
+  const betaResult = tool(
+    "result-beta",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-beta",
+    "Vendor Beta source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha browser render",
+        },
+      },
+      {
+        ...betaResult,
+        runtime: {
+          ...betaResult.runtime,
+          sourceLabel: "Vendor Beta",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Source: http://127.0.0.1/vendor-alpha. Vendor Alpha pricing is $19 per seat.",
+          "Vendor Beta was also verified, and residual risk remains source updates after this local run.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats rendered view as generic source-label wording", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-alpha",
+    "Vendor Alpha rendered view returned pricing, strength, and risk evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha rendered view",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Vendor Alpha decision note.",
+          "Source: http://127.0.0.1/vendor-alpha - Vendor Alpha Evidence confirmed pricing ($19/seat), browser automation strength, and limited API integration catalog risk.",
+          "Residual risk: governance fit and enterprise terms were not verified from this source.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats rendered page verification snapshot as generic source-label text", () => {
+  const renderedSnapshot = tool(
+    "result-rendered-snapshot",
+    2_000,
+    "result",
+    "sessions_send",
+    "call-rendered-snapshot",
+    "Rendered page verification snapshot returned approval form evidence."
+  );
+  const formResult = tool(
+    "result-form",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-form",
+    "Approval form source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...renderedSnapshot,
+        runtime: {
+          ...renderedSnapshot.runtime,
+          sourceLabel: "rendered page verification snapshot",
+        },
+      },
+      {
+        ...formResult,
+        runtime: {
+          ...formResult.runtime,
+          sourceLabel: "approval form",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "The approval form was verified after the approved dry-run submit, with residual risk limited to the local fixture."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats evidence collection as a generic source-label suffix", () => {
+  const asiaWalkResult = tool(
+    "result-asiawalk",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-asiawalk",
+    "AsiaWalk pilot evidence collection returned route, budget, and readiness evidence."
+  );
+  const budgetResult = tool(
+    "result-budget",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-budget",
+    "AsiaWalk budget source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...asiaWalkResult,
+        runtime: {
+          ...asiaWalkResult.runtime,
+          sourceLabel: "AsiaWalk pilot evidence collection",
+        },
+      },
+      {
+        ...budgetResult,
+        runtime: {
+          ...budgetResult.runtime,
+          sourceLabel: "AsiaWalk budget",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "AsiaWalk pilot evidence supports the route and budget plan; residual risk remains guide confirmation before deposits."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats local URL fetch as a generic source label", () => {
+  const fetchResult = tool(
+    "result-fetch",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-fetch",
+    "Local URL fetch returned Vendor Alpha evidence."
+  );
+  const betaResult = tool(
+    "result-beta",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-beta",
+    "Vendor Beta source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...fetchResult,
+        runtime: {
+          ...fetchResult.runtime,
+          sourceLabel: "local-url-fetch",
+        },
+      },
+      {
+        ...betaResult,
+        runtime: {
+          ...betaResult.runtime,
+          sourceLabel: "Vendor Beta",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Vendor Alpha and Vendor Beta were both verified; residual risk remains source freshness."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot ignores bounded probe source labels", () => {
+  const probeResult = tool(
+    "result-probe",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-probe",
+    "Ops dashboard bounded probe returned detached_target evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...probeResult,
+        runtime: {
+          ...probeResult.runtime,
+          sourceLabel: "ops-dashboard-bounded-probe",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Ops Dashboard Probe verified detached browser-target evidence; residual risk remains rendered dashboard content."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats stream as a generic source-label suffix", () => {
+  const routeResult = tool(
+    "result-route",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-route",
+    "AsiaWalk route stream returned evidence."
+  );
+  const budgetResult = tool(
+    "result-budget",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-budget",
+    "AsiaWalk budget stream returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...routeResult,
+        runtime: {
+          ...routeResult.runtime,
+          sourceLabel: "AsiaWalk Route Stream",
+        },
+      },
+      {
+        ...budgetResult,
+        runtime: {
+          ...budgetResult.runtime,
+          sourceLabel: "AsiaWalk Budget Stream",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "AsiaWalk route and budget evidence support the pilot, with residual risk around guide confirmation."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps AsiaWalk three-stream label to user-facing stream evidence", () => {
+  const asiaWalkResult = tool(
+    "result-asiawalk",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-asiawalk",
+    "AsiaWalk three-stream inspection returned route, budget, and readiness evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...asiaWalkResult,
+        runtime: {
+          ...asiaWalkResult.runtime,
+          sourceLabel: "AsiaWalk three-stream inspection",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "AsiaWalk route and budget evidence support a pilot recommendation; readiness risk remains rain and guide confirmation."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps AsiaWalk three-stream evidence collection label to brief evidence", () => {
+  const asiaWalkResult = tool(
+    "result-asiawalk-evidence",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-asiawalk-evidence",
+    "AsiaWalk three-stream evidence collection returned route, budget, and readiness evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...asiaWalkResult,
+        runtime: {
+          ...asiaWalkResult.runtime,
+          sourceLabel: "AsiaWalk three-stream evidence collection",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "AsiaWalk Pilot Brief.",
+          "Route: Seoul orientation walk, Taipei food-and-transit loop, and Tokyo neighborhood finale.",
+          "Budget: $1,280 total, with a $180 contingency buffer.",
+          "Rendered readiness: browser evidence shows readiness yellow, with rain risk in Taipei and metro maintenance in Tokyo.",
+          "Recommendation: conditional go.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps AsiaWalk data labels to URL slug source references", () => {
+  const routeResult = tool("result-route", 2_000, "result", "sessions_spawn", "call-route", completedSessionResultContent("worker:explore:asiawalk-route", "AsiaWalk Route Data returned evidence."));
+  const budgetResult = tool("result-budget", 3_000, "result", "sessions_spawn", "call-budget", completedSessionResultContent("worker:explore:asiawalk-budget", "AsiaWalk Budget Data returned evidence."));
+  const liveResult = tool("result-live", 4_000, "result", "sessions_spawn", "call-live", completedSessionResultContent("worker:browser:asiawalk-live", "AsiaWalk Live Readiness Data returned evidence."));
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...routeResult,
+        runtime: { ...routeResult.runtime, sourceLabel: "AsiaWalk Route Data" },
+      },
+      {
+        ...budgetResult,
+        runtime: { ...budgetResult.runtime, sourceLabel: "AsiaWalk Budget Data" },
+      },
+      {
+        ...liveResult,
+        runtime: { ...liveResult.runtime, sourceLabel: "AsiaWalk Live Readiness Data" },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "# AsiaWalk Pilot Brief",
+          "**Sources:** `asiawalk-route` · `asiawalk-budget` · `asiawalk-live`",
+          "Route source: Seoul orientation walk, Taipei food loop, Tokyo finale.",
+          "Budget source: $8,400 cap and partner deposit timing.",
+          "Live readiness dashboard source: guide coverage and rain risk remain the main limitation.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts AsiaWalk rendered readiness with route-detail residual scope", () => {
+  const routeResult = tool("result-route", 2_000, "result", "sessions_spawn", "call-route", completedSessionResultContent("worker:explore:asiawalk-route", "AsiaWalk Route Data returned evidence."));
+  const budgetResult = tool("result-budget", 3_000, "result", "sessions_spawn", "call-budget", completedSessionResultContent("worker:explore:asiawalk-budget", "AsiaWalk Budget Data returned evidence."));
+  const liveResult = tool("result-live", 4_000, "result", "sessions_spawn", "call-live", completedSessionResultContent("worker:browser:asiawalk-live", "AsiaWalk Live Readiness Data returned evidence."));
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: [
+        "Prepare a decision-ready AsiaWalk pilot brief.",
+        "Use route, budget, and live readiness as three separate evidence streams.",
+        "Inspect the live readiness dashboard as rendered browser evidence, not raw HTML.",
+        "Include source-backed risk or limitation notes and a final conclusion.",
+      ].join(" "),
+    }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...routeResult,
+        runtime: { ...routeResult.runtime, sourceLabel: "AsiaWalk Route Data" },
+      },
+      {
+        ...budgetResult,
+        runtime: { ...budgetResult.runtime, sourceLabel: "AsiaWalk Budget Data" },
+      },
+      {
+        ...liveResult,
+        runtime: { ...liveResult.runtime, sourceLabel: "AsiaWalk Live Readiness Data" },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "# AsiaWalk Pilot Brief",
+          "**Sources:** `asiawalk-route` · `asiawalk-budget` · `asiawalk-live`",
+          "Route source: Seoul orientation walk, Taipei food loop, Tokyo finale.",
+          "Budget source: $8,400 cap and deposit timing remain feasible.",
+          "Live readiness dashboard rendered browser evidence: Overall readiness yellow; rain risk in Taipei and metro maintenance in Tokyo are visible on the page with marker TURNKEYAI_ASIAWALK_LIVE_OK.",
+          "Risk: guide confirmation remains the main operational limitation.",
+          "Note: Distances, segment durations, and detailed waypoint steps were not visible in the rendered source.",
+          "Conclusion: proceed with a limited pilot after guide confirmation.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps AsiaWalk live-readiness completion labels to asiawalk-live evidence", () => {
+  const liveResult = tool("result-live", 4_000, "result", "sessions_send", "call-live", "AsiaWalk Live Readiness — complete.");
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...liveResult,
+        runtime: { ...liveResult.runtime, sourceLabel: "AsiaWalk Live Readiness — complete" },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "AsiaWalk brief uses `asiawalk-live` evidence.",
+          "Live readiness dashboard evidence: Overall readiness yellow, rain risk in Taipei, metro maintenance in Tokyo.",
+          "Risk: guide confirmation remains the next action.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps slow-source timeout labels to final evidence facts", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool("result-timeout", 2_000, "result", "sessions_spawn", "call-timeout", "Slow source timeout test returned bounded timeout evidence."),
+        runtime: {
+          ...tool("result-timeout", 2_000, "result", "sessions_spawn", "call-timeout", "").runtime,
+          sourceLabel: "Slow source timeout test",
+        },
+      },
+      {
+        ...tool("result-resume", 3_000, "result", "sessions_send", "call-resume", "Resume slow-source timeout test returned recovered evidence."),
+        runtime: {
+          ...tool("result-resume", 3_000, "result", "sessions_send", "call-resume", "").runtime,
+          sourceLabel: "Resume slow-source timeout test",
+        },
+      },
+      {
+        ...tool("result-browser", 4_000, "result", "sessions_send", "call-browser", "Browser render of slow-fixture returned title and marker evidence."),
+        runtime: {
+          ...tool("result-browser", 4_000, "result", "sessions_send", "call-browser", "").runtime,
+          sourceLabel: "Browser render of slow-fixture",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Release-risk note for slow-fixture.",
+          "Initial bounded attempt timed out, then the resumed source-check recovered.",
+          "Browser evidence shows HTTP status 200 OK, page title TurnkeyAI Slow Mission E2E Fixture, and marker TURNKEYAI_MISSION_FIXTURE_OK.",
+          "Residual risk remains production latency outside this fixture.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats fresh recovery as generic source-label wording", () => {
+  const result = tool(
+    "result-dashboard",
+    4_000,
+    "result",
+    "sessions_send",
+    "call-dashboard",
+    "Ops dashboard fresh recovery returned rendered dashboard facts."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...result,
+        runtime: {
+          ...result.runtime,
+          sourceLabel: "Ops dashboard fresh recovery",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Cold-recovered by reopening http://127.0.0.1:56567/ops-dashboard.",
+          "Dashboard queue depth is 11, SLA breaches are 3, and the owner is Incident Commander.",
+          "Residual risk: fixture-only dashboard; production readiness is not verified.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats product capabilities as generic source-label terms", () => {
+  const orchestrationResult = tool(
+    "result-orchestration",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-orchestration",
+    "Product orchestration returned Mission Control evidence."
+  );
+  const bridgeResult = tool(
+    "result-bridge",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-bridge",
+    "Product Bridge Capabilities returned browser bridge boundary evidence."
+  );
+  const signalsResult = tool(
+    "result-signals",
+    4_000,
+    "result",
+    "sessions_spawn",
+    "call-signals",
+    "Product signals returned stuck mission evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...orchestrationResult,
+        runtime: {
+          ...orchestrationResult.runtime,
+          sourceLabel: "Product Orchestration",
+        },
+      },
+      {
+        ...bridgeResult,
+        runtime: {
+          ...bridgeResult.runtime,
+          sourceLabel: "Product Bridge Capabilities",
+        },
+      },
+      {
+        ...signalsResult,
+        runtime: {
+          ...signalsResult.runtime,
+          sourceLabel: "Product Signals Dashboard",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "The orchestration source says Mission Control should be the default launch surface.",
+          "The bridge boundary should stay clear: browser work is an execution surface with setup risk.",
+          "The signals source shows stuck missions and weak-answer rate, making completion reliability the release gate.",
+          "Residual risk is local fixture evidence only.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats recheck as an internal follow-up source-label action", () => {
+  const dashboardResult = tool(
+    "result-dashboard",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-dashboard",
+    "Ops dashboard source returned queue depth and SLA breach evidence."
+  );
+  const titledDashboardResult = tool(
+    "result-dashboard-title",
+    2_500,
+    "result",
+    "sessions_spawn",
+    "call-dashboard-title",
+    "Ops Dashboard Review returned queue depth and SLA breach evidence."
+  );
+  const recheckResult = tool(
+    "result-recheck",
+    3_000,
+    "result",
+    "sessions_send",
+    "call-recheck",
+    "Recheck ops dashboard returned unchanged rendered evidence."
+  );
+  const reinspectResult = tool(
+    "result-reinspect",
+    4_000,
+    "result",
+    "sessions_send",
+    "call-reinspect",
+    "Re-inspect dashboard post-restart returned unchanged rendered evidence."
+  );
+  const recoveryResult = tool(
+    "result-recovery",
+    4_500,
+    "result",
+    "sessions_send",
+    "call-recovery",
+    "Ops dashboard recovery returned a cold-recreated browser session and rendered evidence."
+  );
+  const reconnectResult = tool(
+    "result-reconnect",
+    4_700,
+    "result",
+    "sessions_send",
+    "call-reconnect",
+    "Ops dashboard reconnect returned rendered evidence after daemon restart."
+  );
+  const restartReconnectResult = tool(
+    "result-restart-reconnect",
+    4_750,
+    "result",
+    "sessions_send",
+    "call-restart-reconnect",
+    "Ops dashboard restart reconnect returned rendered evidence after daemon restart."
+  );
+  const retryVersionResult = tool(
+    "result-review-v2",
+    4_800,
+    "result",
+    "sessions_send",
+    "call-review-v2",
+    "Ops dashboard review v2 returned rendered evidence after incomplete-final recovery."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...dashboardResult,
+        runtime: {
+          ...dashboardResult.runtime,
+          sourceLabel: "ops-dashboard-review",
+        },
+      },
+      {
+        ...titledDashboardResult,
+        runtime: {
+          ...titledDashboardResult.runtime,
+          sourceLabel: "Ops Dashboard Review",
+        },
+      },
+      {
+        ...recheckResult,
+        runtime: {
+          ...recheckResult.runtime,
+          sourceLabel: "recheck-ops-dashboard",
+        },
+      },
+      {
+        ...reinspectResult,
+        runtime: {
+          ...reinspectResult.runtime,
+          sourceLabel: "Re-inspect dashboard post-restart",
+        },
+      },
+      {
+        ...recoveryResult,
+        runtime: {
+          ...recoveryResult.runtime,
+          sourceLabel: "Ops dashboard recovery re-open",
+        },
+      },
+      {
+        ...reconnectResult,
+        runtime: {
+          ...reconnectResult.runtime,
+          sourceLabel: "ops-dashboard-reconnect",
+        },
+      },
+      {
+        ...restartReconnectResult,
+        runtime: {
+          ...restartReconnectResult.runtime,
+          sourceLabel: "ops-dashboard-restart-reconnect",
+        },
+      },
+      {
+        ...retryVersionResult,
+        runtime: {
+          ...retryVersionResult.runtime,
+          sourceLabel: "ops-dashboard-review-v2.",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Operational State was re-checked in the same browser session after daemon restart and cold recovery.",
+          "Queue depth remains 11, SLA breaches remain 3, and Incident Commander is still the recommended owner.",
+          "Residual uncertainty is that this is a local dynamic dashboard fixture.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot maps ops dashboard restart labels to rendered dashboard facts", () => {
+  const initialResult = tool(
+    "result-initial",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-initial",
+    "Ops dashboard review returned rendered queue depth and SLA breach evidence."
+  );
+  const restartResult = tool(
+    "result-post-restart",
+    4_000,
+    "result",
+    "sessions_send",
+    "call-post-restart",
+    "Ops dashboard post restart returned rendered dashboard evidence after daemon restart."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...initialResult,
+        runtime: {
+          ...initialResult.runtime,
+          sourceLabel: "ops-dashboard-review",
+        },
+      },
+      {
+        ...restartResult,
+        runtime: {
+          ...restartResult.runtime,
+          sourceLabel: "ops-dashboard-post-restart",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Queue depth: 11. SLA breaches: 3.",
+          "Escalation trigger: both thresholds breached, so escalation is active.",
+          "Recommended owner: Incident Commander.",
+          "Browser continuity: the session reconnected and reloaded the page after daemon restart.",
+          "Dashboard fixture status: TURNKEYAI_DASHBOARD_TRIAGE_OK.",
         ].join(" ")
       ),
     ],
@@ -703,6 +3458,107 @@ test("buildMissionObservabilitySnapshot ignores generic continuation task labels
           "Vendor Alpha was verified from source evidence.",
           "The recommendation is to continue with residual risk around integration evidence.",
         ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats full extraction as a generic source-label suffix", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_send",
+    "call-alpha",
+    "Vendor Alpha full extraction returned evidence."
+  );
+  const betaResult = tool(
+    "result-beta",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-beta",
+    "Vendor Beta source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha full extraction",
+        },
+      },
+      {
+        ...betaResult,
+        runtime: {
+          ...betaResult.runtime,
+          sourceLabel: "Vendor Beta",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Vendor Alpha and Vendor Beta were both verified from source evidence.",
+          "Residual risk remains around future source changes.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats evidence pull as a generic source-label suffix", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-alpha",
+    "Vendor Alpha full evidence pull returned evidence."
+  );
+  const betaResult = tool(
+    "result-beta",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-beta",
+    "Vendor Beta source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha Full Evidence Pull",
+        },
+      },
+      {
+        ...betaResult,
+        runtime: {
+          ...betaResult.runtime,
+          sourceLabel: "Vendor Beta",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Vendor Alpha and Vendor Beta were both verified; residual risk remains source freshness."
       ),
     ],
   });
@@ -961,6 +3817,36 @@ test("buildMissionObservabilitySnapshot surfaces browser recovery buckets from c
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot maps cold browser recovery evidence to session_not_found", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-browser", 2_000, "call", "sessions_send", "call-browser", "Calling sessions_send"),
+      tool(
+        "result-browser",
+        4_000,
+        "result",
+        "sessions_send",
+        "call-browser",
+        "Browser evidence recovered via cold-recovered session browser-session-new after the previous session was unavailable."
+      ),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Source: browser-visible fixture verified via cold-recovered session browser-session-new. Residual risk remains local fixture scope."
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, [
+    { bucket: "session_not_found", count: 2, latestAtMs: 5_000 },
+  ]);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
+});
+
 test("buildMissionObservabilitySnapshot does not infer browser buckets from unrelated text", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),
@@ -1113,6 +3999,47 @@ test("buildMissionObservabilitySnapshot accepts completed sub-agent final closeo
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "tool_loop_closeout")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot accepts bounded partial sub-agent final closeout as healthy", () => {
+  const finalAnswer = event(
+    "final-1",
+    "thought",
+    5_000,
+    "role-lead",
+    [
+      "Based on bounded partial worker evidence, queue depth is 11 and SLA breaches are 3.",
+      "Residual risk: panels outside the partial evidence remain unverified.",
+      "This answer does not claim broader completion beyond the returned final content.",
+    ].join(" ")
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_send", "call-a", "Calling sessions_send"),
+      tool("result-1", 4_000, "result", "sessions_send", "call-a", "Tool sessions_send returned bounded partial evidence."),
+      {
+        ...finalAnswer,
+        runtime: {
+          ...finalAnswer.runtime,
+          toolLoopCloseout: "true",
+          toolLoopCloseoutReason: "partial_sub_agent_final",
+          "toolLoopCloseout.roundCount": "1",
+          "toolLoopCloseout.toolCallCount": "1",
+          "toolLoopCloseout.finalContentCount": "1",
+          "toolLoopCloseout.evidenceAvailable": "true",
+        },
+      },
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "tool_loop_closeout")?.status, "pass");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "tool_loop_closeout")?.detail ?? "",
+    /bounded partial sub-agent final content/
+  );
+});
+
 test("buildMissionObservabilitySnapshot handles long fallback phrasing without regex backtracking risk", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),
@@ -1156,6 +4083,124 @@ test("buildMissionObservabilitySnapshot passes substantive evidence-backed final
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "answer_substance")?.status, "pass");
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "evidence_usage")?.status, "pass");
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats source-bound excerpt tables as evidence usage", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned page evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "| 研究员 | 检查的 URL | 页面标题 | 关键原文摘录 | 与另一个页面的关系 |",
+          "|---|---|---|---|---|",
+          '| 研究员A | https://example.com/ | Example Domain | "This domain is for use in documentation examples without needing permission." | 具体示例页面 |',
+          '| 研究员B | https://www.iana.org/help/example-domains | Example Domains | "example.com and example.org are maintained for documentation purposes." | 权威说明页面 |',
+          "",
+          "**结论：** 两页共同说明 example.com 的文档示例用途。",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "evidence_usage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot still warns when table lacks quoted source excerpts", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned page evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "| 研究员 | 检查的 URL | 页面标题 | 关系 |",
+          "|---|---|---|---|",
+          "| 研究员A | https://example.com/ | Example Domain | 具体示例页面 |",
+          "| 研究员B | https://www.iana.org/help/example-domains | Example Domains | 权威说明页面 |",
+          "",
+          "结论：两页存在关联。",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "evidence_usage")?.status, "warn");
+});
+
+test("buildMissionObservabilitySnapshot does not treat placeholder domains as unresolved placeholders", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Explain the evidence from example.com."),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "web_fetch",
+        "call-1",
+        "Tool web_fetch returned Example Domain: This domain is for use in documentation examples without needing permission. Avoid use in operations."
+      ),
+      event(
+        "final-1",
+        "thought",
+        3_000,
+        "role-lead",
+        [
+          "Decision Note: example.com is a placeholder domain for documentation examples.",
+          "It can be used as a 占位链接 in docs.",
+          'Evidence: "This domain is for use in documentation examples without needing permission. Avoid use in operations."',
+          "Residual risk: use is source-bounded to documentation examples and operational use remains outside the verified scope.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot warns when final upgrades avoid operations into production bans", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Write a source-bounded decision note for example.com."),
+      tool(
+        "result-1",
+        2_000,
+        "result",
+        "web_fetch",
+        "call-1",
+        "Tool web_fetch returned Example Domain: This domain is for use in documentation examples without needing permission. Avoid use in operations."
+      ),
+      event(
+        "final-1",
+        "thought",
+        3_000,
+        "role-lead",
+        [
+          "Decision Note: example.com can be used in documentation examples.",
+          'Evidence: "This domain is for use in documentation examples without needing permission. Avoid use in operations."',
+          "Risk: 禁止用于任何生产或运营环境、真实服务，否则可能导致路由冲突或安全风险。",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "warn");
 });
 
 function baseMission(overrides: Partial<Mission> = {}): Mission {
@@ -1208,8 +4253,25 @@ function tool(
       toolCallId,
       messageId: "msg-1",
       round: "1",
+      ...(phase === "result" ? { resultContent: text } : {}),
     },
   };
+}
+
+function completedSessionResultContent(sessionKey: string, result: string): string {
+  return sessionResultContent(sessionKey, "completed", result);
+}
+
+function sessionResultContent(sessionKey: string, status: string, result: string): string {
+  return JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: sessionKey,
+    agent_id: "explore",
+    status,
+    result,
+    final_content: status === "completed" ? result : null,
+  });
 }
 
 function progress(

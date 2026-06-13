@@ -289,6 +289,7 @@ export interface ValidationOpsRealAcceptanceDetails {
         timeoutCloseoutQuality: number;
       };
       failureBuckets?: string[];
+      replayFindings?: string[];
     }>;
   };
 }

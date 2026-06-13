@@ -34,9 +34,9 @@ export function ApprovalsPage() {
     <div className="page">
       <div className="page-head">
         <div>
-          <h2>Approvals</h2>
+          <h2>Waiting</h2>
           <div className="sub">
-            人在回路。每一项都带 mission · agent · context · 风险说明 · 精确动作。
+            Work pauses here when TurnkeyAI needs your decision before doing something sensitive.
           </div>
         </div>
         <div className="right">
@@ -79,7 +79,7 @@ export function ApprovalsPage() {
       {!canDecideApprovals && allPending.length > 0 && (
         <div className="card" role="note" style={{ padding: 12, marginBottom: 12 }}>
           <div className="muted" style={{ fontSize: 11.5 }}>
-            Approval decisions require an operator or admin token.
+            Decisions require an operator or admin token.
           </div>
         </div>
       )}

@@ -325,6 +325,7 @@ export interface ActivityEventStore {
     options?: { limit?: number; before?: { tMs: number; id: ActivityEventId } }
   ): Promise<ActivityEvent[]>;
   append(event: ActivityEvent): Promise<void>;
+  replaceAll?(missionId: MissionId, events: ActivityEvent[]): Promise<void>;
 }
 
 export interface ApprovalRequestStore {

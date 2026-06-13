@@ -50,7 +50,14 @@ export async function recoverRoleRunsOnStartup(input: {
     .filter((run) => (run.status === "running" || run.status === "resuming") && hasNoActiveWorkerSessions(run))
     .map((run) => run.runKey);
 
-  await Promise.all(restartableRuns.map((run) => input.roleLoopRunner.ensureRunning(run.runKey)));
+  for (const run of restartableRuns) {
+    void input.roleLoopRunner.ensureRunning(run.runKey).catch((error) => {
+      console.error("role run startup recovery failed to signal role loop", {
+        runKey: run.runKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 
   return {
     totalRoleRuns: roleRuns.length,

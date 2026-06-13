@@ -471,6 +471,221 @@ test("explore worker can explicitly allow loopback hosts for isolated E2E fixtur
   assert.match(result?.summary ?? "", /TURNKEYAI_LOCAL_FIXTURE_OK/);
 });
 
+test("explore worker fetches every explicit URL in a multi-source task", async () => {
+  const fetchedUrls: string[] = [];
+  const handler = new ExploreWorkerHandler({
+    allowLoopbackHosts: true,
+    fetchFn: async (input) => {
+      const url = String(input);
+      fetchedUrls.push(url);
+      if (url.endsWith("/vendor-alpha")) {
+        return new Response(
+          "<html><head><title>Vendor Alpha Evidence</title></head><body>Pricing: $19 per seat. Strength: browser automation. Risk: limited API catalog.</body></html>",
+          { status: 200, headers: { "content-type": "text/html" } }
+        );
+      }
+      return new Response(
+        "<html><head><title>Vendor Beta Evidence</title></head><body>Pricing: $29 per workspace. Strength: approval workflow. Risk: separate browser connector.</body></html>",
+        { status: 200, headers: { "content-type": "text/html" } }
+      );
+    },
+  });
+
+  const result = await handler.run({
+    ...buildExploreInvocationInput(),
+    packet: {
+      ...buildExploreInvocationInput().packet,
+      taskPrompt: [
+        "Compare these two source pages.",
+        "Alpha: http://127.0.0.1:49152/vendor-alpha",
+        "Beta: http://127.0.0.1:49152/vendor-beta",
+        "Return pricing, strengths, and risks for both vendors.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(fetchedUrls, [
+    "http://127.0.0.1:49152/vendor-alpha",
+    "http://127.0.0.1:49152/vendor-beta",
+  ]);
+  assert.match(result?.summary ?? "", /fetched 2 of 2 sources/);
+  assert.match(result?.summary ?? "", /\$19 per seat/);
+  assert.match(result?.summary ?? "", /\$29 per workspace/);
+  const payload = result?.payload as {
+    pages: Array<{ requestedUrl: string; title: string }>;
+    findings: string[];
+    sourceResults: Array<{ status: string; url: string; findings: string[] }>;
+  };
+  assert.equal(payload.pages.length, 2);
+  assert.equal(payload.sourceResults.length, 2);
+  assert.deepEqual(payload.sourceResults.map((item) => item.status), ["completed", "completed"]);
+  assert.match(payload.findings.join("\n"), /vendor-alpha: .*Pricing: \$19 per seat/i);
+  assert.match(payload.findings.join("\n"), /vendor-beta: .*Pricing: \$29 per workspace/i);
+});
+
+test("explore worker synthesizes a decision note from existing evidence on resume", async () => {
+  let fetched = false;
+  const handler = new ExploreWorkerHandler({
+    allowLoopbackHosts: true,
+    fetchFn: async () => {
+      fetched = true;
+      throw new Error("continuation synthesis should not fetch");
+    },
+  });
+  const input = buildExploreInvocationInput();
+
+  const result = await handler.run({
+    ...input,
+    sessionState: {
+      workerRunKey: "worker:explore:task:task-1:call-1",
+      workerType: "explore",
+      status: "done",
+      createdAt: 1,
+      updatedAt: 2,
+      lastResult: {
+        workerType: "explore",
+        status: "completed",
+        summary: "Explore worker fetched 1 of 1 sources.",
+        payload: {
+          pages: [
+            {
+              requestedUrl: "http://127.0.0.1:49152/vendor-alpha",
+              finalUrl: "http://127.0.0.1:49152/vendor-alpha",
+              title: "Vendor Alpha Evidence",
+              textExcerpt: "Pricing: $19 per seat. Strength: browser automation. Risk: limited API catalog.",
+              statusCode: 200,
+            },
+          ],
+          sourceResults: [
+            {
+              url: "http://127.0.0.1:49152/vendor-alpha",
+              label: "Vendor Alpha",
+              status: "completed",
+              findings: [
+                "Pricing: $19 per seat.",
+                "Strength: browser automation.",
+                "Risk: limited API catalog.",
+              ],
+              page: {
+                requestedUrl: "http://127.0.0.1:49152/vendor-alpha",
+                finalUrl: "http://127.0.0.1:49152/vendor-alpha",
+                title: "Vendor Alpha Evidence",
+                textExcerpt: "Pricing: $19 per seat. Strength: browser automation. Risk: limited API catalog.",
+                statusCode: 200,
+              },
+            },
+          ],
+          findings: [
+            "Vendor Alpha: Pricing: $19 per seat.",
+            "Vendor Alpha: Strength: browser automation.",
+            "Vendor Alpha: Risk: limited API catalog.",
+          ],
+        },
+      },
+      history: [
+        {
+          id: "history-tool-1",
+          role: "tool",
+          content: "Explore worker fetched Vendor Alpha. Pricing: $19 per seat. Strength: browser automation. Risk: limited API catalog.",
+          createdAt: 2,
+          status: "completed",
+          payload: {
+            page: {
+              requestedUrl: "http://127.0.0.1:49152/vendor-alpha",
+              finalUrl: "http://127.0.0.1:49152/vendor-alpha",
+              title: "Vendor Alpha Evidence",
+              textExcerpt: "Pricing: $19 per seat. Strength: browser automation. Risk: limited API catalog.",
+              statusCode: 200,
+            },
+          },
+        },
+      ],
+    },
+    packet: {
+      ...input.packet,
+      continuityMode: "resume-existing",
+      taskPrompt: [
+        "Continue from the previous work on this mission.",
+        "Ask the same Vendor Alpha research thread to revisit its notes and turn the evidence into a decision note for a product lead.",
+        "Keep the answer source-bounded.",
+        "",
+        "Continuation context:",
+        "Previous worker status: done",
+        "Last result: Explore worker fetched 1 of 1 sources.",
+        "- tool status=completed: Final URL: http://127.0.0.1:49152/vendor-alpha. Title: Vendor Alpha Evidence.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(fetched, false);
+  assert.equal(result?.status, "completed");
+  assert.match(result?.summary ?? "", /reused prior evidence/i);
+  const payload = result?.payload as { content: string; pages: unknown[]; sourceResults: unknown[] };
+  assert.match(payload.content, /\$19 per seat/);
+  assert.match(payload.content, /Residual risk/i);
+  assert.equal(payload.pages.length, 1);
+  assert.equal(payload.sourceResults.length, 1);
+});
+
+test("explore worker ignores evidence-summary pseudo URLs when extracting explicit targets", async () => {
+  const fetchedUrls: string[] = [];
+  const handler = new ExploreWorkerHandler({
+    allowLoopbackHosts: true,
+    fetchFn: async (input) => {
+      fetchedUrls.push(String(input));
+      return new Response(
+        "<html><head><title>Vendor Alpha Evidence</title></head><body>Pricing: $19 per seat.</body></html>",
+        { status: 200, headers: { "content-type": "text/html" } }
+      );
+    },
+  });
+
+  const result = await handler.run({
+    ...buildExploreInvocationInput(),
+    packet: {
+      ...buildExploreInvocationInput().packet,
+      taskPrompt: [
+        "Fetch http://127.0.0.1:49152/vendor-alpha",
+        "Recent transcript noise: Final URL: http://127.0.0.1:49152/vendor-alpha/nPage title follows.",
+        "More transcript noise: http://127.0.0.1:49152/vendor-alpha/nFinal URL.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(fetchedUrls, ["http://127.0.0.1:49152/vendor-alpha"]);
+});
+
+test("explore worker ignores truncated transcript URLs and strips closing brackets", async () => {
+  const fetchedUrls: string[] = [];
+  const handler = new ExploreWorkerHandler({
+    allowLoopbackHosts: true,
+    fetchFn: async (input) => {
+      fetchedUrls.push(String(input));
+      return new Response(
+        "<html><head><title>Vendor Alpha Evidence</title></head><body>Pricing: $19 per seat.</body></html>",
+        { status: 200, headers: { "content-type": "text/html" } }
+      );
+    },
+  });
+
+  const result = await handler.run({
+    ...buildExploreInvocationInput(),
+    packet: {
+      ...buildExploreInvocationInput().packet,
+      taskPrompt: [
+        "Fetch http://127.0.0.1:49152/vendor-alpha].",
+        "Ignore transcript truncation: http://127.0.0.1:49152/vendor…",
+        "Ignore encoded transcript truncation: http://127.0.0.1:49152/vendor%E2%80%A6",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(fetchedUrls, ["http://127.0.0.1:49152/vendor-alpha"]);
+});
+
 test("explore worker strips prose punctuation from explicit URLs", async () => {
   let fetchedUrl = "";
   const handler = new ExploreWorkerHandler({

@@ -4,7 +4,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
+import {
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
+} from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
 
 import {
   buildRealLlmAbCoreSpec,
@@ -14,15 +17,7 @@ import {
   runRealLlmAbSpecBuildCli,
 } from "./real-llm-ab-spec-build";
 
-const CORE_NATURAL_SCENARIOS = [
-  "natural-comparison-research",
-  "natural-browser-dynamic-page",
-  "natural-followup-continuation",
-  "natural-approval-dry-run-action",
-  "natural-long-delegation",
-  "natural-timeout-followup-continuation",
-  "natural-memory-recall",
-] as const;
+const CORE_NATURAL_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS;
 
 const BROWSER_FOCUSED_NATURAL_SCENARIOS = [
   "natural-browser-external-page-review",
@@ -43,6 +38,27 @@ const BROWSER_RELIABILITY_NATURAL_SCENARIOS = [
 const FULL_NATURAL_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS;
 
 test("real LLM A/B spec builder parses args and help", () => {
+  assert.deepEqual(
+    parseRealLlmAbSpecBuildArgs([
+      "--natural-report",
+      "/tmp/natural.json",
+      "--natural-report",
+      "/tmp/natural-extra.json",
+      "--reference-dir",
+      "/tmp/reference",
+      "--suite",
+      "report-scenarios",
+      "--out",
+      "/tmp/spec.json",
+    ]),
+    {
+      naturalReportPath: "/tmp/natural.json",
+      naturalReportPaths: ["/tmp/natural.json", "/tmp/natural-extra.json"],
+      referenceDir: "/tmp/reference",
+      requiredSuite: "report-scenarios",
+      outPath: "/tmp/spec.json",
+    }
+  );
   assert.deepEqual(
     parseRealLlmAbSpecBuildArgs([
       "--natural-report",
@@ -82,6 +98,24 @@ test("real LLM A/B spec builder parses args and help", () => {
       naturalReportPath: "/tmp/natural.json",
       referenceDir: "/tmp/reference",
       requiredSuite: "full-natural",
+      outPath: "/tmp/spec.json",
+    }
+  );
+  assert.deepEqual(
+    parseRealLlmAbSpecBuildArgs([
+      "--natural-report",
+      "/tmp/natural.json",
+      "--reference-dir",
+      "/tmp/reference",
+      "--suite",
+      "report-scenarios",
+      "--out",
+      "/tmp/spec.json",
+    ]),
+    {
+      naturalReportPath: "/tmp/natural.json",
+      referenceDir: "/tmp/reference",
+      requiredSuite: "report-scenarios",
       outPath: "/tmp/spec.json",
     }
   );
@@ -137,7 +171,7 @@ test("real LLM A/B spec builder parses args and help", () => {
         "--out",
         "/tmp/spec.json",
       ]),
-    /--suite must be one of: core, browser-focused, browser-reliability, full-natural/
+    /--suite must be one of: core, browser-focused, browser-reliability, full-natural, report-scenarios/
   );
 });
 
@@ -154,7 +188,7 @@ test("real LLM A/B spec builder emits the full core suite from a natural report"
 
     assert.equal(spec.kind, "turnkeyai.real-llm-ab-acceptance.build-spec");
     assert.equal(spec.generatedAtMs, 1);
-    assert.equal(spec.scenarios.length, 7);
+    assert.equal(spec.scenarios.length, CORE_NATURAL_SCENARIOS.length);
     assert.deepEqual(
       spec.scenarios.map((scenario) => scenario.scenarioId),
       [...CORE_NATURAL_SCENARIOS]
@@ -165,6 +199,7 @@ test("real LLM A/B spec builder emits the full core suite from a natural report"
     assert.ok(spec.scenarios.every((scenario) => /Reference model provenance/.test(scenario.modelComparison?.differenceNote ?? "")));
     assert.equal(spec.scenarios.find((scenario) => scenario.scenarioId === "natural-browser-dynamic-page")?.requiresBrowser, true);
     assert.equal(spec.scenarios.find((scenario) => scenario.scenarioId === "natural-long-delegation")?.requiresBrowser, true);
+    assert.equal(spec.scenarios.find((scenario) => scenario.scenarioId === "natural-asiawalk-multi-agent")?.requiresBrowser, true);
     assert.equal(spec.scenarios.find((scenario) => scenario.scenarioId === "natural-followup-continuation")?.requiresContinuation, true);
     assert.equal(spec.scenarios.find((scenario) => scenario.scenarioId === "natural-approval-dry-run-action")?.requiresApproval, true);
     assert.equal(
@@ -200,6 +235,73 @@ test("real LLM A/B spec builder emits the browser-focused suite from a natural r
     assert.ok(spec.scenarios.every((scenario) => scenario.requiresBrowser === true));
     assert.ok(spec.scenarios.every((scenario) => scenario.promptPolicy?.naturalPrompt === true));
     assert.ok(spec.scenarios.every((scenario) => scenario.referenceArtifactPath.endsWith(`${scenario.scenarioId}.json`)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B spec builder emits only scenarios present in report-scenarios mode", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
+  try {
+    const scenarios = [
+      "natural-comparison-research",
+      "natural-asiawalk-multi-agent",
+      "natural-timeout-followup-continuation",
+    ] as const;
+    const { naturalReportPath, referenceDir, outPath } = writeCoreFixture(dir, { scenarios });
+    const spec = buildRealLlmAbSpec({
+      naturalReportPath,
+      referenceDir,
+      outPath,
+      suite: "report-scenarios",
+      generatedAtMs: 1,
+    });
+
+    assert.equal(spec.generatedAtMs, 1);
+    assert.deepEqual(
+      spec.scenarios.map((scenario) => scenario.scenarioId),
+      [...scenarios]
+    );
+    assert.equal(spec.scenarios.find((scenario) => scenario.scenarioId === "natural-asiawalk-multi-agent")?.requiresBrowser, true);
+    assert.equal(
+      spec.scenarios.find((scenario) => scenario.scenarioId === "natural-timeout-followup-continuation")
+        ?.requiresTimeoutCloseout,
+      true
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B spec builder can assemble a suite from multiple natural reports", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
+  try {
+    const firstNaturalReportPath = path.join(dir, "turnkeyai", "natural-a.json");
+    const secondNaturalReportPath = path.join(dir, "turnkeyai", "natural-b.json");
+    const referenceDir = path.join(dir, "reference");
+    const outPath = path.join(dir, "out", "ab-build-spec.json");
+    const firstScenario = CORE_NATURAL_SCENARIOS[0]!;
+    const secondScenarios = CORE_NATURAL_SCENARIOS.slice(1);
+    mkdirSync(referenceDir, { recursive: true });
+    writeNaturalReport(firstNaturalReportPath, [firstScenario]);
+    writeNaturalReport(secondNaturalReportPath, secondScenarios);
+    writeReferenceArtifacts(referenceDir, CORE_NATURAL_SCENARIOS);
+
+    const spec = buildRealLlmAbCoreSpec({
+      naturalReportPath: firstNaturalReportPath,
+      naturalReportPaths: [firstNaturalReportPath, secondNaturalReportPath],
+      referenceDir,
+      outPath,
+      generatedAtMs: 1,
+    });
+
+    assert.deepEqual(
+      spec.scenarios.map((scenario) => scenario.scenarioId),
+      [...CORE_NATURAL_SCENARIOS]
+    );
+    assert.equal(spec.scenarios[0]?.turnkeyaiNaturalReportPath, undefined);
+    assert.match(spec.scenarios[1]?.turnkeyaiNaturalReportPath ?? "", /natural-b\.json$/);
+    assert.ok(spec.turnkeyaiNaturalReportPath.endsWith("natural-a.json"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -288,7 +390,7 @@ test("real LLM A/B spec builder CLI writes a core build spec", async () => {
     ]);
     const spec = JSON.parse(readFileSync(outPath, "utf8")) as { scenarios: unknown[] };
     const missingManifest = JSON.parse(readFileSync(missingManifestPath, "utf8")) as { missingEvidence?: unknown[] };
-    assert.equal(spec.scenarios.length, 7);
+    assert.equal(spec.scenarios.length, CORE_NATURAL_SCENARIOS.length);
     assert.deepEqual(missingManifest.missingEvidence, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -525,8 +627,14 @@ function writeCoreFixture(
   const naturalReportPath = path.join(dir, "turnkeyai", "natural.json");
   const referenceDir = path.join(dir, "reference");
   const outPath = path.join(dir, "ab-build-spec.json");
-  mkdirSync(path.dirname(naturalReportPath), { recursive: true });
   mkdirSync(referenceDir, { recursive: true });
+  writeNaturalReport(naturalReportPath, scenarios);
+  writeReferenceArtifacts(referenceDir, scenarios);
+  return { naturalReportPath, referenceDir, outPath };
+}
+
+function writeNaturalReport(naturalReportPath: string, scenarios: readonly string[]): void {
+  mkdirSync(path.dirname(naturalReportPath), { recursive: true });
   writeFileSync(
     naturalReportPath,
     JSON.stringify({
@@ -537,6 +645,10 @@ function writeCoreFixture(
       })),
     })
   );
+}
+
+function writeReferenceArtifacts(referenceDir: string, scenarios: readonly string[]): void {
+  mkdirSync(referenceDir, { recursive: true });
   for (const scenario of scenarios) {
     writeFileSync(
       path.join(referenceDir, `${scenario}.json`),
@@ -550,5 +662,4 @@ function writeCoreFixture(
       })
     );
   }
-  return { naturalReportPath, referenceDir, outPath };
 }

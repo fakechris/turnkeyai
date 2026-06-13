@@ -6,11 +6,15 @@ import { createNativeToolCapabilityRegistry } from "./tool-capability-registry";
 test("native tool capability registry drives schemas and prompt harness from the same worker set", () => {
   const registry = createNativeToolCapabilityRegistry({
     availableWorkerKinds: ["browser", "explore"],
+    webFetchEnabled: true,
   });
 
   const definitions = registry.definitions();
+  const fetch = definitions.find((definition) => definition.name === "web_fetch");
   const spawn = definitions.find((definition) => definition.name === "sessions_spawn");
   const list = definitions.find((definition) => definition.name === "sessions_list");
+  assert.match(fetch?.description ?? "", /Fetch a public HTTP\(S\) page directly/);
+  assert.match(fetch?.description ?? "", /Use this before spawning explore/);
   assert.match(spawn?.description ?? "", /Use explore first for public source research/);
   assert.match(spawn?.description ?? "", /pricing\/docs pages/);
   assert.match(spawn?.description ?? "", /unless the task asks for browser-visible, user-visible, rendered, visual, or interactive page evidence/);
@@ -29,11 +33,17 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.deepEqual(listSchema.properties?.kinds?.items?.enum, ["browser", "explore"]);
   assert.deepEqual(
     registry.summaries().map((summary) => summary.name),
-    ["sessions_spawn", "sessions_send", "sessions_list", "sessions_history"]
+    ["web_fetch", "sessions_spawn", "sessions_send", "sessions_list", "sessions_history"]
   );
 
   const harness = registry.renderPromptHarness({ seat: "lead" });
   assert.match(harness, /Tool Usage Discipline/);
+  assert.match(harness, /Direct Web Fetch/);
+  assert.match(harness, /use web_fetch before spawning a sub-agent/);
+  assert.match(harness, /web_fetch is source evidence, not browser evidence/);
+  assert.match(harness, /After two 404\/401 guesses on one host/);
+  assert.match(harness, /never use placeholder words such as not verified, unverified, unknown, missing, or 未验证 as search queries/);
+  assert.match(harness, /use that label to locate the linked page instead of inventing likely paths/);
   assert.match(harness, /Sub-Agent Sessions/);
   assert.match(harness, /browser: authenticated or interactive web work/);
   assert.match(harness, /explore: focused read-only research/);
@@ -62,6 +72,16 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(harness, /Do not add status preambles/);
   assert.match(harness, /keep each requested bullet compact/);
   assert.doesNotMatch(harness, /coder:/);
+});
+
+test("native tool capability registry can expose direct web fetch without session workers", () => {
+  const registry = createNativeToolCapabilityRegistry({ webFetchEnabled: true });
+
+  assert.deepEqual(registry.availableWorkerKinds(), []);
+  assert.deepEqual(registry.names(), ["web_fetch"]);
+  const harness = registry.renderPromptHarness({ seat: "lead" });
+  assert.match(harness, /Direct Web Fetch/);
+  assert.doesNotMatch(harness, /Sub-Agent Sessions/);
 });
 
 test("native tool capability registry omits browser harness when browser is unavailable", () => {

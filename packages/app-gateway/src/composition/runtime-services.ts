@@ -82,6 +82,27 @@ const AGENT_TOOL_MAX_ROUNDS = readPositiveIntegerEnv(
   "TURNKEYAI_AGENT_TOOL_MAX_ROUNDS",
   DEFAULT_AGENT_TOOL_MAX_ROUNDS
 );
+export const LLM_SUB_AGENT_WORKER_KINDS = ["browser", "explore"] as const satisfies readonly WorkerKind[];
+const STARTUP_TRACE_ENABLED = process.env.TURNKEYAI_STARTUP_TRACE === "1";
+
+async function startupStep<T>(name: string, run: () => Promise<T>): Promise<T> {
+  if (!STARTUP_TRACE_ENABLED) {
+    return run();
+  }
+  const startedAt = Date.now();
+  console.info(`daemon startup step started: ${name}`);
+  try {
+    const result = await run();
+    console.info(`daemon startup step completed: ${name}`, { durationMs: Date.now() - startedAt });
+    return result;
+  } catch (error) {
+    console.error(`daemon startup step failed: ${name}`, {
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
 
 function readPositiveIntegerEnv(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
@@ -236,15 +257,17 @@ export async function composeDaemonRuntimeServices(
     runtimeProgressRecorder,
     sessionStore: workerSessionStore,
   });
-  const workerStartupReconcileResult = await workerRuntime.reconcileStartup?.();
+  const workerStartupReconcileResult = await startupStep("worker-runtime-reconcile", async () => workerRuntime.reconcileStartup?.());
   if (workerStartupReconcileResult && workerStartupReconcileResult.totalSessions > 0) {
     console.info("worker runtime startup reconcile completed", workerStartupReconcileResult);
   }
-  const workerBindingReconcileResult = await reconcileWorkerBindingsOnStartup({
-    teamThreadStore,
-    roleRunStore,
-    workerRuntime,
-  });
+  const workerBindingReconcileResult = await startupStep("worker-binding-reconcile", async () =>
+    reconcileWorkerBindingsOnStartup({
+      teamThreadStore,
+      roleRunStore,
+      workerRuntime,
+    })
+  );
   if (workerBindingReconcileResult && workerBindingReconcileResult.totalBindings > 0) {
     console.info("worker binding startup reconcile completed", workerBindingReconcileResult);
   }
@@ -279,6 +302,7 @@ export async function composeDaemonRuntimeServices(
     permissionsEnabled: Boolean(inputs.toolPermissionService),
     memoryEnabled: true,
     tasksEnabled: Boolean(inputs.taskToolService),
+    webFetchEnabled: true,
   });
   const toolCancellationRegistry = new InMemoryToolCancellationRegistry();
 
@@ -306,6 +330,7 @@ export async function composeDaemonRuntimeServices(
               now: () => clock.now(),
             }),
             clock,
+            deferToolObservability: true,
             toolLoop: {
               executor: createWorkerSessionToolExecutor({
                 workerRuntime,
@@ -405,18 +430,22 @@ export async function composeDaemonRuntimeServices(
     workerRuntime,
     replayRecorder,
     runtimeChainRecorder,
+    runtimeProgressRecorder,
+    teamEventBus,
     ingressOutboxRootDir: path.join(dataDir, "flow-start-outbox"),
     dispatchOutboxRootDir: path.join(dataDir, "dispatch-outbox"),
     roleOutcomeOutboxRootDir: path.join(dataDir, "role-outcome-outbox"),
   });
 
   // --- Startup recovery + recovery action service -----------------------
-  const roleRunStartupRecoveryResult = await recoverRoleRunsOnStartup({
-    teamThreadStore,
-    flowLedgerStore,
-    roleRunStore,
-    roleLoopRunner,
-  });
+  const roleRunStartupRecoveryResult = await startupStep("role-run-startup-recovery", async () =>
+    recoverRoleRunsOnStartup({
+      teamThreadStore,
+      flowLedgerStore,
+      roleRunStore,
+      roleLoopRunner,
+    })
+  );
 
   // Mutable reconciliation state lives in this closure scope. The getters
   // below are passed to recoveryActionService and runtimeQueryService and
@@ -471,7 +500,7 @@ export async function composeDaemonRuntimeServices(
     }
   }
 
-  await refreshRuntimeReconciliationPass();
+  await startupStep("runtime-reconciliation-pass", refreshRuntimeReconciliationPass);
   if (
     roleRunStartupRecoveryResult.restartedQueuedRuns > 0 ||
     roleRunStartupRecoveryResult.restartedRunningRuns > 0 ||
@@ -578,7 +607,7 @@ function installLLMSubAgentWorkerHandlers(input: {
   runtimeProgressRecorder: DaemonFoundations["runtimeProgressRecorder"];
   clock: Clock;
 }): void {
-  for (const kind of ["browser", "explore"] as const) {
+  for (const kind of LLM_SUB_AGENT_WORKER_KINDS) {
     if (
       input.foundations.workerHandlers.some(
         (handler) => handler instanceof LLMSubAgentWorkerHandler && handler.kind === kind

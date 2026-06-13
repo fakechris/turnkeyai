@@ -1,7 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+
+const ACCIO_WORK_REFERENCE_APP = "accio-work-app-asar";
+const ACCIO_WORK_APP_ASAR_PATH = "/Applications/Accio.app/Contents/Resources/app.asar";
+const ACCIO_WORK_REFERENCE_RUNTIME_ROOT = "artifacts/reference-runtimes/accio-work-0.4.5";
+const ACCIO_WORK_REFERENCE_VERSION = "0.4.5";
 
 type ReferenceCollectionAction = "collect_reference_artifact" | "recollect_reference_artifact";
 
@@ -24,6 +30,9 @@ interface ReferenceCollectOptions {
   baseUrl: string;
   referenceToken?: string;
   variant: string;
+  accioWs?: boolean;
+  accioAgentId?: string;
+  accioWorkspacePath?: string;
   timeoutMs: number;
   pollMs: number;
   referenceApp: string;
@@ -48,6 +57,7 @@ interface ReferenceCollectedArtifact {
   rawToolCalls: unknown[];
   rawToolResults: unknown[];
   rawBrowserEvidence: unknown[];
+  rawMemoryEvidence: unknown[];
   rawFlowEvidence: unknown[];
   rawApprovalEvidence: unknown[];
   rawCancellationEvidence?: unknown[];
@@ -88,6 +98,7 @@ export interface ReferenceScenarioDriver {
     | "memory_pressure_flush"
     | "memory_invalidation"
     | "tool_result_pruning"
+    | "followup_thread"
     | "timeout_partial"
     | "timeout_followup"
     | "cancel_active"
@@ -128,6 +139,9 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
   let baseUrl: string | undefined;
   let referenceToken: string | undefined;
   let variant = "operator";
+  let accioWs = false;
+  let accioAgentId: string | undefined;
+  let accioWorkspacePath: string | undefined;
   let timeoutMs = 180_000;
   let pollMs = 2_000;
   let referenceApp = "reference-workbench";
@@ -136,6 +150,10 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
   let referenceRuntimeRoot: string | undefined;
   let referenceVersion: string | undefined;
   let referenceCommit: string | undefined;
+  let referenceAppExplicit = false;
+  let referenceBinaryExplicit = false;
+  let referenceRuntimeRootExplicit = false;
+  let referenceCommitExplicit = false;
   let check = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -159,6 +177,20 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
       index += 1;
       continue;
     }
+    if (arg === "--accio-ws") {
+      accioWs = true;
+      continue;
+    }
+    if (arg === "--accio-agent-id") {
+      accioAgentId = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--accio-workspace-path") {
+      accioWorkspacePath = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
     if (arg === "--timeout-ms") {
       timeoutMs = readPositiveInteger(readValue(args, index, arg), arg);
       index += 1;
@@ -171,11 +203,13 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
     }
     if (arg === "--reference-app") {
       referenceApp = readValue(args, index, arg);
+      referenceAppExplicit = true;
       index += 1;
       continue;
     }
     if (arg === "--reference-binary") {
       referenceBinary = readValue(args, index, arg);
+      referenceBinaryExplicit = true;
       index += 1;
       continue;
     }
@@ -186,6 +220,7 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
     }
     if (arg === "--reference-runtime-root") {
       referenceRuntimeRoot = readValue(args, index, arg);
+      referenceRuntimeRootExplicit = true;
       index += 1;
       continue;
     }
@@ -196,6 +231,7 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
     }
     if (arg === "--reference-commit") {
       referenceCommit = readValue(args, index, arg);
+      referenceCommitExplicit = true;
       index += 1;
       continue;
     }
@@ -207,21 +243,42 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
   }
   if (!tasksPath) throw new Error("missing required --tasks <path>");
   if (!baseUrl) throw new Error("missing required --base-url <url>");
+  const resolvedReferenceApp = accioWs && !referenceAppExplicit ? ACCIO_WORK_REFERENCE_APP : referenceApp;
+  const resolvedReferenceBinary =
+    accioWs && !referenceBinaryExplicit ? ACCIO_WORK_APP_ASAR_PATH : referenceBinary;
+  const resolvedReferenceRuntimeRoot =
+    accioWs && !referenceRuntimeRootExplicit
+      ? path.resolve(ACCIO_WORK_REFERENCE_RUNTIME_ROOT)
+      : referenceRuntimeRoot
+        ? path.resolve(referenceRuntimeRoot)
+        : undefined;
+  const resolvedReferenceVersion = accioWs && !referenceVersion ? ACCIO_WORK_REFERENCE_VERSION : referenceVersion;
+  const resolvedReferenceCommit =
+    accioWs && !referenceCommitExplicit ? readAccioWorkAppAsarCommit() : referenceCommit;
   return {
     tasksPath,
     baseUrl,
     ...(referenceToken ? { referenceToken } : {}),
     variant,
+    ...(accioWs ? { accioWs } : {}),
+    ...(accioAgentId ? { accioAgentId } : {}),
+    ...(accioWs || accioWorkspacePath ? { accioWorkspacePath: accioWorkspacePath ?? process.cwd() } : {}),
     timeoutMs,
     pollMs,
-    referenceApp,
-    ...(referenceBinary ? { referenceBinary } : {}),
+    referenceApp: resolvedReferenceApp,
+    ...(resolvedReferenceBinary ? { referenceBinary: resolvedReferenceBinary } : {}),
     ...(referenceRepoPath ? { referenceRepoPath } : {}),
-    ...(referenceRuntimeRoot ? { referenceRuntimeRoot } : {}),
-    ...(referenceVersion ? { referenceVersion } : {}),
-    ...(referenceCommit ? { referenceCommit } : {}),
+    ...(resolvedReferenceRuntimeRoot ? { referenceRuntimeRoot: resolvedReferenceRuntimeRoot } : {}),
+    ...(resolvedReferenceVersion ? { referenceVersion: resolvedReferenceVersion } : {}),
+    ...(resolvedReferenceCommit ? { referenceCommit: resolvedReferenceCommit } : {}),
     check,
   };
+}
+
+function readAccioWorkAppAsarCommit(): string | undefined {
+  if (!existsSync(ACCIO_WORK_APP_ASAR_PATH)) return undefined;
+  const hash = createHash("sha256").update(readFileSync(ACCIO_WORK_APP_ASAR_PATH)).digest("hex");
+  return `app.asar:${hash}`;
 }
 
 export function buildRealLlmAbReferenceCollectHelpText(): string {
@@ -230,6 +287,7 @@ export function buildRealLlmAbReferenceCollectHelpText(): string {
     "",
     "Usage:",
     "  npm run acceptance:ab:reference-collect -- --tasks <task-manifest.json> --base-url <reference-daemon-url> [--reference-token <token>] [--variant operator] [--timeout-ms 180000] [--poll-ms 2000] [--reference-repo-path <path>] [--reference-runtime-root <path>] [--reference-version <version>] [--check]",
+    "  npm run acceptance:ab:reference-collect -- --tasks <task-manifest.json> --base-url http://127.0.0.1:4097 --accio-ws [--accio-agent-id DID-...] [--accio-workspace-path <path>] --reference-runtime-root artifacts/reference-runtimes/accio-work-0.4.5 [--check]",
     "",
     "The collector sends each natural prompt to a compatible reference daemon and writes provenance-complete artifacts to each task's expectedReferenceArtifactPath.",
     "The reference audit remains responsible for deciding whether collected artifacts are valid comparison evidence.",
@@ -305,6 +363,22 @@ async function collectOneReferenceArtifact(input: {
   const baseUrl = normalizeBaseUrl(input.options.baseUrl);
   const requestAuth = buildReferenceRequestAuth(input.options.referenceToken);
   const scenarioDriver = referenceScenarioDriverFor(input.task.scenarioId);
+  const accioWsUnsupportedReason = input.options.accioWs ? unsupportedAccioWsScenarioReason(scenarioDriver) : null;
+  if (accioWsUnsupportedReason) {
+    return buildUnsupportedReferenceArtifact({
+      task: input.task,
+      options: input.options,
+      fixtureContentHashes: input.fixtureContentHashes,
+      baseUrl,
+      scenarioDriver: unsupportedScenarioDriver(
+        scenarioDriver.kind,
+        accioWsUnsupportedReason,
+        scenarioDriver.envRequirements
+      ),
+      startedAt,
+      collectedAtMs,
+    });
+  }
   if (!scenarioDriver.supported) {
     return buildUnsupportedReferenceArtifact({
       task: input.task,
@@ -329,6 +403,7 @@ async function collectOneReferenceArtifact(input: {
   let rawApprovalEvidence: unknown[] = [];
   let rawCancellationEvidence: unknown[] = [];
   let rawMemoryEvidence: unknown[] = [];
+  let loopbackFixtureProbe: LoopbackFixtureProbeResult | undefined;
   let followupSummary: ReferenceCollectedArtifact["followup"];
   let firstSummaryToolCallCount = 0;
   let firstSummaryToolResultCount = 0;
@@ -345,7 +420,68 @@ async function collectOneReferenceArtifact(input: {
     const modelInfo = inferReferenceModelInfo(modelCatalog);
     provider = modelInfo.provider;
     modelId = modelInfo.modelId;
-    if (scenarioDriver.kind === "memory_pressure_flush" || scenarioDriver.kind === "memory_invalidation") {
+    if (input.options.accioWs) {
+      loopbackFixtureProbe = await probeLoopbackFixturesForAccioWsPrompt(input.task.prompt, input.task.scenarioId);
+      if (loopbackFixtureProbe.unreachable.length > 0) {
+        return buildFixtureUnavailableReferenceArtifact({
+          task: input.task,
+          options: input.options,
+          fixtureContentHashes: input.fixtureContentHashes,
+          baseUrl,
+          scenarioDriver,
+          startedAt,
+          collectedAtMs,
+          modelCatalog,
+          provider,
+          modelId,
+          probe: loopbackFixtureProbe,
+        });
+      }
+    }
+    if (input.options.accioWs) {
+      const accioResult = scenarioDriver.kind === "memory_thread"
+        ? await driveAccioWsMemoryRecallReferenceScenario({
+            task: input.task,
+            options: input.options,
+            baseUrl,
+            modelCatalog,
+            modelInfo,
+          })
+        : scenarioDriver.kind === "followup_thread" || scenarioDriver.kind === "timeout_followup"
+          ? await driveAccioWsFollowupReferenceScenario({
+              task: input.task,
+              options: input.options,
+              baseUrl,
+              modelCatalog,
+              modelInfo,
+            })
+        : await driveAccioWsReferenceScenario({
+        task: input.task,
+        options: input.options,
+        baseUrl,
+        modelCatalog,
+        modelInfo,
+      });
+      exactRequestPayload = accioResult.exactRequestPayload;
+      apiEndpoint = accioResult.apiEndpoint;
+      rawResponse = accioResult.rawResponse;
+      threadId = accioResult.threadId;
+      rawTranscript = accioResult.rawTranscript;
+      rawToolCalls = accioResult.rawToolCalls;
+      rawToolResults = accioResult.rawToolResults;
+      rawBrowserEvidence = accioResult.rawBrowserEvidence;
+      rawMemoryEvidence = accioResult.rawMemoryEvidence ?? [];
+      rawFlowEvidence = accioResult.rawFlowEvidence;
+      finalText = accioResult.finalText;
+      timedOut = accioResult.timedOut;
+      firstSummaryToolCallCount = accioResult.firstSummaryToolCallCount;
+      firstSummaryToolResultCount = accioResult.firstSummaryToolResultCount;
+      followupSummary = accioResult.followupSummary;
+    } else if (
+      scenarioDriver.kind === "memory_thread" ||
+      scenarioDriver.kind === "memory_pressure_flush" ||
+      scenarioDriver.kind === "memory_invalidation"
+    ) {
       const memoryResult = await driveReferenceMemoryScenario({
         task: input.task,
         options: input.options,
@@ -409,7 +545,11 @@ async function collectOneReferenceArtifact(input: {
         };
       }
     }
-    if (scenarioDriver.kind !== "memory_pressure_flush" && scenarioDriver.kind !== "memory_invalidation") {
+    if (
+      !input.options.accioWs &&
+      scenarioDriver.kind !== "memory_pressure_flush" &&
+      scenarioDriver.kind !== "memory_invalidation"
+    ) {
       const pollResult = await pollReferenceMessages({
         baseUrl,
         threadId,
@@ -500,7 +640,7 @@ async function collectOneReferenceArtifact(input: {
             summary: {
               toolCallCount: followupToolCalls.length,
               toolResultCount: followupToolResults.length,
-              pendingToolCount: 0,
+              pendingToolCount: readPendingReferenceToolCalls(followupMessages).length,
               finalText: followupPollResult.finalText,
             },
           };
@@ -508,15 +648,17 @@ async function collectOneReferenceArtifact(input: {
       }
     }
 
-    rawBrowserEvidence = [
-      ...(await readBrowserEvidence(baseUrl, threadId, requestAuth)),
-      ...extractBrowserEvidenceFromTranscript(Array.isArray(rawTranscript) ? rawTranscript : []),
-    ];
-    rawFlowEvidence = [
-      ...(await readFlowEvidence(baseUrl, threadId, requestAuth)),
-      ...rawCancellationEvidence,
-      ...rawMemoryEvidence,
-    ];
+    if (!input.options.accioWs) {
+      rawBrowserEvidence = [
+        ...(await readBrowserEvidence(baseUrl, threadId, requestAuth)),
+        ...extractBrowserEvidenceFromTranscript(Array.isArray(rawTranscript) ? rawTranscript : []),
+      ];
+      rawFlowEvidence = [
+        ...(await readFlowEvidence(baseUrl, threadId, requestAuth)),
+        ...rawCancellationEvidence,
+        ...rawMemoryEvidence,
+      ];
+    }
     finalTextForScoring = followupSummary?.summary.finalText ?? finalText;
     exitStatus = timedOut ? "timeout" : finalTextForScoring ? "success" : "error";
     errorReason = timedOut
@@ -531,7 +673,9 @@ async function collectOneReferenceArtifact(input: {
   finalTextForScoring = followupSummary?.summary.finalText ?? finalText;
   const durationMs = Date.now() - startedAt;
   const pendingApprovalPausedState =
-    scenarioDriver.approvalDecisionPolicy === "pending" && hasObservedPendingApprovalEvidence(rawApprovalEvidence);
+    scenarioDriver.approvalDecisionPolicy === "pending" &&
+    (hasObservedPendingApprovalEvidence(rawApprovalEvidence) ||
+      isExpectedPendingApprovalFinal(finalTextForScoring));
   const approvalWaitTimeoutCloseout =
     scenarioDriver.approvalDecisionPolicy === "wait_timeout" &&
     hasObservedPendingApprovalEvidence(rawApprovalEvidence) &&
@@ -549,12 +693,14 @@ async function collectOneReferenceArtifact(input: {
     exitStatus === "success" &&
     finalTextForScoring.trim().length >= 80 &&
     (!weak || pendingApprovalPausedState || approvalWaitTimeoutCloseout || activeCancellationCloseout || cancelFollowupContinuation);
+  const referenceRepoPath = resolveReferenceRepoPath(input.options);
   const provenance = {
     referenceApp: input.options.referenceApp,
     referenceBinary: input.options.referenceBinary ?? "unknown",
-    referenceRepoPath: input.options.referenceRepoPath ?? "unknown",
+    referenceRepoPath,
+    ...(input.options.referenceRuntimeRoot ? { referenceRuntimeRoot: input.options.referenceRuntimeRoot } : {}),
     referenceVersion: input.options.referenceVersion ?? "unknown",
-    referenceCommit: input.options.referenceCommit ?? readGitCommit(input.options.referenceRepoPath),
+    referenceCommit: input.options.referenceCommit ?? readGitCommit(referenceRepoPath),
     daemonUrl: baseUrl,
     apiEndpoint,
     ...(missionId ? { missionId } : {}),
@@ -577,11 +723,15 @@ async function collectOneReferenceArtifact(input: {
     rawMemoryEvidence,
     fixtureContentHashes: input.fixtureContentHashes,
     referenceScenarioDriver: scenarioDriver,
+    ...(loopbackFixtureProbe ? { loopbackFixtureProbe } : {}),
     artifactAdapterMappingSource: "scripts/real-llm-ab-reference-collect.ts",
     collectedAtMs,
     exitStatus,
     errorReason,
   };
+  const firstSummaryPendingToolCount = Array.isArray(rawTranscript)
+    ? readPendingReferenceToolCalls(rawTranscript).length
+    : Math.max(0, firstSummaryToolCallCount - firstSummaryToolResultCount);
   return {
     system: "reference",
     prompt: input.task.prompt,
@@ -607,7 +757,7 @@ async function collectOneReferenceArtifact(input: {
       summary: {
         toolCallCount: firstSummaryToolCallCount,
         toolResultCount: firstSummaryToolResultCount,
-        pendingToolCount: 0,
+        pendingToolCount: firstSummaryPendingToolCount,
         finalText,
       },
     },
@@ -630,12 +780,14 @@ function buildUnsupportedReferenceArtifact(input: {
 }): ReferenceCollectedArtifact {
   const errorReason = `unsupported_reference_scenario_driver:${input.scenarioDriver.unsupportedReason ?? input.scenarioDriver.kind}`;
   const durationMs = Date.now() - input.startedAt;
+  const referenceRepoPath = resolveReferenceRepoPath(input.options);
   const provenance = {
     referenceApp: input.options.referenceApp,
     referenceBinary: input.options.referenceBinary ?? "unknown",
-    referenceRepoPath: input.options.referenceRepoPath ?? "unknown",
+    referenceRepoPath,
+    ...(input.options.referenceRuntimeRoot ? { referenceRuntimeRoot: input.options.referenceRuntimeRoot } : {}),
     referenceVersion: input.options.referenceVersion ?? "unknown",
-    referenceCommit: input.options.referenceCommit ?? readGitCommit(input.options.referenceRepoPath),
+    referenceCommit: input.options.referenceCommit ?? readGitCommit(referenceRepoPath),
     daemonUrl: input.baseUrl,
     apiEndpoint: "not_run",
     provider: "unknown",
@@ -689,6 +841,926 @@ function buildUnsupportedReferenceArtifact(input: {
       weak: true,
     },
   };
+}
+
+function buildFixtureUnavailableReferenceArtifact(input: {
+  task: ReferenceCollectionTask;
+  options: ReferenceCollectOptions;
+  fixtureContentHashes: Record<string, string>;
+  baseUrl: string;
+  scenarioDriver: ReferenceScenarioDriver;
+  startedAt: number;
+  collectedAtMs: number;
+  modelCatalog: unknown;
+  provider: string;
+  modelId: string;
+  probe: LoopbackFixtureProbeResult;
+}): ReferenceCollectedArtifact {
+  const durationMs = Date.now() - input.startedAt;
+  const referenceRepoPath = resolveReferenceRepoPath(input.options);
+  const unreachable = input.probe.unreachable
+    .map((item) => `${item.url} (${item.reason})`)
+    .join("; ");
+  const errorReason = `reference_fixture_unreachable:${unreachable}`;
+  const provenance = {
+    referenceApp: input.options.referenceApp,
+    referenceBinary: input.options.referenceBinary ?? "unknown",
+    referenceRepoPath,
+    ...(input.options.referenceRuntimeRoot ? { referenceRuntimeRoot: input.options.referenceRuntimeRoot } : {}),
+    referenceVersion: input.options.referenceVersion ?? "unknown",
+    referenceCommit: input.options.referenceCommit ?? readGitCommit(referenceRepoPath),
+    daemonUrl: input.baseUrl,
+    apiEndpoint: "not_run",
+    provider: input.provider,
+    modelId: input.modelId,
+    modelCatalog: input.modelCatalog,
+    exactRequestPayload: {
+      transport: "accio-work-websocket-sendQuery",
+      prompt: input.task.prompt,
+      blockedBeforeSend: true,
+      loopbackFixtureProbe: input.probe,
+    },
+    timeout: {
+      timeoutMs: input.options.timeoutMs,
+      pollMs: input.options.pollMs,
+    },
+    rawResponse: null,
+    rawTranscript: null,
+    rawToolCalls: [],
+    rawToolResults: [],
+    rawBrowserEvidence: [],
+    rawFlowEvidence: [],
+    rawApprovalEvidence: [],
+    fixtureContentHashes: input.fixtureContentHashes,
+    referenceScenarioDriver: input.scenarioDriver,
+    loopbackFixtureProbe: input.probe,
+    artifactAdapterMappingSource: "scripts/real-llm-ab-reference-collect.ts",
+    collectedAtMs: input.collectedAtMs,
+    exitStatus: "error",
+    errorReason,
+  };
+  return {
+    system: "reference",
+    prompt: input.task.prompt,
+    durationMs,
+    timedOut: false,
+    provenance,
+    rawResponse: null,
+    rawTranscript: null,
+    rawToolCalls: [],
+    rawToolResults: [],
+    rawBrowserEvidence: [],
+    rawFlowEvidence: [],
+    rawApprovalEvidence: [],
+    artifactAdapterMappingSource: "scripts/real-llm-ab-reference-collect.ts",
+    collectedAtMs: input.collectedAtMs,
+    exitStatus: "error",
+    errorReason,
+    first: {
+      summary: {
+        toolCallCount: 0,
+        toolResultCount: 0,
+        pendingToolCount: 0,
+        finalText: "",
+      },
+    },
+    score: {
+      useful: false,
+      weak: true,
+    },
+  };
+}
+
+interface LoopbackFixtureProbeResult {
+  checked: string[];
+  reachable: string[];
+  unreachable: Array<{ url: string; reason: string }>;
+}
+
+async function probeLoopbackFixturesForAccioWsPrompt(
+  prompt: string,
+  scenarioId?: string
+): Promise<LoopbackFixtureProbeResult> {
+  const urls = extractLoopbackUrls(prompt);
+  const reachable: string[] = [];
+  const unreachable: Array<{ url: string; reason: string }> = [];
+  for (const url of urls) {
+    const reason = await probeLoopbackUrl(url);
+    if (reason) {
+      if (isAllowedSlowFixtureProbeTimeout({ url, reason, prompt, scenarioId })) {
+        reachable.push(url);
+        continue;
+      }
+      unreachable.push({ url, reason });
+    } else {
+      reachable.push(url);
+    }
+  }
+  return { checked: urls, reachable, unreachable };
+}
+
+function isAllowedSlowFixtureProbeTimeout(input: {
+  url: string;
+  reason: string;
+  prompt: string;
+  scenarioId?: string;
+}): boolean {
+  if (input.reason !== "timeout") return false;
+  if (
+    input.scenarioId !== "natural-timeout-followup-continuation" &&
+    input.scenarioId !== "natural-timeout-partial-closeout"
+  ) {
+    return false;
+  }
+  try {
+    if (new URL(input.url).pathname !== "/slow-fixture") return false;
+  } catch {
+    return false;
+  }
+  return (
+    /\bslow source\b/i.test(input.prompt) &&
+    /\bbounded attempt\b/i.test(input.prompt) &&
+    /\b(?:timeout|does not return in time|does not respond|no response)\b/i.test(input.prompt)
+  );
+}
+
+function extractLoopbackUrls(value: string): string[] {
+  const matches = value.match(/https?:\/\/[^\s"'<>),]+/gi) ?? [];
+  return [...new Set(matches.map((url) => url.replace(/[.;:,]+$/g, "")))]
+    .flatMap((url) => {
+      try {
+        const parsed = new URL(url);
+        const hostname = parsed.hostname.toLowerCase();
+        if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+          return [url];
+        }
+      } catch {
+        return [];
+      }
+      return [];
+    })
+    .sort();
+}
+
+async function probeLoopbackUrl(url: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1_500);
+  try {
+    const response = await fetch(url, { method: "GET", signal: controller.signal });
+    await response.arrayBuffer().catch(() => new ArrayBuffer(0));
+    return response.ok || response.status < 500 ? null : `http_${response.status}`;
+  } catch (error) {
+    if (error instanceof Error) {
+      return error.name === "AbortError" ? "timeout" : error.message;
+    }
+    return String(error);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function driveAccioWsReferenceScenario(input: {
+  task: ReferenceCollectionTask;
+  options: ReferenceCollectOptions;
+  baseUrl: string;
+  modelCatalog: unknown;
+  modelInfo: { provider: string; modelId: string };
+}): Promise<{
+  apiEndpoint: string;
+  exactRequestPayload: Record<string, unknown>;
+  rawResponse: unknown;
+  threadId: string;
+  rawTranscript: unknown[];
+  rawToolCalls: unknown[];
+  rawToolResults: unknown[];
+  rawBrowserEvidence: unknown[];
+  rawFlowEvidence: unknown[];
+  finalText: string;
+  timedOut: boolean;
+  firstSummaryToolCallCount: number;
+  firstSummaryToolResultCount: number;
+  followupSummary?: ReferenceCollectedArtifact["followup"];
+}> {
+  const health = await getJson(input.baseUrl, "/reference/health");
+  const agents = await getJson(input.baseUrl, "/agents");
+  const selectedAgent = selectAccioAgent(agents, input.options.accioAgentId);
+  const agentId = selectedAgent?.id ?? input.options.accioAgentId ?? "DID-F456DA-2B0D4C";
+  const accountId = selectedAgent?.accountId ?? "reference-account";
+  const accioHome =
+    readString((health as { accioHome?: unknown } | null)?.accioHome) ??
+    resolveAccioHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
+  const electronUserDataDir = readString((health as { electronUserDataDir?: unknown } | null)?.electronUserDataDir);
+  if (!accioHome) {
+    throw new Error("Accio WS collection requires /reference/health.accioHome or --reference-runtime-root");
+  }
+  const workspacePath = input.options.accioWorkspacePath ?? process.cwd();
+  const promptStartedAtMs = Date.now();
+  const scenarioDriver = referenceScenarioDriverFor(input.task.scenarioId);
+  const probe = await sendAccioWsPrompt({
+    baseUrl: input.baseUrl,
+    agentId,
+    workspacePath,
+    prompt: input.task.prompt,
+    timeoutMs: Math.min(input.options.timeoutMs, 45_000),
+    conversationLabel: input.task.scenarioId,
+  });
+  let pollResult: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+  try {
+    pollResult = await pollAccioSessionMessages({
+      accioHome,
+      accountId,
+      agentId,
+      conversationId: probe.conversationId,
+      timeoutMs: input.options.timeoutMs,
+      pollMs: input.options.pollMs,
+      approvalDecisionPolicy: scenarioDriver.approvalDecisionPolicy,
+    });
+  } finally {
+    probe.close();
+  }
+  let rawResponse: unknown = probe.readRawResponse();
+  let transcript = pollResult.messages;
+  let finalText = readLatestAssistantText(transcript);
+  let timedOut = pollResult.timedOut;
+  let followupSummary: ReferenceCollectedArtifact["followup"];
+  if (
+    scenarioDriver.approvalDecisionPolicy === "denied" &&
+    isApprovalDecisionRequestFinal(finalText)
+  ) {
+    const followupPrompt = buildReferenceApprovalDeniedFollowupPrompt();
+    const followupProbe = await sendAccioWsPrompt({
+      baseUrl: input.baseUrl,
+      agentId,
+      workspacePath,
+      prompt: followupPrompt,
+      timeoutMs: Math.min(input.options.timeoutMs, 45_000),
+      conversationLabel: input.task.scenarioId,
+      conversationId: probe.conversationId,
+    });
+    let followupPoll: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+    try {
+      followupPoll = await pollAccioSessionMessages({
+        accioHome,
+        accountId,
+        agentId,
+        conversationId: probe.conversationId,
+        timeoutMs: input.options.timeoutMs,
+        pollMs: input.options.pollMs,
+        afterUserContent: followupPrompt,
+        approvalDecisionPolicy: scenarioDriver.approvalDecisionPolicy,
+      });
+    } finally {
+      followupProbe.close();
+    }
+    transcript = followupPoll.messages.length > 0 ? followupPoll.messages : transcript;
+    const followupMessages = sliceMessagesAfterUserContent(transcript, followupPrompt);
+    const followupToolCalls = dedupeReferenceToolCalls(extractToolCalls(followupMessages));
+    const followupToolResults = extractToolResults(followupMessages);
+    finalText =
+      followupPoll.completion.finalText ||
+      readLatestAssistantText(followupMessages) ||
+      finalText;
+    timedOut = followupPoll.timedOut && !followupPoll.completion.finalText;
+    rawResponse = {
+      first: rawResponse,
+      followup: followupProbe.readRawResponse(),
+    };
+    followupSummary = {
+      summary: {
+        toolCallCount: followupToolCalls.length,
+        toolResultCount: followupToolResults.length,
+        pendingToolCount: readPendingReferenceToolCalls(followupMessages).length,
+        finalText,
+      },
+    };
+  }
+  const toolCalls = dedupeReferenceToolCalls(extractToolCalls(transcript));
+  const toolResults = extractToolResults(transcript);
+  const workspaceArtifacts = collectAccioWorkspaceArtifacts({
+    workspacePath,
+    sinceMs: promptStartedAtMs,
+  });
+  return {
+    apiEndpoint: "/websocket/connect",
+    exactRequestPayload: {
+      transport: "accio-work-websocket-sendQuery",
+      conversationId: probe.conversationId,
+      agentId,
+      accountId,
+      modelCatalog: input.modelCatalog,
+      provider: input.modelInfo.provider,
+      modelId: input.modelInfo.modelId,
+      prompt: input.task.prompt,
+      ...(followupSummary ? { followup: { content: buildReferenceApprovalDeniedFollowupPrompt() } } : {}),
+    },
+    rawResponse,
+    threadId: probe.conversationId,
+    rawTranscript: transcript,
+    rawToolCalls: toolCalls,
+    rawToolResults: toolResults,
+    rawBrowserEvidence: extractBrowserEvidenceFromTranscript(transcript),
+    rawMemoryEvidence: [],
+    rawFlowEvidence: [
+      {
+        source: "accio_ws_session_file",
+        accioHome,
+        accountId,
+        agentId,
+        conversationId: probe.conversationId,
+        sessionPath: accioSessionMessagesPath({ accioHome, accountId, agentId, conversationId: probe.conversationId }),
+      },
+      {
+        source: "accio_ws_sdk_log",
+        conversationId: probe.conversationId,
+        sdkLogPath: path.join(accioHome, "logs", "sdk.log"),
+      },
+      ...(electronUserDataDir
+        ? [
+            {
+              source: "accio_ws_sdk_log",
+              conversationId: probe.conversationId,
+              sdkLogPath: path.join(electronUserDataDir, "logs", "sdk.log"),
+            },
+          ]
+        : []),
+      ...workspaceArtifacts,
+    ],
+    finalText,
+    timedOut,
+    firstSummaryToolCallCount: toolCalls.length,
+    firstSummaryToolResultCount: toolResults.length,
+    ...(followupSummary ? { followupSummary } : {}),
+  };
+}
+
+async function driveAccioWsMemoryRecallReferenceScenario(input: {
+  task: ReferenceCollectionTask;
+  options: ReferenceCollectOptions;
+  baseUrl: string;
+  modelCatalog: unknown;
+  modelInfo: { provider: string; modelId: string };
+}): Promise<{
+  apiEndpoint: string;
+  exactRequestPayload: Record<string, unknown>;
+  rawResponse: unknown;
+  threadId: string;
+  rawTranscript: unknown[];
+  rawToolCalls: unknown[];
+  rawToolResults: unknown[];
+  rawBrowserEvidence: unknown[];
+  rawMemoryEvidence: unknown[];
+  rawFlowEvidence: unknown[];
+  finalText: string;
+  timedOut: boolean;
+  firstSummaryToolCallCount: number;
+  firstSummaryToolResultCount: number;
+  followupSummary?: ReferenceCollectedArtifact["followup"];
+}> {
+  const health = await getJson(input.baseUrl, "/reference/health");
+  const agents = await getJson(input.baseUrl, "/agents");
+  const selectedAgent = selectAccioAgent(agents, input.options.accioAgentId);
+  const agentId = selectedAgent?.id ?? input.options.accioAgentId ?? "DID-F456DA-2B0D4C";
+  const accountId = selectedAgent?.accountId ?? "reference-account";
+  const accioHome =
+    readString((health as { accioHome?: unknown } | null)?.accioHome) ??
+    resolveAccioHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
+  if (!accioHome) {
+    throw new Error("Accio WS memory recall collection requires /reference/health.accioHome or --reference-runtime-root");
+  }
+  const memorySeed = writeAccioAgentCoreMemorySeed({ accioHome, accountId, agentId });
+  const probe = await sendAccioWsPrompt({
+    baseUrl: input.baseUrl,
+    agentId,
+    workspacePath: input.options.accioWorkspacePath ?? process.cwd(),
+    prompt: input.task.prompt,
+    timeoutMs: Math.min(input.options.timeoutMs, 45_000),
+    conversationLabel: input.task.scenarioId,
+  });
+  let pollResult: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+  try {
+    pollResult = await pollAccioSessionMessages({
+      accioHome,
+      accountId,
+      agentId,
+      conversationId: probe.conversationId,
+      timeoutMs: input.options.timeoutMs,
+      pollMs: input.options.pollMs,
+    });
+  } finally {
+    probe.close();
+  }
+  const transcript = pollResult.messages;
+  const finalText = readLatestAssistantText(transcript);
+  const toolCalls = dedupeReferenceToolCalls(extractToolCalls(transcript));
+  const toolResults = extractToolResults(transcript);
+  return {
+    apiEndpoint: "/websocket/connect",
+    exactRequestPayload: {
+      transport: "accio-work-websocket-sendQuery",
+      conversationId: probe.conversationId,
+      agentId,
+      accountId,
+      modelCatalog: input.modelCatalog,
+      provider: input.modelInfo.provider,
+      modelId: input.modelInfo.modelId,
+      prompt: input.task.prompt,
+      memorySeed: {
+        path: memorySeed.path,
+        source: "accio_agent_core_memory",
+      },
+    },
+    rawResponse: {
+      ...probe.readRawResponse(),
+      memorySeed: { path: memorySeed.path },
+    },
+    threadId: probe.conversationId,
+    rawTranscript: transcript,
+    rawToolCalls: toolCalls,
+    rawToolResults: toolResults,
+    rawBrowserEvidence: extractBrowserEvidenceFromTranscript(transcript),
+    rawMemoryEvidence: [
+      {
+        source: "accio_agent_core_memory",
+        phase: "seed",
+        memoryPath: memorySeed.path,
+        content: memorySeed.content,
+      },
+      {
+        source: "accio_ws_session_file",
+        phase: "final_recall",
+        timedOut: pollResult.timedOut,
+        finalText,
+      },
+    ],
+    rawFlowEvidence: [
+      {
+        source: "accio_ws_session_file",
+        accioHome,
+        accountId,
+        agentId,
+        conversationId: probe.conversationId,
+        sessionPath: accioSessionMessagesPath({ accioHome, accountId, agentId, conversationId: probe.conversationId }),
+      },
+    ],
+    finalText,
+    timedOut: pollResult.timedOut,
+    firstSummaryToolCallCount: toolCalls.length,
+    firstSummaryToolResultCount: toolResults.length,
+  };
+}
+
+async function driveAccioWsFollowupReferenceScenario(input: {
+  task: ReferenceCollectionTask;
+  options: ReferenceCollectOptions;
+  baseUrl: string;
+  modelCatalog: unknown;
+  modelInfo: { provider: string; modelId: string };
+}): Promise<{
+  apiEndpoint: string;
+  exactRequestPayload: Record<string, unknown>;
+  rawResponse: unknown;
+  threadId: string;
+  rawTranscript: unknown[];
+  rawToolCalls: unknown[];
+  rawToolResults: unknown[];
+  rawBrowserEvidence: unknown[];
+  rawMemoryEvidence: unknown[];
+  rawFlowEvidence: unknown[];
+  finalText: string;
+  timedOut: boolean;
+  firstSummaryToolCallCount: number;
+  firstSummaryToolResultCount: number;
+  followupSummary?: ReferenceCollectedArtifact["followup"];
+}> {
+  const health = await getJson(input.baseUrl, "/reference/health");
+  const agents = await getJson(input.baseUrl, "/agents");
+  const selectedAgent = selectAccioAgent(agents, input.options.accioAgentId);
+  const agentId = selectedAgent?.id ?? input.options.accioAgentId ?? "DID-F456DA-2B0D4C";
+  const accountId = selectedAgent?.accountId ?? "reference-account";
+  const accioHome =
+    readString((health as { accioHome?: unknown } | null)?.accioHome) ??
+    resolveAccioHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
+  if (!accioHome) {
+    throw new Error("Accio WS follow-up collection requires /reference/health.accioHome or --reference-runtime-root");
+  }
+  const firstProbe = await sendAccioWsPrompt({
+    baseUrl: input.baseUrl,
+    agentId,
+    workspacePath: input.options.accioWorkspacePath ?? process.cwd(),
+    prompt: input.task.prompt,
+    timeoutMs: Math.min(input.options.timeoutMs, 45_000),
+    conversationLabel: input.task.scenarioId,
+  });
+  let firstPoll: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+  try {
+    firstPoll = await pollAccioSessionMessages({
+      accioHome,
+      accountId,
+      agentId,
+      conversationId: firstProbe.conversationId,
+      timeoutMs: input.options.timeoutMs,
+      pollMs: input.options.pollMs,
+    });
+  } finally {
+    firstProbe.close();
+  }
+  const followupPrompt =
+    referenceScenarioDriverFor(input.task.scenarioId).kind === "timeout_followup"
+      ? buildReferenceTimeoutFollowupPrompt(input.task.prompt)
+      : buildReferenceFollowupContinuationPrompt(input.task.scenarioId);
+  const followupProbe = await sendAccioWsPrompt({
+    baseUrl: input.baseUrl,
+    agentId,
+    workspacePath: input.options.accioWorkspacePath ?? process.cwd(),
+    prompt: followupPrompt,
+    timeoutMs: Math.min(input.options.timeoutMs, 45_000),
+    conversationLabel: input.task.scenarioId,
+    conversationId: firstProbe.conversationId,
+  });
+  let followupPoll: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+  try {
+    followupPoll = await pollAccioSessionMessages({
+      accioHome,
+      accountId,
+      agentId,
+      conversationId: firstProbe.conversationId,
+      timeoutMs: input.options.timeoutMs,
+      pollMs: input.options.pollMs,
+      afterUserContent: followupPrompt,
+    });
+  } finally {
+    followupProbe.close();
+  }
+  const transcript = followupPoll.messages.length > 0 ? followupPoll.messages : firstPoll.messages;
+  const firstToolCalls = dedupeReferenceToolCalls(extractToolCalls(firstPoll.messages));
+  const firstToolResults = extractToolResults(firstPoll.messages);
+  const followupMessages = sliceMessagesAfterUserContent(transcript, followupPrompt);
+  const followupToolCalls = dedupeReferenceToolCalls(extractToolCalls(followupMessages));
+  const followupToolResults = extractToolResults(followupMessages);
+  const toolCalls = dedupeReferenceToolCalls(extractToolCalls(transcript));
+  const toolResults = extractToolResults(transcript);
+  const finalText = followupPoll.finalText || readLatestAssistantText(followupMessages);
+  return {
+    apiEndpoint: "/websocket/connect",
+    exactRequestPayload: {
+      transport: "accio-work-websocket-sendQuery",
+      conversationId: firstProbe.conversationId,
+      agentId,
+      accountId,
+      modelCatalog: input.modelCatalog,
+      provider: input.modelInfo.provider,
+      modelId: input.modelInfo.modelId,
+      prompt: input.task.prompt,
+      followup: { content: followupPrompt },
+    },
+    rawResponse: {
+      first: firstProbe.readRawResponse(),
+      followup: followupProbe.readRawResponse(),
+    },
+    threadId: firstProbe.conversationId,
+    rawTranscript: transcript,
+    rawToolCalls: toolCalls,
+    rawToolResults: toolResults,
+    rawBrowserEvidence: extractBrowserEvidenceFromTranscript(transcript),
+    rawMemoryEvidence: [],
+    rawFlowEvidence: [
+      {
+        source: "accio_ws_session_file",
+        accioHome,
+        accountId,
+        agentId,
+        conversationId: firstProbe.conversationId,
+        sessionPath: accioSessionMessagesPath({ accioHome, accountId, agentId, conversationId: firstProbe.conversationId }),
+      },
+    ],
+    finalText,
+    timedOut: followupPoll.timedOut && !finalText,
+    firstSummaryToolCallCount: firstToolCalls.length,
+    firstSummaryToolResultCount: firstToolResults.length,
+    followupSummary: {
+      summary: {
+        toolCallCount: followupToolCalls.length,
+        toolResultCount: followupToolResults.length,
+        pendingToolCount: readPendingReferenceToolCalls(followupMessages).length,
+        finalText,
+      },
+    },
+  };
+}
+
+interface AccioWsPromptProbe {
+  conversationId: string;
+  close(): void;
+  readRawResponse(): Record<string, unknown>;
+}
+
+async function sendAccioWsPrompt(input: {
+  baseUrl: string;
+  agentId: string;
+  workspacePath: string;
+  prompt: string;
+  timeoutMs: number;
+  conversationLabel: string;
+  conversationId?: string;
+}): Promise<AccioWsPromptProbe> {
+  const safeLabel = input.conversationLabel.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 48) || "reference";
+  const conversationId = input.conversationId ?? `CID-${safeLabel}-${Date.now().toString(36)}`;
+  const clientId = `desktop-reference-collect-${Date.now().toString(36)}`;
+  const wsUrl = `${input.baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "")}/websocket/connect?clientId=${encodeURIComponent(
+    clientId
+  )}`;
+  const messages: string[] = [];
+  let accepted = false;
+  let errorMessage = "";
+  let ws: WebSocket | null = null;
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      ws?.close();
+    } catch {}
+  };
+  const readRawResponse = (): Record<string, unknown> => ({
+    route: "/websocket/connect",
+    transport: "accio-work-websocket-sendQuery",
+    accepted,
+    keptOpenAfterAccept: true,
+    conversationId,
+    clientId,
+    messageCount: messages.length,
+    messages: parseAccioWsMessages(messages),
+  });
+  await new Promise<void>((resolve, reject) => {
+    ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => {
+      close();
+      resolve();
+    }, input.timeoutMs);
+    ws.addEventListener("open", () => {
+      ws?.send(
+        JSON.stringify({
+          type: "req",
+          method: "sendQuery",
+          params: {
+            conversationId,
+            chatType: "direct",
+            question: { query: input.prompt },
+            path: input.workspacePath,
+            agentId: input.agentId,
+            targetAgentList: [{ agentId: input.agentId, isTL: true }],
+            skills: [],
+            language: "zh",
+            ts: Date.now(),
+            extra: {},
+            source: {
+              platform: "pcApp",
+              type: "im",
+              channelId: "reference-collector",
+              chatId: "reference-collector-chat",
+              userId: "reference-user",
+              chatType: "private",
+              wasMentioned: true,
+              isAuthorized: true,
+            },
+            atIds: [],
+          },
+        })
+      );
+    });
+    ws.addEventListener("message", (event) => {
+      const text = String(event.data);
+      messages.push(text);
+      if (isAcceptedAccioWsMessage(text, conversationId)) {
+        accepted = true;
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+    ws.addEventListener("error", () => {
+      errorMessage = "websocket error";
+      clearTimeout(timer);
+      reject(new Error(errorMessage));
+    });
+  }).catch((error) => {
+    errorMessage = error instanceof Error ? error.message : String(error);
+  });
+  if (!accepted) {
+    throw new Error(`Accio WS sendQuery was not accepted${errorMessage ? `: ${errorMessage}` : ""}`);
+  }
+  return {
+    conversationId,
+    close,
+    readRawResponse,
+  };
+}
+
+function parseAccioWsMessages(messages: string[]): unknown[] {
+  return messages.flatMap((message) => {
+    try {
+      return [JSON.parse(message) as unknown];
+    } catch {
+      return [{ raw: message }];
+    }
+  });
+}
+
+function isAcceptedAccioWsMessage(text: string, conversationId: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const record = parsed as { type?: unknown; payload?: { conversationId?: unknown; success?: unknown } };
+  return readString(record.payload?.conversationId) === conversationId && (record.payload?.success === true || readString(record.type) === "ack");
+}
+
+async function pollAccioSessionMessages(input: {
+  accioHome: string;
+  accountId: string;
+  agentId: string;
+  conversationId: string;
+  timeoutMs: number;
+  pollMs: number;
+  afterUserContent?: string;
+  approvalDecisionPolicy?: ReferenceApprovalDecisionPolicy;
+}): Promise<{ messages: unknown[]; completion: { finalText: string; ready: boolean }; timedOut: boolean }> {
+  const sessionPath = accioSessionMessagesPath(input);
+  const startedAt = Date.now();
+  let lastCompletion = { finalText: "", ready: false };
+  while (Date.now() - startedAt <= input.timeoutMs) {
+    const messages = readJsonlMessages(sessionPath);
+    const scopedMessages = input.afterUserContent ? sliceMessagesAfterUserContent(messages, input.afterUserContent) : messages;
+    const completion = readReferenceCompletion(scopedMessages, {
+      approvalDecisionPolicy: input.approvalDecisionPolicy,
+    });
+    lastCompletion = completion;
+    if (completion.ready) return { messages, completion, timedOut: false };
+    await sleep(input.pollMs);
+  }
+  const messages = readJsonlMessages(sessionPath);
+  const scopedMessages = input.afterUserContent ? sliceMessagesAfterUserContent(messages, input.afterUserContent) : messages;
+  return {
+    messages,
+    completion:
+      readReferenceCompletion(scopedMessages, {
+        approvalDecisionPolicy: input.approvalDecisionPolicy,
+      }) ?? lastCompletion,
+    timedOut: true,
+  };
+}
+
+function accioSessionMessagesPath(input: {
+  accioHome: string;
+  accountId: string;
+  agentId: string;
+  conversationId: string;
+}): string {
+  return path.join(
+    input.accioHome,
+    "accounts",
+    input.accountId,
+    "agents",
+    input.agentId,
+    "sessions",
+    `${input.agentId}_${input.conversationId}.messages.jsonl`
+  );
+}
+
+const ACCIO_WORKSPACE_ARTIFACT_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".html",
+  ".htm",
+  ".md",
+  ".txt",
+  ".json",
+]);
+
+export function collectAccioWorkspaceArtifacts(input: {
+  workspacePath: string;
+  sinceMs: number;
+  maxFiles?: number;
+  maxBytes?: number;
+  maxDepth?: number;
+}): unknown[] {
+  const root = path.resolve(input.workspacePath);
+  if (!existsSync(root)) return [];
+  const maxFiles = input.maxFiles ?? 25;
+  const maxBytes = input.maxBytes ?? 10 * 1024 * 1024;
+  const maxDepth = input.maxDepth ?? 4;
+  const artifacts: Array<Record<string, unknown> & { mtimeMs: number; relativePath: string }> = [];
+  let visitedEntries = 0;
+  const visit = (dir: string, depth: number): void => {
+    if (depth > maxDepth || artifacts.length >= maxFiles || visitedEntries > 5_000) return;
+    let entries: ReturnType<typeof readdirSync>;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (artifacts.length >= maxFiles || visitedEntries > 5_000) return;
+      visitedEntries += 1;
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === ".cache") continue;
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolutePath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!ACCIO_WORKSPACE_ARTIFACT_EXTENSIONS.has(ext)) continue;
+      let stat;
+      try {
+        stat = statSync(absolutePath);
+      } catch {
+        continue;
+      }
+      if (stat.mtimeMs + 1_000 < input.sinceMs) continue;
+      if (stat.size <= 0 || stat.size > maxBytes) continue;
+      let sha256 = "";
+      try {
+        sha256 = createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
+      } catch {
+        continue;
+      }
+      artifacts.push({
+        source: "accio_ws_workspace_artifact_after_prompt",
+        status: "orphaned_workspace_artifact",
+        kind: classifyAccioWorkspaceArtifactKind(ext),
+        workspacePath: root,
+        path: absolutePath,
+        relativePath: path.relative(root, absolutePath),
+        sizeBytes: stat.size,
+        mtimeMs: stat.mtimeMs,
+        sha256: `sha256:${sha256}`,
+      });
+    }
+  };
+  visit(root, 0);
+  return artifacts
+    .sort((left, right) => left.mtimeMs - right.mtimeMs || left.relativePath.localeCompare(right.relativePath))
+    .slice(0, maxFiles);
+}
+
+function classifyAccioWorkspaceArtifactKind(ext: string): string {
+  if ([".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)) return "screenshot";
+  if (ext === ".html" || ext === ".htm") return "html";
+  if (ext === ".json") return "json";
+  return "text";
+}
+
+function readJsonlMessages(filePath: string): unknown[] {
+  try {
+    return readFileSync(filePath, "utf8")
+      .split(/\r?\n/g)
+      .flatMap((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return [];
+        try {
+          return [JSON.parse(trimmed) as unknown];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function selectAccioAgent(value: unknown, requestedAgentId: string | undefined): { id: string; accountId: string } | null {
+  const agents = readAccioAgentRecords(value);
+  const selected =
+    agents.find((agent) => requestedAgentId && agent.id === requestedAgentId) ??
+    agents.find((agent) => agent.modelName === "MiniMax-M2.7-highspeed") ??
+    agents[0];
+  return selected ? { id: selected.id, accountId: selected.accountId } : null;
+}
+
+function readAccioAgentRecords(value: unknown): Array<{ id: string; accountId: string; modelName?: string }> {
+  if (typeof value !== "object" || value === null) return [];
+  const record = value as { data?: unknown };
+  const data = Array.isArray(record.data) ? record.data : Array.isArray(value) ? value : [];
+  return data.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const agent = item as { id?: unknown; accountId?: unknown; model?: { name?: unknown } };
+    const id = readString(agent.id);
+    const accountId = readString(agent.accountId);
+    if (!id || !accountId) return [];
+    const modelName = readString(agent.model?.name);
+    return [{ id, accountId, ...(modelName ? { modelName } : {}) }];
+  });
+}
+
+function resolveAccioHomeFromRuntimeRoot(runtimeRoot: string | undefined): string | null {
+  if (!runtimeRoot) return null;
+  return path.join(runtimeRoot, "home", ".accio");
 }
 
 function buildPendingApprovalPausedStateSummary(approvalEvidence: unknown[]): string {
@@ -978,11 +2050,15 @@ async function driveReferenceMemoryScenario(input: {
   const setupPrompt =
     input.scenarioDriver.kind === "memory_pressure_flush"
       ? buildReferenceMemoryPressureSetupPrompt()
+      : input.scenarioDriver.kind === "memory_thread"
+        ? buildReferenceMemoryRecallSetupPrompt()
       : buildReferenceMemoryInvalidationSetupPrompt();
   const initialMissionPayload = {
     title:
       input.scenarioDriver.kind === "memory_pressure_flush"
         ? "Reference memory pressure flush"
+        : input.scenarioDriver.kind === "memory_thread"
+          ? "Reference memory recall"
         : "Reference memory invalidation",
     desc: setupPrompt,
     mode: input.scenarioDriver.missionMode,
@@ -1014,6 +2090,18 @@ async function driveReferenceMemoryScenario(input: {
     finalText: setupPoll.finalText,
     ...(runtimeRoot ? { memory: readReferenceThreadMemorySnapshot(runtimeRoot, threadId) } : {}),
   });
+
+  if (input.scenarioDriver.kind === "memory_thread") {
+    if (!runtimeRoot) {
+      throw new Error("memory_thread reference collection requires --reference-runtime-root or TURNKEYAI_HOME");
+    }
+    seedReferenceMemoryRecallFixture({ runtimeRoot, threadId });
+    rawMemoryEvidence.push({
+      source: "memory_driver",
+      phase: "seed",
+      memory: readReferenceThreadMemorySnapshot(runtimeRoot, threadId),
+    });
+  }
 
   let correctionPrompt: string | undefined;
   let rawCorrectionResponse: unknown = null;
@@ -1127,6 +2215,34 @@ function buildReferenceMemoryInvalidationSetupPrompt(): string {
   ].join("\n");
 }
 
+function buildReferenceMemoryRecallSetupPrompt(): string {
+  return [
+    "Start a launch-planning thread for Helios-47.",
+    "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+  ].join("\n");
+}
+
+function buildReferenceFollowupContinuationPrompt(scenarioId?: string): string {
+  if (
+    scenarioId === "natural-browser-followup-continuation" ||
+    scenarioId === "natural-browser-restart-continuation" ||
+    scenarioId === "natural-browser-cold-recreation-continuation"
+  ) {
+    return [
+      "Continue from the previous browser dashboard review in this same conversation.",
+      "Re-check the rendered dashboard state as a user would see it in the browser, using the same URL or safely reopening it if needed.",
+      "Confirm whether the operational state, escalation trigger, owner, and next operator action are still supported by rendered browser evidence.",
+      "Keep the answer source-bounded and call out anything that remains unverified.",
+    ].join("\n");
+  }
+  return [
+    "Continue from the previous work on this mission.",
+    "Ask the same Vendor Alpha research thread to revisit its notes and turn the evidence into a decision note for a product lead.",
+    "Keep continuity with that earlier research thread rather than starting the same Vendor Alpha work from scratch.",
+    "Keep the answer source-bounded and call out any remaining risk or uncertainty from the collected evidence.",
+  ].join("\n");
+}
+
 function buildReferenceMemoryInvalidationCorrectionPrompt(): string {
   return [
     "Update the Borealis-23 launch context.",
@@ -1167,6 +2283,44 @@ function seedReferenceMemoryInvalidationFixture(input: { runtimeRoot: string; th
     ],
     longTermNotes: [],
   });
+}
+
+function seedReferenceMemoryRecallFixture(input: { runtimeRoot: string; threadId: string }): void {
+  writeReferenceThreadMemoryRecord(input.runtimeRoot, {
+    threadId: input.threadId,
+    updatedAt: Date.now(),
+    preferences: [
+      "For memory recall acceptance, prefer source-backed launch briefs over unstated assumptions.",
+    ],
+    constraints: [
+      "When asked about Helios-47, use the durable memory launch window exactly as written.",
+    ],
+    longTermNotes: [
+      "Helios-47 launch window is Tuesday 09:30. Owner is Release Captain. Residual risk: calendar lock is remembered locally and should be verified before external release announcements.",
+    ],
+  });
+}
+
+function writeAccioAgentCoreMemorySeed(input: {
+  accioHome: string;
+  accountId: string;
+  agentId: string;
+}): { path: string; content: string } {
+  const memoryDir = path.join(input.accioHome, "accounts", input.accountId, "agents", input.agentId, "agent-core");
+  const memoryPath = path.join(memoryDir, "MEMORY.md");
+  const content = [
+    "## Reference A/B durable memory seed",
+    "",
+    "- Source: TurnkeyAI natural-memory-recall fixture parity seed, 2026-06-06.",
+    "- Helios-47 launch window is Tuesday 09:30.",
+    "- Owner is Release Captain.",
+    "- Residual risk: calendar lock is remembered locally and should be verified before external release announcements.",
+    "- When asked about Helios-47, use the durable memory launch window exactly as written and inspect the memory entry before relying on it.",
+    "",
+  ].join("\n");
+  mkdirSync(memoryDir, { recursive: true });
+  writeFileSync(memoryPath, content);
+  return { path: memoryPath, content };
 }
 
 function readReferenceThreadMemorySnapshot(runtimeRoot: string, threadId: string): unknown {
@@ -1246,7 +2400,12 @@ export function referenceScenarioDriverFor(scenarioId: string): ReferenceScenari
     };
   }
   if (scenarioId === "natural-memory-recall") {
-    return unsupportedScenarioDriver("memory_thread", "scenario_requires_preseeded_memory_thread");
+    return {
+      kind: "memory_thread",
+      supported: true,
+      missionThread: true,
+      missionMode: "custom",
+    };
   }
   if (scenarioId === "natural-memory-pressure-flush") {
     return {
@@ -1280,6 +2439,26 @@ export function referenceScenarioDriverFor(scenarioId: string): ReferenceScenari
         TURNKEYAI_TOOL_RESULT_SOFT_PRUNE_MAX_BYTES: "1800",
         TURNKEYAI_TOOL_RESULT_HARD_PRUNE_MAX_BYTES: "12000",
       },
+    };
+  }
+  if (scenarioId === "natural-followup-continuation") {
+    return {
+      kind: "followup_thread",
+      supported: true,
+      missionThread: true,
+      missionMode: "research",
+    };
+  }
+  if (
+    scenarioId === "natural-browser-followup-continuation" ||
+    scenarioId === "natural-browser-restart-continuation" ||
+    scenarioId === "natural-browser-cold-recreation-continuation"
+  ) {
+    return {
+      kind: "followup_thread",
+      supported: true,
+      missionThread: true,
+      missionMode: "browser",
     };
   }
   if (scenarioId === "natural-timeout-partial-closeout") {
@@ -1326,6 +2505,13 @@ export function referenceScenarioDriverFor(scenarioId: string): ReferenceScenari
   return singlePrompt;
 }
 
+function unsupportedAccioWsScenarioReason(driver: ReferenceScenarioDriver): string | null {
+  if (driver.kind === "cancel_active" || driver.kind === "cancel_followup") {
+    return "accio_ws_reference_does_not_expose_active_cancellation_driver";
+  }
+  return null;
+}
+
 function unsupportedScenarioDriver(
   kind: ReferenceScenarioDriver["kind"],
   unsupportedReason: string,
@@ -1352,6 +2538,18 @@ function inferReferenceModelInfo(modelCatalog: unknown): { provider: string; mod
     return { provider: "unknown", modelId: "unknown" };
   }
   const catalog = modelCatalog as { defaultModelId?: unknown; models?: unknown };
+  const accioProviders = readArray((modelCatalog as { data?: unknown }).data).filter(
+    (provider): provider is Record<string, unknown> => typeof provider === "object" && provider !== null
+  );
+  for (const provider of accioProviders) {
+    const providerId = readString(provider.provider);
+    const models = readArray(provider.modelList).filter(
+      (model): model is Record<string, unknown> => typeof model === "object" && model !== null
+    );
+    const selected = models.find((model) => model.isDefault === true) ?? models[0];
+    const modelId = readString(selected?.modelName);
+    if (providerId && modelId) return { provider: providerId, modelId };
+  }
   const models = readArray(catalog.models).filter(
     (model): model is Record<string, unknown> => typeof model === "object" && model !== null
   );
@@ -1460,6 +2658,14 @@ function buildReferenceCancelFollowupPrompt(): string {
     "Continue from the cancelled source-check attempt in this mission.",
     "Resume the existing source-check context if possible, let the source finish now, and turn the outcome into a release-risk note.",
     "Separate verified facts from unverified items, describe residual risk, and explain how the earlier cancellation affects confidence.",
+  ].join("\n");
+}
+
+function buildReferenceApprovalDeniedFollowupPrompt(): string {
+  return [
+    "Operator decision: denied.",
+    "Do not submit the browser form and do not apply the approval-gated action.",
+    "Close out with what approval was requested, that the dry-run form submission did not run, and the safest next action.",
   ].join("\n");
 }
 
@@ -1618,10 +2824,18 @@ function readNaturalFixtureContentHashes(
   const naturalReportPath = readString(manifest.naturalReportPath);
   if (!naturalReportPath) return {};
   try {
-    const report = readJsonFile<{ fixtureContentHashes?: unknown }>(path.resolve(taskDir, naturalReportPath));
-    if (typeof report.fixtureContentHashes !== "object" || report.fixtureContentHashes === null) return {};
+    const report = readJsonFile<{
+      fixtureContentHashes?: unknown;
+      fixtureManifest?: { fixtureContentHashes?: unknown };
+    }>(path.resolve(taskDir, naturalReportPath));
+    const fixtureContentHashes =
+      typeof report.fixtureManifest?.fixtureContentHashes === "object" &&
+      report.fixtureManifest.fixtureContentHashes !== null
+        ? report.fixtureManifest.fixtureContentHashes
+        : report.fixtureContentHashes;
+    if (typeof fixtureContentHashes !== "object" || fixtureContentHashes === null) return {};
     return Object.fromEntries(
-      Object.entries(report.fixtureContentHashes as Record<string, unknown>).flatMap(([url, hash]) =>
+      Object.entries(fixtureContentHashes as Record<string, unknown>).flatMap(([url, hash]) =>
         typeof hash === "string" && hash.trim() ? [[canonicalizeComparableUrl(url), hash.trim()] as const] : []
       )
     );
@@ -1771,15 +2985,96 @@ function readLatestAssistantText(messages: unknown[]): string {
   return "";
 }
 
-function readReferenceCompletion(messages: unknown[]): { finalText: string; ready: boolean } {
+export function readReferenceCompletion(
+  messages: unknown[],
+  options: { approvalDecisionPolicy?: ReferenceApprovalDecisionPolicy } = {}
+): { finalText: string; ready: boolean } {
   const finalText = readLatestAssistantText(messages);
   if (!finalText) return { finalText: "", ready: false };
-  const toolCallCount = extractToolCalls(messages).length;
+  if (!latestAssistantFollowsLatestToolResult(messages)) return { finalText, ready: false };
+  const pendingToolCalls = readPendingReferenceToolCalls(messages);
+  if (pendingToolCalls.length > 0) return { finalText, ready: false };
+  const expectedPendingApprovalFinal =
+    options.approvalDecisionPolicy === "pending" && isExpectedPendingApprovalFinal(finalText);
+  if (
+    isWeakReferenceAnswer(finalText) &&
+    !expectedPendingApprovalFinal &&
+    !hasApprovalWaitTimeoutCloseoutEvidence(finalText)
+  ) {
+    return { finalText, ready: false };
+  }
+  const toolCallCount = dedupeReferenceToolCalls(extractToolCalls(messages)).length;
   const toolResultCount = extractToolResults(messages).length;
-  if (toolCallCount > 0 && toolResultCount > 0 && !isWeakReferenceAnswer(finalText)) {
+  if (toolCallCount === 0 || toolResultCount > 0) {
     return { finalText, ready: true };
   }
   return { finalText, ready: false };
+}
+
+export function isExpectedPendingApprovalFinal(text: string): boolean {
+  return (
+    /\b(?:approval|authorization|permission)\b[\s\S]{0,160}\b(?:pending|awaiting|confirm|deny|decision|approval)\b/i.test(
+      text
+    ) &&
+    /\b(?:not|no|never)\b[\s\S]{0,80}\b(?:submitted|executed|applied|performed|ran|side effect|mutation)\b|\b(?:submit|submission|side effect|mutation)\b[\s\S]{0,80}\b(?:not|never|no)\b[\s\S]{0,40}\b(?:submitted|executed|applied|performed|ran|occurred|affected)/i.test(
+      text
+    )
+  );
+}
+
+function isApprovalDecisionRequestFinal(text: string): boolean {
+  return (
+    /\b(?:approval|authorization|permission|approve|deny)\b/i.test(text) &&
+    /\b(?:approve|approved|yes)\b[\s\S]{0,120}\b(?:deny|denied|reject|no)\b|\b(?:deny|denied|reject|no)\b[\s\S]{0,120}\b(?:approve|approved|yes)\b/i.test(
+      text
+    ) &&
+    /\b(?:waiting|respond|response|decision|confirm|choose)\b/i.test(text)
+  );
+}
+
+function latestAssistantFollowsLatestToolResult(messages: unknown[]): boolean {
+  let latestAssistantIndex = -1;
+  let latestToolResultIndex = -1;
+  for (const [index, message] of messages.entries()) {
+    if (typeof message !== "object" || message === null) continue;
+    const record = message as { role?: unknown; toolResults?: unknown; metadata?: { toolResults?: unknown; workerPayload?: unknown; workerState?: { lastResult?: unknown } } };
+    if (readString(record.role) === "assistant" && readMessageText((record as { content?: unknown }).content) !== null) {
+      latestAssistantIndex = index;
+    }
+    if (readString(record.role) === "tool" || extractToolResults([message]).length > 0) {
+      latestToolResultIndex = index;
+    }
+  }
+  return latestAssistantIndex >= 0 && latestAssistantIndex >= latestToolResultIndex;
+}
+
+function readPendingReferenceToolCalls(messages: unknown[]): unknown[] {
+  const toolCalls = dedupeReferenceToolCalls(extractToolCalls(messages));
+  const callNameCounts = new Map<string, number>();
+  for (const call of toolCalls) {
+    const name = readReferenceToolName(call);
+    if (name) callNameCounts.set(name, (callNameCounts.get(name) ?? 0) + 1);
+  }
+  const anonymousResultNameCounts = new Map<string, number>();
+  for (const result of extractToolResults(messages)) {
+    if (readReferenceToolResultId(result)) continue;
+    const name = readReferenceToolResultName(result);
+    if (name) anonymousResultNameCounts.set(name, (anonymousResultNameCounts.get(name) ?? 0) + 1);
+  }
+  const resultKeys = new Set(
+    extractToolResults(messages)
+      .flatMap((result) => readReferenceToolResultIdentities(result))
+      .filter((key): key is string => Boolean(key))
+  );
+  return toolCalls.filter((call) => {
+    const callKeys = readReferenceToolCallIdentities(call);
+    if (callKeys.length > 0 && callKeys.some((key) => resultKeys.has(key))) return false;
+    const name = readReferenceToolName(call);
+    if (name && (callNameCounts.get(name) ?? 0) === 1 && (anonymousResultNameCounts.get(name) ?? 0) > 0) {
+      return false;
+    }
+    return callKeys.length > 0 || Boolean(name);
+  });
 }
 
 function readMessageText(value: unknown): string | null {
@@ -1865,12 +3160,49 @@ function dedupeReferenceToolCalls(toolCalls: unknown[]): unknown[] {
 }
 
 function readReferenceToolCallIdentity(value: unknown): string | null {
+  return readReferenceToolCallIdentities(value)[0] ?? null;
+}
+
+function readReferenceToolCallIdentities(value: unknown): string[] {
+  if (typeof value !== "object" || value === null) return [];
+  const record = value as Record<string, unknown>;
+  const id = readReferenceToolCallId(value);
+  const name = readReferenceToolName(value);
+  if (!id) return name ? [`name:${name}`] : [];
+  return [`${id}:${name ?? "unknown"}`, `${id}:unknown`];
+}
+
+function readReferenceToolResultIdentities(value: unknown): string[] {
+  if (typeof value !== "object" || value === null) return [];
+  const id = readReferenceToolResultId(value);
+  const name = readReferenceToolResultName(value);
+  if (!id) return name ? [`name:${name}`] : [];
+  return [`${id}:${name ?? "unknown"}`, `${id}:unknown`];
+}
+
+function readReferenceToolCallId(value: unknown): string | null {
   if (typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
-  const id = readString(record.id) ?? readString(record.toolCallId);
-  const name = readString(record.name) ?? readString(record.toolName);
-  if (!id && !name) return null;
-  return `${id ?? "unknown"}:${name ?? "unknown"}`;
+  return readString(record.id) ?? readString(record.toolCallId);
+}
+
+function readReferenceToolName(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  return readString(record.name) ?? readString(record.toolName);
+}
+
+function readReferenceToolResultId(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  return readString(record.toolCallId) ?? readString(record.tool_call_id);
+}
+
+function readReferenceToolResultName(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const metadata = typeof record.metadata === "object" && record.metadata !== null ? record.metadata as Record<string, unknown> : {};
+  return readString(record.name) ?? readString(record.toolName) ?? readString(metadata.toolName);
 }
 
 function extractBrowserEvidenceFromTranscript(messages: unknown[]): unknown[] {
@@ -1885,32 +3217,102 @@ function extractBrowserEvidenceFromTranscript(messages: unknown[]): unknown[] {
     };
     const toolName = readString(record.name) ?? readString(record.metadata?.toolName);
     if (readString(record.role) !== "tool" || toolName !== "sessions_spawn") return [];
-    const envelope = parseToolResultEnvelope(readString(record.content));
-    if (!isBrowserSessionToolEnvelope(envelope)) return [];
-    const payload = typeof envelope.payload === "object" && envelope.payload !== null ? envelope.payload as Record<string, unknown> : {};
-    const artifactIds = readArray(payload.artifactIds);
-    const screenshotPaths = readArray(payload.screenshotPaths).flatMap((value) => readString(value) ? [readString(value)!] : []);
-    const evidenceText = [
-      readString(envelope.evidence_summary),
-      readString(envelope.evidence_excerpt),
-      readString(envelope.final_content),
-      readString(envelope.result),
-    ].filter((value): value is string => Boolean(value));
-    if (artifactIds.length === 0 && screenshotPaths.length === 0 && evidenceText.length === 0) return [];
-    const status = readString(envelope.status) ?? readString(record.toolStatus) ?? "completed";
-    return [
-      {
-        source: "session_tool_result",
-        rendered: isRenderedSessionToolStatus(status) && (artifactIds.length > 0 || screenshotPaths.length > 0 || evidenceText.some(isRenderedEvidenceText)),
-        status,
-        agent_id: readString(envelope.agent_id) ?? "browser",
-        session_key: readString(envelope.session_key) ?? null,
-        artifactIds,
-        screenshotPaths,
-        evidenceText,
-      },
-    ];
+    return extractBrowserEvidenceFromSessionToolContent(readString(record.content), readString(record.toolStatus));
   });
+}
+
+function extractBrowserEvidenceFromSessionToolContent(content: string | null, fallbackStatus: string | null): unknown[] {
+  const envelope = parseToolResultEnvelope(content);
+  if (envelope) return extractBrowserEvidenceFromJsonEnvelope(envelope, fallbackStatus);
+  return extractBrowserEvidenceFromAccioTextSessionToolResult(content, fallbackStatus);
+}
+
+function extractBrowserEvidenceFromJsonEnvelope(envelope: Record<string, unknown>, fallbackStatus: string | null): unknown[] {
+  if (!isBrowserSessionToolEnvelope(envelope)) return [];
+  const payload = typeof envelope.payload === "object" && envelope.payload !== null ? envelope.payload as Record<string, unknown> : {};
+  const artifactIds = readArray(payload.artifactIds);
+  const screenshotPaths = readArray(payload.screenshotPaths).flatMap((value) => readString(value) ? [readString(value)!] : []);
+  const evidenceText = [
+    readString(envelope.evidence_summary),
+    readString(envelope.evidence_excerpt),
+    readString(envelope.final_content),
+    readString(envelope.result),
+  ].filter((value): value is string => Boolean(value));
+  if (artifactIds.length === 0 && screenshotPaths.length === 0 && evidenceText.length === 0) return [];
+  const status = readString(envelope.status) ?? fallbackStatus ?? "completed";
+  return [
+    {
+      source: "session_tool_result",
+      rendered: isRenderedSessionToolStatus(status) && (artifactIds.length > 0 || screenshotPaths.length > 0 || evidenceText.some(isRenderedEvidenceText)),
+      status,
+      agent_id: readString(envelope.agent_id) ?? "browser",
+      session_key: readString(envelope.session_key) ?? null,
+      artifactIds,
+      screenshotPaths,
+      evidenceText,
+    },
+  ];
+}
+
+function extractBrowserEvidenceFromAccioTextSessionToolResult(content: string | null, fallbackStatus: string | null): unknown[] {
+  if (!content || !isAccioTextBrowserSessionToolResult(content)) return [];
+  const status = readAccioTextHeader(content, "status") ?? fallbackStatus ?? "completed";
+  const taskId = readAccioTextHeader(content, "task_id");
+  const toolChain = readAccioTextHeader(content, "tool_chain");
+  const taskResult = readAccioTaskResult(content) ?? content;
+  const screenshotPaths = extractMarkdownImageTargets(taskResult);
+  const urls = extractHttpUrls(taskResult);
+  const evidenceText = compactEvidenceText([
+    taskResult,
+    screenshotPaths.length > 0 ? `Screenshots: ${screenshotPaths.join(", ")}` : null,
+    urls.length > 0 ? `URLs: ${urls.join(", ")}` : null,
+  ]);
+  if (screenshotPaths.length === 0 && urls.length === 0 && evidenceText.length === 0) return [];
+  return [
+    {
+      source: "session_tool_result",
+      rendered: isRenderedSessionToolStatus(status) && (screenshotPaths.length > 0 || evidenceText.some(isRenderedEvidenceText)),
+      status,
+      agent_id: "browser",
+      session_key: taskId,
+      tool_chain: toolChain,
+      screenshotPaths,
+      urls,
+      evidenceText,
+    },
+  ];
+}
+
+function isAccioTextBrowserSessionToolResult(content: string): boolean {
+  return /^tool_chain:\s*.*\bbrowser\b/im.test(content) || /^task_id:\s*.*:sub:browser:/im.test(content);
+}
+
+function readAccioTextHeader(content: string, key: string): string | null {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, "im"));
+  return readString(match?.[1]);
+}
+
+function readAccioTaskResult(content: string): string | null {
+  const match = content.match(/<task_result>\s*([\s\S]*?)\s*<\/task_result>/i);
+  return readString(match?.[1]);
+}
+
+function extractMarkdownImageTargets(text: string): string[] {
+  return Array.from(text.matchAll(/!\[[^\]]*]\(([^)\s]+)\)/g))
+    .flatMap((match) => readString(match[1]) ? [readString(match[1])!] : []);
+}
+
+function extractHttpUrls(text: string): string[] {
+  const urls = Array.from(text.matchAll(/https?:\/\/[^\s)`>"']+/g))
+    .flatMap((match) => readString(match[0]) ? [readString(match[0])!] : []);
+  return [...new Set(urls)];
+}
+
+function compactEvidenceText(values: Array<string | null>): string[] {
+  return values
+    .filter((value): value is string => Boolean(readString(value)))
+    .map((value) => value.trim().length > 4_000 ? `${value.trim().slice(0, 4_000)}...` : value.trim());
 }
 
 function isRenderedSessionToolStatus(status: string): boolean {
@@ -1938,13 +3340,19 @@ function isBrowserSessionToolEnvelope(envelope: Record<string, unknown> | null):
 }
 
 function isWeakReferenceAnswer(text: string): boolean {
-  return /暂时无法|无法返回|待确认|估算|没有足够|cannot access|unable to access|not enough information|no executable results?|could not process the task|without live network access|localhost is inaccessible|operating as|use the browser worker|close the flow with|approval (?:is )?pending|approval request (?:is )?pending|awaiting (?:operator|your) (?:decision|approval)|waiting for (?:the )?(?:operator|your) (?:decision|approval)|proceed once (?:the )?operator approves/i.test(
+  return /暂时无法|无法返回|待确认|估算|没有足够|cannot access|unable to access|unable to collect evidence|could not (?:be reached|collect|verify)|neither source page could be accessed|source pages? could not be accessed|without the source content|cannot produce (?:a|the) comparison|cannot make a recommendation based on evidence I did not collect|nothing (?:was )?verified|not enough information|no executable results?|could not process the task|without live network access|localhost is inaccessible|operating as|use the browser worker|close the flow with|approval (?:is )?pending|approval request (?:is )?pending|awaiting (?:operator|your) (?:decision|approval)|waiting for (?:the )?(?:operator|your) (?:decision|approval)|proceed once (?:the )?operator approves/i.test(
     text
   );
 }
 
 function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function resolveReferenceRepoPath(options: ReferenceCollectOptions): string {
+  if (options.referenceRepoPath) return options.referenceRepoPath;
+  if (options.referenceRuntimeRoot) return options.referenceRuntimeRoot;
+  return "unknown";
 }
 
 function readGitCommit(repoPath?: string): string {

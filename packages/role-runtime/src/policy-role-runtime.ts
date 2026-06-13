@@ -243,12 +243,15 @@ export class PolicyRoleRuntime implements RoleRuntime {
         ...(basePacket.promptAssembly ? { promptAssembly: basePacket.promptAssembly } : {}),
       };
       const nativeToolMessages = buildNativeToolMessages(input, generationMetadata, this.clock.now());
-      const message = this.buildMessage(
+      let message = this.buildMessage(
         input,
         reply.content,
         packet,
         nativeToolMessages.length > 0 ? omitToolUseTrace(generationMetadata) : generationMetadata
       );
+      if (nativeToolMessages.length > 0) {
+        message = placeFinalAnswerAfterNativeToolMessages(message, nativeToolMessages);
+      }
       const roleReplayPath = await this.runBestEffort(
         () =>
           this.recordRoleReplay(
@@ -1043,6 +1046,25 @@ function shouldReuseWorkerSession(
   }
 
   return ["running", "waiting_input", "waiting_external", "resumable"].includes(status);
+}
+
+function placeFinalAnswerAfterNativeToolMessages(
+  message: TeamMessage,
+  nativeToolMessages: TeamMessage[]
+): TeamMessage {
+  const latestNativeTimestamp = nativeToolMessages.reduce(
+    (latest, item) => Math.max(latest, item.createdAt, item.updatedAt),
+    -Infinity
+  );
+  if (!Number.isFinite(latestNativeTimestamp) || message.createdAt > latestNativeTimestamp) {
+    return message;
+  }
+  const finalTimestamp = latestNativeTimestamp + 1;
+  return {
+    ...message,
+    createdAt: finalTimestamp,
+    updatedAt: Math.max(message.updatedAt, finalTimestamp),
+  };
 }
 
 function collectApiAttempts(payload: Record<string, unknown>): ApiExecutionAttempt[] {

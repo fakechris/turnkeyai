@@ -592,7 +592,7 @@ test("inline role loop runner emits runtime progress for worker-waiting transiti
     inbox: [handoff],
     lastActiveAt: 2,
   };
-  const recordedPhases: string[] = [];
+  const recordedProgress: Array<{ phase: string; statusReason?: string }> = [];
 
   const runner = new InlineRoleLoopRunner({
     roleRunStore: {
@@ -711,14 +711,206 @@ test("inline role loop runner emits runtime progress for worker-waiting transiti
     onRoleFailure: async () => {},
     runtimeProgressRecorder: {
       async record(event) {
-        recordedPhases.push(event.phase);
+        const progress: { phase: string; statusReason?: string } = { phase: event.phase };
+        if (event.statusReason !== undefined) {
+          progress.statusReason = event.statusReason;
+        }
+        recordedProgress.push(progress);
       },
     },
   });
 
   await runner.ensureRunning(runKey);
 
-  assert.deepEqual(recordedPhases, ["started", "waiting"]);
+  assert.deepEqual(
+    recordedProgress
+      .filter((event) => !event.statusReason?.startsWith("role_loop_"))
+      .map((event) => event.phase),
+    ["started", "waiting"],
+  );
+  assert.deepEqual(
+    recordedProgress
+      .filter((event) => event.statusReason?.startsWith("role_loop_"))
+      .map((event) => event.statusReason),
+    [
+      "role_loop_dequeued",
+      "role_loop_iteration_incremented",
+      "role_loop_run_acked",
+      "role_loop_edge_acked",
+      "role_loop_hydrated",
+    ],
+  );
+});
+
+test("inline role loop runner starts activation before slow flow edge ack completes", async () => {
+  const runKey = "role:role-lead:thread:thread-edge-ack";
+  const handoff: HandoffEnvelope = {
+    taskId: "task-edge-ack",
+    flowId: "flow-edge-ack",
+    sourceMessageId: "msg-edge-ack",
+    targetRoleId: "role-lead",
+    activationType: "mention",
+    threadId: "thread-edge-ack",
+    payload: normalizeRelayPayload({
+      threadId: "thread-edge-ack",
+      relayBrief: "Use a tool quickly.",
+      recentMessages: [],
+      dispatchPolicy: {
+        allowParallel: false,
+        allowReenter: true,
+        sourceFlowMode: "serial",
+      },
+    }),
+    createdAt: 1,
+  };
+  const runState: RoleRunState = {
+    runKey,
+    threadId: "thread-edge-ack",
+    roleId: "role-lead",
+    mode: "group",
+    status: "queued",
+    iterationCount: 0,
+    maxIterations: 4,
+    inbox: [handoff],
+    lastActiveAt: 1,
+  };
+  const flow: FlowLedger = {
+    flowId: "flow-edge-ack",
+    threadId: "thread-edge-ack",
+    rootMessageId: "msg-edge-ack",
+    mode: "serial",
+    status: "running",
+    currentStageIndex: 0,
+    activeRoleIds: ["role-lead"],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    hopCount: 0,
+    maxHops: 4,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const thread: TeamThread = {
+    threadId: "thread-edge-ack",
+    teamId: "team-edge-ack",
+    teamName: "Demo",
+    leadRoleId: "role-lead",
+    roles: [{ roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  let releaseEdgeAck!: () => void;
+  const edgeAckDone = new Promise<void>((resolve) => {
+    releaseEdgeAck = resolve;
+  });
+  let activationStarted = false;
+  let edgeAckCompleted = false;
+
+  const runner = new InlineRoleLoopRunner({
+    roleRunStore: {
+      async get(key) {
+        return key === runKey ? runState : null;
+      },
+      async put(next) {
+        Object.assign(runState, next);
+      },
+      async delete() {},
+      async listByThread() {
+        return [runState];
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return flowId === flow.flowId ? flow : null;
+      },
+      async put() {},
+      async listByThread() {
+        return [flow];
+      },
+    },
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append() {},
+      async list() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as TeamMessageStore,
+    roleRunCoordinator: {
+      async getOrCreate() {
+        return runState;
+      },
+      async enqueue(_, nextHandoff) {
+        runState.inbox.push(nextHandoff);
+        return runState;
+      },
+      async dequeue() {
+        return runState.inbox.shift() ?? null;
+      },
+      async ack(_, taskId) {
+        runState.lastDequeuedTaskId = taskId;
+      },
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus(_, status) {
+        runState.status = status;
+      },
+      async incrementIteration() {
+        runState.iterationCount += 1;
+        return runState.iterationCount;
+      },
+      async fail() {
+        runState.status = "failed";
+      },
+      async finish() {
+        runState.status = "done";
+      },
+    },
+    roleRuntime: {
+      async runActivation() {
+        activationStarted = true;
+        assert.equal(edgeAckCompleted, false, "activation should not wait for flow edge ack");
+        return {
+          status: "delegated",
+        };
+      },
+    },
+    async onHandoffAck() {
+      await edgeAckDone;
+      edgeAckCompleted = true;
+    },
+    onRoleReply: async () => {},
+    onRoleFailure: async () => {},
+    runtimeProgressRecorder: {
+      async record() {},
+    },
+  });
+
+  await runner.ensureRunning(runKey);
+  assert.equal(activationStarted, true);
+  assert.equal(edgeAckCompleted, false);
+  releaseEdgeAck();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(edgeAckCompleted, true);
 });
 
 test("inline role loop runner emits long-running heartbeat ticks while a role stays active", async () => {

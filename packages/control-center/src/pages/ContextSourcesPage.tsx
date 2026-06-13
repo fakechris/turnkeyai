@@ -17,7 +17,7 @@ interface Section {
 }
 
 const SECTIONS: Section[] = [
-  { kind: "browser", title: "Browser sessions", desc: "本地 / relay 浏览器会话。raw-CDP 仍在 Runtime 内可见。" },
+  { kind: "browser", title: "Browser evidence", desc: "Pages, screenshots, and browser context used while doing work." },
   { kind: "doc", title: "Documents", desc: "本地或工作区文档 · 由 doc watcher 跟踪 diff，写入需审批。" },
   { kind: "folder", title: "Files & folders", desc: "只读视图 · 用作证据归档与导出基础。" },
   { kind: "api", title: "API clients", desc: "外部 API 调用 · 配额、最近调用与作用域。" },
@@ -73,9 +73,9 @@ export function ContextSourcesPage() {
     <div className="page">
       <div className="page-head">
         <div>
-          <h2>Context sources</h2>
+          <h2>Sources</h2>
           <div className="sub">
-            Browser · 文档 · 文件夹 · API · 桌面 — 这是 agent 看得到的一切。
+            Browser · 文档 · 文件夹 · API · 桌面 — 这是 mission 可用的证据和上下文，不是连接配置页。
           </div>
         </div>
         <div className="right">
@@ -115,7 +115,7 @@ export function ContextSourcesPage() {
       )}
       {!canAttachSource && (
         <div className="notice" role="note">
-          Context source attachment requires an operator or admin token.
+          Adding sources requires an operator or admin token.
         </div>
       )}
 

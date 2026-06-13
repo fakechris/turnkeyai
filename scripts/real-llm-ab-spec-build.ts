@@ -13,13 +13,19 @@ import type { RealLlmAbReportBuildSpec } from "./real-llm-ab-report-build";
 
 export interface RealLlmAbSpecBuildOptions {
   naturalReportPath: string;
+  naturalReportPaths?: string[];
   referenceDir: string;
   outPath: string;
   requiredSuite: RealLlmAbSpecBuildSuite;
   missingManifestOutPath?: string;
 }
 
-export type RealLlmAbSpecBuildSuite = "core" | "browser-focused" | "browser-reliability" | "full-natural";
+export type RealLlmAbSpecBuildSuite =
+  | "core"
+  | "browser-focused"
+  | "browser-reliability"
+  | "full-natural"
+  | "report-scenarios";
 
 interface NaturalMissionReportShape {
   kind?: unknown;
@@ -36,6 +42,7 @@ interface RealLlmAbReferenceCollectionManifest {
   generatedAtMs: number;
   suite: RealLlmAbSpecBuildSuite;
   naturalReportPath: string;
+  naturalReportPaths?: string[];
   referenceDir: string;
   missingEvidence: RealLlmAbReferenceCollectionMissingEvidence[];
 }
@@ -53,6 +60,7 @@ interface RealLlmAbReferenceCollectionManifestData {
   generatedAtMs: number;
   suite: RealLlmAbSpecBuildSuite;
   naturalReportPath: string;
+  naturalReportPaths?: string[];
   referenceDir: string;
   missingEvidence: RealLlmAbReferenceCollectionMissingEvidence[];
 }
@@ -71,7 +79,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
   if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "help")) {
     return { help: true };
   }
-  let naturalReportPath: string | undefined;
+  const naturalReportPaths: string[] = [];
   let referenceDir: string | undefined;
   let outPath: string | undefined;
   let requiredSuite: RealLlmAbSpecBuildSuite | undefined;
@@ -79,7 +87,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--natural-report") {
-      naturalReportPath = readValue(args, index, arg);
+      naturalReportPaths.push(readValue(args, index, arg));
       index += 1;
       continue;
     }
@@ -101,7 +109,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
       if (!isRealLlmAbSpecBuildSuite(value)) {
-        throw new Error("--suite must be one of: core, browser-focused, browser-reliability, full-natural");
+        throw new Error("--suite must be one of: core, browser-focused, browser-reliability, full-natural, report-scenarios");
       }
       requiredSuite = value;
       index += 1;
@@ -109,7 +117,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
     }
     throw new Error(`unknown argument: ${arg}`);
   }
-  if (!naturalReportPath) {
+  if (naturalReportPaths.length === 0) {
     throw new Error("missing required --natural-report <path>");
   }
   if (!referenceDir) {
@@ -122,7 +130,8 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
     throw new Error("missing required --suite core");
   }
   return {
-    naturalReportPath,
+    naturalReportPath: naturalReportPaths[0]!,
+    ...(naturalReportPaths.length > 1 ? { naturalReportPaths } : {}),
     referenceDir,
     outPath,
     requiredSuite,
@@ -140,6 +149,7 @@ export async function runRealLlmAbSpecBuildCli(args: string[]): Promise<void> {
   try {
     spec = buildRealLlmAbSpec({
       naturalReportPath: options.naturalReportPath,
+      ...(options.naturalReportPaths ? { naturalReportPaths: options.naturalReportPaths } : {}),
       referenceDir: options.referenceDir,
       outPath: options.outPath,
       suite: options.requiredSuite,
@@ -162,6 +172,9 @@ export async function runRealLlmAbSpecBuildCli(args: string[]): Promise<void> {
       generatedAtMs: spec.generatedAtMs ?? Date.now(),
       suite: options.requiredSuite,
       naturalReportPath: path.resolve(options.naturalReportPath),
+      ...(options.naturalReportPaths
+        ? { naturalReportPaths: options.naturalReportPaths.map((item) => path.resolve(item)) }
+        : {}),
       referenceDir: path.resolve(options.referenceDir),
       missingEvidence: [],
     });
@@ -174,12 +187,14 @@ export function buildRealLlmAbSpecBuildHelpText(): string {
     "TurnkeyAI real LLM A/B build-spec generator",
     "",
     "Usage:",
-    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability|full-natural> --out <path> [--missing-manifest-out <path>]",
+    "  npm run acceptance:ab:spec -- --natural-report <path> [--natural-report <path> ...] --reference-dir <dir> --suite <core|browser-focused|browser-reliability|full-natural|report-scenarios> --out <path> [--missing-manifest-out <path>]",
     "",
     "The generator selects natural same-scenario runs for the requested A/B suite.",
     "core covers the full P0 natural runtime gate; browser-focused covers external and complex browser gates.",
     "browser-reliability covers browser failure/recovery gates such as profile fallback, target/session recovery, and CDP failure closeout.",
     "full-natural covers the complete default natural mission matrix, including cancellation, approval variants, memory pressure/invalidation, and pruning.",
+    "When --natural-report is repeated, the generator finds scenarios across all reports and writes per-scenario report paths into the build spec.",
+    "report-scenarios covers exactly the natural scenarios present in the supplied report(s); it is useful for same-run A/B evidence and must not be described as core or full-natural coverage.",
     "Reference artifacts must be named <natural-scenario-id>.json in --reference-dir.",
     "--missing-manifest-out writes a reference collection manifest when required evidence is incomplete, then the command still fails.",
   ].join("\n");
@@ -187,6 +202,7 @@ export function buildRealLlmAbSpecBuildHelpText(): string {
 
 export function buildRealLlmAbSpec(input: {
   naturalReportPath: string;
+  naturalReportPaths?: readonly string[];
   referenceDir: string;
   outPath: string;
   suite: RealLlmAbSpecBuildSuite;
@@ -194,12 +210,16 @@ export function buildRealLlmAbSpec(input: {
 }): RealLlmAbReportBuildSpec {
   return buildRealLlmAbSpecForRequirements({
     ...input,
-    requirements: suiteRequirements(input.suite),
+    requirements:
+      input.suite === "report-scenarios"
+        ? reportScenarioRequirements(naturalReportPathsForInput(input))
+        : suiteRequirements(input.suite),
   });
 }
 
 export function buildRealLlmAbCoreSpec(input: {
   naturalReportPath: string;
+  naturalReportPaths?: readonly string[];
   referenceDir: string;
   outPath: string;
   generatedAtMs?: number;
@@ -209,23 +229,32 @@ export function buildRealLlmAbCoreSpec(input: {
 
 function buildRealLlmAbSpecForRequirements(input: {
   naturalReportPath: string;
+  naturalReportPaths?: readonly string[];
   referenceDir: string;
   outPath: string;
   suite: RealLlmAbSpecBuildSuite;
   requirements: readonly RealLlmAbSpecRequirement[];
   generatedAtMs?: number;
 }): RealLlmAbReportBuildSpec {
-  const naturalReportPath = path.resolve(input.naturalReportPath);
+  const naturalReportPaths = naturalReportPathsForInput(input).map((item) => path.resolve(item));
+  const naturalReportPath = naturalReportPaths[0]!;
   const referenceDir = path.resolve(input.referenceDir);
   const outDir = path.dirname(path.resolve(input.outPath));
-  const naturalReport = readJsonFile<NaturalMissionReportShape>(naturalReportPath);
-  if (naturalReport.kind !== "turnkeyai.natural-mission-e2e.report" || !Array.isArray(naturalReport.scenarios)) {
-    throw new Error("--natural-report does not point to a natural mission E2E report");
-  }
-  const naturalScenarios = new Map<string, NaturalMissionScenarioShape>();
-  for (const scenario of naturalReport.scenarios) {
-    if (isNaturalScenario(scenario)) {
-      naturalScenarios.set(readString(scenario.scenario)!, scenario);
+  const naturalScenarios = new Map<string, { scenario: NaturalMissionScenarioShape; naturalReportPath: string }>();
+  for (const currentNaturalReportPath of naturalReportPaths) {
+    const naturalReport = readJsonFile<NaturalMissionReportShape>(currentNaturalReportPath);
+    if (naturalReport.kind !== "turnkeyai.natural-mission-e2e.report" || !Array.isArray(naturalReport.scenarios)) {
+      throw new Error("--natural-report does not point to a natural mission E2E report");
+    }
+    for (const scenario of naturalReport.scenarios) {
+      if (!isNaturalScenario(scenario)) continue;
+      const scenarioId = readString(scenario.scenario)!;
+      if (!naturalScenarios.has(scenarioId)) {
+        naturalScenarios.set(scenarioId, {
+          scenario,
+          naturalReportPath: currentNaturalReportPath,
+        });
+      }
     }
   }
   const missingEvidence: string[] = [];
@@ -233,6 +262,7 @@ function buildRealLlmAbSpecForRequirements(input: {
   const scenarioInputs: Array<{
     scenario: NaturalMissionScenarioShape;
     scenarioId: string;
+    naturalReportPath: string;
     referenceArtifactPath: string;
   }> = [];
   for (const requirement of input.requirements) {
@@ -246,8 +276,8 @@ function buildRealLlmAbSpecForRequirements(input: {
       });
       continue;
     }
-    const scenarioId = readString(naturalScenario.scenario)!;
-    const prompt = readString(naturalScenario.prompt)!;
+    const scenarioId = readString(naturalScenario.scenario.scenario)!;
+    const prompt = readString(naturalScenario.scenario.prompt)!;
     const referenceArtifactPath = path.join(referenceDir, `${scenarioId}.json`);
     if (!existsSync(referenceArtifactPath)) {
       missingEvidence.push(`missing reference artifact for ${scenarioId}: ${referenceArtifactPath}`);
@@ -261,7 +291,12 @@ function buildRealLlmAbSpecForRequirements(input: {
       });
       continue;
     }
-    scenarioInputs.push({ scenario: naturalScenario, scenarioId, referenceArtifactPath });
+    scenarioInputs.push({
+      scenario: naturalScenario.scenario,
+      scenarioId,
+      naturalReportPath: naturalScenario.naturalReportPath,
+      referenceArtifactPath,
+    });
   }
   if (missingEvidence.length > 0) {
     throw new RealLlmAbSpecIncompleteEvidenceError(
@@ -270,15 +305,19 @@ function buildRealLlmAbSpecForRequirements(input: {
         generatedAtMs: input.generatedAtMs ?? Date.now(),
         suite: input.suite,
         naturalReportPath,
+        ...(naturalReportPaths.length > 1 ? { naturalReportPaths } : {}),
         referenceDir,
         missingEvidence: manifestMissingEvidence,
       }
     );
   }
-  const scenarios = scenarioInputs.map(({ scenario, scenarioId, referenceArtifactPath }) => {
+  const scenarios = scenarioInputs.map(({ scenario, scenarioId, naturalReportPath: scenarioNaturalReportPath, referenceArtifactPath }) => {
     return {
       scenarioId,
       turnkeyaiScenarioId: scenarioId,
+      ...(scenarioNaturalReportPath === naturalReportPath
+        ? {}
+        : { turnkeyaiNaturalReportPath: toRelativePath(outDir, scenarioNaturalReportPath) }),
       prompt: readString(scenario.prompt)!,
       promptPolicy: {
         naturalPrompt: true,
@@ -321,6 +360,9 @@ interface RealLlmAbSpecRequirement {
 }
 
 function suiteRequirements(suite: RealLlmAbSpecBuildSuite): readonly RealLlmAbSpecRequirement[] {
+  if (suite === "report-scenarios") {
+    throw new Error("report-scenarios requirements must be derived from --natural-report");
+  }
   if (suite === "core") return REAL_LLM_AB_CORE_SUITE_REQUIREMENTS;
   if (suite === "full-natural") {
     return DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS.map((scenarioId) => ({
@@ -340,10 +382,28 @@ function suiteRequirements(suite: RealLlmAbSpecBuildSuite): readonly RealLlmAbSp
   }));
 }
 
+function reportScenarioRequirements(naturalReportPaths: readonly string[]): readonly RealLlmAbSpecRequirement[] {
+  const scenarioIds = naturalReportPaths.flatMap((naturalReportPath) => {
+    const naturalReport = readJsonFile<NaturalMissionReportShape>(path.resolve(naturalReportPath));
+    if (naturalReport.kind !== "turnkeyai.natural-mission-e2e.report" || !Array.isArray(naturalReport.scenarios)) {
+      throw new Error("--natural-report does not point to a natural mission E2E report");
+    }
+    return naturalReport.scenarios.flatMap((scenario) => {
+      if (!isNaturalScenario(scenario)) return [];
+      const scenarioId = readString(scenario.scenario);
+      return scenarioId ? [scenarioId] : [];
+    });
+  });
+  return [...new Set(scenarioIds)].map((scenarioId) => ({
+    key: scenarioId.replace(/^natural-/, ""),
+    acceptedScenarioIds: [scenarioId],
+  }));
+}
+
 function findRequirementScenario(
-  scenarios: ReadonlyMap<string, NaturalMissionScenarioShape>,
+  scenarios: ReadonlyMap<string, { scenario: NaturalMissionScenarioShape; naturalReportPath: string }>,
   acceptedScenarioIds: readonly string[]
-): NaturalMissionScenarioShape | null {
+): { scenario: NaturalMissionScenarioShape; naturalReportPath: string } | null {
   for (const scenarioId of acceptedScenarioIds) {
     const match = scenarios.get(scenarioId);
     if (match) {
@@ -383,12 +443,19 @@ function requiresBrowser(scenarioId: string): boolean {
     scenarioId === "natural-browser-cdp-timeout-closeout" ||
     scenarioId === "natural-browser-detached-target-closeout" ||
     scenarioId === "natural-browser-attach-failed-closeout" ||
+    scenarioId === "natural-asiawalk-multi-agent" ||
     scenarioId === "natural-long-delegation"
   );
 }
 
 function isRealLlmAbSpecBuildSuite(value: string): value is RealLlmAbSpecBuildSuite {
-  return value === "core" || value === "browser-focused" || value === "browser-reliability" || value === "full-natural";
+  return (
+    value === "core" ||
+    value === "browser-focused" ||
+    value === "browser-reliability" ||
+    value === "full-natural" ||
+    value === "report-scenarios"
+  );
 }
 
 function isNaturalScenario(value: unknown): value is NaturalMissionScenarioShape {
@@ -404,11 +471,33 @@ function readJsonFile<T>(filePath: string): T {
   return JSON.parse(readFileSync(filePath, "utf8")) as T;
 }
 
+function naturalReportPathsForInput(input: {
+  naturalReportPath: string;
+  naturalReportPaths?: readonly string[];
+}): string[] {
+  const paths = input.naturalReportPaths && input.naturalReportPaths.length > 0
+    ? input.naturalReportPaths
+    : [input.naturalReportPath];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of paths) {
+    const resolved = path.resolve(item);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    out.push(item);
+  }
+  if (out.length === 0) {
+    throw new Error("missing required --natural-report <path>");
+  }
+  return out;
+}
+
 function writeMissingEvidenceManifest(input: {
   manifestOutPath: string;
   generatedAtMs: number;
   suite: RealLlmAbSpecBuildSuite;
   naturalReportPath: string;
+  naturalReportPaths?: string[];
   referenceDir: string;
   missingEvidence: RealLlmAbReferenceCollectionMissingEvidence[];
 }): void {
@@ -419,6 +508,9 @@ function writeMissingEvidenceManifest(input: {
     generatedAtMs: input.generatedAtMs,
     suite: input.suite,
     naturalReportPath: toRelativePath(manifestDir, input.naturalReportPath),
+    ...(input.naturalReportPaths
+      ? { naturalReportPaths: input.naturalReportPaths.map((item) => toRelativePath(manifestDir, item)) }
+      : {}),
     referenceDir: toRelativePath(manifestDir, input.referenceDir),
     missingEvidence: input.missingEvidence.map((item) => {
       if (item.expectedReferenceArtifactPath) {

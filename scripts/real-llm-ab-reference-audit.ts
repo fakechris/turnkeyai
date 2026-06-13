@@ -2,8 +2,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import type { RealLlmAbRequiredSuite } from "@turnkeyai/qc-runtime/real-llm-ab-acceptance";
-
 import { buildRealLlmAbSpec, RealLlmAbSpecIncompleteEvidenceError, type RealLlmAbSpecBuildSuite } from "./real-llm-ab-spec-build";
 import { buildRealLlmAbAcceptanceReport } from "./real-llm-ab-report-build";
 import { buildRealLlmAbFairnessReportForSpec } from "./real-llm-ab-fairness";
@@ -100,7 +98,7 @@ export function parseRealLlmAbReferenceAuditArgs(
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
       if (!isRealLlmAbSpecBuildSuite(value)) {
-        throw new Error("--suite must be one of: core, browser-focused, browser-reliability, full-natural");
+        throw new Error("--suite must be one of: core, browser-focused, browser-reliability, full-natural, report-scenarios");
       }
       suite = value;
       index += 1;
@@ -174,7 +172,7 @@ export function buildRealLlmAbReferenceAuditHelpText(): string {
     "TurnkeyAI real LLM A/B reference artifact audit",
     "",
     "Usage:",
-    "  npm run acceptance:ab:reference-audit -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability|full-natural> --out <path> [--tasks-out <path>] [--model-difference-note <text>] [--check]",
+    "  npm run acceptance:ab:reference-audit -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability|full-natural|report-scenarios> --out <path> [--tasks-out <path>] [--model-difference-note <text>] [--check]",
     "",
     "The audit verifies reference provenance, runtime health, adapter mapping, and same-scenario fairness before A/B reports may claim capability.",
   ].join("\n");
@@ -438,8 +436,14 @@ function resolveInputPath(filePath: string, baseDir: string): string {
   return path.isAbsolute(filePath) ? filePath : path.resolve(baseDir, filePath);
 }
 
-function isRealLlmAbSpecBuildSuite(value: string): value is RealLlmAbRequiredSuite {
-  return value === "core" || value === "browser-focused" || value === "browser-reliability" || value === "full-natural";
+function isRealLlmAbSpecBuildSuite(value: string): value is RealLlmAbSpecBuildSuite {
+  return (
+    value === "core" ||
+    value === "browser-focused" ||
+    value === "browser-reliability" ||
+    value === "full-natural" ||
+    value === "report-scenarios"
+  );
 }
 
 function readValue(args: string[], index: number, arg: string): string {

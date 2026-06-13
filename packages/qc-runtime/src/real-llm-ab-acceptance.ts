@@ -1,6 +1,7 @@
 import {
   DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
 } from "./real-llm-acceptance-defaults";
 
@@ -205,6 +206,10 @@ export const REAL_LLM_AB_CORE_SUITE_REQUIREMENTS = [
     acceptedScenarioIds: ["comparison-research", "natural-comparison-research"],
   },
   {
+    key: "provider-search-pricing",
+    acceptedScenarioIds: ["natural-provider-search-pricing"],
+  },
+  {
     key: "browser-dynamic-page",
     acceptedScenarioIds: ["browser-dynamic-page", "natural-browser-dynamic-page"],
   },
@@ -225,6 +230,10 @@ export const REAL_LLM_AB_CORE_SUITE_REQUIREMENTS = [
     acceptedScenarioIds: ["long-delegation", "natural-long-delegation"],
   },
   {
+    key: "asiawalk-multi-agent",
+    acceptedScenarioIds: ["natural-asiawalk-multi-agent"],
+  },
+  {
     key: "timeout-closeout",
     acceptedScenarioIds: [
       "timeout-closeout",
@@ -237,7 +246,13 @@ export const REAL_LLM_AB_CORE_SUITE_REQUIREMENTS = [
     key: "memory-recall",
     acceptedScenarioIds: ["memory-recall", "natural-memory-recall"],
   },
-] as const;
+] as const satisfies readonly {
+  key: string;
+  acceptedScenarioIds: readonly (
+    | (typeof DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS)[number]
+    | string
+  )[];
+}[];
 
 export const REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS =
   DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS.map((scenarioId) => ({
@@ -507,6 +522,7 @@ export function buildRealLlmAbMarkdownReport(
   const comparisons = summary.comparisons;
   const losingComparisons = comparisons.filter((comparison) => comparison.scoreDelta < 0 || comparison.rootCauseRequired);
   const rootCauseBuckets = summary.rootCauseBuckets;
+  const referenceAuditFindingLines = formatReferenceAuditFindingLines(report);
   const effectiveCapabilityClaim = validation.status === "passed" ? summary.capabilityClaim : "unproven";
   const effectiveStabilityClaim = validation.status === "passed" ? summary.stabilityClaim : "unstable";
   const reportedClaimLines =
@@ -536,6 +552,10 @@ export function buildRealLlmAbMarkdownReport(
       const scenario = report.scenarios.find((item) => item.scenarioId === comparison.scenarioId);
       return `- ${comparison.scenarioId}: ${scenario?.comparisonClassification ?? "missing classification"}`;
     }),
+    "",
+    "## Reference Audit Findings",
+    "",
+    ...(referenceAuditFindingLines.length === 0 ? ["- None."] : referenceAuditFindingLines),
     "",
     "## Where TurnkeyAI Lost Or Needs Review",
     "",
@@ -567,6 +587,26 @@ export function buildRealLlmAbMarkdownReport(
     ...(validation.failures.length === 0 ? ["- None."] : validation.failures.map((failure) => `- ${failure}`)),
     "",
   ].join("\n");
+}
+
+function formatReferenceAuditFindingLines(report: RealLlmAbAcceptanceReport): string[] {
+  const lines: string[] = [];
+  for (const scenario of report.scenarios) {
+    const findings = scenario.referenceAudit?.findings ?? [];
+    if (findings.length === 0) continue;
+    lines.push(`- ${scenario.scenarioId}: ${scenario.comparisonClassification}`);
+    for (const finding of findings.slice(0, 6)) {
+      lines.push(`  - ${formatMarkdownSingleLine(finding)}`);
+    }
+    if (findings.length > 6) {
+      lines.push(`  - ... ${findings.length - 6} more finding(s) in JSON report`);
+    }
+  }
+  return lines;
+}
+
+function formatMarkdownSingleLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 export function detectControlledPromptLanguage(prompt: string): string[] {
@@ -641,8 +681,19 @@ function deriveRootCauseBuckets(
   if (lossDimensions.includes("evidenceQuality") || lossDimensions.includes("finalAnswerUsefulness")) {
     buckets.push("final_answer_quality");
   }
-  if (scenario.requiresContinuation) buckets.push("timeout_cancel_continue");
-  if (scenario.requiresApproval) buckets.push("permission_flow");
+  if (
+    scenario.requiresApproval &&
+    (scenario.turnkeyai.approval?.requested !== true ||
+      scenario.turnkeyai.approval?.sideEffectPreventedBeforeApproval !== true)
+  ) {
+    buckets.push("permission_flow");
+  }
+  if (scenario.requiresContinuation && !hasTurnkeyAiContinuationEvidence(scenario.turnkeyai)) {
+    buckets.push("timeout_cancel_continue");
+  }
+  if (scenario.requiresTimeoutCloseout && !hasTurnkeyAiTimeoutCloseoutEvidence(scenario.turnkeyai)) {
+    buckets.push("timeout_cancel_continue");
+  }
   return buckets;
 }
 

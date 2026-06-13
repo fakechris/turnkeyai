@@ -15,6 +15,7 @@ import type {
   RelayBriefBuilder,
   RoleId,
   RoleLoopRunner,
+  RunKey,
   RoleRunCoordinator,
   RoleRunState,
   ShardGroupRecord,
@@ -22,10 +23,12 @@ import type {
   WorkerRuntime,
   RuntimeError,
   RuntimeLimits,
+  RuntimeProgressRecorder,
   ResearchShardPacket,
   ScheduledTaskRecord,
   SendTeamMessageInput,
   SummaryBuilder,
+  TeamEventBus,
   TeamMessage,
   TeamMessageSummary,
   TeamMessageStore,
@@ -65,6 +68,8 @@ interface CoordinationEngineDeps {
   workerRuntime?: Pick<WorkerRuntime, "getState">;
   replayRecorder?: ReplayStore;
   runtimeChainRecorder?: import("@turnkeyai/core-types/team").RuntimeChainRecorder;
+  runtimeProgressRecorder?: RuntimeProgressRecorder;
+  teamEventBus?: TeamEventBus;
   ingressOutboxRootDir?: string;
   ingressOutboxMaxRetries?: number;
   ingressOutboxRetryDelayMs?: number;
@@ -401,6 +406,12 @@ export class CoordinationEngine {
     if (!edgeId) {
       return;
     }
+    this.recordDispatchProgressBestEffort({
+      handoff,
+      phase: "waiting",
+      statusReason: "dispatch_handoff_queued",
+      summary: `Queued work for ${input.toRoleId}.`,
+    });
 
     if (this.dispatchOutboxShipper) {
       await this.dispatchViaOutbox({
@@ -414,8 +425,24 @@ export class CoordinationEngine {
     try {
       const runState = await this.deps.roleRunCoordinator.getOrCreate(input.thread.threadId, input.toRoleId);
       await this.deps.roleRunCoordinator.enqueue(runState.runKey, handoff);
-      await this.markHandoffDelivered(flow.flowId, edgeId);
-      await this.deps.roleLoopRunner.ensureRunning(runState.runKey);
+      this.recordDispatchProgressBestEffort({
+        handoff,
+        phase: "started",
+        statusReason: "dispatch_role_inbox_accepted",
+        summary: `Delivered work to ${input.toRoleId}.`,
+      });
+      this.signalRoleLoop(runState.runKey);
+      this.recordDispatchProgressBestEffort({
+        handoff,
+        phase: "started",
+        statusReason: "dispatch_role_loop_signaled",
+        summary: `Woke ${input.toRoleId}.`,
+      });
+      await this.recordDeliveredAfterRoleSignal({
+        flowId: flow.flowId,
+        edgeId,
+        handoff,
+      });
     } catch (error) {
       await this.markHandoffCancelled(flow.flowId, edgeId);
       await this.removeActiveRole(flow.flowId, input.toRoleId);
@@ -554,7 +581,9 @@ export class CoordinationEngine {
     intent: RoleOutcomeIntent
   ): Promise<void> {
     await this.markHandoffResponded(flow.flowId, intent.handoff.taskId);
-    await Promise.all(this.normalizeRoleOutcomeMessages(intent).map((message) => this.ensureMessagePersisted(message)));
+    const outcomeMessages = this.normalizeRoleOutcomeMessages(intent);
+    await Promise.all(outcomeMessages.map((message) => this.ensureMessagePersisted(message)));
+    this.publishMessagesPostedBestEffort(thread.threadId, outcomeMessages, "role_outcome");
     await this.refreshRoleContext(thread.threadId, intent.roleId);
     await this.markRoleCompleted(flow.flowId, intent.roleId);
     await this.markHandoffClosed(flow.flowId, intent.handoff.taskId);
@@ -574,6 +603,23 @@ export class CoordinationEngine {
         return;
       }
 
+      const recovery = await this.deps.recoveryDirector.onRoleReply({
+        thread,
+        flow: latestFlow,
+        message: intent.message,
+        mentions: [],
+      });
+
+      await this.applyRecoveryDecision(recovery, latestFlow, thread, intent.message);
+      return;
+    }
+
+    if (
+      await this.shouldSuppressMentionDispatchAfterFinalRecoveryBudget(
+        thread.threadId,
+        intent.message,
+      )
+    ) {
       const recovery = await this.deps.recoveryDirector.onRoleReply({
         thread,
         flow: latestFlow,
@@ -621,6 +667,7 @@ export class CoordinationEngine {
     error: RuntimeError
   ): Promise<void> {
     await this.ensureMessagePersisted(intent.message);
+    this.publishMessagesPostedBestEffort(thread.threadId, [intent.message], "role_failure");
     await this.markHandoffResponded(flow.flowId, intent.handoff.taskId);
     await this.markRoleFailed(flow.flowId, intent.roleId);
     await this.markHandoffClosed(flow.flowId, intent.handoff.taskId);
@@ -1443,13 +1490,15 @@ export class CoordinationEngine {
       }
 
       await this.ensureMessagePersisted(intent.message);
-      await this.refreshThreadContext(thread.threadId);
       const flow = await this.ensureFlowPersisted(intent.flow);
 
       if (intent.kind === "user-post") {
         await this.dispatchToLead(thread, flow, intent.message);
+        this.refreshThreadContextInBackground(thread.threadId);
         return;
       }
+
+      await this.refreshThreadContext(thread.threadId);
 
       const task = intent.scheduledTask;
       if (!task) {
@@ -1486,7 +1535,19 @@ export class CoordinationEngine {
   }
 
   private async deliverDispatchIntent(intent: DispatchDeliveryIntent): Promise<void> {
-    // P1.4a — `ensureRunning` is moved OUT of dispatchDeliveryMutex.
+    // P1.4a/P1.4b — dispatch delivery only persists the handoff and
+    // signals the role loop. `ensureRunning` enters a while(true) loop and
+    // awaits LLM/tool execution until the run drains; awaiting it here would
+    // hold the dispatch outbox claim for the whole role activation. Once the
+    // 30s lease expires, the background shipper can reclaim the same delivery
+    // and create duplicated wait/retry latency before the user sees progress.
+    //
+    // Therefore the lock below protects only idempotent inbox delivery and
+    // edge state. After that, the role loop is started best-effort in the
+    // background so the outbox can ack the delivery immediately.
+    //
+    // Older note: `ensureRunning` was first moved OUT of dispatchDeliveryMutex.
+    // This keeps that invariant and also moves it out of the dispatch claim.
     //
     // Background: the role loop runner's `ensureRunning` enters a `while(true)`
     // loop on first call per runKey and awaits each LLM activation; it only
@@ -1503,7 +1564,7 @@ export class CoordinationEngine {
     // performs its own state transition. The lock here only protects the
     // edge-state read-modify-write sequence; calling ensureRunning afterward
     // is a pure handoff-to-the-role-loop signal that does not need the lock.
-    const runKey = await this.dispatchDeliveryMutex.run(intent.edgeId, async () => {
+    const delivery = await this.dispatchDeliveryMutex.run(intent.edgeId, async () => {
       const edge = await this.getEdge(intent.flowId, intent.edgeId);
       if (!edge || ["cancelled", "timeout", "responded", "closed"].includes(edge.state)) {
         return null;
@@ -1515,16 +1576,109 @@ export class CoordinationEngine {
       );
       if (edge.state === "created" && !hasTrackedHandoff(runState, intent.handoff.taskId)) {
         await this.deps.roleRunCoordinator.enqueue(runState.runKey, intent.handoff);
+        this.recordDispatchProgressBestEffort({
+          handoff: intent.handoff,
+          phase: "started",
+          statusReason: "dispatch_role_inbox_accepted",
+          summary: `Delivered work to ${intent.handoff.targetRoleId}.`,
+        });
       }
-      if (edge.state === "created") {
-        await this.markHandoffDelivered(intent.flowId, intent.edgeId);
-      }
-      return runState.runKey;
+      return {
+        runKey: runState.runKey,
+        shouldRecordDelivered: edge.state === "created",
+      };
     });
 
-    if (runKey !== null) {
-      await this.deps.roleLoopRunner.ensureRunning(runKey);
+    if (delivery !== null) {
+      this.signalRoleLoop(delivery.runKey);
+      this.recordDispatchProgressBestEffort({
+        handoff: intent.handoff,
+        phase: "started",
+        statusReason: "dispatch_role_loop_signaled",
+        summary: `Woke ${intent.handoff.targetRoleId}.`,
+      });
+      if (delivery.shouldRecordDelivered) {
+        await this.recordDeliveredAfterRoleSignal(intent);
+      }
     }
+  }
+
+  private signalRoleLoop(runKey: RunKey): void {
+    void this.deps.roleLoopRunner.ensureRunning(runKey).catch((error) => {
+      console.error("role loop runner signal failed after dispatch delivery", {
+        runKey,
+        error,
+      });
+    });
+  }
+
+  private async recordDeliveredAfterRoleSignal(intent: DispatchDeliveryIntent): Promise<void> {
+    await this.markHandoffDelivered(intent.flowId, intent.edgeId);
+  }
+
+  private recordDispatchProgressBestEffort(input: {
+    handoff: HandoffEnvelope;
+    phase: "waiting" | "started";
+    statusReason: "dispatch_handoff_queued" | "dispatch_role_inbox_accepted" | "dispatch_role_loop_signaled";
+    summary: string;
+  }): void {
+    const recorder = this.deps.runtimeProgressRecorder;
+    if (!recorder) {
+      return;
+    }
+    const recordedAt = Date.now();
+    void recorder.record({
+      progressId: `progress:dispatch:${input.handoff.taskId}:${input.statusReason}:${recordedAt}`,
+      threadId: input.handoff.threadId,
+      chainId: `flow:${input.handoff.flowId}`,
+      spanId: `dispatch:${input.handoff.taskId}`,
+      subjectKind: "dispatch",
+      subjectId: input.handoff.taskId,
+      phase: input.phase,
+      progressKind: "boundary",
+      heartbeatSource: "control_path",
+      continuityState: "alive",
+      summary: input.summary,
+      recordedAt,
+      flowId: input.handoff.flowId,
+      taskId: input.handoff.taskId,
+      roleId: input.handoff.targetRoleId,
+      statusReason: input.statusReason,
+    }).catch((error) => {
+      console.error("dispatch progress recording failed", {
+        flowId: input.handoff.flowId,
+        taskId: input.handoff.taskId,
+        roleId: input.handoff.targetRoleId,
+        statusReason: input.statusReason,
+        error,
+      });
+    });
+  }
+
+  private publishMessagesPostedBestEffort(threadId: string, messages: TeamMessage[], route: string): void {
+    const eventBus = this.deps.teamEventBus;
+    if (!eventBus || messages.length === 0) {
+      return;
+    }
+    const now = Date.now();
+    void eventBus.publish({
+      eventId: `message-posted:${threadId}:${now}:${messages.at(-1)?.id ?? "unknown"}`,
+      threadId,
+      kind: "message.posted",
+      createdAt: now,
+      payload: {
+        route,
+        messageIds: messages.map((message) => message.id),
+        messageCount: messages.length,
+      },
+    }).catch((error) => {
+      console.error("message.posted event publish failed after role outcome persistence", {
+        threadId,
+        route,
+        messageIds: messages.map((message) => message.id),
+        error,
+      });
+    });
   }
 
   private async abandonDispatchIntent(intent: DispatchDeliveryIntent): Promise<void> {
@@ -1559,6 +1713,19 @@ export class CoordinationEngine {
 
   private async ensureMessagePersisted(message: TeamMessage): Promise<void> {
     const store = this.deps.teamMessageStore;
+    if (typeof store.appendIfAbsent === "function") {
+      const result = await store.appendIfAbsent(message);
+      if (result.threadIdConflict) {
+        throw new Error(
+          `message thread mismatch for ${message.id}: existing=${result.threadIdConflict.existing} requested=${result.threadIdConflict.requested}`
+        );
+      }
+      if (result.existing && shouldRefreshExistingNativeToolMessage(result.existing, message)) {
+        await store.append(message);
+      }
+      return;
+    }
+
     const existing = await store.get(message.id);
     if (existing) {
       if (existing.threadId !== message.threadId) {
@@ -1566,16 +1733,6 @@ export class CoordinationEngine {
       }
       if (shouldRefreshExistingNativeToolMessage(existing, message)) {
         await store.append(message);
-      }
-      return;
-    }
-
-    if (typeof store.appendIfAbsent === "function") {
-      const result = await store.appendIfAbsent(message);
-      if (result.threadIdConflict) {
-        throw new Error(
-          `message thread mismatch for ${message.id}: existing=${result.threadIdConflict.existing} requested=${result.threadIdConflict.requested}`
-        );
       }
       return;
     }
@@ -1806,6 +1963,20 @@ export class CoordinationEngine {
     }
   }
 
+  private async shouldSuppressMentionDispatchAfterFinalRecoveryBudget(
+    threadId: string,
+    message: TeamMessage
+  ): Promise<boolean> {
+    if (!/@\{[^}]+}/.test(message.content)) {
+      return false;
+    }
+    const messages = await this.deps.teamMessageStore.list(threadId, 80);
+    return isFinalRecoveryBudgetExhausted([
+      ...messages.map((item) => item.content),
+      message.content,
+    ]);
+  }
+
   private async putFlow(flow: FlowLedger): Promise<void> {
     await this.deps.flowLedgerStore.put(flow, { expectedVersion: flow.version ?? 0 });
     await this.recordRuntimeChainBestEffort("syncFlowStatus", flow, () => this.deps.runtimeChainRecorder?.syncFlowStatus(flow));
@@ -1816,16 +1987,20 @@ export class CoordinationEngine {
     flow: Pick<FlowLedger, "flowId" | "threadId">,
     work: () => Promise<void> | undefined
   ): Promise<void> {
-    try {
-      await work();
-    } catch (error) {
-      console.error("runtime chain recorder failed", {
-        method,
-        flowId: flow.flowId,
-        threadId: flow.threadId,
-        error,
+    // Runtime-chain recording is observability, not an execution precondition.
+    // Keep it out of flow locks and dispatch/role critical paths; if it falls
+    // behind, the core flow state is still persisted and the recorder can catch
+    // up asynchronously.
+    void Promise.resolve()
+      .then(() => work())
+      .catch((error) => {
+        console.error("runtime chain recorder failed", {
+          method,
+          flowId: flow.flowId,
+          threadId: flow.threadId,
+          error,
+        });
       });
-    }
   }
 
   private async withFlowLock<T>(flowId: string, work: () => Promise<T>): Promise<T> {
@@ -1842,6 +2017,14 @@ export class CoordinationEngine {
     } catch (error) {
       console.error("context state refresh failed for user message", { threadId, error });
     }
+  }
+
+  private refreshThreadContextInBackground(threadId: string): void {
+    if (!this.deps.contextStateMaintainer) {
+      return;
+    }
+
+    void this.refreshThreadContext(threadId);
   }
 
   private async refreshRoleContext(threadId: string, roleId: RoleId): Promise<void> {
@@ -1955,6 +2138,69 @@ function buildHandoffEdge(flowId: string, handoff: HandoffEnvelope): FlowLedger[
   }
 
   return edge;
+}
+
+function isFinalRecoveryBudgetExhausted(contents: string[]): boolean {
+  const context = contents.join("\n");
+  const marker = findLastFinalRecoveryBudgetMarker(context);
+  if (!marker) {
+    return false;
+  }
+  const toolCalls = countRenderedToolCalls(context.slice(marker.index));
+  return toolCalls >= marker.maxToolCalls;
+}
+
+function findLastFinalRecoveryBudgetMarker(
+  context: string
+): { index: number; maxToolCalls: number } | null {
+  let marker: { index: number; maxToolCalls: number } | null = null;
+  const pattern =
+    /Automatic recovery attempt\s+(\d+)\s+of\s+(\d+)[\s\S]{0,600}?at most\s+([a-z]+|\d+)\s+additional tool calls total/gi;
+  for (const match of context.matchAll(pattern)) {
+    const currentAttempt = Number(match[1]);
+    const maxAttempt = Number(match[2]);
+    const maxToolCalls = parseSmallIntegerWord(match[3] ?? "");
+    if (
+      Number.isFinite(currentAttempt) &&
+      Number.isFinite(maxAttempt) &&
+      currentAttempt >= maxAttempt &&
+      Number.isFinite(maxToolCalls) &&
+      maxToolCalls > 0
+    ) {
+      marker = {
+        index: match.index ?? 0,
+        maxToolCalls,
+      };
+    }
+  }
+  return marker;
+}
+
+function countRenderedToolCalls(context: string): number {
+  return Array.from(
+    context.matchAll(
+      /(?:^|[\n\r])\s*Calling\s+[A-Za-z_][\w-]*\s*\(/g,
+    ),
+  ).length;
+}
+
+function parseSmallIntegerWord(value: string): number {
+  const normalized = value.trim().toLowerCase();
+  const numeric = Number(normalized);
+  if (Number.isFinite(numeric)) return Math.floor(numeric);
+  const words: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+  };
+  return words[normalized] ?? Number.NaN;
 }
 
 function buildFanOutMergeContext(group: ShardGroupRecord): FanOutMergeContext {

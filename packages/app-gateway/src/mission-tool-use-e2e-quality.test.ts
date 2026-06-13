@@ -116,6 +116,26 @@ test("natural mission weak answer gate allows synthesized answers that mention d
   assert.ok(!signals.includes("delegation-only closeout"));
 });
 
+test("natural mission weak answer gate allows synthesized browser failure closeouts with delegated evidence excerpts", () => {
+  const signals = findWeakAnswerSignals(
+    [
+      "**Closeout: Natural browser unavailable**",
+      "**What was verified**",
+      "- The browser sub-agent runtime is non-functional: CDP endpoint returns ECONNREFUSED across 5 attempts.",
+      "- Dashboard content at `http://127.0.0.1:65104/ops-dashboard` is not verified.",
+      "**What remains unverified**",
+      "- All rendered dashboard elements, metrics, tables, and JavaScript-rendered content.",
+      "**Next action for operator**",
+      "Restart or repair the browser sub-agent runtime, then retry the dashboard review.",
+      "Browser failure buckets: browser_cdp_unavailable=5.",
+      "## Task Failure - Browser Runtime Unavailable",
+      "**Delegated task:** Navigate to the dashboard and capture a full screenshot.",
+    ].join("\n")
+  );
+
+  assert.ok(!signals.includes("delegation-only closeout"));
+});
+
 test("natural mission weak answer gate allows source-bounded inability to estimate", () => {
   const signals = findWeakAnswerSignals(
     [

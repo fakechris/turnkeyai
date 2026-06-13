@@ -95,6 +95,39 @@ test("session tool result protocol persists browser page evidence summary", () =
   assert.match(parsed?.evidence_summary ?? "", /Approval Gate Fixture/);
 });
 
+test("session tool result protocol preserves multi-source page evidence summaries", () => {
+  const result = buildSessionToolResult({
+    taskId: "task-1",
+    sessionKey: "worker:explore:task-1",
+    agentId: "explore",
+    missingResultMessage: "missing",
+    result: {
+      workerType: "explore",
+      status: "completed",
+      summary: "Explore worker fetched 2 of 2 sources.",
+      payload: {
+        pages: [
+          {
+            finalUrl: "http://127.0.0.1:65210/vendor-alpha",
+            title: "Vendor Alpha Evidence",
+            textExcerpt: "Pricing: $19 per seat. Strength: browser automation.",
+          },
+          {
+            finalUrl: "http://127.0.0.1:65210/vendor-beta",
+            title: "Vendor Beta Evidence",
+            textExcerpt: "Pricing: $29 per workspace. Strength: approval workflow.",
+          },
+        ],
+      },
+    },
+  });
+
+  assert.match(result.evidence_summary ?? "", /vendor-alpha/);
+  assert.match(result.evidence_summary ?? "", /\$19 per seat/);
+  assert.match(result.evidence_summary ?? "", /vendor-beta/);
+  assert.match(result.evidence_summary ?? "", /\$29 per workspace/);
+});
+
 test("session tool result protocol lifts browser profile fallback into evidence summary", () => {
   const result = buildSessionToolResult({
     taskId: "task-1",

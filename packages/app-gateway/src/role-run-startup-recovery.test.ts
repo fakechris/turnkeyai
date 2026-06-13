@@ -278,6 +278,86 @@ test("role run startup recovery restarts queued running and resuming role runs",
   });
 });
 
+test("role run startup recovery signals role loops without blocking daemon startup", async () => {
+  const threads: TeamThread[] = [
+    {
+      threadId: "thread-1",
+      teamId: "team-1",
+      teamName: "Demo",
+      leadRoleId: "lead",
+      roles: [],
+      participantLinks: [],
+      metadataVersion: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ];
+  const run: RoleRunState = {
+    runKey: "run:running",
+    threadId: "thread-1",
+    roleId: "role-1",
+    mode: "group",
+    status: "running",
+    iterationCount: 1,
+    maxIterations: 4,
+    inbox: [
+      buildHandoff({
+        taskId: "task-running",
+        flowId: "flow-1",
+        sourceMessageId: "msg-1",
+        targetRoleId: "role-1",
+        threadId: "thread-1",
+        relayBrief: "continue",
+        createdAt: 10,
+      }),
+    ],
+    lastActiveAt: 10,
+  };
+  const signalledRunKeys: string[] = [];
+  const result = await recoverRoleRunsOnStartup({
+    teamThreadStore: {
+      async list() {
+        return threads;
+      },
+    } as any,
+    flowLedgerStore: {
+      async get(flowId: string) {
+        return { flowId, threadId: "thread-1" };
+      },
+    } as any,
+    roleRunStore: {
+      async listAll() {
+        return [run];
+      },
+      async listByThread() {
+        return [run];
+      },
+    } as any,
+    roleLoopRunner: {
+      async ensureRunning(runKey: string) {
+        signalledRunKeys.push(runKey);
+        await new Promise(() => {});
+      },
+    } as any,
+  });
+
+  assert.deepEqual(signalledRunKeys, ["run:running"]);
+  assert.deepEqual(result, {
+    totalRoleRuns: 1,
+    restartedQueuedRuns: 0,
+    restartedRunningRuns: 1,
+    restartedResumingRuns: 0,
+    restartedRunKeys: ["run:running"],
+    coldRestartRuns: 1,
+    coldRestartRunKeys: ["run:running"],
+    orphanedThreadRuns: 0,
+    failedOrphanedRuns: 0,
+    failedRunKeys: [],
+    clearedInvalidHandoffs: 0,
+    queuedRunsIdled: 0,
+  });
+});
+
 test("role run startup recovery retries orphaned run failure after a version conflict", async () => {
   const threads: TeamThread[] = [
     {

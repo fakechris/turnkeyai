@@ -110,7 +110,7 @@ export function OnboardingPage() {
         <div>
           <h2>First run</h2>
           <div className="sub">
-            Connect the local daemon, verify the browser bridge, then start a mission.
+            Make sure missions can run, then start real work.
           </div>
         </div>
         <div className="row" style={{ gap: 8 }}>
@@ -154,21 +154,21 @@ export function OnboardingPage() {
       <div className="onboarding-grid">
         <OnboardingStep
           n="1"
-          icon="runtime"
-          title="Daemon and token"
-          detail="The page is already authenticated when opened through the app launcher. Runtime shows setup health, logs, and stalled work."
-          action="Open Runtime"
+          icon="settings"
+          title="Models and policy"
+          detail="Check the model route that missions will use. Policy and local details are kept here for operators."
+          action="Open Models"
           onAction={() => {
-            setRoute("runtime");
-            window.location.hash = "#/runtime";
+            setRoute("settings");
+            window.location.hash = "#/settings";
           }}
         />
         <OnboardingStep
           n="2"
-          icon="browser"
-          title="Browser bridge"
-          detail="Use Settings and Agent Connect to verify transport mode, bridge status, and tool capability exposure before asking an agent to browse."
-          action="Open Agent Connect"
+          icon="connect"
+          title="How you will use it"
+          detail="Start in this app, or add another AI app or browser access only when your workflow needs it."
+          action="Open Start"
           onAction={() => {
             setRoute("agent-connect");
             window.location.hash = "#/agent-connect";
@@ -179,7 +179,7 @@ export function OnboardingPage() {
           icon="missions"
           title="Run a real mission"
           detail="Create a mission, watch the trace, inspect evidence, and use follow-up when the quality gate needs attention."
-          action="Open Missions"
+          action="Open Tasks"
           onAction={() => {
             setRoute("missions");
             window.location.hash = "#/missions";
@@ -223,7 +223,7 @@ export function OnboardingPage() {
             disabled={!canWrite || busy !== null}
             onClick={() => void markStep("reviewed-runtime")}
           >
-            Mark runtime reviewed
+            Mark diagnostics reviewed
           </button>
           <button
             type="button"
@@ -231,7 +231,7 @@ export function OnboardingPage() {
             disabled={!canWrite || busy !== null}
             onClick={() => void markStep("reviewed-agent-connect")}
           >
-            Mark bridge reviewed
+            Mark setup reviewed
           </button>
         </div>
       </section>
@@ -276,13 +276,13 @@ function ReadinessCard({
       </div>
       <div className="onboarding-readiness-actions">
         <button type="button" className="btn" onClick={onOpenRuntime}>
-          <Icon name="runtime" size={13} /> Runtime
+          <Icon name="runtime" size={13} /> Diagnostics
         </button>
         <button type="button" className="btn" onClick={onOpenSettings}>
           <Icon name="settings" size={13} /> Models
         </button>
         <button type="button" className="btn" onClick={onOpenAgentConnect}>
-          <Icon name="connect" size={13} /> Bridge
+          <Icon name="play" size={13} /> Start
         </button>
       </div>
     </section>
@@ -298,7 +298,7 @@ function OnboardingStep({
   onAction,
 }: {
   n: string;
-  icon: "runtime" | "browser" | "missions";
+  icon: "runtime" | "browser" | "missions" | "connect" | "settings";
   title: string;
   detail: string;
   action: string;
@@ -347,8 +347,8 @@ function daemonReadiness(live: OnboardingLive): ReadinessItem {
     state: authMode === "disabled" ? "warn" : "ok",
     detail: `v${diagnostics.daemon.version} on port ${diagnostics.daemon.port} · auth ${authMode}`,
     action: diagnostics.readiness?.status === "error"
-      ? "Open Runtime and clear blocking setup checks."
-      : "Runtime health is live.",
+      ? "Open Diagnostics and clear blocking setup checks."
+      : "Local service health is live.",
     command: "npm run daemon:status",
   };
 }
@@ -371,7 +371,7 @@ function modelReadiness(models: ModelsReport | null): ReadinessItem {
       label: "Default model route",
       state: "error",
       detail: selection?.error ?? "No default model selection is available.",
-      action: "Open Settings and fix the model catalog/default chain.",
+      action: "Open Models and fix the default route.",
       command: "npm run acceptance:real -- --model-catalog models.local.json",
     };
   }
@@ -401,10 +401,10 @@ export function bridgeReadiness(status: BridgeStatus | null): ReadinessItem {
   if (!status) {
     return {
       id: "bridge",
-      label: "Browser bridge route",
+      label: "Start path",
       state: "checking",
       detail: "Waiting for /bridge/status.",
-      action: "Open Agent Connect to inspect the command endpoint and available tools.",
+      action: "Open Start to begin work; use the advanced section only if you need another AI app or browser access.",
     };
   }
   const health = status.transport.health;
@@ -421,16 +421,16 @@ export function bridgeReadiness(status: BridgeStatus | null): ReadinessItem {
         : "warn";
   return {
     id: "bridge",
-    label: "Browser bridge route",
+    label: "Start path",
     state,
     detail: `${status.transport.mode} · ${status.transport.label} · ${healthLabel} · ${status.sessions.count} session(s)`,
     action: !status.ok
-      ? "Bridge route is not healthy; open Agent Connect for transport diagnostics."
+      ? "Start is not healthy; open Start first, then Diagnostics if it still fails."
       : health?.healthy === false
       ? "Transport needs attention before browser-backed missions."
       : status.expertLane.available
-      ? "Direct browser expert lane is available."
-      : status.expertLane.reason ?? "Bridge is reachable; expert lane is not available on this transport.",
+      ? "Browser access is available."
+      : status.expertLane.reason ?? "Start is reachable; browser access is not available on this transport.",
     command: status.directCdp.endpoint ?? "turnkeyai bridge status",
   };
 }
