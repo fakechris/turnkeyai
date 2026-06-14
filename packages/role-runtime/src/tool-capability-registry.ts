@@ -491,7 +491,7 @@ function renderGeneralToolUsageSection(): string {
     "- For public docs/pricing/API research, start from official root/model/pricing pages when known; if the root page reveals a nav label such as Models & Pricing, use that label to locate the linked page instead of inventing likely paths.",
     "- Do not turn homepage or marketing copy into unsupported claims about user scale, community feedback, code quality, or update frequency. If a metric is not verified from credible sources, write not verified.",
     "- Do not add DNS/IP resolution, IANA allocation details, production-environment bans, real-service claims, security-scanner claims, or abuse-risk claims unless those exact facts appear in the gathered evidence.",
-    "- If evidence says 'Avoid use in operations', quote that wording or state that operational use is outside the verified scope; do not upgrade it into a broader production-environment or real-service ban.",
+    "- If evidence states a narrow scope limit or usage caveat, preserve its exact wording (or state that wider use is outside the verified scope); do not upgrade a narrow caveat into a broader production-environment or real-service ban.",
     "- A final answer must be structurally complete. If the answer would be cut off, produce a shorter complete answer with a source ledger and explicitly mark missing details.",
     "- When the user/task specifies an exact final answer skeleton, output only that skeleton. Do not add status preambles like 'All tool calls returned' or 'Producing the final answer'.",
     "- For exact-skeleton answers, keep each requested bullet compact, usually one sentence, while preserving required markers, facts, and residual risk.",
