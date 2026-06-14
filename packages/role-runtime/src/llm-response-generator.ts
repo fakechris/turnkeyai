@@ -1656,7 +1656,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             "Use the delegated session evidence below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
             "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
             "Do not add DNS/IP resolution, IANA allocation details, production-environment bans, real-service claims, security-scanner claims, or abuse-risk claims unless those exact facts are stated in this source content.",
-            "If the source says 'Avoid use in operations', quote that wording or state that operational use is outside the verified scope; do not upgrade it into a broader production-environment or real-service ban.",
+            "If the source states a narrow scope limit or usage caveat, preserve its exact wording (or state that wider use is outside the verified scope); do not upgrade a narrow caveat into a broader production-environment or real-service ban.",
             ...buildCompletedBrowserEvidenceDimensionCarryForwardLines({
               taskPrompt: input.packet.taskPrompt,
               finalContents: completedSession.finalContents,
@@ -5109,12 +5109,16 @@ function extractSourceBoundedEvidenceSnippets(text: string): string {
 
 function looksLikeSourceBoundedEvidenceLine(line: string): boolean {
   return (
-    /This domain is for use in documentation examples without needing permission/i.test(line) ||
-    /Avoid use in operations/i.test(line) ||
+    // Scope/usage caveats a source may state (kept general — no fixture
+    // literals): e.g. "for documentation use", "avoid use in operations",
+    // "not for production use", "without needing permission".
+    /\b(?:avoid use in\b|not (?:for|intended for) (?:production|operational|operations)|for (?:documentation|illustrative|example|testing) (?:use|purposes?)|without needing permission|outside the verified scope|scope[- ]limited)\b/i.test(
+      line,
+    ) ||
     /\b(?:Evidence|source|observed|verified|final_url|status_code|title)\b/i.test(
       line,
     ) ||
-    /(?:证据|来源|已验证|关键原文|最终 URL|页面 title|取证方式)/i.test(line)
+    /(?:证据|来源|已验证|关键原文|最终 URL|页面 title|取证方式|仅供(?:文档|示例|测试)|请勿用于(?:生产|运营|实际))/i.test(line)
   );
 }
 
@@ -7219,7 +7223,7 @@ function buildWeakEvidenceSynthesisRepairPrompt(): string {
     "For facts directly present in the evidence, say observed or verified instead of maybe, probably, estimate, estimated, TBD, to be confirmed, pending confirmation, or similar placeholder wording.",
     "For facts absent from the evidence, write not verified and name the missing dimension without guessing.",
     "Remove source-external technical or policy extrapolations such as DNS/IP resolution details, production-environment bans, real-service claims, user-scale claims, or operational restrictions unless those exact facts appear in the gathered evidence.",
-    "If the evidence says 'Avoid use in operations', preserve that wording or say operational use is outside the verified scope; do not convert it into a broader production-environment or real-service ban.",
+    "If the evidence states a narrow scope limit or usage caveat, preserve its exact wording (or say wider use is outside the verified scope); do not convert a narrow caveat into a broader production-environment or real-service ban.",
     "Preserve requested dimension labels from the user when evidence supports them, such as pricing, strength, risk, owner, and next action.",
     "Do not rename a requested risk dimension into only generic weaknesses, open questions, or uncertainty when risk evidence is present.",
     "Keep residual risk visible, but do not downgrade verified source facts into estimates.",

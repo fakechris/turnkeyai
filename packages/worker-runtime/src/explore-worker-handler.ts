@@ -928,13 +928,12 @@ function buildExploreContinuationSynthesis(
     ? evidence.findings.slice(0, 10).map((finding) => `- ${finding}`)
     : ["- No structured finding lines were available; use the page excerpts below as the evidence boundary."];
   const content = [
-    "Decision note from the existing Vendor Alpha research thread:",
-    "Recommendation: Vendor Alpha remains a reasonable near-term workbench candidate when the product lead values browser automation evidence and visible source-backed progress.",
+    "Reused evidence from the existing research session (no new sources fetched this turn):",
     "Evidence used:",
     ...findingLines,
     "Source boundary:",
     ...sourceBlocks,
-    "Residual risk: keep integration/API catalog depth and governance fit as follow-up checks; do not treat those gaps as verified by this source alone.",
+    "Residual risk: this synthesis reuses only the already-captured sources above; treat any dimension not present in that evidence as unverified by this session, and draw the decision from the evidence rather than from prior assumptions.",
   ].join("\n");
 
   return {
