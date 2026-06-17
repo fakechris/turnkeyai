@@ -30,6 +30,52 @@ const SLOT_LABELS: Record<MissionGoalSlot, string> = {
   final_conclusion: "final conclusion",
 };
 
+/**
+ * True when the mission EXPLICITLY permits an honest partial/blocked outcome —
+ * e.g. "mark the conclusion as blocked/partial", "write 'not verified'",
+ * "do not dress it up as complete", and their Chinese equivalents. When a
+ * mission authorizes this, an honest answer that surfaces unverified/missing
+ * items is the REQUESTED outcome, not a goal-slot failure: the completion
+ * evaluator must let it settle to a tagged non-success terminal instead of
+ * looping recovery. (Without this, the slot guard penalizes the agent for
+ * obeying the instruction to write "未验证" / "not verified".)
+ *
+ * Bilingual on purpose — the prior implementation only recognized an
+ * English "bounded attempt/timeout" framing and missed Chinese tasks.
+ */
+export function missionAuthorizesPartialCloseout(goalText: string): boolean {
+  const authorizesPartial =
+    /\b(?:blocked\s*\/\s*partial|partial\s*\/\s*blocked)\b/i.test(goalText) ||
+    /\b(?:mark|set|label|report|return|leave|treat|flag)\b[\s\S]{0,48}\b(?:as\s+)?(?:blocked|partial)\b/i.test(goalText) ||
+    /\b(?:conclusion|status|result|mission)\b[\s\S]{0,32}\b(?:blocked|partial)\b/i.test(goalText) ||
+    /(?:标记?|设|记)\s*(?:为|成)?[\s\S]{0,12}(?:blocked|partial|阻塞|部分(?:完成|验证)?|未完成)/u.test(goalText) ||
+    /(?:结论|状态|结果|mission)[\s\S]{0,16}(?:标|设|记|定)\s*(?:为|成)?[\s\S]{0,12}(?:blocked|partial|阻塞|部分|未完成)/u.test(goalText);
+  const requiresUnverifiedLabel =
+    /\b(?:write|mark|label|state|note)\b[\s\S]{0,48}["'“]?\s*(?:not verified|unverified)\b/i.test(goalText) ||
+    /(?:必须|需要?|应当?|请)[\s\S]{0,24}(?:写|标注?|标记|注明|说明)[\s\S]{0,12}["'“]?\s*(?:未验证|未确认|无法验证)/u.test(goalText) ||
+    /\b(?:do\s*not|don['’]t)\b[\s\S]{0,40}\b(?:dress(?:ed)?\s*up|fake|pretend|present)\b[\s\S]{0,24}\b(?:complete|completion|done)\b/i.test(goalText) ||
+    /不要[\s\S]{0,16}(?:包装成完成|当作完成|伪装成完成|算作完成|当成完成|说成完成)/u.test(goalText);
+  return authorizesPartial || requiresUnverifiedLabel;
+}
+
+/**
+ * True when an answer honestly reports a partial/blocked outcome: it both
+ * declares blocked/partial AND surfaces what is unverified/missing. Requiring
+ * BOTH halves keeps a fabricated "done" from passing — a fake completion does
+ * not declare itself blocked/partial. Only meaningful in combination with
+ * missionAuthorizesPartialCloseout().
+ */
+export function looksLikeHonestPartialBlockedAnswer(finalText: string): boolean {
+  const declaresPartialOrBlocked =
+    /\b(?:blocked|partial|partially verified|partially complete|incomplete)\b/i.test(finalText) ||
+    /(?:部分(?:验证|完成)?|未完成|阻塞|未全部验证)/u.test(finalText);
+  const surfacesGaps =
+    /\b(?:not verified|unverified|could not verify|unable to verify|remains? unverified|not confirmed|still missing|to be verified|missing)\b/i.test(
+      finalText
+    ) || /(?:未验证|未确认|无法验证|无法确认|待验证|仍?缺(?:失|口)?|尚未验证)/u.test(finalText);
+  return declaresPartialOrBlocked && surfacesGaps;
+}
+
 export function evaluateMissionGoalSlotCoverage(input: {
   goalText: string;
   finalText: string;

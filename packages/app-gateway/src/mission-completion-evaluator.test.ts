@@ -3528,3 +3528,123 @@ describe("MissionCompletionEvaluator", () => {
     });
   });
 });
+
+describe("mission-authorized partial/blocked closeout", () => {
+  // Regression for MSN-0113: a mission that explicitly asks for a
+  // blocked/partial outcome ("把结论标为 blocked/partial，必须写未验证") and
+  // gets an HONEST partial answer must settle to a tagged non-success
+  // terminal — NOT loop goal_slots_unverified recovery, NOT hang in working,
+  // NOT be dressed up as plain done.
+  const partialAuthorizingMission: Mission = {
+    ...mission,
+    status: "working",
+    progress: 0,
+    desc: [
+      "调研 DeepSeek V4 Flash API 的可用 provider、是否支持 web search、以及价格。",
+      "如果价格或 search 支持没有被来源明确验证，必须写“未验证”，并把 mission 结论标为 blocked/partial，不要包装成完成。",
+    ].join("\n"),
+  };
+
+  const honestPartialAnswer = (createdAt: number): TeamMessage => ({
+    ...message("a-final", "assistant", createdAt),
+    roleId: "role-lead",
+    name: "Lead",
+    content: [
+      "**结论：blocked / partial**",
+      "| provider | 是否支持 DeepSeek V4 Flash | 输入价格 | 证据 URL |",
+      "| OpenRouter | 已确认 | 未验证 | https://openrouter.ai/... |",
+      "搜索参数支持：未验证（官方文档 404，未能确认）。",
+      "缺口：价格与 search 支持尚未验证；下一步应核对 DeepSeek 官方定价页。",
+    ].join("\n"),
+  });
+
+  it("settles an honest authorized partial answer to a tagged terminal (no recovery)", () => {
+    const decision = evaluateMissionCompletion({
+      mission: partialAuthorizingMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: partialAuthorizingMission.desc },
+        honestPartialAnswer(100),
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "final_answer");
+      assert.equal(decision.patch.status, "done");
+      assert.equal(decision.patch.closeout, "bounded_failure");
+      assert.notEqual(decision.patch.progress, 1); // not dressed up as complete
+      assert.equal(decision.recovery, undefined); // no recovery loop
+    }
+  });
+
+  it("recovers the already-stuck working mission instead of leaving it hung", () => {
+    // The reproduction left the mission in working/progress 0 after recovery
+    // exhaustion. A subsequent tick must converge it, not hang.
+    const decision = evaluateMissionCompletion({
+      mission: { ...partialAuthorizingMission, status: "working", progress: 0, blockers: 0 },
+      messages: [
+        { ...message("u-1", "user", 50), content: partialAuthorizingMission.desc },
+        honestPartialAnswer(100),
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.patch.status, "done");
+      assert.equal(decision.patch.closeout, "bounded_failure");
+    }
+  });
+
+  it("still recovers a NON-authorizing mission whose answer leaves slots unverified", () => {
+    // Guard against over-correction: a mission that did NOT authorize partial
+    // must still be caught by the goal-slot guard.
+    const strictMission: Mission = {
+      ...mission,
+      status: "working",
+      desc: "Research the pricing of the Acme API and give the exact input/output price.",
+    };
+    const decision = evaluateMissionCompletion({
+      mission: strictMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: strictMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Pricing is not verified; I could not load the pricing page.",
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "incomplete_final_answer");
+      assert.equal(decision.recovery?.kind, "incomplete_final_answer");
+    }
+  });
+
+  it("does not treat a fabricated 'done' as an authorized partial (no blocked/partial declared)", () => {
+    const decision = evaluateMissionCompletion({
+      mission: partialAuthorizingMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: partialAuthorizingMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          // Claims completion, no blocked/partial declaration, no gaps surfaced.
+          content: "All providers confirmed. OpenRouter input $0.27, output $0.41. Search supported everywhere.",
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    // Must NOT settle via the authorized-partial branch (no closeout tag).
+    if (decision.action === "update") {
+      assert.notEqual(decision.patch.closeout, "bounded_failure");
+    }
+  });
+});

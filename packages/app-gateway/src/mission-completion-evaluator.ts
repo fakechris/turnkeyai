@@ -5,7 +5,11 @@ import type {
   WorkerSessionRecord,
 } from "@turnkeyai/core-types/team";
 import { isLifecycleStatusText } from "./mission-final-answer-guard";
-import { evaluateMissionGoalSlotCoverage } from "./mission-goal-slot-coverage";
+import {
+  evaluateMissionGoalSlotCoverage,
+  looksLikeHonestPartialBlockedAnswer,
+  missionAuthorizesPartialCloseout,
+} from "./mission-goal-slot-coverage";
 
 export type MissionCompletionReason =
   | "terminal"
@@ -218,6 +222,21 @@ export function evaluateMissionCompletion(input: {
     };
   }
 
+  if (
+    hasAuthorizedPartialBlockedCloseout(mission, messages) &&
+    !hasActiveExecution(input.roleRuns, input.workerSessions)
+  ) {
+    // Mission authorized a partial/blocked result and the lead delivered an
+    // honest one (declares partial/blocked + names the unverified gaps). This
+    // is a legitimate NON-success terminal: settle it (tagged, progress not
+    // forced to 1) instead of marking it a plain "done" or looping recovery.
+    return {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", blockers: 0, closeout: "bounded_failure" },
+    };
+  }
+
   if (hasFinalLeadAssistantMessage(mission, messages)) {
     return {
       action: "update",
@@ -351,6 +370,16 @@ function hasCompleteBrowserBoundedFailureCloseout(mission: Mission, messages: Te
       !isIncompleteLeadFinalAnswer(mission, latest.message, messages) &&
       !hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index) &&
       looksLikeCompleteBoundedFailureCloseout(mission.desc, latest.message.content)
+  );
+}
+
+function hasAuthorizedPartialBlockedCloseout(mission: Mission, messages: TeamMessage[]): boolean {
+  const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  if (!latest) return false;
+  if (hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index)) return false;
+  return (
+    missionAuthorizesPartialCloseout(missionGoalTextForAnswer(mission, messages, latest.message)) &&
+    looksLikeHonestPartialBlockedAnswer(latest.message.content)
   );
 }
 
@@ -513,6 +542,19 @@ function isIncompleteLeadFinalAnswer(
   }
   if (looksLikeTruncatedMarkdown(message.content)) {
     return { message, reason: "truncated_markdown", goalText: missionGoalTextForAnswer(mission, messages, message) };
+  }
+  // When the mission explicitly authorizes a partial/blocked outcome (e.g.
+  // "把结论标为 blocked/partial", "必须写未验证", "do not dress it up as
+  // complete"), an honest answer that declares partial/blocked AND surfaces the
+  // unverified items is the REQUESTED result — not an incomplete final. Letting
+  // the goal-slot guard flag it as `goal_slots_unverified` here would loop
+  // recovery against the mission's own instructions. Settling is handled by the
+  // authorized-partial terminal branch in evaluateMissionCompletion.
+  if (
+    missionAuthorizesPartialCloseout(missionGoalTextForAnswer(mission, messages, message)) &&
+    looksLikeHonestPartialBlockedAnswer(message.content)
+  ) {
+    return null;
   }
   const goalText = missionGoalTextForAnswer(mission, messages, message);
   const goalCoverage = evaluateMissionGoalSlotCoverage({
