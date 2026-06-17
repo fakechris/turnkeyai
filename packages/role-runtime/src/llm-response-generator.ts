@@ -1,5 +1,6 @@
 import type {
   Clock,
+  MissionTerminalReport,
   RoleActivationInput,
   RoleId,
   RuntimeProgressRecorder,
@@ -71,6 +72,42 @@ interface ToolLoopCloseoutMetadata {
   timeoutSeconds?: number;
   evidenceAvailable?: boolean;
   finalContentCount?: number;
+}
+
+function buildRuntimeDerivedMissionReport(
+  closeout: ToolLoopCloseoutMetadata | undefined
+): MissionTerminalReport | undefined {
+  if (!closeout) return undefined;
+  const status = missionTerminalStatusForCloseout(closeout);
+  return {
+    status,
+    reason: closeout.reason,
+    source: "runtime_derived",
+    authorizedPartial: status !== "completed",
+  };
+}
+
+function missionTerminalStatusForCloseout(
+  closeout: ToolLoopCloseoutMetadata
+): MissionTerminalReport["status"] {
+  switch (closeout.reason) {
+    case "completed_sub_agent_final":
+      return "completed";
+    case "partial_sub_agent_final":
+      return "partial";
+    case "wall_clock_budget":
+    case "round_limit":
+    case "sub_agent_timeout":
+    case "repeated_session_inspection":
+    case "excessive_session_continuation":
+    case "tool_evidence_fallback":
+    case "pseudo_tool_call":
+      return closeout.evidenceAvailable ? "partial" : "blocked";
+    case "operator_cancelled":
+    case "repeated_tool_failure":
+    case "recovery_tool_budget":
+      return "blocked";
+  }
 }
 
 interface ModelCallBoundaryTrace {
@@ -2199,6 +2236,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       taskPrompt: input.packet.taskPrompt,
       resultText: result.text,
     });
+    const missionReport = buildRuntimeDerivedMissionReport(toolLoopCloseout);
 
     return {
       content: finalText,
@@ -2235,6 +2273,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ? { modelUse: summarizeModelUseTrace(modelCallTrace) }
           : {}),
         ...(toolLoopCloseout ? { toolLoopCloseout } : {}),
+        ...(missionReport ? { missionReport } : {}),
       },
     };
   }

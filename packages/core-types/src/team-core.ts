@@ -16,6 +16,18 @@ export type ContinuityMode = "fresh" | "prefer-existing" | "resume-existing";
 export const SESSION_TARGETS = ["main", "worker"] as const;
 export type SessionTarget = (typeof SESSION_TARGETS)[number];
 
+export type MissionTerminalStatus = "completed" | "partial" | "blocked";
+export type MissionTerminalReportSource = "runtime_derived" | "model_report";
+
+export interface MissionTerminalReport {
+  status: MissionTerminalStatus;
+  reason?: string;
+  unverifiedSlots?: string[];
+  evidenceRefs?: string[];
+  authorizedPartial?: boolean;
+  source?: MissionTerminalReportSource;
+}
+
 export interface TeamMessage {
   id: MessageId;
   threadId: ThreadId;

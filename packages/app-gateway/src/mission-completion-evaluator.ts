@@ -1,5 +1,6 @@
 import type { Mission } from "@turnkeyai/core-types/mission";
 import type {
+  MissionTerminalReport,
   RoleRunState,
   TeamMessage,
   WorkerSessionRecord,
@@ -27,13 +28,22 @@ export type MissionCompletionDecision =
   | {
       action: "none";
       reason: MissionCompletionReason;
+      completion?: MissionCompletionSignal;
     }
   | {
       action: "update";
       reason: MissionCompletionReason;
-      patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout">>;
+      patch: Partial<
+        Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout" | "terminalReason">
+      >;
+      completion?: MissionCompletionSignal;
       recovery?: MissionCompletionRecovery;
     };
+
+export type MissionCompletionSignal = {
+  source: "self_report" | "structural" | "verifier" | "evidence" | "advisory";
+  verified: boolean;
+};
 
 export type MissionIncompleteFinalReason =
   | "max_tokens"
@@ -126,6 +136,11 @@ export function evaluateMissionCompletion(input: {
       reason: "existing_blocker",
       patch: { progress: 0.95 },
     };
+  }
+
+  const typedTerminal = evaluateTypedMissionTerminalReport(input);
+  if (typedTerminal) {
+    return typedTerminal;
   }
 
   const incompleteFinal = findIncompleteLeadFinalAnswer(mission, messages);
@@ -292,6 +307,61 @@ export function evaluateMissionCompletion(input: {
     };
   }
   return { action: "none", reason: "awaiting_work" };
+}
+
+function evaluateTypedMissionTerminalReport(input: {
+  mission: Mission;
+  messages: TeamMessage[];
+  roleRuns?: RoleRunState[] | "unknown";
+  workerSessions?: WorkerSessionRecord[] | "unknown" | undefined;
+}): MissionCompletionDecision | null {
+  const { mission, messages } = input;
+  const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  if (!latest) return null;
+  const report = readMissionTerminalReport(latest.message.metadata);
+  if (!report) return null;
+  if (hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index)) return null;
+  if (hasActiveExecutionAfterAnswer(input.roleRuns, input.workerSessions, latest.message.createdAt)) {
+    if (mission.status === "done") {
+      return {
+        action: "update",
+        reason: "active_execution",
+        patch: { status: "working", progress: Math.min(mission.progress, 0.95) },
+        completion: { source: "self_report", verified: false },
+      };
+    }
+    return {
+      action: "none",
+      reason: "active_execution",
+      completion: { source: "self_report", verified: false },
+    };
+  }
+
+  if (report.status === "completed") {
+    if (isIncompleteLeadFinalAnswer(mission, latest.message, messages)) {
+      return null;
+    }
+    return {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1, blockers: 0 },
+      completion: { source: "self_report", verified: true },
+    };
+  }
+
+  const terminalReason = report.reason?.trim() || report.status;
+  return {
+    action: "update",
+    reason: "final_answer",
+    patch: {
+      status: "done",
+      blockers: 0,
+      progress: Math.min(mission.progress, 0.95),
+      closeout: report.status === "partial" ? "partial" : "bounded_failure",
+      terminalReason,
+    },
+    completion: { source: "self_report", verified: true },
+  };
 }
 
 function hasActiveExecution(
@@ -857,6 +927,34 @@ function missionAllowsSourceBoundedFailureCloseout(missionDesc: string): boolean
       missionDesc
     )
   );
+}
+
+function readMissionTerminalReport(metadata: Record<string, unknown> | undefined): MissionTerminalReport | null {
+  const raw = metadata?.missionReport;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const status = record.status;
+  if (status !== "completed" && status !== "partial" && status !== "blocked") return null;
+  const reason = typeof record.reason === "string" && record.reason.trim() ? record.reason : undefined;
+  const unverifiedSlots = readStringArray(record.unverifiedSlots);
+  const evidenceRefs = readStringArray(record.evidenceRefs);
+  const authorizedPartial =
+    typeof record.authorizedPartial === "boolean" ? record.authorizedPartial : undefined;
+  const source =
+    record.source === "runtime_derived" || record.source === "model_report" ? record.source : undefined;
+  return {
+    status,
+    ...(reason ? { reason } : {}),
+    ...(unverifiedSlots.length ? { unverifiedSlots } : {}),
+    ...(evidenceRefs.length ? { evidenceRefs } : {}),
+    ...(authorizedPartial !== undefined ? { authorizedPartial } : {}),
+    ...(source ? { source } : {}),
+  };
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
 function readStringMetadata(
