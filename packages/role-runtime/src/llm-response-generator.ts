@@ -79,11 +79,20 @@ function buildRuntimeDerivedMissionReport(
 ): MissionTerminalReport | undefined {
   if (!closeout) return undefined;
   const status = missionTerminalStatusForCloseout(closeout);
+  // NOTE: do NOT set authorizedPartial here. authorizedPartial means "the
+  // TASK explicitly permitted a partial/blocked outcome" — a property of the
+  // mission request, not of how this run ended. A runtime-derived report
+  // reflects objective exhaustion (budget/timeout/etc.), which says nothing
+  // about task authorization. Asserting authorizedPartial here would, once a
+  // future phase consumes the field to decide whether a self-reported partial
+  // may settle without recovery, let any exhausted run claim authorization —
+  // a fail-closed hole (an agent could escape completion by reporting partial).
+  // authorizedPartial is set only by an explicit model report (Stage B) or by
+  // the evaluator's task-text authorization check.
   return {
     status,
     reason: closeout.reason,
     source: "runtime_derived",
-    authorizedPartial: status !== "completed",
   };
 }
 
