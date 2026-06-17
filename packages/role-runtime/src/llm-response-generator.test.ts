@@ -5215,6 +5215,13 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
   assert.equal(closeout?.roundCount, 1);
   assert.equal(closeout?.pendingToolCallCount, 1);
   assert.equal(closeout?.evidenceAvailable, true);
+  const missionReport = result.metadata?.missionReport as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(missionReport?.status, "partial");
+  assert.equal(missionReport?.reason, "wall_clock_budget");
+  assert.equal(missionReport?.source, "runtime_derived");
+  assert.equal(missionReport?.authorizedPartial, true);
 });
 
 test("llm role response generator repairs final synthesis that omits an explicitly requested conclusion", async () => {
@@ -5579,6 +5586,13 @@ test("llm role response generator repairs required timeout continuation synthesi
   assert.equal(closeout?.reason, "completed_sub_agent_final");
   assert.equal(closeout?.toolName, "sessions_send");
   assert.equal(closeout?.toolCallCount, 3);
+  const missionReport = result.metadata?.missionReport as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(missionReport?.status, "completed");
+  assert.equal(missionReport?.reason, "completed_sub_agent_final");
+  assert.equal(missionReport?.source, "runtime_derived");
+  assert.equal(missionReport?.authorizedPartial, false);
 });
 
 test("llm role response generator aborts active tool execution when the wall-clock budget expires", async () => {

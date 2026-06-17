@@ -407,7 +407,7 @@ export function createMissionThreadBridge(
 
   async function updateMissionLifecycle(
     mission: Mission,
-    patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout">>,
+    patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout" | "terminalReason">>,
     lifecycleOptions: { allowDoneReopen?: boolean } = {}
   ): Promise<void> {
     try {

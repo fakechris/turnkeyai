@@ -31,10 +31,11 @@ export type MissionStatus =
  *  completion. `bounded_failure` = the mission ended via an explicit
  *  bounded-failure closeout (e.g. browser/CDP unreachable, automated work
  *  impossible); `approval_timeout` = a pending approval never received a
- *  decision and the mission closed without performing the gated action.
+ *  decision and the mission closed without performing the gated action;
+ *  `partial` = the mission ended with an explicit partial terminal report.
  *  Status stays "done" (the flow is finished) but UIs MUST NOT present these
  *  as goal-achieved completions. */
-export type MissionCloseout = "bounded_failure" | "approval_timeout";
+export type MissionCloseout = "bounded_failure" | "approval_timeout" | "partial";
 
 export type MissionMode =
   | "research"
@@ -85,6 +86,8 @@ export interface Mission {
   /** Set when the mission terminated via a non-success closeout. See
    *  MissionCloseout — UIs must render these distinctly from "done". */
   closeout?: MissionCloseout;
+  /** Machine-readable terminal reason from a typed mission report or closeout. */
+  terminalReason?: string;
   pendingApprovals: number;
   blockers: number;
   /** Short labels for the mission card footer (e.g. "3 browser", "1 doc"). */

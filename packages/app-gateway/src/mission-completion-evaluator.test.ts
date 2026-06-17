@@ -3597,6 +3597,119 @@ describe("mission-authorized partial/blocked closeout", () => {
     }
   });
 
+  it("settles a typed partial terminal report before prose slot regex recovery", () => {
+    const strictMission: Mission = {
+      ...mission,
+      status: "working",
+      desc: "Research the pricing of the Acme API and give the exact input/output price.",
+    };
+    const decision = evaluateMissionCompletion({
+      mission: strictMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: strictMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "已核到 provider 名称，但价格页在本轮没有拿到可靠来源。",
+          metadata: {
+            missionReport: {
+              status: "partial",
+              reason: "wall_clock_budget",
+              unverifiedSlots: ["input/output price"],
+              authorizedPartial: true,
+              source: "runtime_derived",
+            },
+          },
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "final_answer");
+      assert.equal(decision.patch.status, "done");
+      assert.equal(decision.patch.closeout, "partial");
+      assert.equal(decision.patch.terminalReason, "wall_clock_budget");
+      assert.equal(decision.recovery, undefined);
+      assert.deepEqual(decision.completion, { source: "self_report", verified: true });
+    }
+  });
+
+  it("settles a typed blocked terminal report as bounded failure", () => {
+    const strictMission: Mission = {
+      ...mission,
+      status: "working",
+      desc: "Use the browser to submit the approval-gated settings form.",
+    };
+    const decision = evaluateMissionCompletion({
+      mission: strictMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: strictMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "浏览器执行被取消，未提交表单，也没有产生副作用。",
+          metadata: {
+            missionReport: {
+              status: "blocked",
+              reason: "operator_cancelled",
+              authorizedPartial: true,
+              source: "runtime_derived",
+            },
+          },
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.patch.status, "done");
+      assert.equal(decision.patch.closeout, "bounded_failure");
+      assert.equal(decision.patch.terminalReason, "operator_cancelled");
+      assert.equal(decision.recovery, undefined);
+      assert.deepEqual(decision.completion, { source: "self_report", verified: true });
+    }
+  });
+
+  it("does not let a typed completed report bypass missing goal slots", () => {
+    const strictMission: Mission = {
+      ...mission,
+      status: "working",
+      desc: "Research the pricing of the Acme API and give the exact input/output price.",
+    };
+    const decision = evaluateMissionCompletion({
+      mission: strictMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: strictMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Pricing is not verified; I could not load the pricing page.",
+          metadata: {
+            missionReport: {
+              status: "completed",
+              reason: "completed_sub_agent_final",
+              source: "runtime_derived",
+            },
+          },
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "incomplete_final_answer");
+      assert.equal(decision.recovery?.kind, "incomplete_final_answer");
+      assert.equal(decision.patch.status, "blocked");
+    }
+  });
+
   it("still recovers a NON-authorizing mission whose answer leaves slots unverified", () => {
     // Guard against over-correction: a mission that did NOT authorize partial
     // must still be caught by the goal-slot guard.
