@@ -5221,7 +5221,9 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
   assert.equal(missionReport?.status, "partial");
   assert.equal(missionReport?.reason, "wall_clock_budget");
   assert.equal(missionReport?.source, "runtime_derived");
-  assert.equal(missionReport?.authorizedPartial, true);
+  // runtime-derived reports must NOT assert task authorization; authorizedPartial
+  // is set only by an explicit model report / the evaluator's task-text check.
+  assert.equal(missionReport?.authorizedPartial, undefined);
 });
 
 test("llm role response generator repairs final synthesis that omits an explicitly requested conclusion", async () => {
@@ -5592,7 +5594,9 @@ test("llm role response generator repairs required timeout continuation synthesi
   assert.equal(missionReport?.status, "completed");
   assert.equal(missionReport?.reason, "completed_sub_agent_final");
   assert.equal(missionReport?.source, "runtime_derived");
-  assert.equal(missionReport?.authorizedPartial, false);
+  // runtime-derived reports do not carry authorizedPartial (task-authorization
+  // is decided by an explicit model report / the evaluator, not the runtime).
+  assert.equal(missionReport?.authorizedPartial, undefined);
 });
 
 test("llm role response generator aborts active tool execution when the wall-clock budget expires", async () => {

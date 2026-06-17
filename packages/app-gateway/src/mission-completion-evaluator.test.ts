@@ -3617,7 +3617,6 @@ describe("mission-authorized partial/blocked closeout", () => {
               status: "partial",
               reason: "wall_clock_budget",
               unverifiedSlots: ["input/output price"],
-              authorizedPartial: true,
               source: "runtime_derived",
             },
           },
@@ -3633,6 +3632,128 @@ describe("mission-authorized partial/blocked closeout", () => {
       assert.equal(decision.patch.closeout, "partial");
       assert.equal(decision.patch.terminalReason, "wall_clock_budget");
       assert.equal(decision.recovery, undefined);
+      assert.deepEqual(decision.completion, { source: "self_report", verified: true });
+    }
+  });
+
+  it("fail-closed: a typed completed report that misses a required goal slot does not settle done", () => {
+    const pricingMission: Mission = {
+      ...mission,
+      status: "working",
+      desc: "Research the pricing of the Acme API and give the exact input/output price.",
+    };
+    const decision = evaluateMissionCompletion({
+      mission: pricingMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: pricingMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          // Self-reports completed, but never states a concrete price → the
+          // pricing slot is uncovered. A self-report must NOT bypass the
+          // goal-slot guard, so the typed branch yields to the legacy path.
+          content: "Acme offers several plans for teams of various sizes.",
+          metadata: {
+            missionReport: { status: "completed", source: "model_report" },
+          },
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.notEqual(decision.patch.status, "done");
+      assert.equal(decision.reason, "incomplete_final_answer");
+    }
+  });
+
+  it("settles a typed completed report that covers required slots as done via self_report", () => {
+    const pricingMission: Mission = {
+      ...mission,
+      status: "working",
+      desc: "Research the pricing of the Acme API and give the exact input/output price.",
+    };
+    const decision = evaluateMissionCompletion({
+      mission: pricingMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: pricingMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Acme API pricing: input $0.27 per million tokens, output $0.41 per million tokens.",
+          metadata: {
+            missionReport: { status: "completed", source: "model_report" },
+          },
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.patch.status, "done");
+      assert.equal(decision.patch.progress, 1);
+      assert.deepEqual(decision.completion, { source: "self_report", verified: true });
+    }
+  });
+
+  it("settles a typed blocked report to a tagged non-success terminal with no recovery", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, status: "working" },
+      messages: [
+        { ...message("u-1", "user", 50), content: "Do the thing." },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "I could not reach the required source; closing out as blocked.",
+          metadata: {
+            missionReport: { status: "blocked", reason: "operator_cancelled", source: "runtime_derived" },
+          },
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.patch.status, "done");
+      assert.equal(decision.patch.closeout, "bounded_failure");
+      assert.equal(decision.patch.terminalReason, "operator_cancelled");
+      assert.equal(decision.recovery, undefined);
+      assert.deepEqual(decision.completion, { source: "self_report", verified: true });
+    }
+  });
+
+  it("resolves a Chinese typed completed report identically to its English twin (no English bias)", () => {
+    const zhMission: Mission = {
+      ...mission,
+      status: "working",
+      desc: "调研 Acme API 的价格，给出明确的输入/输出价格。",
+    };
+    const decision = evaluateMissionCompletion({
+      mission: zhMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: zhMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Acme API 价格：输入 $0.27/百万 tokens，输出 $0.41/百万 tokens。",
+          metadata: {
+            missionReport: { status: "completed", source: "model_report" },
+          },
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.patch.status, "done");
       assert.deepEqual(decision.completion, { source: "self_report", verified: true });
     }
   });
