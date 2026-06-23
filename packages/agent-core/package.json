@@ -1,0 +1,11 @@
+{
+  "name": "@turnkeyai/agent-core",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tool": "./src/tool.ts",
+    "./toolkit": "./src/toolkit.ts",
+    "./tool-messages": "./src/tool-messages.ts",
+    "./index": "./src/index.ts"
+  }
+}
