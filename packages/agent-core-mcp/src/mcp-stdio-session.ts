@@ -28,7 +28,14 @@ export async function createStdioMcpSession(options: StdioMcpSessionOptions): Pr
     ...(options.args ? { args: options.args } : {}),
     ...(options.env ? { env: options.env } : {}),
   });
-  await client.connect(transport);
+  try {
+    await client.connect(transport);
+  } catch (error) {
+    // connect() spawns the child process before the handshake; close the
+    // transport on failure so a bad command/handshake doesn't orphan it.
+    await transport.close();
+    throw error;
+  }
 
   return {
     async listTools(): Promise<McpToolDescriptor[]> {
@@ -47,6 +54,7 @@ export async function createStdioMcpSession(options: StdioMcpSessionOptions): Pr
       );
       return {
         content: (Array.isArray(result.content) ? result.content : []) as McpContentBlock[],
+        ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
         ...(result.isError ? { isError: Boolean(result.isError) } : {}),
       };
     },

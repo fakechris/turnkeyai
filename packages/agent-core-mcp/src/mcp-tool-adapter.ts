@@ -11,11 +11,17 @@ export interface McpToolAdapterOptions {
   toolFilter?: (descriptor: McpToolDescriptor) => boolean;
 }
 
-/** Flatten MCP content blocks into the single string our ToolResult carries. */
+/** Flatten MCP content blocks into the single string our ToolResult carries.
+ *  Falls back to the structured payload when a tool returns only
+ *  `structuredContent` (common when it declares an outputSchema). */
 function flattenContent(result: McpCallResult): string {
-  return result.content
+  const text = (result.content ?? [])
     .map((block) => (block.type === "text" ? block.text ?? "" : JSON.stringify(block)))
     .join("\n");
+  if (text.length === 0 && result.structuredContent !== undefined) {
+    return JSON.stringify(result.structuredContent);
+  }
+  return text;
 }
 
 /** Wrap one MCP server tool as an agent-core Tool. The host context is ignored
@@ -34,7 +40,7 @@ export function mcpToolToTool<Ctx extends ToolContext = ToolContext>(
     },
     async execute(call: LLMToolCall, ctx: Ctx): Promise<ToolResult> {
       try {
-        const result = await session.callTool(descriptor.name, call.input, ctx.signal);
+        const result = await session.callTool(descriptor.name, call.input ?? {}, ctx.signal);
         return {
           toolCallId: call.id,
           toolName: name,
@@ -43,6 +49,16 @@ export function mcpToolToTool<Ctx extends ToolContext = ToolContext>(
           raw: result,
         };
       } catch (error) {
+        // An aborted in-flight call is a cancellation, not a failure — downstream
+        // runtime code treats the two differently.
+        if (ctx.signal?.aborted) {
+          return {
+            toolCallId: call.id,
+            toolName: name,
+            cancelled: true,
+            content: "mcp tool call cancelled",
+          };
+        }
         return {
           toolCallId: call.id,
           toolName: name,

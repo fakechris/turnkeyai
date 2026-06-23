@@ -72,6 +72,28 @@ test("mcpToolToTool JSON-stringifies non-text content blocks", async () => {
   assert.equal(result.content, JSON.stringify({ type: "image", data: "abc" }));
 });
 
+test("mcpToolToTool serializes structuredContent when there is no text content", async () => {
+  const session = fakeSession({ call: async () => ({ content: [], structuredContent: { rows: 2, ok: true } }) });
+  const tool = mcpToolToTool(session, { name: "query", inputSchema: { type: "object" } });
+  const result = await tool.execute(call("query"), {});
+  assert.equal(result.content, JSON.stringify({ rows: 2, ok: true }));
+  assert.equal(result.isError, undefined);
+});
+
+test("mcpToolToTool marks an aborted call as cancelled (not a failure)", async () => {
+  const controller = new AbortController();
+  const session = fakeSession({
+    call: async () => {
+      controller.abort();
+      throw new Error("The operation was aborted");
+    },
+  });
+  const tool = mcpToolToTool(session, { name: "slow", inputSchema: { type: "object" } });
+  const result = await tool.execute(call("slow"), { signal: controller.signal });
+  assert.equal(result.cancelled, true);
+  assert.equal(result.isError, undefined);
+});
+
 test("createMcpToolkit registers every advertised tool and routes by prefixed name", async () => {
   const toolkit = await createMcpToolkit(fakeSession(), { namePrefix: "mcp__fs__" });
   assert.deepEqual(toolkit.definitions().map((d) => d.name), ["mcp__fs__read_file", "mcp__fs__write_file"]);

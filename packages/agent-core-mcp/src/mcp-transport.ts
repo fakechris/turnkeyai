@@ -22,6 +22,9 @@ export interface McpContentBlock {
 
 export interface McpCallResult {
   content: McpContentBlock[];
+  /** Present when a tool declares an outputSchema. Tools may return this with
+   *  little or no text content, so it must not be dropped. */
+  structuredContent?: unknown;
   isError?: boolean;
 }
 
