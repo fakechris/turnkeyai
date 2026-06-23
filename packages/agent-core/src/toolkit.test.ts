@@ -67,3 +67,20 @@ test("createToolkit threads ctx through to the tool", async () => {
   const result = await toolkit.execute(call("alpha"), { marker: "from-ctx" });
   assert.equal(result.content, "from-ctx");
 });
+
+test("createToolkit is last-wins on name override for both execute() and definitions()", async () => {
+  const toolkit = createToolkit<TestCtx>([
+    fakeTool("dup", () => "first"),
+    fakeTool("solo", () => "solo"),
+    fakeTool("dup", () => "second"),
+  ]);
+  // execute dispatches the last registration...
+  const result = await toolkit.execute(call("dup"), {});
+  assert.equal(result.content, "second");
+  // ...and definitions() exposes exactly one entry per name (no stale duplicate),
+  // in first-seen order.
+  assert.deepEqual(
+    toolkit.definitions().map((d) => d.name),
+    ["dup", "solo"]
+  );
+});

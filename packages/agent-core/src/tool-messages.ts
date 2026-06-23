@@ -15,7 +15,7 @@ export function appendAssistantToolCallMessage(
       ? input.contentBlocks
       : [
           ...(input.text ? [{ type: "text" as const, text: input.text }] : []),
-          ...input.toolCalls.map((call) => ({
+          ...(input.toolCalls ?? []).map((call) => ({
             type: "tool_use" as const,
             id: call.id,
             name: call.name,
@@ -38,7 +38,7 @@ export function appendToolResultMessages(
 ): LLMMessage[] {
   return [
     ...messages,
-    ...results.map((result) => ({
+    ...(results ?? []).map((result) => ({
       role: "tool" as const,
       name: result.toolName,
       toolCallId: result.toolCallId,

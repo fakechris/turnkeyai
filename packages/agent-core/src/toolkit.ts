@@ -21,7 +21,11 @@ export function createToolkit<Ctx extends ToolContext>(tools: Array<Tool<Ctx>>):
   for (const tool of tools) {
     byName.set(tool.definition.name, tool);
   }
-  const definitions = tools.map((tool) => tool.definition);
+  // Build definitions from the deduped registry (last-wins, first-seen order) so
+  // the offered schemas always match what execute() will dispatch. With unique
+  // names this is identical to mapping `tools` directly; with a name override it
+  // drops the stale duplicate instead of exposing two schemas for one name.
+  const definitions = Array.from(byName.values(), (tool) => tool.definition);
   return {
     definitions() {
       return definitions;
