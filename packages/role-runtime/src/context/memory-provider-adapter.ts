@@ -21,6 +21,9 @@ export function memoryNamespace(threadId: ThreadId, roleId: RoleId): string {
 
 /** Decode a namespace produced by {@link memoryNamespace}. */
 export function parseMemoryNamespace(namespace: string): { threadId: ThreadId; roleId: RoleId } {
+  if (typeof namespace !== "string") {
+    throw new Error(`invalid memory namespace (expected string): ${String(namespace)}`);
+  }
   const index = namespace.indexOf(NAMESPACE_SEPARATOR);
   if (index < 0) {
     throw new Error(`invalid memory namespace (expected "<threadId>${NAMESPACE_SEPARATOR}<roleId>"): ${namespace}`);
@@ -39,7 +42,9 @@ export function asMemoryProvider(
     async retrieve({ namespace, queryText, limit }) {
       const { threadId, roleId } = parseMemoryNamespace(namespace);
       const hits = await resolver.retrieveMemory({ threadId, roleId, queryText });
-      return typeof limit === "number" ? hits.slice(0, limit) : hits;
+      // Clamp to >= 0: a negative limit would otherwise slice from the end and
+      // silently drop the highest-ranked hits.
+      return typeof limit === "number" ? hits.slice(0, Math.max(0, limit)) : hits;
     },
     async get({ namespace, memoryId }) {
       const { threadId, roleId } = parseMemoryNamespace(namespace);

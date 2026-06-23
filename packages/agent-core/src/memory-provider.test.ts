@@ -57,3 +57,16 @@ test("createVectorMemoryProvider.get returns null when the store has no get()", 
   const provider = createVectorMemoryProvider({ embed, store });
   assert.equal(await provider.get({ namespace: "ns", memoryId: "m7" }), null);
 });
+
+test("VectorRecord carries the namespace so a shared store can isolate scopes", async () => {
+  const store = fakeVectorStore();
+  const records: VectorRecord[] = [
+    { memoryId: "m1", namespace: "t1::r1", vector: [1], content: "a" },
+    { memoryId: "m2", namespace: "t2::r2", vector: [2], content: "b" },
+  ];
+  await store.upsert(records);
+  assert.deepEqual(
+    store.upserted.map((r) => [r.memoryId, r.namespace]),
+    [["m1", "t1::r1"], ["m2", "t2::r2"]]
+  );
+});

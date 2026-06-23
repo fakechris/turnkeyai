@@ -64,6 +64,16 @@ test("asMemoryProvider.retrieve returns all hits when limit is omitted", async (
   assert.deepEqual(hits.map((h) => h.memoryId), ["a", "b", "c"]);
 });
 
+test("asMemoryProvider.retrieve clamps a negative limit to zero (no slice-from-end)", async () => {
+  const provider = asMemoryProvider(fakeResolver());
+  const hits = await provider.retrieve({
+    namespace: memoryNamespace("t1" as ThreadId, "r1" as RoleId),
+    queryText: "q",
+    limit: -1,
+  });
+  assert.deepEqual(hits, []);
+});
+
 test("asMemoryProvider.get unpacks the namespace and delegates", async () => {
   const provider = asMemoryProvider(fakeResolver());
   const ns = memoryNamespace("t1" as ThreadId, "r1" as RoleId);

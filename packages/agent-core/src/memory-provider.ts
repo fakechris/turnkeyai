@@ -39,6 +39,9 @@ export interface EmbeddingFn {
 
 export interface VectorRecord {
   memoryId: string;
+  /** Scope this record belongs to — mirrors the namespace used by query()/get()
+   *  so a single store can isolate memory across many host scopes. */
+  namespace: string;
   vector: number[];
   content: string;
   source?: string;
