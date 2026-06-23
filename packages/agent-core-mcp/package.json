@@ -1,0 +1,14 @@
+{
+  "name": "@turnkeyai/agent-core-mcp",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./mcp-transport": "./src/mcp-transport.ts",
+    "./mcp-tool-adapter": "./src/mcp-tool-adapter.ts",
+    "./mcp-stdio-session": "./src/mcp-stdio-session.ts",
+    "./index": "./src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}
