@@ -123,6 +123,45 @@ test("collectReActRun returns the terminal answer", async () => {
   assert.deepEqual(out, { text: "result", rounds: 2, stopReason: "stop" });
 });
 
+test("threads the run signal into the tool execution context", async () => {
+  let toolSawSignal = false;
+  const probeTool: Tool<Ctx> = {
+    definition: { name: "probe", description: "probe", inputSchema: { type: "object" } },
+    async execute(call, ctx) {
+      toolSawSignal = ctx.signal instanceof AbortSignal;
+      return { toolCallId: call.id, toolName: "probe", content: "ok" };
+    },
+  };
+  const model = scriptedModel([
+    { text: "go", toolCalls: [toolCall("c1", "probe")] },
+    { text: "done" },
+  ]);
+  const agent = createBasicReActAgent<Ctx>({ model, toolkit: createToolkit([probeTool]) });
+  const controller = new AbortController();
+  await drain(agent.run({ messages: [{ role: "user", content: "hi" }], ctx: {}, signal: controller.signal }));
+  assert.equal(toolSawSignal, true);
+});
+
+test("isolates a throwing tool as an error result and keeps looping", async () => {
+  const boomTool: Tool<Ctx> = {
+    definition: { name: "boom", description: "boom", inputSchema: { type: "object" } },
+    async execute() {
+      throw new Error("tool exploded");
+    },
+  };
+  const model = scriptedModel([
+    { text: "call boom", toolCalls: [toolCall("c1", "boom")] },
+    { text: "recovered" },
+  ]);
+  const agent = createBasicReActAgent<Ctx>({ model, toolkit: createToolkit([boomTool]) });
+  const events = await drain(agent.run({ messages: [{ role: "user", content: "hi" }], ctx: {} }));
+  const toolResult = events.find((e) => e.type === "tool_result");
+  assert.ok(toolResult?.type === "tool_result" && toolResult.result.isError === true);
+  assert.ok(toolResult?.type === "tool_result" && toolResult.result.content === "tool exploded");
+  // loop continued to a normal final answer instead of throwing
+  assert.equal(events.at(-1)?.type === "final" && events.at(-1)!.type, "final");
+});
+
 test("aborts before calling the model when the signal is already aborted", async () => {
   const model = scriptedModel([{ text: "should not run" }]);
   const agent = createBasicReActAgent<Ctx>({ model, toolkit: createToolkit([echoTool("search")]) });

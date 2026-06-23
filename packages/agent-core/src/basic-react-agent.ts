@@ -57,8 +57,24 @@ export function createBasicReActAgent<Ctx extends ToolContext>(
         for (const call of toolCalls) {
           yield { type: "tool_started", round, call };
         }
+        // Thread the run's abort signal into the tool context so tools (e.g. the
+        // MCP adapter, which cancels via ctx.signal) can abort an in-flight call.
+        const toolCtx: Ctx = signal ? ({ ...ctx, signal } as Ctx) : ctx;
         const results: ToolResult[] = await Promise.all(
-          toolCalls.map((call) => options.toolkit.execute(call, ctx))
+          toolCalls.map(async (call) => {
+            try {
+              return await options.toolkit.execute(call, toolCtx);
+            } catch (error) {
+              // Isolate a throwing tool as an error result instead of rejecting
+              // Promise.all and crashing the whole loop; the model sees the error.
+              return {
+                toolCallId: call.id,
+                toolName: call.name,
+                isError: true,
+                content: error instanceof Error ? error.message : String(error),
+              };
+            }
+          })
         );
         for (const result of results) {
           yield { type: "tool_result", round, result };
