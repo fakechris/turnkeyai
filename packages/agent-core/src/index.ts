@@ -13,11 +13,17 @@ export {
 } from "./memory-provider";
 export type {
   ModelClient,
+  ReActEmptyDecision,
   ReActEvent,
+  ReActHooks,
   ReActLoop,
   ReActLoopOptions,
   ReActRunInput,
+  ReActState,
+  ReActSynthesis,
+  ReActToolChoice,
 } from "./react-loop";
+export { createReActAgent } from "./react-agent";
 export {
   collectReActRun,
   createBasicReActAgent,
