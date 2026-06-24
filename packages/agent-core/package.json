@@ -8,6 +8,7 @@
     "./tool-messages": "./src/tool-messages.ts",
     "./memory-provider": "./src/memory-provider.ts",
     "./react-loop": "./src/react-loop.ts",
+    "./react-agent": "./src/react-agent.ts",
     "./basic-react-agent": "./src/basic-react-agent.ts",
     "./index": "./src/index.ts"
   }
