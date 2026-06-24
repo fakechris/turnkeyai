@@ -180,6 +180,14 @@ npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all 
   engine fail loud meanwhile.)
 - **Stage-7 approval pre-check** before `tool_evidence_fallback` (forced `permission_result`
   round) — engine model-error closeout is scoped to non-approval flows until Stage 7.
+- **Completed-closeout visibility appenders** (PR2c, codex P2) — the engine
+  `completed_sub_agent_final` `onTerminate` applies `maybeRedactForbiddenLocalUrls` only.
+  The inline completed branch (`~:1747-1783`) also runs `maybeAppendBrowserRecoveryVisibility`
+  / `maybeAppendBrowserFailureBucketVisibility` / recovered-timeout + continuation appenders
+  before redaction. Those fire only for browser-recovery / timed-out-then-completed sessions,
+  which **also** trip the inline pre-synthesis continuation branches PR2c defers — so they
+  can't be parity-tested until the browser/recovery + Stage-7 continuation stages land. No-ops
+  for the clean (explore-agent) sessions in scope.
 - **Redaction consolidation** (`maybeRedactForbiddenLocalUrls` at 5 sites) — **security-
   sensitive** (strips forbidden local URLs across heterogeneous sites; a 197-green run can't
   prove a removed site safe on uncovered paths → URL-leak risk). Deliberately deferred; do
