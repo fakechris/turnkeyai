@@ -65,7 +65,6 @@ type ToolLoopCloseoutReason =
   | "wall_clock_budget"
   | "round_limit"
   | "completed_sub_agent_final"
-  | "partial_sub_agent_final"
   | "sub_agent_timeout"
   | "operator_cancelled"
   | "repeated_tool_failure"
@@ -115,8 +114,6 @@ function missionTerminalStatusForCloseout(
   switch (closeout.reason) {
     case "completed_sub_agent_final":
       return "completed";
-    case "partial_sub_agent_final":
-      return "partial";
     case "wall_clock_budget":
     case "round_limit":
     case "sub_agent_timeout":
@@ -1690,7 +1687,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             evidenceText: completedSession.finalContents.join("\n\n"),
           });
         const completedSessionCloseout: ToolLoopCloseoutMetadata = {
-          reason: completedSession.partial ? "partial_sub_agent_final" : "completed_sub_agent_final",
+          reason: "completed_sub_agent_final",
           maxRounds,
           toolName: completedSession.toolName,
           finalContentCount: completedSession.finalContents.length,
@@ -1709,7 +1706,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           maxRounds,
           modelCallTrace,
           reasonLines: [
-            `${completedSession.toolName} returned ${completedSession.partial ? "partial delegated session evidence with usable final content" : "completed delegated session evidence"}.`,
+            `${completedSession.toolName} returned completed delegated session evidence.`,
             "Do not call sessions_history or sessions_list just to restate this delegated result.",
             "Use the delegated session evidence below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
             "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
@@ -1738,13 +1735,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     (summary, index) =>
                       `Browser continuity ${index + 1}: ${summary}`,
                   ),
-                ]
-              : []),
-            ...(completedSession.partial
-              ? [
-                  "The delegated session status is partial, but it returned usable final_content.",
-                  "Write a bounded answer from that partial evidence now instead of continuing the same session again.",
-                  "Preserve any unverified scope from the source content; do not convert partial evidence into broader verified completion.",
                 ]
               : []),
             ...completedSession.finalContents.map(
@@ -4365,12 +4355,10 @@ function findCompletedSessionEvidence(results: RoleToolExecutionResult[]): {
   toolName: string;
   finalContents: string[];
   browserRecoverySummaries: string[];
-  partial: boolean;
 } | null {
   const finalContents: string[] = [];
   const browserRecoverySummaries: string[] = [];
   let toolName: string | null = null;
-  let partial = false;
   for (const result of results) {
     if (result.isError || result.cancelled || result.skipped) {
       continue;
@@ -4419,7 +4407,7 @@ function findCompletedSessionEvidence(results: RoleToolExecutionResult[]): {
     }
   }
   return toolName && finalContents.length > 0
-    ? { toolName, finalContents, browserRecoverySummaries, partial }
+    ? { toolName, finalContents, browserRecoverySummaries }
     : null;
 }
 
