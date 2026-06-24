@@ -450,55 +450,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         ),
         messages,
       );
-      let toolCalls = normalizeApprovalGatedBrowserSpawnCalls(
-        applySessionContinuationDirective(
-          normalizeBoundedTimeoutDuplicateSourceSpawns(
-            normalizeBoundedTimeoutSourceSpawnAgents(
-              normalizeLocalUrlWebFetchCalls(
-                normalizePrivateUrlResearchSpawnCalls(
-                  normalizeSessionToolCalls(
-                    normalizeExplicitContinuationHistoryCalls(
-                      applySessionContinuationLookupDirective(
-                        applySessionContinuationDirective(
-                          modelToolCalls,
-                          sessionContinuationDirective,
-                        ),
-                        sessionContinuationLookupDirective,
-                      ),
-                      input.packet.taskPrompt,
-                    ),
-                    sessionContinuationContext,
-                  ),
-                  {
-                    browserAvailable:
-                      input.packet.capabilityInspection?.availableWorkers?.includes(
-                        "browser",
-                      ) ?? false,
-                    taskPrompt: input.packet.taskPrompt,
-                  },
-                ),
-                { taskPrompt: input.packet.taskPrompt },
-              ),
-              {
-                exploreAvailable:
-                  input.packet.capabilityInspection?.availableWorkers?.includes(
-                    "explore",
-                  ) ?? false,
-                taskPrompt: input.packet.taskPrompt,
-              },
-            ),
-            {
-              taskPrompt: input.packet.taskPrompt,
-            },
-          ),
-          sessionContinuationDirective,
-        ),
-        {
-          taskPrompt: input.packet.taskPrompt,
-          sessionContext: sessionContinuationContext,
-          toolTrace,
-        },
-      );
+      // Tool-call normalization pipeline. Flattened from a 12-deep nested
+      // expression into an explicit ordered sequence — identical functions,
+      // arguments, and order, just readable as a pipeline. Each step rewrites
+      // the pending calls before execution.
+      let toolCalls = applySessionContinuationDirective(modelToolCalls, sessionContinuationDirective);
+      toolCalls = applySessionContinuationLookupDirective(toolCalls, sessionContinuationLookupDirective);
+      toolCalls = normalizeExplicitContinuationHistoryCalls(toolCalls, input.packet.taskPrompt);
+      toolCalls = normalizeSessionToolCalls(toolCalls, sessionContinuationContext);
+      toolCalls = normalizePrivateUrlResearchSpawnCalls(toolCalls, {
+        browserAvailable:
+          input.packet.capabilityInspection?.availableWorkers?.includes("browser") ?? false,
+        taskPrompt: input.packet.taskPrompt,
+      });
+      toolCalls = normalizeLocalUrlWebFetchCalls(toolCalls, { taskPrompt: input.packet.taskPrompt });
+      toolCalls = normalizeBoundedTimeoutSourceSpawnAgents(toolCalls, {
+        exploreAvailable:
+          input.packet.capabilityInspection?.availableWorkers?.includes("explore") ?? false,
+        taskPrompt: input.packet.taskPrompt,
+      });
+      toolCalls = normalizeBoundedTimeoutDuplicateSourceSpawns(toolCalls, {
+        taskPrompt: input.packet.taskPrompt,
+      });
+      toolCalls = applySessionContinuationDirective(toolCalls, sessionContinuationDirective);
+      toolCalls = normalizeApprovalGatedBrowserSpawnCalls(toolCalls, {
+        taskPrompt: input.packet.taskPrompt,
+        sessionContext: sessionContinuationContext,
+        toolTrace,
+      });
       toolCalls = limitIndependentEvidenceSpawnCalls(toolCalls, {
         taskPrompt: input.packet.taskPrompt,
         toolTrace,
