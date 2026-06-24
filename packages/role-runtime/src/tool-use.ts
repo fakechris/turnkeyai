@@ -1,9 +1,4 @@
-import type {
-  LLMContentBlock,
-  LLMMessage,
-  LLMToolCall,
-  LLMToolDefinition,
-} from "@turnkeyai/llm-adapter/index";
+import type { LLMToolCall, LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 import {
   MAX_BROWSER_OPEN_TIMEOUT_MS,
   getInstructions,
@@ -21,9 +16,16 @@ import type {
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
+import type { Tool, ToolContext, ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
+import { createToolkit } from "@turnkeyai/agent-core/toolkit";
 
 import type { RolePromptPacket } from "./prompt-policy";
 import {
+  buildMemoryToolDefinitions,
+  buildPermissionToolDefinitions,
+  buildSessionToolDefinitions,
+  buildTaskToolDefinitions,
+  buildWebToolDefinitions,
   createNativeToolCapabilityRegistry,
   type ToolCapabilityRegistry,
 } from "./tool-capability-registry";
@@ -57,22 +59,20 @@ export interface RoleToolExecutionInput {
   signal?: AbortSignal;
 }
 
-export interface RoleToolExecutionResult {
-  toolCallId: string;
-  toolName: string;
-  content: string;
-  isError?: boolean;
-  cancelled?: boolean;
-  skipped?: boolean;
-  progress?: RoleToolProgressEvent[];
-  raw?: unknown;
-}
+// Structural aliases of the reusable agent-core tool types. The field shapes
+// are identical, so the existing public names keep working for downstream
+// importers while the canonical definitions now live in @turnkeyai/agent-core.
+export type RoleToolExecutionResult = ToolResult;
+export type RoleToolProgressEvent = ToolProgressEvent;
 
-export interface RoleToolProgressEvent {
-  phase: "started" | "progress" | "completed" | "failed" | "cancelled";
-  toolName: string;
-  summary: string;
-  detail?: Record<string, unknown>;
+/**
+ * Role-aware per-call tool context. Carries the TurnkeyAI activation/packet
+ * that native tool executors read. agent-core never inspects this — it only
+ * flows it back to the tools through the generic `Ctx` type parameter.
+ */
+export interface RoleToolContext extends ToolContext {
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
 }
 
 export interface RoleToolExecutor {
@@ -126,52 +126,12 @@ class AsyncSerialGate {
   }
 }
 
-export function appendAssistantToolCallMessage(
-  messages: LLMMessage[],
-  input: { text: string; contentBlocks?: LLMContentBlock[]; toolCalls: LLMToolCall[] }
-): LLMMessage[] {
-  const contentBlocks =
-    input.contentBlocks && input.contentBlocks.length > 0
-      ? input.contentBlocks
-      : [
-          ...(input.text ? [{ type: "text" as const, text: input.text }] : []),
-          ...input.toolCalls.map((call) => ({
-            type: "tool_use" as const,
-            id: call.id,
-            name: call.name,
-            input: call.input,
-          })),
-        ];
-  return [
-    ...messages,
-    {
-      role: "assistant",
-      content: contentBlocks,
-    },
-  ];
-}
-
-export function appendToolResultMessages(
-  messages: LLMMessage[],
-  results: RoleToolExecutionResult[]
-): LLMMessage[] {
-  return [
-    ...messages,
-    ...results.map((result) => ({
-      role: "tool" as const,
-      name: result.toolName,
-      toolCallId: result.toolCallId,
-      content: [
-        {
-          type: "tool_result" as const,
-          toolUseId: result.toolCallId,
-          content: result.content,
-          ...(result.isError ? { isError: true } : {}),
-        },
-      ],
-    })),
-  ];
-}
+// Moved verbatim into the reusable agent-core package; re-exported here so the
+// existing `./tool-use` import path keeps working for in-repo consumers.
+export {
+  appendAssistantToolCallMessage,
+  appendToolResultMessages,
+} from "@turnkeyai/agent-core/tool-messages";
 
 // gemini K3.5: Date.now() can repeat within the same millisecond
 // when parallel tool calls fire via Promise.all and each emits a
@@ -252,64 +212,94 @@ export function createWorkerSessionToolExecutor(options: {
   const definitions = toolCapabilityRegistry.definitions();
   const executableWorkerKinds = new Set(toolCapabilityRegistry.availableWorkerKinds());
   const sessionSpawnGate = new AsyncSerialGate();
+
+  // Source a definition for every dispatchable tool name so the toolkit carries
+  // honest schemas. The capability registry above stays the authority for which
+  // definitions are *offered* to the model (`definitions()` below); the toolkit
+  // only routes execution by name — exactly like the previous switch, including
+  // the unknown-tool fallback.
+  const workerKinds = toolCapabilityRegistry.availableWorkerKinds();
+  const toolDefinitionsByName = new Map<string, LLMToolDefinition>();
+  for (const definition of [
+    ...buildWebToolDefinitions(),
+    ...buildSessionToolDefinitions(
+      workerKinds,
+      options.maxSessionToolTimeoutMs
+        ? { maxTimeoutSeconds: options.maxSessionToolTimeoutMs / 1_000 }
+        : {}
+    ),
+    ...buildPermissionToolDefinitions(workerKinds),
+    ...buildMemoryToolDefinitions(),
+    ...buildTaskToolDefinitions(),
+  ]) {
+    toolDefinitionsByName.set(definition.name, definition);
+  }
+  const definitionFor = (name: string): LLMToolDefinition =>
+    toolDefinitionsByName.get(name) ?? { name, description: "", inputSchema: { type: "object" } };
+  const roleTool = (
+    name: string,
+    run: (input: RoleToolExecutionInput) => Promise<RoleToolExecutionResult>
+  ): Tool<RoleToolContext> => ({
+    definition: definitionFor(name),
+    execute(call, ctx) {
+      const input: RoleToolExecutionInput = {
+        call,
+        activation: ctx.activation,
+        packet: ctx.packet,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      };
+      return run(input);
+    },
+  });
+
+  const toolkit = createToolkit<RoleToolContext>([
+    roleTool("sessions_spawn", (input) =>
+      executeSessionsSpawn(
+        workerRuntime,
+        input,
+        executableWorkerKinds,
+        options.toolCancellationRegistry,
+        options.toolPermissionService,
+        options.maxSessionToolTimeoutMs,
+        options.hardTimeoutGraceMs,
+        options.sessionConcurrency,
+        sessionSpawnGate
+      )
+    ),
+    roleTool("sessions_send", (input) =>
+      executeSessionsSend(
+        workerRuntime,
+        input,
+        options.toolCancellationRegistry,
+        options.toolPermissionService,
+        options.maxSessionToolTimeoutMs,
+        options.hardTimeoutGraceMs
+      )
+    ),
+    roleTool("sessions_list", (input) => executeSessionsList(workerRuntime, input)),
+    roleTool("sessions_history", (input) => executeSessionsHistory(workerRuntime, input)),
+    roleTool("web_fetch", (input) => executeWebFetch(input, options.fetchFn ?? fetch)),
+    roleTool("permission_query", (input) => executePermissionQuery(input, options.toolPermissionService)),
+    roleTool("permission_result", (input) => executePermissionResult(input, options.toolPermissionService)),
+    roleTool("permission_applied", (input) => executePermissionApplied(input, options.toolPermissionService)),
+    roleTool("memory_search", (input) => executeMemorySearch(input, options.memoryResolver)),
+    roleTool("memory_get", (input) => executeMemoryGet(input, options.memoryResolver)),
+    roleTool("tasks_list", (input) => executeTasksList(input, options.taskToolService)),
+    roleTool("tasks_create", (input) => executeTasksCreate(input, options.taskToolService)),
+    roleTool("tasks_update", (input) => executeTasksUpdate(input, options.taskToolService)),
+  ]);
+
   return {
     definitions() {
       return definitions;
     },
-
     async execute(input) {
-      switch (input.call.name) {
-        case "sessions_spawn":
-          return executeSessionsSpawn(
-            workerRuntime,
-            input,
-            executableWorkerKinds,
-            options.toolCancellationRegistry,
-            options.toolPermissionService,
-            options.maxSessionToolTimeoutMs,
-            options.hardTimeoutGraceMs,
-            options.sessionConcurrency,
-            sessionSpawnGate
-          );
-        case "sessions_send":
-          return executeSessionsSend(
-            workerRuntime,
-            input,
-            options.toolCancellationRegistry,
-            options.toolPermissionService,
-            options.maxSessionToolTimeoutMs,
-            options.hardTimeoutGraceMs
-          );
-        case "sessions_list":
-          return executeSessionsList(workerRuntime, input);
-        case "sessions_history":
-          return executeSessionsHistory(workerRuntime, input);
-        case "web_fetch":
-          return executeWebFetch(input, options.fetchFn ?? fetch);
-        case "permission_query":
-          return executePermissionQuery(input, options.toolPermissionService);
-        case "permission_result":
-          return executePermissionResult(input, options.toolPermissionService);
-        case "permission_applied":
-          return executePermissionApplied(input, options.toolPermissionService);
-        case "memory_search":
-          return executeMemorySearch(input, options.memoryResolver);
-        case "memory_get":
-          return executeMemoryGet(input, options.memoryResolver);
-        case "tasks_list":
-          return executeTasksList(input, options.taskToolService);
-        case "tasks_create":
-          return executeTasksCreate(input, options.taskToolService);
-        case "tasks_update":
-          return executeTasksUpdate(input, options.taskToolService);
-        default:
-          return {
-            toolCallId: input.call.id,
-            toolName: input.call.name,
-            isError: true,
-            content: `Unknown tool: ${input.call.name}`,
-          };
-      }
+      const ctx: RoleToolContext = {
+        activation: input.activation,
+        packet: input.packet,
+        ...(input.signal ? { signal: input.signal } : {}),
+      };
+      return toolkit.execute(input.call, ctx);
     },
   };
 }
