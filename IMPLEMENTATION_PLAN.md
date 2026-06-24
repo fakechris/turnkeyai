@@ -136,11 +136,42 @@ The PR sequence is strictly serial (each builds on merged `main`), but the draft
 **Goal**: onFinalize chain; 5 redaction sites → 1. **Status**: Skipped — security-sensitive redaction + circular-dep wall; revisit via engine-path onFinalize
 ## Stage 4: Scaffolding + simplest-path parity (flag)
 **Goal**: engine path behind flag; no-policy parity. **Status**: Complete (#483) — flag + runViaReActEngine + parity tests landed
-## Stage 5: Closeout plumbing
-**Goal**: 12 closeouts via terminationPredicates/onTerminate; delete dead branch. **Status**: Not Started ← NEXT
+## Stage 5: Closeout plumbing + execution-limit gap
+**Goal**: honor execution limits + replicate the 13 closeouts via hooks; delete dead branch. **Status**: In Progress — PR1 done (#485); PR2/PR3 remain (see Appendix B) ← NEXT
 ## Stage 6: Repair/recovery (messages→ctx)
 **Goal**: idempotency to ctx; shouldRepair* → hooks. **Status**: Not Started
 ## Stage 7: Approval + session-continuation
 **Goal**: onRoundEmpty override + approval machine as hooks. **Status**: Not Started
 ## Stage 8: Flip + delete inline loop
 **Goal**: engine default; remove inline loop; e2e. **Status**: Not Started
+
+---
+
+# Appendix B — Stage 5 detailed spec (from analysis workflow)
+
+Verified against current `main`. All line refs are `llm-response-generator.ts` unless noted. Ship as 3 PRs.
+
+## PR1 — execution-limit gap ✅ MERGED (#485)
+Added `ReActHooks.runToolBatch?(calls, runOne, ctx)` to agent-core (default unbounded `Promise.all`). `runViaReActEngine` supplies a `runToolBatch` reusing the inline helpers `shouldSerializeToolBatch` / `resolveEffectiveToolLoopWallClockMs` / `createToolExecutionSignal` (order-dependent → step 1; else chunk by `maxParallelToolCalls`; per-chunk wall-clock signal). Each call wrapped in try/catch → `isError` result (error isolation, per codex/gemini). Inline `executeToolCalls` untouched. **Deferred to PR2:** `maxToolCallsPerRound` cap (via `onBeforeExecute`, replicate the synthetic `tool_call_limit_exceeded` result at `:3011-3030`) + progress/result persistence (via `onProgress` → `roundTrace` + `persistNativeToolTraceSafely` + `runtimeProgressRecorder`).
+
+## PR3 — delete dead `partial_sub_agent_final` (independent, do anytime)
+`findCompletedSessionEvidence` (`:4296-4356`) declares `let partial = false` and never reassigns it (the loop `continue`s on any `parsed.status !== "completed"`), so `completedSession.partial` is always false and the `partial_sub_agent_final` branch is unreachable (two tests at `:13281`, `:13368` already assert the reason is never produced — they use `assert.notEqual`, which does NOT type-constrain, so removing the union member is safe). Delete: the union member (`:68`), the `missionTerminalStatusForCloseout` case (`:118`), the ternary → just `"completed_sub_agent_final"` (`:1693`), the partial-specific reasonLines branch (`~:1745`), and the finder's `partial` field (type `:4368`, decl `:4373`, return `:4422`).
+
+## PR2 — closeout hooks (the bulk; depends on PR1)
+Turn `runViaReActEngine` from no-hooks into a closeout-parity path.
+
+**Needs a NEW agent-core hook** (adversarial finding): 7 of the 13 closeouts gate on the round's **pending** tool calls (post-normalize, pre-execute) — `recovery_tool_budget`, `operator_cancelled`, `pseudo_tool_call`, `wall_clock_budget`, `repeated_tool_failure`, `repeated_session_inspection`, `excessive_session_continuation`. No current hook can terminate there (`terminationPredicate` is pre-model; `onToolCalls` can only rewrite). Add `ReActHooks.onToolCallsClose?(calls, state, ctx): string | null`, invoked in `react-agent.ts` right after `onToolCalls` (`~:126`) and before execute (`:141`); if non-null, `yield* terminate(reason); return;`. Preserve the inline precedence order inside it: recovery-budget → operator-cancelled → pseudo → wall-clock → round-limit → repeated-failure → repeated-inspection → excessive-continuation.
+
+**Per-run closeout state** (the hooks fire across callbacks): a mutable `run = { toolLoopCloseout, closeoutResult, reduction, reductionSnapshot, memoryFlushes }` captured by the hook closures. `onTerminate` writes it; `onFinalize` + the metadata assembly (`:2447-2467`) read it (mirror inline `:2275-2297`: emit `toolLoopCloseout`, `missionReport`, `requestEnvelopeReduction`, `preCompactionMemoryFlushes`).
+
+**Hook map** (reuse the in-scope generator helpers verbatim):
+- `round_limit` → already handled by `maxRounds`; just an `onTerminate` branch.
+- `onToolCallsClose` → the 7 pending-call closeouts (reuse `findRepeatedFailedToolCall`, `findRepeatedSessionInspectionCall`, `findExcessiveSessionContinuationCall`, `containsAnyToolCallForm`, `shouldCloseoutCancelledSessionWithoutContinuation`, recovery-budget check, wall-clock check). Verify `containsAnyToolCallForm` reads only `.text`/`.toolCalls`.
+- `onModelCallError` → `tool_evidence_fallback` model-error site (`:407-431`): `buildLocalEvidenceCloseout` + `maybeRedactForbiddenLocalUrls`, set `run.toolLoopCloseout` reason `tool_evidence_fallback`, return `{ text }`.
+- `onAfterExecute` → `completed_sub_agent_final` (`findCompletedSessionEvidence`) + `sub_agent_timeout` (`findSubAgentToolTimeout`). **Scope guard:** only the two terminal closeouts — the huge inline post-execute block (`:1533-2216`) also has continuation/repair branches that `continue` (those are Stage 7); parity tests must use scenarios where none fire (the `simplePacket()` discipline).
+- `onTerminate(reason, state, ctx)` → dispatch to `this.generateFinalAfterToolRoundLimit({ activation, packet, selection, baseGatewayInput: initialGatewayInput, messages: state.messages, maxRounds, modelCallTrace, reasonLines: <per-reason> })`; write `run.closeoutResult` (+ reduction/snapshot/memoryFlush); return `{ text }`. `generateFinalAfterToolRoundLimit` is at `:2642-2868`.
+- `onFinalize` → apply the trailing visibility appenders (`:2228-2254`) for all paths; `maybeAppendTimeoutContinuationVisibility` for `sub_agent_timeout` only.
+
+**fail-closed invariant** (`:82-91`): the partial/blocked split is enforced by deliberately NOT setting `authorizedPartial` — replicate by leaving it unset (`evidenceAvailable ? "partial" : "blocked"` reads `hasUsableEvidence(toolTrace)`).
+
+**Parity tests:** one per closeout reason (round-limit, repeated-failure, repeated-session-inspection, pseudo-tool, wall-clock, completed-sub-agent, sub-agent-timeout, model-error fallback), asserting content + `missionReport` + `toolLoopCloseout` parity between `reactEngine: "inline"` and `"engine"`. Gate every step on the inline 197 + the parity set.
