@@ -16,6 +16,7 @@
     "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
     "./prompt-policy": "./src/prompt-policy.ts",
     "./react-model-client": "./src/react-model-client.ts",
+    "./react/predicates": "./src/react/predicates.ts",
     "./role-profile": "./src/role-profile.ts",
     "./sub-agent-worker-handler": "./src/sub-agent-worker-handler.ts",
     "./task-tool-service": "./src/task-tool-service.ts",
