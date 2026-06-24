@@ -218,7 +218,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     this.deferToolObservability = options.deferToolObservability === true;
     this.reactEngine =
       options.reactEngine ??
-      (process.env.TURNKEYAI_REACT_ENGINE === "engine" ? "engine" : "inline");
+      (typeof process !== "undefined" && process.env?.TURNKEYAI_REACT_ENGINE === "engine"
+        ? "engine"
+        : "inline");
   }
 
   async generate(input: {
@@ -2305,6 +2307,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
    * (repair, approval, continuation, closeouts) lands in later cutover stages;
    * until then this is gated behind reactEngine: "engine" and exercised only on
    * simple scenarios. Production stays "inline".
+   *
+   * Known scope gap (execution/budget convergence stage): tool calls run
+   * per-call through the executor, NOT through the inline executeToolCalls
+   * wrapper, so a round with multiple calls does not yet honor
+   * maxParallelToolCalls / maxToolCallsPerRound / order-dependent serialization /
+   * wall-clock aborts / progress persistence. The engine path is therefore
+   * scoped to single-tool-per-round simple scenarios until those limits are
+   * wired into the engine.
    */
   private async runViaReActEngine(args: {
     input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal };
@@ -2319,8 +2329,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     let lastResult: GenerateTextResult | undefined;
     let traceRound = 0;
     const model: ModelClient = {
-      generate: async ({ messages: roundMessages, toolChoice }) => {
-        const noToolRound = toolChoice === "none";
+      generate: async ({ messages: roundMessages, tools, toolChoice }) => {
+        // The engine omits `tools` for its tool-free synthesis round (round-limit
+        // closeout); honor that so the closeout can't emit a discarded tool call.
+        const noToolRound = toolChoice === "none" || tools === undefined;
         const mappedToolChoice: GenerateTextInput["toolChoice"] | undefined =
           toolChoice === undefined
             ? undefined
@@ -2415,7 +2427,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           toolCallId: event.result.toolCallId,
           toolName: event.result.toolName,
           isError: event.result.isError === true,
-          contentBytes: Buffer.byteLength(event.result.content ?? "", "utf8"),
+          contentBytes: new TextEncoder().encode(event.result.content ?? "").length,
           ...(event.result.content ? { content: event.result.content } : {}),
           ...(event.result.cancelled ? { cancelled: true } : {}),
           ...(event.result.skipped ? { skipped: true } : {}),
