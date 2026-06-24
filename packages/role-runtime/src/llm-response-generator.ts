@@ -2556,6 +2556,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
     }
 
+    // Record the request-envelope reduction boundary before building metadata,
+    // matching the inline path's observability (a closeout's final synthesis may
+    // have overflowed and reduced).
+    if (run.reductionSnapshot) {
+      await this.recordReductionBoundarySafely(activation, packet, selection, run.reductionSnapshot);
+    }
+
     const content = enforceRequestedThreeLineLabelShape({
       taskPrompt: packet.taskPrompt,
       resultText: finalText,
