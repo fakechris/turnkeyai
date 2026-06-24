@@ -5,6 +5,7 @@
   "exports": {
     "./compression/context-compressor": "./src/compression/context-compressor.ts",
     "./context/context-budgeter": "./src/context/context-budgeter.ts",
+    "./context/memory-provider-adapter": "./src/context/memory-provider-adapter.ts",
     "./context/role-memory-resolver": "./src/context/role-memory-resolver.ts",
     "./deterministic-response-generator": "./src/deterministic-response-generator.ts",
     "./hybrid-response-generator": "./src/hybrid-response-generator.ts",

@@ -6,6 +6,7 @@
     "./tool": "./src/tool.ts",
     "./toolkit": "./src/toolkit.ts",
     "./tool-messages": "./src/tool-messages.ts",
+    "./memory-provider": "./src/memory-provider.ts",
     "./index": "./src/index.ts"
   }
 }
