@@ -21571,3 +21571,60 @@ test("cutover parity: tool_evidence_fallback closeout is identical between inlin
     (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
   );
 });
+
+test("cutover parity: an aborting tool propagates (rejects) on inline and engine paths", async () => {
+  // A per-chunk wall-clock timeout / operator cancellation surfaces from the
+  // executor as an AbortError. Both paths must let it propagate (reject the
+  // run), NOT swallow it into an isError result that lets the loop continue
+  // making more model/tool rounds past the abort. Before the engine
+  // runToolBatch rethrew aborts, the engine path swallowed this into an isError
+  // result, called the gateway again, and returned a normal reply.
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute() {
+      const err = new Error("tool execution aborted");
+      err.name = "AbortError";
+      throw err;
+    },
+  });
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) {
+        return {
+          text: "let me look",
+          toolCalls: [{ id: "c1", name: "lookup", input: {} }],
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      // Reaching a second model call means the abort was swallowed — the run
+      // should have rejected before getting here.
+      return {
+        text: "abort was swallowed — should never be reached",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    return gateway;
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+
+  await assert.rejects(run("inline"), /aborted/);
+  await assert.rejects(run("engine"), /aborted/);
+});
