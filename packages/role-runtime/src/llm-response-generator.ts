@@ -2397,12 +2397,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         | ({ level: RequestEnvelopeReductionLevel; omittedSections: string[] } & ReductionEnvelopeSnapshot)
         | undefined;
       memoryFlushes: PreCompactionMemoryFlushResult[];
+      // PR2c: onAfterExecute detects the two terminal sub-agent closeouts and
+      // stashes the matching signal here so onTerminate can rebuild the inline
+      // reasonLines + closeout metadata for the reason it returned.
+      completedSession: NonNullable<ReturnType<typeof findCompletedSessionEvidence>> | undefined;
+      timeoutSignal: NonNullable<ReturnType<typeof findSubAgentToolTimeout>> | undefined;
     } = {
       toolLoopCloseout: undefined,
       closeoutResult: undefined,
       reduction: undefined,
       reductionSnapshot: undefined,
       memoryFlushes: [],
+      completedSession: undefined,
+      timeoutSignal: undefined,
     };
     const toolTrace: NativeToolRoundTrace[] = [];
     const agent = createReActAgent<RoleToolContext>({
@@ -2483,18 +2490,135 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           return results;
         },
-        // Stage 5 closeout-answer producer. Only round_limit is reachable until
-        // the remaining closeout hooks (onToolCallsClose / onAfterExecute / ...)
-        // land; each closeout reason gets its inline reasonLines + status here.
+        // Stage 5 PR2c closeout detection: mirror the inline post-execute
+        // terminal closeouts. After a tool round runs, inspect the round's
+        // results with the same finders the inline loop uses (findCompletedSession
+        // Evidence / findSubAgentToolTimeout) and return the closeout reason; the
+        // engine then routes a non-null reason through terminate → onTerminate,
+        // exactly like a terminationPredicate. Order matches inline: a completed
+        // delegated session wins over a timeout signal in the same round.
+        //
+        // Scope: this fires ONLY the two TERMINAL closeouts. The inline
+        // post-execute block also has continuation/repair branches (supplemental
+        // probe, approval-gate repair, independent-evidence streams, forced
+        // permission_result, weak-evidence) that `continue` the loop instead of
+        // closing out — those are the approval/recovery cutover stages. Until
+        // they land, the engine path is exercised only by parity scenarios that
+        // trip none of them.
+        onAfterExecute: (results) => {
+          const completedSession = findCompletedSessionEvidence(results);
+          if (completedSession) {
+            run.completedSession = completedSession;
+            return "completed_sub_agent_final";
+          }
+          const timeoutSignal = findSubAgentToolTimeout(results);
+          if (timeoutSignal) {
+            run.timeoutSignal = timeoutSignal;
+            return "sub_agent_timeout";
+          }
+          return null;
+        },
+        // Stage 5 closeout-answer producer. round_limit (PR2a),
+        // completed_sub_agent_final + sub_agent_timeout (PR2c) are reachable;
+        // each closeout reason gets its inline reasonLines + status here.
         onTerminate: async (reason, state) => {
-          const reasonLines =
-            reason === "round_limit"
-              ? [
-                  `Tool-use round limit reached (${maxRounds}).`,
-                  "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-                  "State uncertainties and missing verification explicitly instead of trying another lookup.",
-                ]
-              : undefined;
+          // Each closeout reason rebuilds the inline reasonLines + closeout
+          // metadata it produced inline; the round_limit defaults remain the
+          // fallback for any reason without a bespoke branch. completed/timeout
+          // read the signal onAfterExecute stashed on `run`.
+          let reasonLines: string[] | undefined;
+          let closeout: ToolLoopCloseoutMetadata;
+          if (reason === "completed_sub_agent_final" && run.completedSession) {
+            const completedSession = run.completedSession;
+            const preserveRecoveredTimeoutCloseout = shouldPreserveRecoveredTimeoutCloseout({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              toolTrace,
+              evidenceText: completedSession.finalContents.join("\n\n"),
+            });
+            reasonLines = [
+              `${completedSession.toolName} returned completed delegated session evidence.`,
+              "Do not call sessions_history or sessions_list just to restate this delegated result.",
+              "Use the delegated session evidence below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
+              "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
+              "Do not add DNS/IP resolution, IANA allocation details, production-environment bans, real-service claims, security-scanner claims, or abuse-risk claims unless those exact facts are stated in this source content.",
+              "If the source states a narrow scope limit or usage caveat, preserve its exact wording (or state that wider use is outside the verified scope); do not upgrade a narrow caveat into a broader production-environment or real-service ban.",
+              ...buildCompletedBrowserEvidenceDimensionCarryForwardLines({
+                taskPrompt: packet.taskPrompt,
+                finalContents: completedSession.finalContents,
+              }),
+              "If a requested dimension is missing or uncertain in the source content, write not verified.",
+              "Preserve uncertainty labels. Preserve source URLs only when the original user did not forbid links or source URLs.",
+              "For each Source N evidence block below, carry at least one verified fact into the final answer or explicitly say that source did not verify a required dimension.",
+              "For approval-gated work, include the approved action, the evidence observed after the approved action, and the residual risk or no-external-side-effect boundary.",
+              ...(preserveRecoveredTimeoutCloseout
+                ? [
+                    "This completed source followed a timeout or timed-out continuation.",
+                    "Preserve user-visible timeout closeout: say what was recovered, whether the timeout still limits the conclusion, and what continue/retry/longer-timeout path remains if future evidence is missing.",
+                    "Do not reduce the timeout closeout to 'no action required' solely because resumed evidence eventually arrived.",
+                  ]
+                : []),
+              ...(completedSession.browserRecoverySummaries.length
+                ? [
+                    "The source also includes browser continuity metadata.",
+                    "If the user asked to continue, recover, reopen, reconnect, or handle an unavailable browser session, include one concise user-visible continuity sentence in the final answer.",
+                    ...completedSession.browserRecoverySummaries.map(
+                      (summary, index) => `Browser continuity ${index + 1}: ${summary}`,
+                    ),
+                  ]
+                : []),
+              ...completedSession.finalContents.map(
+                (content, index) => `Source ${index + 1} evidence:\n${sliceUtf8(content, 8 * 1024)}`,
+              ),
+            ];
+            closeout = {
+              reason: "completed_sub_agent_final",
+              maxRounds,
+              toolName: completedSession.toolName,
+              finalContentCount: completedSession.finalContents.length,
+              toolCallCount: countToolCalls(toolTrace),
+              roundCount: toolTrace.length,
+              evidenceAvailable: true,
+            };
+          } else if (reason === "sub_agent_timeout" && run.timeoutSignal) {
+            const timeoutSignal = run.timeoutSignal;
+            reasonLines = [
+              `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
+              "Do not call more tools or spawn fallback sessions for this timeout.",
+              "Do not copy internal fetch URLs, local fixture URLs, session keys, or raw tool arguments into the final answer unless the original user requested those exact raw identifiers.",
+              timeoutSignal.evidenceAvailable
+                ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
+                : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
+              "Include one concise continuation sentence: the user can continue the same source check if the missing evidence is still worth waiting for.",
+            ];
+            closeout = {
+              reason: "sub_agent_timeout",
+              maxRounds,
+              toolName: timeoutSignal.toolName,
+              ...(timeoutSignal.timeoutSeconds == null
+                ? {}
+                : { timeoutSeconds: timeoutSignal.timeoutSeconds }),
+              evidenceAvailable: timeoutSignal.evidenceAvailable,
+              toolCallCount: countToolCalls(toolTrace),
+              roundCount: toolTrace.length,
+            };
+          } else {
+            reasonLines =
+              reason === "round_limit"
+                ? [
+                    `Tool-use round limit reached (${maxRounds}).`,
+                    "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+                    "State uncertainties and missing verification explicitly instead of trying another lookup.",
+                  ]
+                : undefined;
+            closeout = {
+              reason: reason as ToolLoopCloseoutMetadata["reason"],
+              maxRounds,
+              toolCallCount: countToolCalls(toolTrace),
+              roundCount: toolTrace.length,
+              evidenceAvailable: hasUsableEvidence(toolTrace),
+            };
+          }
           const generated = await this.generateFinalAfterToolRoundLimit({
             activation,
             packet,
@@ -2505,14 +2629,29 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             modelCallTrace,
             ...(reasonLines ? { reasonLines } : {}),
           });
-          run.toolLoopCloseout = {
-            reason: reason as ToolLoopCloseoutMetadata["reason"],
-            maxRounds,
-            toolCallCount: countToolCalls(toolTrace),
-            roundCount: toolTrace.length,
-            evidenceAvailable: hasUsableEvidence(toolTrace),
-          };
-          run.closeoutResult = generated.result;
+          // Mirror the inline per-reason trailing transforms. completed: redact
+          // forbidden local URLs from the delegated evidence (inline :1784).
+          // timeout: append the resumable-continuation sentence (inline :2197).
+          // Other reasons pass through.
+          //
+          // Scope gap (deferred to the browser/recovery cutover stages): the
+          // inline completed branch also runs maybeAppendBrowserRecoveryVisibility
+          // / maybeAppendBrowserFailureBucketVisibility / the recovered-timeout +
+          // continuation appenders (:1747-1783) before redaction. Those only fire
+          // for browser-recovery or timed-out-then-completed delegated sessions —
+          // scenarios that ALSO trip the inline pre-synthesis continuation
+          // branches this slice doesn't yet handle, so they cannot be parity-
+          // tested here (a browser session would diverge on the continuation, not
+          // the appender). For the clean delegated sessions in scope they are
+          // no-ops, so redaction alone preserves parity.
+          const closeoutResult =
+            reason === "completed_sub_agent_final"
+              ? maybeRedactForbiddenLocalUrls({ result: generated.result, packet })
+              : reason === "sub_agent_timeout"
+                ? maybeAppendTimeoutContinuationVisibility(generated.result)
+                : generated.result;
+          run.toolLoopCloseout = closeout;
+          run.closeoutResult = closeoutResult;
           if (generated.reduction) {
             run.reduction = generated.reduction;
             run.reductionSnapshot = generated.reductionSnapshot;
@@ -2521,8 +2660,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             run.memoryFlushes.push(generated.memoryFlush);
           }
           return {
-            text: generated.result.text,
-            ...(generated.result.stopReason ? { stopReason: generated.result.stopReason } : {}),
+            text: closeoutResult.text,
+            ...(closeoutResult.stopReason ? { stopReason: closeoutResult.stopReason } : {}),
           };
         },
         // Stage 5 closeout: a thrown tool-round model call converges onto the

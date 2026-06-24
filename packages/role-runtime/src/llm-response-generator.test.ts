@@ -21628,3 +21628,182 @@ test("cutover parity: an aborting tool propagates (rejects) on inline and engine
   await assert.rejects(run("inline"), /aborted/);
   await assert.rejects(run("engine"), /aborted/);
 });
+
+test("cutover parity: completed_sub_agent_final closeout is identical between inline and engine paths", async () => {
+  // Round 1 delegates to a sub-agent; the executor returns a completed session
+  // record with usable evidence. findCompletedSessionEvidence fires the terminal
+  // completed_sub_agent_final closeout on both paths. agent_id "explore" (not
+  // "browser") and the bland simplePacket keep every Stage-7 continuation/repair
+  // branch from firing, so both paths reach the closeout in a single tool round.
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input) => {
+      // tools disabled => the closeout synthesis round (withoutToolUse)
+      if ((input.tools?.length ?? 0) === 0) {
+        return {
+          text: "The delegated explore session confirms the answer is 42.",
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return {
+        text: "delegating to a sub-agent",
+        toolCalls: [
+          {
+            id: "c1",
+            name: "sessions_spawn",
+            input: { agent_id: "explore", task: "Find the answer." },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:c1",
+          agent_id: "explore",
+          status: "completed",
+          tool_chain: [],
+          result: "The delegated explore session confirmed the answer is 42.",
+          final_content: null,
+          payload: null,
+        }),
+      };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "completed_sub_agent_final",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "completed_sub_agent_final",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});
+
+test("cutover parity: sub_agent_timeout closeout is identical between inline and engine paths", async () => {
+  // Round 1 delegates to a sub-agent that times out with no usable evidence.
+  // findSubAgentToolTimeout fires the terminal sub_agent_timeout closeout on both
+  // paths; both then pipe the synthesis through maybeAppendTimeoutContinuation
+  // Visibility (the plain synthesis text carries no timeout guidance, so the
+  // resumable-continuation sentence is appended). evidence_available:false maps
+  // missionReport.status to "blocked". agent_id "explore" avoids the supplemental
+  // local-timeout probe (which only fires for non-browser agents on richer
+  // prompts).
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input) => {
+      if ((input.tools?.length ?? 0) === 0) {
+        return {
+          text: "Verification did not complete within the tool budget.",
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return {
+        text: "delegating to a sub-agent",
+        toolCalls: [
+          {
+            id: "c1",
+            name: "sessions_spawn",
+            input: { agent_id: "explore", task: "Fetch evidence from a slow source." },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        isError: true,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:c1",
+          agent_id: "explore",
+          status: "timeout",
+          timeout_seconds: 120,
+          resumable: true,
+          evidence_available: false,
+          tool_chain: [],
+          result: "No usable evidence was gathered before timeout.",
+          final_content: null,
+          payload: null,
+        }),
+      };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "sub_agent_timeout",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "sub_agent_timeout",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+  // sub_agent_timeout always pipes through maybeAppendTimeoutContinuationVisibility.
+  assert.ok(
+    engine.content.includes("Continuation: this source check is resumable"),
+    "engine timeout closeout should carry the resumable-continuation sentence",
+  );
+});
