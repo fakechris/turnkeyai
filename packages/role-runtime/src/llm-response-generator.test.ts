@@ -21453,3 +21453,62 @@ test("cutover: engine path isolates a throwing tool as an error result (no faile
   const result = await generator.generate({ activation: buildActivation(), packet: simplePacket() });
   assert.equal(result.content, "recovered");
 });
+
+test("cutover parity: round-limit closeout is identical between inline and engine paths", async () => {
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input) => {
+      // tools disabled => the closeout synthesis round (withoutToolUse)
+      if ((input.tools?.length ?? 0) === 0) {
+        return {
+          text: "final after the round limit",
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return {
+        text: "looping",
+        toolCalls: [{ id: "c", name: "lookup", input: {} }],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "v" };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 2 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "round_limit",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "round_limit",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});
