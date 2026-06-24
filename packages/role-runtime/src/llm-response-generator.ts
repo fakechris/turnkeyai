@@ -2522,6 +2522,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // engine catches in model.generate, calls this, and emits final directly
         // (closeoutReason "model_call_error") — NOT via onTerminate; the host
         // closeout reason is tool_evidence_fallback. Aborts must rethrow.
+        //
+        // Stage 7 scope gap: the inline path first checks for a pending approval
+        // (buildForcedPendingApprovalWaitTimeoutPermissionResultCall → a forced
+        // permission_result round) before this fallback, so an approval/denial
+        // that arrived before the provider error is observed. That forced-round
+        // machinery is the approval/continuation cutover stage; until it lands,
+        // the engine model-error closeout is scoped to non-approval flows.
         onModelCallError: (error, state, _ctx) => {
           if (isAbortError(error)) {
             return "rethrow";
