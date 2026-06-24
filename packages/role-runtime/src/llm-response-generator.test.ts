@@ -21512,3 +21512,62 @@ test("cutover parity: round-limit closeout is identical between inline and engin
     (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
   );
 });
+
+test("cutover parity: tool_evidence_fallback closeout is identical between inline and engine paths", async () => {
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: "The capital of France is Paris.",
+      };
+    },
+  });
+  // round 1 → a tool call (usable evidence lands in the trace); the post-tool
+  // model call throws → tool_evidence_fallback on both paths.
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) {
+        return {
+          text: "let me look",
+          toolCalls: [{ id: "c1", name: "lookup", input: { q: "capital of France" } }],
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      throw new Error("gateway exploded on the tool-round model call");
+    };
+    return gateway;
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "tool_evidence_fallback",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "tool_evidence_fallback",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});

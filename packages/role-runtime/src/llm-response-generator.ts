@@ -2517,6 +2517,48 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ...(generated.result.stopReason ? { stopReason: generated.result.stopReason } : {}),
           };
         },
+        // Stage 5 closeout: a thrown tool-round model call converges onto the
+        // inline tool_evidence_fallback closeout (when usable evidence exists). The
+        // engine catches in model.generate, calls this, and emits final directly
+        // (closeoutReason "model_call_error") — NOT via onTerminate; the host
+        // closeout reason is tool_evidence_fallback. Aborts must rethrow.
+        //
+        // Stage 7 scope gap: the inline path first checks for a pending approval
+        // (buildForcedPendingApprovalWaitTimeoutPermissionResultCall → a forced
+        // permission_result round) before this fallback, so an approval/denial
+        // that arrived before the provider error is observed. That forced-round
+        // machinery is the approval/continuation cutover stage; until it lands,
+        // the engine model-error closeout is scoped to non-approval flows.
+        onModelCallError: (error, state, _ctx) => {
+          if (isAbortError(error)) {
+            return "rethrow";
+          }
+          const localResult =
+            activeToolLoop && hasUsableEvidence(toolTrace)
+              ? buildLocalEvidenceCloseout({
+                  activation,
+                  messages: state.messages,
+                  packet,
+                  selection,
+                  error,
+                })
+              : null;
+          if (!localResult) {
+            return "rethrow";
+          }
+          run.toolLoopCloseout = {
+            reason: "tool_evidence_fallback",
+            maxRounds,
+            toolCallCount: countToolCalls(toolTrace),
+            roundCount: toolTrace.length,
+            evidenceAvailable: true,
+          };
+          run.closeoutResult = maybeRedactForbiddenLocalUrls({ result: localResult, packet });
+          return {
+            text: run.closeoutResult.text,
+            ...(run.closeoutResult.stopReason ? { stopReason: run.closeoutResult.stopReason } : {}),
+          };
+        },
       },
     });
 
