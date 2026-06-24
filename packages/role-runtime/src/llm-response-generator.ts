@@ -2456,9 +2456,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                       ...(execSignal.signal ? { signal: execSignal.signal } : {}),
                     });
                   } catch (error) {
-                    // Match the inline executeToolCalls + the engine's default
-                    // runOne: a thrown tool failure becomes an isError result the
-                    // model can observe, not a rejected (failed) response.
+                    // Aborts (operator cancellation or a per-chunk wall-clock
+                    // timeout) MUST propagate, exactly like the inline
+                    // executeToolCalls catch (isAbortError → rethrow). Swallowing
+                    // an abort into an isError result would let the loop keep
+                    // making model/tool rounds past a cancellation or budget that
+                    // should have stopped it.
+                    if (isAbortError(error)) {
+                      throw error;
+                    }
+                    // A non-abort tool failure becomes an isError result the model
+                    // can observe, not a rejected (failed) response.
                     return {
                       toolCallId: call.id,
                       toolName: call.name,
