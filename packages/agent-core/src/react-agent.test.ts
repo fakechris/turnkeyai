@@ -173,3 +173,41 @@ test("collectReActRun surfaces the closeout reason", async () => {
   );
   assert.deepEqual(out, { text: "ok", rounds: 0, stopReason: "stop", closeoutReason: "done_reason" });
 });
+
+test("runToolBatch receives the executable calls and its result order drives tool_result events", async () => {
+  const seen: string[] = [];
+  const model = scriptedModel([
+    { text: "fan out", toolCalls: [call("c1", "a"), call("c2", "b")] },
+    { text: "done" },
+  ]);
+  const events = await run(
+    model,
+    {
+      // Run serially, reversed, to prove the host controls execution + order.
+      runToolBatch: async (calls, runOne) => {
+        const out: Awaited<ReturnType<typeof runOne>>[] = [];
+        for (const call of [...calls].reverse()) {
+          seen.push(call.name);
+          out.push(await runOne(call));
+        }
+        return out;
+      },
+    },
+    [echoTool("a"), echoTool("b")]
+  );
+  assert.deepEqual(seen, ["b", "a"]); // host ran them serially, reversed
+  const results = events.filter((e) => e.type === "tool_result");
+  assert.deepEqual(
+    results.map((e) => (e.type === "tool_result" ? e.result.toolName : "")),
+    ["b", "a"] // tool_result order follows runToolBatch's returned order
+  );
+});
+
+test("without runToolBatch the engine still runs the default Promise.all", async () => {
+  const model = scriptedModel([
+    { text: "go", toolCalls: [call("c1", "a")] },
+    { text: "done" },
+  ]);
+  const events = await run(model, {}, [echoTool("a")]);
+  assert.equal(events.filter((e) => e.type === "tool_result").length, 1);
+});

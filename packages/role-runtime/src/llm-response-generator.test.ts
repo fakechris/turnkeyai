@@ -21353,3 +21353,59 @@ test("cutover parity: single tool round is identical between inline and engine p
     1,
   );
 });
+
+test("cutover: engine path serializes an order-dependent multi-tool round", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        { name: "memory_search", description: "s", inputSchema: { type: "object" } },
+        { name: "memory_get", description: "g", inputSchema: { type: "object" } },
+      ];
+    },
+    async execute(input) {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "ok" };
+    },
+  };
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let n = 0;
+  gateway.generate = async () => {
+    n += 1;
+    if (n === 1) {
+      return {
+        text: "look",
+        toolCalls: [
+          { id: "c1", name: "memory_search", input: {} },
+          { id: "c2", name: "memory_get", input: {} },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "done",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 8 },
+    reactEngine: "engine",
+  });
+  await generator.generate({ activation: buildActivation(), packet: simplePacket() });
+  // memory_search + memory_get are order-dependent → the engine path must run
+  // them one-at-a-time (shouldSerializeToolBatch → step 1), not concurrently.
+  assert.equal(maxInFlight, 1);
+});

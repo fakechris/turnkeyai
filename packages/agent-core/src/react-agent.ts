@@ -1,3 +1,4 @@
+import type { LLMToolCall } from "@turnkeyai/llm-adapter/types";
 import type { ToolContext, ToolResult } from "./tool";
 import { appendAssistantToolCallMessage, appendToolResultMessages } from "./tool-messages";
 import type {
@@ -154,20 +155,23 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             yield emit({ type: "tool_started", round, call });
           }
           const toolCtx: Ctx = signal ? ({ ...ctx, signal } as Ctx) : ctx;
-          const executed: ToolResult[] = await Promise.all(
-            executable.map(async (call) => {
-              try {
-                return await options.toolkit.execute(call, toolCtx);
-              } catch (error) {
-                return {
-                  toolCallId: call.id,
-                  toolName: call.name,
-                  isError: true,
-                  content: error instanceof Error ? error.message : String(error),
-                };
-              }
-            })
-          );
+          const runOne = async (call: LLMToolCall): Promise<ToolResult> => {
+            try {
+              return await options.toolkit.execute(call, toolCtx);
+            } catch (error) {
+              // Isolate a throwing tool as an error result instead of rejecting
+              // the batch and crashing the whole loop.
+              return {
+                toolCallId: call.id,
+                toolName: call.name,
+                isError: true,
+                content: error instanceof Error ? error.message : String(error),
+              };
+            }
+          };
+          const executed: ToolResult[] = hooks.runToolBatch
+            ? await hooks.runToolBatch(executable, runOne, toolCtx)
+            : await Promise.all(executable.map(runOne));
           const results = [...rejected, ...executed];
           for (const result of results) {
             yield emit({ type: "tool_result", round, result });

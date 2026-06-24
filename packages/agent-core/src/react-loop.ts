@@ -83,6 +83,19 @@ export interface ReActHooks<Ctx extends ToolContext> {
     calls: LLMToolCall[],
     ctx: Ctx
   ): { executable: LLMToolCall[]; rejected?: ToolResult[] };
+  /**
+   * Strategy for executing a round's executable calls. Default is an unbounded
+   * `Promise.all`. A host supplies this to enforce concurrency caps, ordered
+   * serialization, and per-call wall-clock aborts. It MUST return results in the
+   * same order as `calls` so `tool_result` emission and message pairing stay
+   * correct. `runOne` is the default per-call executor (with the run signal); a
+   * host may call it or run the executor directly with its own signals.
+   */
+  runToolBatch?(
+    calls: LLMToolCall[],
+    runOne: (call: LLMToolCall) => Promise<ToolResult>,
+    ctx: Ctx
+  ): Promise<ToolResult[]>;
   /** Inspect results after a round; return a closeout reason to stop, or null. */
   onAfterExecute?(results: ToolResult[], state: ReActState, ctx: Ctx): string | null;
   /** Ordered closeout predicates checked each round (round/budget/cap closeouts). */
