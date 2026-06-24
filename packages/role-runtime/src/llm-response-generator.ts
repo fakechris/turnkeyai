@@ -38,6 +38,7 @@ import {
   appendToolResultMessages,
   DEFAULT_ROLE_TOOL_MAX_ROUNDS,
   recordRoleToolProgress,
+  type RoleToolContext,
   type RoleToolExecutionResult,
   type RoleToolLoopOptions,
 } from "./tool-use";
@@ -50,6 +51,9 @@ import {
   stableJson,
   toolCallSignature,
 } from "./react/predicates";
+import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
+import type { ModelClient } from "@turnkeyai/agent-core/react-loop";
+import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type {
   PreCompactionMemoryFlusher,
   PreCompactionMemoryFlushResult,
@@ -187,6 +191,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     | undefined;
   private readonly clock: Clock;
   private readonly deferToolObservability: boolean;
+  /**
+   * Cutover flag. "inline" (default) runs the original 1900-line loop. "engine"
+   * routes the simplest no-policy path through agent-core's createReActAgent.
+   * Production stays "inline"; nothing flips until the engine path reaches full
+   * parity. Overridable by TURNKEYAI_REACT_ENGINE=engine.
+   */
+  private readonly reactEngine: "inline" | "engine";
 
   constructor(options: {
     gateway: LLMGateway;
@@ -196,6 +207,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     preCompactionMemoryFlusher?: PreCompactionMemoryFlusher;
     clock?: Clock;
     deferToolObservability?: boolean;
+    reactEngine?: "inline" | "engine";
   }) {
     this.gateway = options.gateway;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
@@ -204,6 +216,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     this.preCompactionMemoryFlusher = options.preCompactionMemoryFlusher;
     this.clock = options.clock ?? { now: () => Date.now() };
     this.deferToolObservability = options.deferToolObservability === true;
+    this.reactEngine =
+      options.reactEngine ??
+      (typeof process !== "undefined" && process.env?.TURNKEYAI_REACT_ENGINE === "engine"
+        ? "engine"
+        : "inline");
   }
 
   async generate(input: {
@@ -308,6 +325,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     let nextToolChoice: GenerateTextInput["toolChoice"] | undefined;
     const toolLoopStartedAtMs = this.clock.now();
     let toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
+    if (this.reactEngine === "engine") {
+      return this.runViaReActEngine({
+        input,
+        selection,
+        activeToolLoop,
+        initialGatewayInput,
+        modelCallTrace,
+      });
+    }
     for (let round = 0; ; round++) {
       throwIfAborted(input.signal);
       const maxRounds =
@@ -2269,6 +2295,175 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           : {}),
         ...(toolLoopCloseout ? { toolLoopCloseout } : {}),
         ...(missionReport ? { missionReport } : {}),
+      },
+    };
+  }
+
+  /**
+   * Cutover beachhead: run the simplest no-policy path through agent-core's
+   * createReActAgent instead of the inline loop. Reuses the same model stack
+   * (generateWithEnvelopeRetry) and tool executor, and assembles content +
+   * mentions identically to the inline path. Full metadata + policy parity
+   * (repair, approval, continuation, closeouts) lands in later cutover stages;
+   * until then this is gated behind reactEngine: "engine" and exercised only on
+   * simple scenarios. Production stays "inline".
+   *
+   * Known scope gap (execution/budget convergence stage): tool calls run
+   * per-call through the executor, NOT through the inline executeToolCalls
+   * wrapper, so a round with multiple calls does not yet honor
+   * maxParallelToolCalls / maxToolCallsPerRound / order-dependent serialization /
+   * wall-clock aborts / progress persistence. The engine path is therefore
+   * scoped to single-tool-per-round simple scenarios until those limits are
+   * wired into the engine.
+   */
+  private async runViaReActEngine(args: {
+    input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal };
+    selection: Parameters<LLMRoleResponseGenerator["generateWithEnvelopeRetry"]>[0]["selection"];
+    activeToolLoop: RoleToolLoopOptions | undefined;
+    initialGatewayInput: GenerateTextInput;
+    modelCallTrace: ModelCallBoundaryTrace[];
+  }): Promise<GeneratedRoleReply> {
+    const { activation, packet, signal } = args.input;
+    const { selection, activeToolLoop, initialGatewayInput, modelCallTrace } = args;
+
+    let lastResult: GenerateTextResult | undefined;
+    let traceRound = 0;
+    const model: ModelClient = {
+      generate: async ({ messages: roundMessages, tools, toolChoice }) => {
+        // The engine omits `tools` for its tool-free synthesis round (round-limit
+        // closeout); honor that so the closeout can't emit a discarded tool call.
+        const noToolRound = toolChoice === "none" || tools === undefined;
+        const mappedToolChoice: GenerateTextInput["toolChoice"] | undefined =
+          toolChoice === undefined
+            ? undefined
+            : typeof toolChoice === "string"
+              ? toolChoice
+              : { type: "tool", name: toolChoice.name };
+        const baseGatewayInput = noToolRound
+          ? withoutToolUse(initialGatewayInput)
+          : initialGatewayInput;
+        const gatewayMessages = prepareToolHistoryForGateway(roundMessages);
+        const gatewayInput = {
+          ...baseGatewayInput,
+          messages: gatewayMessages,
+          ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
+          envelope: {
+            ...(baseGatewayInput.envelope ?? {}),
+            ...(noToolRound ? { toolCount: 0, toolSchemaBytes: 0 } : {}),
+            ...deriveToolResultEnvelope(gatewayMessages),
+          },
+        };
+        const generated = await this.generateWithEnvelopeRetry({
+          activation,
+          packet,
+          selection,
+          gatewayInput,
+          modelCallTrace,
+          tracePhase: "tool_round",
+          traceRound: traceRound++,
+        });
+        lastResult = generated.result;
+        return {
+          text: generated.result.text,
+          ...(generated.result.toolCalls?.length
+            ? { toolCalls: generated.result.toolCalls }
+            : {}),
+          ...(generated.result.stopReason ? { stopReason: generated.result.stopReason } : {}),
+        };
+      },
+    };
+
+    const toolDefinitions = initialGatewayInput.tools ?? [];
+    const toolkit: Toolkit<RoleToolContext> = {
+      definitions: () => toolDefinitions,
+      has: (name) => toolDefinitions.some((def) => def.name === name),
+      execute: (call, ctx) =>
+        activeToolLoop
+          ? activeToolLoop.executor.execute({
+              call,
+              activation: ctx.activation,
+              packet: ctx.packet,
+              ...(ctx.signal ? { signal: ctx.signal } : {}),
+            })
+          : Promise.resolve({
+              toolCallId: call.id,
+              toolName: call.name,
+              isError: true,
+              content: `Unknown tool: ${call.name}`,
+            }),
+    };
+
+    const ctx: RoleToolContext = { activation, packet, ...(signal ? { signal } : {}) };
+    const agent = createReActAgent<RoleToolContext>({
+      model,
+      toolkit,
+      maxRounds: activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+    });
+
+    let finalText = "";
+    const toolTrace: NativeToolRoundTrace[] = [];
+    let currentRound: NativeToolRoundTrace | undefined;
+    for await (const event of agent.run({
+      messages: initialGatewayInput.messages,
+      ctx,
+      ...(signal ? { signal } : {}),
+    })) {
+      if (event.type === "model_response") {
+        if (event.toolCalls.length > 0) {
+          currentRound = {
+            round: event.round + 1,
+            calls: event.toolCalls.map((call) => ({
+              id: call.id,
+              name: call.name,
+              input: call.input,
+            })),
+            results: [],
+            progress: [],
+          };
+          toolTrace.push(currentRound);
+        }
+      } else if (event.type === "tool_result" && currentRound) {
+        currentRound.results.push({
+          toolCallId: event.result.toolCallId,
+          toolName: event.result.toolName,
+          isError: event.result.isError === true,
+          contentBytes: new TextEncoder().encode(event.result.content ?? "").length,
+          ...(event.result.content ? { content: event.result.content } : {}),
+          ...(event.result.cancelled ? { cancelled: true } : {}),
+          ...(event.result.skipped ? { skipped: true } : {}),
+        });
+      } else if (event.type === "final") {
+        finalText = event.text;
+      }
+    }
+
+    const content = enforceRequestedThreeLineLabelShape({
+      taskPrompt: packet.taskPrompt,
+      resultText: finalText,
+    });
+    return {
+      content,
+      mentions: extractMentions(content),
+      metadata: {
+        ...(lastResult
+          ? {
+              adapterName: lastResult.adapterName,
+              providerId: lastResult.providerId,
+              modelId: lastResult.modelId,
+              ...(lastResult.modelChainId ? { modelChainId: lastResult.modelChainId } : {}),
+              protocol: lastResult.protocol,
+              stopReason: lastResult.stopReason,
+            }
+          : {}),
+        ...(toolTrace.length
+          ? {
+              toolUse: {
+                rounds: toolTrace,
+                toolCallCount: toolTrace.reduce((sum, round) => sum + round.calls.length, 0),
+              },
+            }
+          : {}),
+        reactEngine: true,
       },
     };
   }
