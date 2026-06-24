@@ -2385,10 +2385,30 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
     const ctx: RoleToolContext = { activation, packet, ...(signal ? { signal } : {}) };
     const toolLoopStartedAtMs = this.clock.now();
+    const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+    // Per-run closeout state: hooks fire across different engine callbacks, so a
+    // single mutable object threaded through them collects what the inline loop
+    // keeps as locals (toolLoopCloseout/result/reduction/memoryFlushes).
+    const run: {
+      toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
+      closeoutResult: GenerateTextResult | undefined;
+      reduction: { level: RequestEnvelopeReductionLevel; omittedSections: string[] } | undefined;
+      reductionSnapshot:
+        | ({ level: RequestEnvelopeReductionLevel; omittedSections: string[] } & ReductionEnvelopeSnapshot)
+        | undefined;
+      memoryFlushes: PreCompactionMemoryFlushResult[];
+    } = {
+      toolLoopCloseout: undefined,
+      closeoutResult: undefined,
+      reduction: undefined,
+      reductionSnapshot: undefined,
+      memoryFlushes: [],
+    };
+    const toolTrace: NativeToolRoundTrace[] = [];
     const agent = createReActAgent<RoleToolContext>({
       model,
       toolkit,
-      maxRounds: activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+      maxRounds,
       hooks: {
         // Honor the execution limits the per-call default bypasses: order-dependent
         // serialization, bounded concurrency, and per-chunk wall-clock aborts —
@@ -2455,11 +2475,52 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           return results;
         },
+        // Stage 5 closeout-answer producer. Only round_limit is reachable until
+        // the remaining closeout hooks (onToolCallsClose / onAfterExecute / ...)
+        // land; each closeout reason gets its inline reasonLines + status here.
+        onTerminate: async (reason, state) => {
+          const reasonLines =
+            reason === "round_limit"
+              ? [
+                  `Tool-use round limit reached (${maxRounds}).`,
+                  "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+                  "State uncertainties and missing verification explicitly instead of trying another lookup.",
+                ]
+              : undefined;
+          const generated = await this.generateFinalAfterToolRoundLimit({
+            activation,
+            packet,
+            selection,
+            baseGatewayInput: initialGatewayInput,
+            messages: state.messages,
+            maxRounds,
+            modelCallTrace,
+            ...(reasonLines ? { reasonLines } : {}),
+          });
+          run.toolLoopCloseout = {
+            reason: reason as ToolLoopCloseoutMetadata["reason"],
+            maxRounds,
+            toolCallCount: countToolCalls(toolTrace),
+            roundCount: toolTrace.length,
+            evidenceAvailable: hasUsableEvidence(toolTrace),
+          };
+          run.closeoutResult = generated.result;
+          if (generated.reduction) {
+            run.reduction = generated.reduction;
+            run.reductionSnapshot = generated.reductionSnapshot;
+          }
+          if (generated.memoryFlush) {
+            run.memoryFlushes.push(generated.memoryFlush);
+          }
+          return {
+            text: generated.result.text,
+            ...(generated.result.stopReason ? { stopReason: generated.result.stopReason } : {}),
+          };
+        },
       },
     });
 
     let finalText = "";
-    const toolTrace: NativeToolRoundTrace[] = [];
     let currentRound: NativeToolRoundTrace | undefined;
     for await (const event of agent.run({
       messages: initialGatewayInput.messages,
@@ -2499,18 +2560,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       taskPrompt: packet.taskPrompt,
       resultText: finalText,
     });
+    // On a closeout, metadata reflects the closeout-synthesis result (matching
+    // inline), falling back to the last tool-round result otherwise.
+    const metaResult = run.closeoutResult ?? lastResult;
+    const missionReport = buildRuntimeDerivedMissionReport(run.toolLoopCloseout);
     return {
       content,
       mentions: extractMentions(content),
       metadata: {
-        ...(lastResult
+        ...(metaResult
           ? {
-              adapterName: lastResult.adapterName,
-              providerId: lastResult.providerId,
-              modelId: lastResult.modelId,
-              ...(lastResult.modelChainId ? { modelChainId: lastResult.modelChainId } : {}),
-              protocol: lastResult.protocol,
-              stopReason: lastResult.stopReason,
+              adapterName: metaResult.adapterName,
+              providerId: metaResult.providerId,
+              modelId: metaResult.modelId,
+              ...(metaResult.modelChainId ? { modelChainId: metaResult.modelChainId } : {}),
+              protocol: metaResult.protocol,
+              stopReason: metaResult.stopReason,
             }
           : {}),
         ...(toolTrace.length
@@ -2521,6 +2586,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               },
             }
           : {}),
+        ...(run.reduction ? { requestEnvelopeReduction: run.reduction } : {}),
+        ...(run.memoryFlushes.length ? { preCompactionMemoryFlushes: run.memoryFlushes } : {}),
+        ...(run.toolLoopCloseout ? { toolLoopCloseout: run.toolLoopCloseout } : {}),
+        ...(missionReport ? { missionReport } : {}),
         reactEngine: true,
       },
     };
