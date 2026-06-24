@@ -41,6 +41,15 @@ import {
   type RoleToolExecutionResult,
   type RoleToolLoopOptions,
 } from "./tool-use";
+import {
+  findRepeatedFailedToolCall,
+  isPositiveFiniteBudget,
+  normalizeToolInputForSignature,
+  roundLimitReached,
+  shouldSerializeToolBatch,
+  stableJson,
+  toolCallSignature,
+} from "./react/predicates";
 import type {
   PreCompactionMemoryFlusher,
   PreCompactionMemoryFlushResult,
@@ -1245,9 +1254,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         !requiredTimeoutContinuationPastWallClock &&
         toolTrace.length > 0 &&
-        typeof maxWallClockMs === "number" &&
-        Number.isFinite(maxWallClockMs) &&
-        maxWallClockMs > 0 &&
+        isPositiveFiniteBudget(maxWallClockMs) &&
         this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
       ) {
         toolLoopCloseout = {
@@ -1313,7 +1320,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
         break;
       }
-      if (round >= maxRounds) {
+      if (roundLimitReached(round, maxRounds)) {
         toolLoopCloseout = {
           reason: "round_limit",
           maxRounds,
@@ -3486,62 +3493,8 @@ function taskPromptLooksLikeSourceCheckContinuation(taskPrompt: string): boolean
   );
 }
 
-const ORDER_DEPENDENT_TOOL_NAMES = new Set([
-  "memory_search",
-  "memory_get",
-  "permission_query",
-  "permission_result",
-  "permission_applied",
-  "tasks_list",
-  "tasks_create",
-  "tasks_update",
-]);
-
-function shouldSerializeToolBatch(toolCalls: LLMToolCall[]): boolean {
-  return (
-    toolCalls.length > 1 &&
-    toolCalls.some((call) => ORDER_DEPENDENT_TOOL_NAMES.has(call.name))
-  );
-}
-
-function findRepeatedFailedToolCall(
-  pendingCalls: LLMToolCall[],
-  toolTrace: NativeToolRoundTrace[],
-  maxFailures = 2,
-): { toolName: string; failureCount: number } | null {
-  if (pendingCalls.length === 0) {
-    return null;
-  }
-  const callsById = new Map<string, LLMToolCall>();
-  const failedCounts = new Map<string, { toolName: string; count: number }>();
-  for (const round of toolTrace) {
-    for (const call of round.calls) {
-      callsById.set(call.id, call);
-    }
-    for (const result of round.results) {
-      if (!result.isError || result.cancelled) {
-        continue;
-      }
-      const call = callsById.get(result.toolCallId);
-      if (!call) {
-        continue;
-      }
-      const signature = toolCallSignature(call);
-      const current = failedCounts.get(signature) ?? {
-        toolName: call.name,
-        count: 0,
-      };
-      failedCounts.set(signature, { ...current, count: current.count + 1 });
-    }
-  }
-  for (const call of pendingCalls) {
-    const current = failedCounts.get(toolCallSignature(call));
-    if (current && current.count >= maxFailures) {
-      return { toolName: current.toolName, failureCount: current.count };
-    }
-  }
-  return null;
-}
+// ORDER_DEPENDENT_TOOL_NAMES, shouldSerializeToolBatch, findRepeatedFailedToolCall
+// extracted to ./react/predicates (Phase 1 cutover, behavior-preserving).
 
 function findRepeatedSessionInspectionCall(
   pendingCalls: LLMToolCall[],
@@ -3650,32 +3603,8 @@ function taskRequestsSessionTranscript(taskPrompt: string): boolean {
   );
 }
 
-function toolCallSignature(call: LLMToolCall): string {
-  return `${call.name}:${stableJson(normalizeToolInputForSignature(call.input))}`;
-}
-
-function normalizeToolInputForSignature(value: unknown): unknown {
-  if (typeof value === "string") {
-    return value.replace(/\s+/g, " ").trim();
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => normalizeToolInputForSignature(entry));
-  }
-  const normalized: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    normalized[key] = normalizeToolInputForSignature(
-      (value as Record<string, unknown>)[key],
-    );
-  }
-  return normalized;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(value);
-}
+// toolCallSignature, normalizeToolInputForSignature, stableJson
+// extracted to ./react/predicates (Phase 1 cutover, behavior-preserving).
 
 function appendModelCallBoundary(
   trace: ModelCallBoundaryTrace[] | undefined,
