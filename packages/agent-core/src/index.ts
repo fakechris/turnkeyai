@@ -11,3 +11,15 @@ export {
   type VectorRecord,
   type VectorStore,
 } from "./memory-provider";
+export type {
+  ModelClient,
+  ReActEvent,
+  ReActLoop,
+  ReActLoopOptions,
+  ReActRunInput,
+} from "./react-loop";
+export {
+  collectReActRun,
+  createBasicReActAgent,
+  DEFAULT_REACT_MAX_ROUNDS,
+} from "./basic-react-agent";
