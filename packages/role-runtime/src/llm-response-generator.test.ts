@@ -21256,3 +21256,100 @@ function buildPacket(): RolePromptPacket {
     },
   };
 }
+
+// --- Cutover Stage 4: engine-path parity (reactEngine flag) ---------------
+// A plain task prompt avoids the continuity/timeout visibility appenders that
+// the simple engine path does not apply yet, so the two paths are comparable.
+function simplePacket(): RolePromptPacket {
+  return { ...buildPacket(), taskPrompt: "Answer the question concisely." };
+}
+
+function fixedAnswerGateway(text: string): LLMGateway {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => ({
+    text,
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible",
+    adapterName: "test",
+    raw: {},
+  });
+  return gateway;
+}
+
+test("cutover parity: no-tool reply is identical between inline and engine paths", async () => {
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({ gateway: fixedAnswerGateway("Final answer."), reactEngine }).generate({
+      activation: buildActivation(),
+      packet: simplePacket(),
+    });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(engine.metadata?.["adapterName"], inline.metadata?.["adapterName"]);
+  assert.equal(engine.metadata?.["modelId"], inline.metadata?.["modelId"]);
+  assert.equal(engine.metadata?.["protocol"], inline.metadata?.["protocol"]);
+});
+
+test("cutover parity: single tool round is identical between inline and engine paths", async () => {
+  const lookupExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [
+        {
+          name: "lookup",
+          description: "look up a value",
+          inputSchema: { type: "object", properties: { q: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: `value for ${JSON.stringify(input.call.input)}`,
+      };
+    },
+  });
+  const lookupThenAnswerGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) {
+        return {
+          text: "let me look",
+          toolCalls: [{ id: "c1", name: "lookup", input: { q: "x" } }],
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return {
+        text: "The lookup returned the value.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    return gateway;
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: lookupThenAnswerGateway(),
+      toolLoop: { executor: lookupExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolUse"] as { toolCallCount?: number } | undefined)?.toolCallCount,
+    1,
+  );
+});
