@@ -2437,14 +2437,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             });
             try {
               const chunkResults = await Promise.all(
-                chunk.map((call) =>
-                  activeToolLoop.executor.execute({
-                    call,
-                    activation: hookCtx.activation,
-                    packet: hookCtx.packet,
-                    ...(execSignal.signal ? { signal: execSignal.signal } : {}),
-                  }),
-                ),
+                chunk.map(async (call) => {
+                  try {
+                    return await activeToolLoop.executor.execute({
+                      call,
+                      activation: hookCtx.activation,
+                      packet: hookCtx.packet,
+                      ...(execSignal.signal ? { signal: execSignal.signal } : {}),
+                    });
+                  } catch (error) {
+                    // Match the inline executeToolCalls + the engine's default
+                    // runOne: a thrown tool failure becomes an isError result the
+                    // model can observe, not a rejected (failed) response.
+                    return {
+                      toolCallId: call.id,
+                      toolName: call.name,
+                      isError: true,
+                      content: error instanceof Error ? error.message : String(error),
+                    };
+                  }
+                }),
               );
               results.push(...chunkResults);
             } finally {
