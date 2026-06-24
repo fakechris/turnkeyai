@@ -66,6 +66,7 @@ test("onRoundMessages can force a tool-free synthesis round", async () => {
     onRoundMessages: (messages) => ({ messages: [...messages, { role: "user", content: "just acknowledge" }], forceToolChoice: "none" }),
   });
   assert.equal(model.seen[0]!.toolChoice, "none");
+  assert.equal(model.seen[0]!.hadTools, false); // tool schemas dropped for a forced tool-free round
   assert.equal(model.seen[0]!.messageCount, 2); // injected message persisted
   assert.equal(events.at(-1)?.type === "final" && events.at(-1)!.type, "final");
 });

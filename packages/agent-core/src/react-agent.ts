@@ -59,12 +59,15 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
         : options.toolkit.definitions();
 
       const finalEvent = (synthesis: ReActSynthesis, rounds: number, closeoutReason?: string): ReActEvent => {
-        const text = hooks.onFinalize ? hooks.onFinalize(synthesis.text, state, ctx) : synthesis.text;
+        // Guard the hook boundary: a misbehaving onTerminate could hand back a
+        // null/partial synthesis.
+        const rawText = synthesis?.text ?? "";
+        const text = hooks.onFinalize ? hooks.onFinalize(rawText, state, ctx) : rawText;
         return emit({
           type: "final",
           text,
           rounds,
-          ...(synthesis.stopReason ? { stopReason: synthesis.stopReason } : {}),
+          ...(synthesis?.stopReason ? { stopReason: synthesis.stopReason } : {}),
           ...(closeoutReason ? { closeoutReason } : {}),
         });
       };
@@ -104,25 +107,28 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
         let forceToolChoice: ReActToolChoice | undefined;
         if (hooks.onRoundMessages) {
           const rewritten = hooks.onRoundMessages(state.messages, round, ctx);
-          state.messages = rewritten.messages;
-          forceToolChoice = rewritten.forceToolChoice;
+          state.messages = rewritten?.messages ?? state.messages;
+          forceToolChoice = rewritten?.forceToolChoice;
         }
 
         try {
           const generated = await options.model.generate({
             messages: state.messages,
-            tools,
+            // Drop the tool schemas entirely for a forced tool-free round so they
+            // don't count toward provider/envelope tool-size limits during a
+            // synthesis or repair round.
+            ...(forceToolChoice === "none" ? {} : { tools }),
             ...(forceToolChoice ? { toolChoice: forceToolChoice } : {}),
             ...(signal ? { signal } : {}),
           });
           state.lastText = generated.text;
           let toolCalls = generated.toolCalls ?? [];
-          if (onToolCalls) toolCalls = onToolCalls(toolCalls, round, ctx);
+          if (onToolCalls) toolCalls = onToolCalls(toolCalls, round, ctx) ?? [];
           yield emit({ type: "model_response", round, text: generated.text, toolCalls });
 
           if (toolCalls.length === 0) {
             const decision = hooks.onRoundEmpty ? hooks.onRoundEmpty(state, ctx) : "terminate";
-            if (decision === "terminate" || decision.injectedCalls.length === 0) {
+            if (decision === "terminate" || !decision?.injectedCalls?.length) {
               yield finalEvent(
                 { text: generated.text, ...(generated.stopReason ? { stopReason: generated.stopReason } : {}) },
                 round + 1
@@ -136,8 +142,8 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           let rejected: ToolResult[] = [];
           if (hooks.onBeforeExecute) {
             const gated = hooks.onBeforeExecute(toolCalls, ctx);
-            executable = gated.executable;
-            rejected = gated.rejected ?? [];
+            executable = gated?.executable ?? toolCalls;
+            rejected = gated?.rejected ?? [];
           }
 
           state.messages = appendAssistantToolCallMessage(state.messages, {
