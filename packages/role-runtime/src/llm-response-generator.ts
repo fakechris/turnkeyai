@@ -2394,10 +2394,78 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     };
 
     const ctx: RoleToolContext = { activation, packet, ...(signal ? { signal } : {}) };
+    const toolLoopStartedAtMs = this.clock.now();
     const agent = createReActAgent<RoleToolContext>({
       model,
       toolkit,
       maxRounds: activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+      hooks: {
+        // Honor the execution limits the per-call default bypasses: order-dependent
+        // serialization, bounded concurrency, and per-chunk wall-clock aborts —
+        // reusing the same helpers the inline executeToolCalls uses, rather than
+        // refactoring that heavily-tested method. (maxToolCallsPerRound cap +
+        // progress persistence are wired in a later Stage 5 PR.)
+        runToolBatch: async (calls, _runOne, hookCtx) => {
+          if (!activeToolLoop) {
+            return calls.map((call) => ({
+              toolCallId: call.id,
+              toolName: call.name,
+              isError: true,
+              content: `Unknown tool: ${call.name}`,
+            }));
+          }
+          const maxParallel =
+            typeof activeToolLoop.maxParallelToolCalls === "number" &&
+            Number.isFinite(activeToolLoop.maxParallelToolCalls) &&
+            activeToolLoop.maxParallelToolCalls > 0
+              ? Math.floor(activeToolLoop.maxParallelToolCalls)
+              : calls.length;
+          const step = Math.max(1, shouldSerializeToolBatch(calls) ? 1 : maxParallel);
+          const results: RoleToolExecutionResult[] = [];
+          for (let i = 0; i < calls.length; i += step) {
+            const chunk = calls.slice(i, i + step);
+            const wallClockMs = resolveEffectiveToolLoopWallClockMs({
+              ...(activeToolLoop.maxWallClockMs !== undefined
+                ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
+                : {}),
+              toolCalls: chunk,
+            });
+            const execSignal = createToolExecutionSignal({
+              elapsedMs: this.clock.now() - toolLoopStartedAtMs,
+              ...(hookCtx.signal ? { parentSignal: hookCtx.signal } : {}),
+              ...(wallClockMs !== undefined ? { maxWallClockMs: wallClockMs } : {}),
+            });
+            try {
+              const chunkResults = await Promise.all(
+                chunk.map(async (call) => {
+                  try {
+                    return await activeToolLoop.executor.execute({
+                      call,
+                      activation: hookCtx.activation,
+                      packet: hookCtx.packet,
+                      ...(execSignal.signal ? { signal: execSignal.signal } : {}),
+                    });
+                  } catch (error) {
+                    // Match the inline executeToolCalls + the engine's default
+                    // runOne: a thrown tool failure becomes an isError result the
+                    // model can observe, not a rejected (failed) response.
+                    return {
+                      toolCallId: call.id,
+                      toolName: call.name,
+                      isError: true,
+                      content: error instanceof Error ? error.message : String(error),
+                    };
+                  }
+                }),
+              );
+              results.push(...chunkResults);
+            } finally {
+              execSignal.dispose();
+            }
+          }
+          return results;
+        },
+      },
     });
 
     let finalText = "";
