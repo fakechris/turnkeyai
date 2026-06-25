@@ -139,7 +139,7 @@ The PR sequence is strictly serial (each builds on merged `main`), but the draft
 ## Stage 5: Closeout plumbing + execution-limit gap
 **Goal**: honor execution limits + replicate the 13 closeouts via hooks; delete dead branch. **Status**: In Progress — PR1 #485, PR3 #486, PR2a #487 (round_limit), PR2b #488 (tool_evidence_fallback), abort-rethrow fix #490 merged; PR2c (completed/timeout) + PR2d (onToolCallsClose + 7 pending) remain (Appendix B) ← NEXT. **Resume: `docs/HANDOFF_AGENT_CORE_CUTOVER.md`.**
 ## Stage 6: Repair/recovery (messages→ctx)
-**Goal**: idempotency to ctx; shouldRepair* → hooks. **Status**: Not Started
+**Goal**: idempotency to ctx; shouldRepair* → hooks. **Status**: In Progress — prereq (idempotency → `repairMarkers` ledger) merged #495; per-predicate engine moves next (one per PR).
 ## Stage 7: Approval + session-continuation
 **Goal**: onRoundEmpty override + approval machine as hooks. **Status**: Not Started
 ## Stage 8: Flip + delete inline loop
