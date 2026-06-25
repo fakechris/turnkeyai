@@ -2435,7 +2435,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             }),
     };
 
-    const ctx: RoleToolContext = { activation, packet, ...(signal ? { signal } : {}) };
+    const ctx: RoleToolContext = { activation, packet, repairMarkers: [], ...(signal ? { signal } : {}) };
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     // Per-run closeout state: hooks fire across different engine callbacks, so a
@@ -2794,6 +2794,44 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (timeoutSignal) {
             run.timeoutSignal = timeoutSignal;
             return "sub_agent_timeout";
+          }
+          return null;
+        },
+        // Stage 6: post-synthesis repairs on the engine's tool-free candidate
+        // answer (the natural-finish path), mirroring the inline cascade one
+        // predicate at a time. Each fires only when its shouldRepair* predicate
+        // detects a deficiency and the repair has not already been injected
+        // (guarded by the ctx.repairMarkers ledger, exactly like inline). The
+        // remaining cascade predicates (browser-evidence dimensions, extraneous
+        // schema, source-evidence carry-forward, weak/false evidence) follow in
+        // later per-predicate moves.
+        onRepairRound: (state, ctx) => {
+          const repairMarkers = ctx.repairMarkers ?? [];
+          if (
+            shouldRepairMissingRequestedTableColumns({
+              activation,
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              repairMarkers,
+              resultText: state.lastText,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildMissingRequestedTableColumnsRepairPrompt({
+                    activation,
+                    taskPrompt: packet.taskPrompt,
+                    messages: state.messages,
+                    resultText: state.lastText,
+                  }),
+                ),
+              ],
+              forceToolChoice: "none",
+            };
           }
           return null;
         },
