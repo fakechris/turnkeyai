@@ -3058,16 +3058,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // ctx.repairMarkers; the round cap is the hard backstop.
           //
           // Scope: cutting over the completed cascade predicate-by-predicate, in the
-          // inline order (post-synthesis cascade at :1826+). Checked here so far:
-          // missing-requested-next-action, false-evidence-blocked. The ordering between
-          // them matches the inline (missing-next-action :1995 precedes false-evidence
-          // :2129), so single-fire scenarios are parity-exact. Still skipped (later
-          // moves): table-columns/extraneous (:1826/:1854), the sessions_spawn browser
-          // repairs (:1880/:1907 — Stage 7), source-evidence + timeout-followup
-          // (:1941/:1968 — need completedProductBriefEvidenceText), deliverables
-          // (:2016), weak-evidence. Deferred edge: a completed repair whose
-          // re-synthesis itself needs a natural-finish repair (compound) is not chained
-          // here — parity tests use single-repair scenarios.
+          // inline order (post-synthesis cascade at :1826+). Checked here so far, in
+          // inline cascade order: missing-requested-next-action (:1995), required-
+          // deliverables (:2016), false-evidence-blocked (:2129). Their relative order
+          // matches the inline, so single-fire scenarios are parity-exact. Still
+          // skipped (later moves): table-columns/extraneous (:1826/:1854), the
+          // sessions_spawn browser repairs (:1880/:1907 — Stage 7), source-evidence +
+          // timeout-followup (:1941/:1968 — need completedProductBriefEvidenceText),
+          // weak-evidence. Deferred edge: a completed repair whose re-synthesis itself
+          // needs a natural-finish repair (compound) is not chained here — parity tests
+          // use single-repair scenarios.
           if (reason === "completed_sub_agent_final" && run.completedSession) {
             const completedSession = run.completedSession;
             const repairMarkers = (ctx.repairMarkers ??= []);
@@ -3085,6 +3085,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 })
               ) {
                 repairPrompt = buildMissingRequestedNextActionRepairPrompt();
+              }
+              if (!repairPrompt) {
+                // Deliverables follow missing-next-action in the inline cascade
+                // (:2016). evidenceText is the finalContents join already computed
+                // above — no extra plumbing — so this is a clean isolated move.
+                const missingRequiredDeliverables =
+                  findMissingRequiredFinalDeliverables({
+                    taskPrompt: packet.taskPrompt,
+                    resultText: synthesisResult.text,
+                  });
+                if (
+                  missingRequiredDeliverables.length > 0 &&
+                  !hasMissingRequiredFinalDeliverablesRepairPrompt(repairMarkers)
+                ) {
+                  repairPrompt = buildMissingRequiredFinalDeliverablesRepairPrompt({
+                    taskPrompt: packet.taskPrompt,
+                    resultText: synthesisResult.text,
+                    missing: missingRequiredDeliverables,
+                    evidenceText,
+                  });
+                }
               }
               if (
                 !repairPrompt &&

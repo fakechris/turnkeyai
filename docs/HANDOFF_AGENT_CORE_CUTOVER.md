@@ -159,18 +159,20 @@ fires on the result against `run.completedSession.finalContents`, it re-synthesi
 tool-free `generateWithEnvelopeRetry` call with the repair prompt — the SAME plain model call the
 inline completed block uses (NOT the format-contract `generateFinalAfterToolRoundLimit`).
 Idempotent via `ctx.repairMarkers`; 16-round cap; each pre-compaction memory flush appended (codex
-P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairFalseEvidenceBlockedSynthesis`
-(#502), `shouldRepairMissingRequestedNextAction` (#503 — placed before false-evidence to match
-inline precedence; needs no evidence plumbing, so a clean isolated move).
+P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairMissingRequestedNextAction`
+(#503), `findMissingRequiredFinalDeliverables` (#504 — its evidenceText is the finalContents join
+already in the loop, so no extra plumbing), `shouldRepairFalseEvidenceBlockedSynthesis` (#502).
+Each placed in inline precedence order; single-fire scenarios are parity-exact.
 
 **Remaining (follow-on moves on this same loop — add each `if/else if` in inline cascade order +
-a completed-session parity test):** `findMissingRequiredFinalDeliverables`,
-`shouldRepairSourceEvidenceCarryForward` (completed-evidence-dependent, as established — needs
-`completedProductBriefEvidenceText` = finalContents + tool-result text),
-`…TimeoutFollowupFinalGuidance` (also needs that evidence text), `…MissingBrowserEvidenceDimensions`,
-plus the completed-path versions of table-columns/extraneous/weak-evidence. All now fire on the
-completed path (the evidence is present). Deferred edge: a completed repair whose re-synthesis
-itself needs a *natural-finish* repair (compound) is not chained.
+a completed-session parity test):** `shouldRepairSourceEvidenceCarryForward` (completed-evidence-
+dependent, as established — needs `completedProductBriefEvidenceText` = finalContents + tool-result
+text), `…TimeoutFollowupFinalGuidance` (also needs that evidence text + timeout context),
+`…MissingBrowserEvidenceDimensions`, plus the completed-path versions of
+table-columns/extraneous/weak-evidence. The next two (source-evidence, timeout-followup) need
+`collectToolResultContentText(toolResults)` plumbed into `onTerminate` (the engine has the completed
+session but not the raw tool results there yet). Deferred edge: a completed repair whose
+re-synthesis itself needs a *natural-finish* repair (compound) is not chained.
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 
