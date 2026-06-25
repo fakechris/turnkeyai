@@ -475,6 +475,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           normalizeSessionToolAliasCalls(result.toolCalls ?? []),
           {
             messages,
+            repairMarkers,
             taskPrompt: input.packet.taskPrompt,
             toolTrace,
           },
@@ -543,6 +544,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           recoveryToolBudget.maxToolCalls &&
         shouldRepairFinalRecoveryBudgetCloseout({
           messages,
+          repairMarkers,
           resultText: result.text,
         })
       ) {
@@ -552,12 +554,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildFinalRecoveryBudgetCloseoutRepairPrompt(
+          recordRepairPrompt(
+            repairMarkers,
+            buildFinalRecoveryBudgetCloseoutRepairPrompt(
               recoveryToolBudget.maxToolCalls,
             ),
-          },
+          ),
         ];
         nextToolChoice = "none";
         continue;
@@ -641,6 +643,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               activation: input.activation,
               taskPrompt: input.packet.taskPrompt,
               messages,
+              repairMarkers,
               resultText: result.text,
             })
           ) {
@@ -650,15 +653,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 role: "assistant",
                 content: result.text,
               },
-              {
-                role: "user",
-                content: buildMissingRequestedTableColumnsRepairPrompt({
+              recordRepairPrompt(
+                repairMarkers,
+                buildMissingRequestedTableColumnsRepairPrompt({
                   activation: input.activation,
                   taskPrompt: input.packet.taskPrompt,
                   messages,
                   resultText: result.text,
                 }),
-              },
+              ),
             ];
             nextToolChoice = "none";
             continue;
@@ -718,6 +721,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedEvidenceText,
           })
         ) {
@@ -727,14 +731,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingBrowserEvidenceDimensionsRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 evidenceText: completedEvidenceText,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -748,6 +752,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
           tools: initialGatewayInput.tools,
         })
@@ -758,12 +763,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildMissingBrowserEvidenceRepairPrompt(
+          recordRepairPrompt(
+            repairMarkers,
+            buildMissingBrowserEvidenceRepairPrompt(
               input.packet.taskPrompt,
             ),
-          },
+          ),
         ];
         nextToolChoice = { type: "tool", name: "sessions_spawn" };
         continue;
@@ -775,6 +780,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
           tools: initialGatewayInput.tools,
         })
@@ -785,12 +791,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildMissingProductSignalBrowserEvidenceRepairPrompt(
+          recordRepairPrompt(
+            repairMarkers,
+            buildMissingProductSignalBrowserEvidenceRepairPrompt(
               input.packet.taskPrompt,
             ),
-          },
+          ),
         ];
         nextToolChoice = { type: "tool", name: "sessions_spawn" };
         continue;
@@ -802,6 +808,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
           tools: initialGatewayInput.tools,
         })
@@ -812,10 +819,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildMissingApprovalGateRepairPrompt(),
-          },
+          recordRepairPrompt(
+            repairMarkers,
+            buildMissingApprovalGateRepairPrompt(),
+          ),
         ];
         nextToolChoice = { type: "tool", name: "permission_query" };
         continue;
@@ -827,6 +834,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
         })
       ) {
@@ -836,10 +844,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
-          },
+          recordRepairPrompt(
+            repairMarkers,
+            buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
+          ),
         ];
         nextToolChoice = { type: "tool", name: "permission_result" };
         continue;
@@ -851,6 +859,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
         })
       ) {
@@ -860,10 +869,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildPrematurePendingApprovalRepairPrompt(),
-          },
+          recordRepairPrompt(
+            repairMarkers,
+            buildPrematurePendingApprovalRepairPrompt(),
+          ),
         ];
         nextToolChoice = { type: "tool", name: "permission_result" };
         continue;
@@ -875,6 +884,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
         })
       ) {
@@ -884,10 +894,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildStalePendingApprovalRepairPrompt(),
-          },
+          recordRepairPrompt(
+            repairMarkers,
+            buildStalePendingApprovalRepairPrompt(),
+          ),
         ];
         nextToolChoice = { type: "tool", name: "sessions_spawn" };
         continue;
@@ -899,6 +909,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
         })
       ) {
@@ -908,10 +919,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildStaleDeniedApprovalRepairPrompt(),
-          },
+          recordRepairPrompt(
+            repairMarkers,
+            buildStaleDeniedApprovalRepairPrompt(),
+          ),
         ];
         nextToolChoice = "none";
         continue;
@@ -923,6 +934,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
         })
       ) {
@@ -932,10 +944,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildApprovalWaitTimeoutCloseoutRepairPrompt(),
-          },
+          recordRepairPrompt(
+            repairMarkers,
+            buildApprovalWaitTimeoutCloseoutRepairPrompt(),
+          ),
         ];
         nextToolChoice = "none";
         continue;
@@ -947,6 +959,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
         })
       ) {
@@ -976,6 +989,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
+          repairMarkers,
           toolTrace,
         })
       ) {
@@ -985,10 +999,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildIncompleteApprovedBrowserActionRepairPrompt(),
-          },
+          recordRepairPrompt(
+            repairMarkers,
+            buildIncompleteApprovedBrowserActionRepairPrompt(),
+          ),
         ];
         nextToolChoice = { type: "tool", name: "sessions_spawn" };
         continue;
@@ -999,6 +1013,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         shouldSuppressToolsForAwaitingContextSetup({
           taskPrompt: input.packet.taskPrompt,
           messages,
+          repairMarkers,
         })
       ) {
         messages = [
@@ -1007,12 +1022,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             role: "assistant",
             content: result.text,
           },
-          {
-            role: "user",
-            content: buildAwaitingContextSetupNoToolRepairPrompt(
+          recordRepairPrompt(
+            repairMarkers,
+            buildAwaitingContextSetupNoToolRepairPrompt(
               input.packet.taskPrompt,
             ),
-          },
+          ),
         ];
         nextToolChoice = "none";
         continue;
@@ -1068,6 +1083,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedEvidenceText,
           })
         ) {
@@ -1077,14 +1093,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingBrowserEvidenceDimensionsRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 evidenceText: completedEvidenceText,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -1099,6 +1115,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               recoveryToolBudget.maxToolCalls &&
             shouldRepairFinalRecoveryBudgetCloseout({
               messages,
+              repairMarkers,
               resultText: result.text,
             })
           ) {
@@ -1108,12 +1125,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 role: "assistant",
                 content: result.text,
               },
-              {
-                role: "user",
-                content: buildFinalRecoveryBudgetCloseoutRepairPrompt(
+              recordRepairPrompt(
+                repairMarkers,
+                buildFinalRecoveryBudgetCloseoutRepairPrompt(
                   recoveryToolBudget.maxToolCalls,
                 ),
-              },
+              ),
             ];
             nextToolChoice = "none";
             continue;
@@ -1123,6 +1140,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               activation: input.activation,
               taskPrompt: input.packet.taskPrompt,
               messages,
+              repairMarkers,
               resultText: result.text,
             })
           ) {
@@ -1132,15 +1150,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 role: "assistant",
                 content: result.text,
               },
-              {
-                role: "user",
-                content: buildMissingRequestedTableColumnsRepairPrompt({
+              recordRepairPrompt(
+                repairMarkers,
+                buildMissingRequestedTableColumnsRepairPrompt({
                   activation: input.activation,
                   taskPrompt: input.packet.taskPrompt,
                   messages,
                   resultText: result.text,
                 }),
-              },
+              ),
             ];
             nextToolChoice = "none";
             continue;
@@ -1150,6 +1168,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               activation: input.activation,
               taskPrompt: input.packet.taskPrompt,
               messages,
+              repairMarkers,
               resultText: result.text,
             })
           ) {
@@ -1159,13 +1178,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 role: "assistant",
                 content: result.text,
               },
-              {
-                role: "user",
-                content: buildExtraneousProviderTableSchemaRepairPrompt({
+              recordRepairPrompt(
+                repairMarkers,
+                buildExtraneousProviderTableSchemaRepairPrompt({
                   taskPrompt: input.packet.taskPrompt,
                   resultText: result.text,
                 }),
-              },
+              ),
             ];
             nextToolChoice = "none";
             continue;
@@ -1186,6 +1205,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               taskPrompt: input.packet.taskPrompt,
               resultText: result.text,
               messages,
+              repairMarkers,
               evidenceText: sourceBoundedEvidenceText,
             })
           ) {
@@ -1195,14 +1215,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 role: "assistant",
                 content: result.text,
               },
-              {
-                role: "user",
-                content: buildSourceEvidenceCarryForwardRepairPrompt({
+              recordRepairPrompt(
+                repairMarkers,
+                buildSourceEvidenceCarryForwardRepairPrompt({
                   taskPrompt: input.packet.taskPrompt,
                   resultText: result.text,
                   evidenceText: sourceBoundedEvidenceText,
                 }),
-              },
+              ),
             ];
             nextToolChoice = "none";
             continue;
@@ -1212,6 +1232,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               taskPrompt: input.packet.taskPrompt,
               resultText: result.text,
               messages,
+              repairMarkers,
               evidenceText: sourceBoundedEvidenceText,
             })
           ) {
@@ -1221,10 +1242,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 role: "assistant",
                 content: result.text,
               },
-              {
-                role: "user",
-                content: buildWeakEvidenceSynthesisRepairPrompt(),
-              },
+              recordRepairPrompt(
+                repairMarkers,
+                buildWeakEvidenceSynthesisRepairPrompt(),
+              ),
             ];
             nextToolChoice = "none";
             continue;
@@ -1307,6 +1328,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedEvidenceText,
           })
         ) {
@@ -1316,14 +1338,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingBrowserEvidenceDimensionsRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 evidenceText: completedEvidenceText,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -1651,16 +1673,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: completedSession.finalContents.join("\n\n"),
             messages,
+            repairMarkers,
             toolTrace,
             tools: initialGatewayInput.tools,
           })
         ) {
           messages = [
             ...messages,
-            {
-              role: "user",
-              content: buildMissingApprovalGateRepairPrompt(),
-            },
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingApprovalGateRepairPrompt(),
+            ),
           ];
           nextToolChoice = { type: "tool", name: "permission_query" };
           continue;
@@ -1805,6 +1828,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             activation: input.activation,
             taskPrompt: input.packet.taskPrompt,
             messages,
+            repairMarkers,
             resultText: result.text,
           })
         ) {
@@ -1814,15 +1838,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingRequestedTableColumnsRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingRequestedTableColumnsRepairPrompt({
                 activation: input.activation,
                 taskPrompt: input.packet.taskPrompt,
                 messages,
                 resultText: result.text,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -1832,6 +1856,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             activation: input.activation,
             taskPrompt: input.packet.taskPrompt,
             messages,
+            repairMarkers,
             resultText: result.text,
           })
         ) {
@@ -1841,13 +1866,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildExtraneousProviderTableSchemaRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildExtraneousProviderTableSchemaRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -1857,6 +1882,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             toolTrace,
             tools: initialGatewayInput.tools,
           })
@@ -1867,12 +1893,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingBrowserEvidenceRepairPrompt(
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingBrowserEvidenceRepairPrompt(
                 input.packet.taskPrompt,
               ),
-            },
+            ),
           ];
           nextToolChoice = { type: "tool", name: "sessions_spawn" };
           continue;
@@ -1882,6 +1908,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             toolTrace,
             tools: initialGatewayInput.tools,
             evidenceText: completedSession.finalContents.join("\n\n"),
@@ -1893,12 +1920,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingProductSignalBrowserEvidenceRepairPrompt(
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingProductSignalBrowserEvidenceRepairPrompt(
                 input.packet.taskPrompt,
               ),
-            },
+            ),
           ];
           nextToolChoice = { type: "tool", name: "sessions_spawn" };
           continue;
@@ -1915,6 +1942,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedProductBriefEvidenceText,
           })
         ) {
@@ -1924,14 +1952,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildSourceEvidenceCarryForwardRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildSourceEvidenceCarryForwardRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 evidenceText: completedProductBriefEvidenceText,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -1941,6 +1969,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedProductBriefEvidenceText,
           })
         ) {
@@ -1950,14 +1979,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildTimeoutFollowupFinalGuidanceRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildTimeoutFollowupFinalGuidanceRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 evidenceText: completedProductBriefEvidenceText,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -1967,6 +1996,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
           })
         ) {
           messages = [
@@ -1975,10 +2005,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingRequestedNextActionRepairPrompt(),
-            },
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingRequestedNextActionRepairPrompt(),
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -1991,7 +2021,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         );
         if (
           missingRequiredDeliverables.length > 0 &&
-          !hasMissingRequiredFinalDeliverablesRepairPrompt(messages)
+          !hasMissingRequiredFinalDeliverablesRepairPrompt(repairMarkers)
         ) {
           messages = [
             ...messages,
@@ -1999,15 +2029,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingRequiredFinalDeliverablesRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingRequiredFinalDeliverablesRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 missing: missingRequiredDeliverables,
                 evidenceText: completedSession.finalContents.join("\n\n"),
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -2018,6 +2048,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedProductBriefEvidenceText,
           })
         ) {
@@ -2027,14 +2058,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildSourceEvidenceCarryForwardRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildSourceEvidenceCarryForwardRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 evidenceText: completedProductBriefEvidenceText,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -2044,6 +2075,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedProductBriefEvidenceText,
           })
         ) {
@@ -2053,14 +2085,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildTimeoutFollowupFinalGuidanceRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildTimeoutFollowupFinalGuidanceRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 evidenceText: completedProductBriefEvidenceText,
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -2071,6 +2103,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedSession.finalContents.join("\n\n"),
           })
         ) {
@@ -2080,14 +2113,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+            recordRepairPrompt(
+              repairMarkers,
+              buildMissingBrowserEvidenceDimensionsRepairPrompt({
                 taskPrompt: input.packet.taskPrompt,
                 resultText: result.text,
                 evidenceText: completedSession.finalContents.join("\n\n"),
               }),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -2097,6 +2130,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           shouldRepairFalseEvidenceBlockedSynthesis({
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: completedSession.finalContents.join("\n\n"),
           })
         ) {
@@ -2106,12 +2140,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildFalseEvidenceBlockedSynthesisRepairPrompt(
+            recordRepairPrompt(
+              repairMarkers,
+              buildFalseEvidenceBlockedSynthesisRepairPrompt(
                 completedSession.finalContents,
               ),
-            },
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -2121,6 +2155,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
+            repairMarkers,
             evidenceText: [
               completedSession.finalContents.join("\n\n"),
               collectToolResultContentText(toolResults),
@@ -2135,10 +2170,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               role: "assistant",
               content: result.text,
             },
-            {
-              role: "user",
-              content: buildWeakEvidenceSynthesisRepairPrompt(),
-            },
+            recordRepairPrompt(
+              repairMarkers,
+              buildWeakEvidenceSynthesisRepairPrompt(),
+            ),
           ];
           nextToolChoice = "none";
           continue;
@@ -3289,6 +3324,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           activation: input.activation,
           taskPrompt: input.packet.taskPrompt,
           messages: finalMessages,
+          // Separate entry point (generateFinalAfterToolRoundLimit) outside the
+          // generate() loop: its idempotency ledger is finalMessages, which is
+          // where this method injects + scans its own repair prompt. Pass it as
+          // repairMarkers to preserve the pre-migration finalMessages scan.
+          repairMarkers: finalMessages,
           resultText: generated.result.text,
         })
       ) {
@@ -6278,10 +6318,11 @@ function shouldRepairMissingApprovalGate(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
   tools?: GenerateTextInput["tools"];
 }): boolean {
-  if (hasMissingApprovalGateRepairPrompt(input.messages)) {
+  if (hasMissingApprovalGateRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!hasToolDefinition(input.tools, "permission_query")) {
@@ -6313,9 +6354,10 @@ function shouldRepairStalePendingApproval(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  if (hasStalePendingApprovalRepairPrompt(input.messages)) {
+  if (hasStalePendingApprovalRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
@@ -6336,9 +6378,10 @@ function shouldRepairPendingApprovalWaitTimeoutCheck(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  if (hasPendingApprovalWaitTimeoutCheckRepairPrompt(input.messages)) {
+  if (hasPendingApprovalWaitTimeoutCheckRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
@@ -6435,9 +6478,10 @@ function shouldRepairPrematurePendingApprovalFinal(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  if (hasPrematurePendingApprovalRepairPrompt(input.messages)) {
+  if (hasPrematurePendingApprovalRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
@@ -6472,9 +6516,10 @@ function shouldRepairApprovalWaitTimeoutCloseout(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  if (hasApprovalWaitTimeoutCloseoutRepairPrompt(input.messages)) {
+  if (hasApprovalWaitTimeoutCloseoutRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
@@ -6490,12 +6535,13 @@ function shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
   if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
     return false;
   }
-  if (!hasApprovalWaitTimeoutCloseoutRepairPrompt(input.messages)) {
+  if (!hasApprovalWaitTimeoutCloseoutRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!hasApprovalWaitTimeoutEvidence(input.toolTrace)) {
@@ -6531,9 +6577,10 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  if (hasIncompleteApprovedBrowserActionRepairPrompt(input.messages)) {
+  if (hasIncompleteApprovedBrowserActionRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
@@ -6567,13 +6614,14 @@ function shouldRepairMissingBrowserEvidence(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
   tools?: GenerateTextInput["tools"];
 }): boolean {
   if (!hasToolDefinition(input.tools, "sessions_spawn")) {
     return false;
   }
-  if (hasMissingBrowserEvidenceRepairPrompt(input.messages)) {
+  if (hasMissingBrowserEvidenceRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!taskRequiresBrowserEvidence(input.taskPrompt)) {
@@ -6597,6 +6645,7 @@ function shouldRepairMissingProductSignalBrowserEvidence(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
   tools?: GenerateTextInput["tools"];
   evidenceText?: string;
@@ -6604,7 +6653,7 @@ function shouldRepairMissingProductSignalBrowserEvidence(input: {
   if (!hasToolDefinition(input.tools, "sessions_spawn")) {
     return false;
   }
-  if (hasMissingBrowserEvidenceRepairPrompt(input.messages)) {
+  if (hasMissingBrowserEvidenceRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!taskRequestsProductSignalDashboardEvidence(input.taskPrompt)) {
@@ -6639,8 +6688,9 @@ function shouldRepairMissingProductSignalBrowserEvidence(input: {
 function shouldSuppressToolsForAwaitingContextSetup(input: {
   taskPrompt: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
 }): boolean {
-  if (hasAwaitingContextSetupNoToolRepairPrompt(input.messages)) {
+  if (hasAwaitingContextSetupNoToolRepairPrompt(input.repairMarkers)) {
     return false;
   }
   return taskPromptRequestsAwaitingContextSetup(input.taskPrompt);
@@ -6669,8 +6719,9 @@ function shouldRepairMissingRequestedNextAction(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
 }): boolean {
-  if (hasMissingRequestedNextActionRepairPrompt(input.messages)) {
+  if (hasMissingRequestedNextActionRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
@@ -6689,9 +6740,10 @@ function shouldRepairMissingRequestedTableColumns(input: {
   activation?: RoleActivationInput;
   taskPrompt: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   resultText: string;
 }): boolean {
-  if (hasMissingRequestedTableColumnsRepairPrompt(input.messages)) {
+  if (hasMissingRequestedTableColumnsRepairPrompt(input.repairMarkers)) {
     return false;
   }
   const requestedColumns = resolveRequestedTableColumns([
@@ -6746,9 +6798,10 @@ function shouldRepairExtraneousProviderTableSchema(input: {
   activation?: RoleActivationInput;
   taskPrompt: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   resultText: string;
 }): boolean {
-  if (hasExtraneousProviderTableSchemaRepairPrompt(input.messages)) {
+  if (hasExtraneousProviderTableSchemaRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!resultIntroducesProviderSupportSchema(input.resultText)) {
@@ -6896,9 +6949,10 @@ function shouldRepairWeakEvidenceSynthesis(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   evidenceText?: string;
 }): boolean {
-  if (hasWeakEvidenceSynthesisRepairPrompt(input.messages)) {
+  if (hasWeakEvidenceSynthesisRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
@@ -6931,9 +6985,10 @@ function shouldRepairProductBriefEvidenceCarryForward(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   evidenceText: string;
 }): boolean {
-  if (hasProductBriefEvidenceCarryForwardRepairPrompt(input.messages)) {
+  if (hasProductBriefEvidenceCarryForwardRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!taskRequestsAgentWorkbenchProductBrief(input.taskPrompt)) {
@@ -6954,6 +7009,7 @@ function shouldRepairSourceEvidenceCarryForward(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   evidenceText: string;
 }): boolean {
   return (
@@ -6966,9 +7022,10 @@ function shouldRepairCompletedSessionLabelCarryForward(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   evidenceText: string;
 }): boolean {
-  if (hasCompletedSessionLabelCarryForwardRepairPrompt(input.messages)) {
+  if (hasCompletedSessionLabelCarryForwardRepairPrompt(input.repairMarkers)) {
     return false;
   }
   const labels = extractCompletedSessionEvidenceLabels(input.evidenceText);
@@ -7042,7 +7099,13 @@ function buildSourceEvidenceCarryForwardRepairPrompt(input: {
   resultText: string;
   evidenceText: string;
 }): string {
-  if (shouldRepairProductBriefEvidenceCarryForward({ ...input, messages: [] })) {
+  if (
+    shouldRepairProductBriefEvidenceCarryForward({
+      ...input,
+      messages: [],
+      repairMarkers: [],
+    })
+  ) {
     return buildProductBriefEvidenceCarryForwardRepairPrompt(input);
   }
   const missingLabels = extractCompletedSessionEvidenceLabels(input.evidenceText).filter(
@@ -7189,9 +7252,10 @@ function evidenceStatesStrictOperationsRestriction(evidenceText: string): boolea
 function shouldRepairFalseEvidenceBlockedSynthesis(input: {
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   evidenceText: string;
 }): boolean {
-  if (hasFalseEvidenceBlockedSynthesisRepairPrompt(input.messages)) {
+  if (hasFalseEvidenceBlockedSynthesisRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
@@ -7206,9 +7270,10 @@ function shouldRepairMissingBrowserEvidenceDimensions(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   evidenceText: string;
 }): boolean {
-  if (hasMissingBrowserEvidenceDimensionsRepairPrompt(input.messages)) {
+  if (hasMissingBrowserEvidenceDimensionsRepairPrompt(input.repairMarkers)) {
     return false;
   }
   return findMissingBrowserEvidenceDimensions(input).length > 0;
@@ -7272,6 +7337,7 @@ function shouldRepairMissingRequestedRiskDimension(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
 }): boolean {
   if (
     !/\brisks?\b/i.test(input.taskPrompt) ||
@@ -7349,9 +7415,10 @@ function shouldRepairStaleDeniedApproval(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  if (hasStaleDeniedApprovalRepairPrompt(input.messages)) {
+  if (hasStaleDeniedApprovalRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
@@ -7904,9 +7971,10 @@ function shouldRepairTimeoutFollowupFinalGuidance(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   evidenceText: string;
 }): boolean {
-  if (hasTimeoutFollowupFinalGuidanceRepairPrompt(input.messages)) {
+  if (hasTimeoutFollowupFinalGuidanceRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (!taskRequestsTimeoutFollowupContinuation(input.taskPrompt)) {
@@ -9878,12 +9946,13 @@ function enforceMissingApprovalGateRepairToolCalls(
   toolCalls: LLMToolCall[],
   context: {
     messages: LLMMessage[];
+    repairMarkers: LLMMessage[];
     taskPrompt: string;
     toolTrace: NativeToolRoundTrace[];
   },
 ): LLMToolCall[] {
   if (
-    !hasMissingApprovalGateRepairPrompt(context.messages) ||
+    !hasMissingApprovalGateRepairPrompt(context.repairMarkers) ||
     !requestsApprovalGatedBrowserAction(context.taskPrompt) ||
     hasPermissionGateEvidence(context.toolTrace) ||
     toolCalls.some((call) => call.name === "permission_query")
@@ -11588,9 +11657,10 @@ function buildFinalRecoveryBudgetCloseoutReasonLines(maxToolCalls: number): stri
 
 function shouldRepairFinalRecoveryBudgetCloseout(input: {
   messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
   resultText: string;
 }): boolean {
-  if (hasFinalRecoveryBudgetCloseoutRepairPrompt(input.messages)) {
+  if (hasFinalRecoveryBudgetCloseoutRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (/@\{role-[^}]+}/i.test(input.resultText)) {
