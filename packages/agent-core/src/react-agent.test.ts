@@ -128,6 +128,31 @@ test("onAfterExecute can close out the loop with a reason", async () => {
   assert.equal(final?.type === "final" && final.closeoutReason, "evidence_complete");
 });
 
+test("onToolCallsClose closes out on the pending calls before they execute", async () => {
+  const model = scriptedModel([{ text: "go", toolCalls: [call("c1", "search")] }, { text: "should-not-reach" }]);
+  const events = await run(model, {
+    onToolCallsClose: (calls) => (calls.length > 0 ? "pending_cap" : null),
+    onTerminate: (reason) => ({ text: `closed: ${reason}` }),
+  });
+  // the pending round never executed and never entered the event stream, so a
+  // host building its trace from events leaves this round out of the trace.
+  assert.equal(events.filter((e) => e.type === "model_response").length, 0);
+  assert.equal(events.filter((e) => e.type === "tool_started").length, 0);
+  assert.equal(events.filter((e) => e.type === "tool_result").length, 0);
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "closed: pending_cap");
+  assert.equal(final?.type === "final" && final.closeoutReason, "pending_cap");
+});
+
+test("onToolCallsClose returning null lets the round execute normally", async () => {
+  const model = scriptedModel([{ text: "go", toolCalls: [call("c1", "search")] }, { text: "done" }]);
+  const events = await run(model, { onToolCallsClose: () => null });
+  // the round proceeded: model_response emitted and the tool actually ran
+  assert.ok(events.some((e) => e.type === "model_response"));
+  assert.ok(events.some((e) => e.type === "tool_result"));
+  assert.equal(events.at(-1)?.type === "final" && events.at(-1)!.type, "final");
+});
+
 test("terminationPredicates fire before the model call and route through onTerminate", async () => {
   const model = scriptedModel([{ text: "unused" }]);
   const events = await run(model, {

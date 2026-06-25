@@ -21807,3 +21807,373 @@ test("cutover parity: sub_agent_timeout closeout is identical between inline and
     "engine timeout closeout should carry the resumable-continuation sentence",
   );
 });
+
+// --- Cutover Stage 5 PR2d: pending-call closeout parity (onToolCallsClose) ---
+// Each test drives the same single-closeout scenario through reactEngine
+// "inline" and "engine" and asserts content + mentions + toolLoopCloseout.reason
+// + missionReport.status parity. Scenarios use the bland simplePacket (or a
+// minimal recovery prompt) and plain tools so no Stage-7 continuation/repair
+// branch fires before the terminal closeout.
+
+const closeoutSynthesisGateway = (toolRound: () => GenerateTextResult, synthesisText: string): LLMGateway => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input) => {
+    if ((input.tools?.length ?? 0) === 0) {
+      return {
+        text: synthesisText,
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return toolRound();
+  };
+  return gateway;
+};
+
+const toolCallTurn = (id: string, name: string, input: Record<string, unknown>): GenerateTextResult => ({
+  text: "calling a tool",
+  toolCalls: [{ id, name, input }],
+  modelId: "claude-test",
+  providerId: "anthropic",
+  protocol: "anthropic-compatible",
+  adapterName: "test",
+  raw: {},
+});
+
+test("cutover parity: recovery_tool_budget closeout is identical between inline and engine paths", async () => {
+  // A final recovery-attempt prompt caps the budget at 1 tool call; after round 0
+  // spends it, round 1's pending call closes out as recovery_tool_budget.
+  const recoveryPacket = (): RolePromptPacket => ({
+    ...buildPacket(),
+    taskPrompt:
+      "Automatic recovery attempt 2 of 2. Finish the task now. You may make at most 1 additional tool calls total.",
+  });
+  const makeGateway = (): LLMGateway =>
+    closeoutSynthesisGateway(
+      () => toolCallTurn("c", "lookup", {}),
+      "Blocked closeout from the gathered evidence.",
+    );
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "v" };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: recoveryPacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "recovery_tool_budget",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "recovery_tool_budget",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});
+
+test("cutover parity: operator_cancelled closeout is identical between inline and engine paths", async () => {
+  // Round 0 surfaces a cancelled delegated session (returned via a plain tool so
+  // no session-call normalization fires); the bland simplePacket does not ask to
+  // continue it, so round 1's pending call closes out as operator_cancelled.
+  const cancelled = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "cancelled",
+    tool_chain: [],
+    result: "operator cancelled active source verification",
+    final_content: null,
+    payload: null,
+  });
+  const makeGateway = (): LLMGateway =>
+    closeoutSynthesisGateway(
+      () => toolCallTurn("c", "lookup", {}),
+      "Verification was cancelled; bounded closeout from the cancellation evidence.",
+    );
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: cancelled };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "operator_cancelled",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "operator_cancelled",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});
+
+test("cutover parity: pseudo_tool_call closeout is identical between inline and engine paths", async () => {
+  // The model emits tool-call markup as text with no native tool call; both paths
+  // close out as pseudo_tool_call on round 0 without executing anything.
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input) => {
+      if ((input.tools?.length ?? 0) === 0) {
+        return {
+          text: "Final answer without tools.",
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return {
+        text: "<tool_call>lookup</tool_call>",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "v" };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "pseudo_tool_call",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "pseudo_tool_call",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});
+
+test("cutover parity: wall_clock_budget closeout is identical between inline and engine paths", async () => {
+  // The executor advances the clock past the 100ms budget while running round 0;
+  // round 1's pending call hits the graceful wall-clock closeout on both paths.
+  const makeGateway = (): LLMGateway =>
+    closeoutSynthesisGateway(
+      () => toolCallTurn("c", "lookup", {}),
+      "Final answer after the wall-clock budget.",
+    );
+  const run = (reactEngine: "inline" | "engine") => {
+    let now = 0;
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+      },
+      async execute(input) {
+        now = 200;
+        return { toolCallId: input.call.id, toolName: input.call.name, content: "v" };
+      },
+    };
+    return new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor, maxRounds: 8, maxWallClockMs: 100 },
+      clock: { now: () => now },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "wall_clock_budget",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "wall_clock_budget",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});
+
+test("cutover parity: repeated_tool_failure closeout is identical between inline and engine paths", async () => {
+  // The same tool call fails twice (same signature); round 2's pending repeat of
+  // it trips the anti-loop breaker on both paths.
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async (input) => {
+      if ((input.tools?.length ?? 0) === 0) {
+        return {
+          text: "Final answer after repeated tool failures.",
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      n += 1;
+      return toolCallTurn(`c${n}`, "lookup", { q: "x" });
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, isError: true, content: "tool failed" };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "repeated_tool_failure",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "repeated_tool_failure",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});
+
+test("cutover parity: repeated_session_inspection closeout is identical between inline and engine paths", async () => {
+  // Round 0 inspects a session via sessions_history (non-evidence result, so no
+  // completed closeout); round 1 re-inspects the same session and closes out.
+  const inspectionResult = JSON.stringify({ session_key: "worker:explore:task-1:s1", ok: true });
+  const makeGateway = (): LLMGateway =>
+    closeoutSynthesisGateway(
+      () => toolCallTurn("c", "sessions_history", { session_key: "worker:explore:task-1:s1" }),
+      "Final answer from the already-inspected session evidence.",
+    );
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_history", description: "h", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: inspectionResult };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "repeated_session_inspection",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "repeated_session_inspection",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});
+
+test("cutover parity: excessive_session_continuation closeout is identical between inline and engine paths", async () => {
+  // The same session is continued twice via sessions_send (plain acks, so no
+  // completed/timeout closeout); round 2's third continuation closes out.
+  const makeGateway = (): LLMGateway =>
+    closeoutSynthesisGateway(
+      () => toolCallTurn("c", "sessions_send", { session_key: "worker:explore:task-1:s1", message: "go" }),
+      "Final answer from the gathered session evidence.",
+    );
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_send", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "ack" };
+    },
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: simplePacket() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "excessive_session_continuation",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "excessive_session_continuation",
+  );
+  assert.equal(
+    (engine.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+    (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
+  );
+});

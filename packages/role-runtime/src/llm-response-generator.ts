@@ -329,6 +329,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         activeToolLoop,
         initialGatewayInput,
         modelCallTrace,
+        recoveryToolBudget,
+        recoveryToolCallsBeforeActivation,
       });
     }
     for (let round = 0; ; round++) {
@@ -2312,9 +2314,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     activeToolLoop: RoleToolLoopOptions | undefined;
     initialGatewayInput: GenerateTextInput;
     modelCallTrace: ModelCallBoundaryTrace[];
+    recoveryToolBudget: { maxToolCalls: number } | null;
+    recoveryToolCallsBeforeActivation: number;
   }): Promise<GeneratedRoleReply> {
     const { activation, packet, signal } = args.input;
-    const { selection, activeToolLoop, initialGatewayInput, modelCallTrace } = args;
+    const {
+      selection,
+      activeToolLoop,
+      initialGatewayInput,
+      modelCallTrace,
+      recoveryToolBudget,
+      recoveryToolCallsBeforeActivation,
+    } = args;
 
     let lastResult: GenerateTextResult | undefined;
     let traceRound = 0;
@@ -2402,6 +2413,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       // reasonLines + closeout metadata for the reason it returned.
       completedSession: NonNullable<ReturnType<typeof findCompletedSessionEvidence>> | undefined;
       timeoutSignal: NonNullable<ReturnType<typeof findSubAgentToolTimeout>> | undefined;
+      // PR2d: onToolCallsClose detects a pending-call closeout and stashes the
+      // inline reasonLines + closeout metadata it built here; onTerminate runs
+      // the synthesis for the reason it returned.
+      pendingCloseout: { reasonLines: string[]; closeout: ToolLoopCloseoutMetadata } | undefined;
     } = {
       toolLoopCloseout: undefined,
       closeoutResult: undefined,
@@ -2410,6 +2425,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       memoryFlushes: [],
       completedSession: undefined,
       timeoutSignal: undefined,
+      pendingCloseout: undefined,
     };
     const toolTrace: NativeToolRoundTrace[] = [];
     const agent = createReActAgent<RoleToolContext>({
@@ -2490,6 +2506,228 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           return results;
         },
+        // Stage 5 PR2d pending-call closeouts: mirror the inline pre-execute
+        // closeouts that fire on the round's pending (normalized) tool calls, in
+        // inline precedence order. Each builds the inline reasonLines + closeout
+        // metadata and stashes them on `run.pendingCloseout`; onTerminate runs the
+        // synthesis. round_limit is intentionally omitted: the engine's maxRounds
+        // loop fires it post-loop at exactly round === maxRounds, where the inline
+        // `for(;;)` loop hits roundLimitReached, and this hook only runs on rounds
+        // 0..maxRounds-1, so the inline precedence (wall_clock before round_limit
+        // before repeated_*) is preserved without double-handling round_limit.
+        //
+        // Scope: like onAfterExecute, this fires ONLY terminal closeouts. The
+        // inline pre-execute block also has continuation/repair branches that
+        // mutate the pending calls or `continue` (runtime continuation injection,
+        // recovery-budget truncation, approval-gate repair, …) — those are the
+        // approval/recovery cutover stages; parity tests use scenarios that trip
+        // none of them. Likewise the inline recovery/cancelled/pseudo/wall-clock
+        // closeouts can re-loop AFTER synthesis to repair missing requested table
+        // columns or browser-evidence dimensions (shouldRepairMissingRequested
+        // TableColumns / shouldRepairMissingBrowserEvidenceDimensions); those
+        // post-synthesis repair passes are deferred with the same Stage-6/7 work
+        // and are no-ops for the in-scope scenarios.
+        //
+        // Deferred edge (timing race): inline checks wall_clock before round_limit
+        // on the extra round === maxRounds iteration its `for(;;)` loop runs; the
+        // engine exits to round_limit one round earlier. So a wall-clock budget
+        // first crossed exactly on that final boundary closes as round_limit here
+        // vs wall_clock inline. The common case (budget crossed on an earlier
+        // round) is handled; parity tests pin the clock to avoid the boundary.
+        onToolCallsClose: (calls, state) => {
+          if (!activeToolLoop) {
+            return null;
+          }
+          const roundCount = toolTrace.length;
+          // 1. recovery_tool_budget — the final recovery attempt's tool budget is
+          //    exhausted (fires regardless of pending-call count).
+          if (recoveryToolBudget) {
+            const usedToolCalls =
+              recoveryToolCallsBeforeActivation + countToolCalls(toolTrace);
+            if (usedToolCalls >= recoveryToolBudget.maxToolCalls) {
+              run.pendingCloseout = {
+                reasonLines: buildFinalRecoveryBudgetCloseoutReasonLines(
+                  recoveryToolBudget.maxToolCalls,
+                ),
+                closeout: {
+                  reason: "recovery_tool_budget",
+                  maxRounds,
+                  pendingToolCallCount: calls.length,
+                  toolCallCount: usedToolCalls,
+                  roundCount,
+                  evidenceAvailable: hasUsableEvidence(toolTrace),
+                },
+              };
+              return "recovery_tool_budget";
+            }
+          }
+          // 2. operator_cancelled — a prior session was cancelled and the latest
+          //    user message did not ask to continue (pending calls present).
+          if (
+            calls.length > 0 &&
+            shouldCloseoutCancelledSessionWithoutContinuation({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+            })
+          ) {
+            run.pendingCloseout = {
+              reasonLines: [
+                "A previous sub-agent session was cancelled by the operator.",
+                "The latest user message did not ask to continue, resume, or retry that cancelled session.",
+                "Do not call more tools or spawn a replacement session. Produce the final answer from the cancellation evidence already present.",
+                "State what remains unverified and how the user can continue later if they want the cancelled work resumed.",
+              ],
+              closeout: {
+                reason: "operator_cancelled",
+                maxRounds,
+                toolCallCount: countToolCalls(toolTrace),
+                roundCount,
+                evidenceAvailable: hasUsableEvidence(toolTrace),
+              },
+            };
+            return "operator_cancelled";
+          }
+          // 3. pseudo_tool_call — no native calls, but the text emitted tool-call
+          //    markup (XML/JSON/pseudo).
+          if (
+            calls.length === 0 &&
+            containsAnyToolCallForm({ text: state.lastText, toolCalls: calls })
+          ) {
+            run.pendingCloseout = {
+              reasonLines: [
+                "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
+                "Tools are not available through text markup. Do not call more tools.",
+                "Produce only the final user-facing answer from the evidence already present in the conversation.",
+              ],
+              closeout: {
+                reason: "pseudo_tool_call",
+                maxRounds,
+                toolCallCount: countToolCalls(toolTrace),
+                roundCount,
+                evidenceAvailable: hasUsableEvidence(toolTrace),
+              },
+            };
+            return "pseudo_tool_call";
+          }
+          // 4. wall_clock_budget — the graceful round-top closeout (closes the
+          //    #490 gap: produce a final answer from gathered evidence instead of
+          //    failing loud). Pending calls present + at least one prior round.
+          if (calls.length > 0) {
+            const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+              ...(activeToolLoop.maxWallClockMs !== undefined
+                ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
+                : {}),
+              toolCalls: calls,
+            });
+            const requiredTimeoutContinuationPastWallClock =
+              shouldAllowRequiredTimeoutContinuationPastWallClock({
+                taskPrompt: packet.taskPrompt,
+                messages: state.messages,
+                toolCalls: calls,
+                toolTrace,
+              });
+            if (
+              !requiredTimeoutContinuationPastWallClock &&
+              toolTrace.length > 0 &&
+              isPositiveFiniteBudget(maxWallClockMs) &&
+              this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
+            ) {
+              run.pendingCloseout = {
+                reasonLines: [
+                  `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
+                  "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+                  "State uncertainties and missing verification explicitly instead of trying another lookup.",
+                ],
+                closeout: {
+                  reason: "wall_clock_budget",
+                  maxRounds,
+                  maxWallClockMs,
+                  pendingToolCallCount: calls.length,
+                  toolCallCount: countToolCalls(toolTrace),
+                  roundCount,
+                  evidenceAvailable: hasUsableEvidence(toolTrace),
+                },
+              };
+              return "wall_clock_budget";
+            }
+          }
+          // round_limit: handled by the engine's maxRounds loop (see header).
+          // 5. repeated_tool_failure — a pending call's signature already failed
+          //    twice in the trace.
+          const repeatedFailure = findRepeatedFailedToolCall(calls, toolTrace);
+          if (repeatedFailure) {
+            run.pendingCloseout = {
+              reasonLines: [
+                `Repeated failing tool call detected: ${repeatedFailure.toolName} failed ${repeatedFailure.failureCount} times with the same arguments.`,
+                "Do not call the same tool again with those arguments, and do not spawn a fallback session for the same target.",
+                "Produce the best final answer from evidence already gathered. If no usable evidence exists, say verification did not complete and name the next operator/user input needed.",
+              ],
+              closeout: {
+                reason: "repeated_tool_failure",
+                maxRounds,
+                pendingToolCallCount: calls.length,
+                toolName: repeatedFailure.toolName,
+                toolCallCount: countToolCalls(toolTrace),
+                roundCount,
+                evidenceAvailable: hasUsableEvidence(toolTrace),
+              },
+            };
+            return "repeated_tool_failure";
+          }
+          // 6. repeated_session_inspection — a pending sessions_history re-inspects
+          //    an already-inspected session.
+          const repeatedSessionInspection = findRepeatedSessionInspectionCall(
+            calls,
+            toolTrace,
+            packet.taskPrompt,
+            `${packet.taskPrompt}\n${buildContinuationDirectiveContext(packet.taskPrompt, state.messages)}`,
+          );
+          if (repeatedSessionInspection) {
+            run.pendingCloseout = {
+              reasonLines: [
+                `Repeated session inspection detected: ${repeatedSessionInspection.toolName} already inspected ${repeatedSessionInspection.sessionKey}.`,
+                "Do not call sessions_history or sessions_list again for the same session.",
+                "Produce the final answer from the session evidence already gathered. If the gathered evidence is insufficient, state exactly what remains unverified and what follow-up is needed.",
+              ],
+              closeout: {
+                reason: "repeated_session_inspection",
+                maxRounds,
+                pendingToolCallCount: calls.length,
+                toolName: repeatedSessionInspection.toolName,
+                toolCallCount: countToolCalls(toolTrace),
+                roundCount,
+                evidenceAvailable: hasUsableEvidence(toolTrace),
+              },
+            };
+            return "repeated_session_inspection";
+          }
+          // 7. excessive_session_continuation — a pending sessions_send continues a
+          //    session already continued the max number of times.
+          const excessiveSessionContinuation = findExcessiveSessionContinuationCall(
+            calls,
+            toolTrace,
+          );
+          if (excessiveSessionContinuation) {
+            run.pendingCloseout = {
+              reasonLines: [
+                `Repeated session continuation detected: ${excessiveSessionContinuation.sessionKey} was already continued ${excessiveSessionContinuation.continuationCount} times.`,
+                "Do not call sessions_send again for the same session.",
+                "Produce the final answer from the gathered session evidence now. If the evidence is incomplete, state the exact unverified scope and the bounded follow-up needed.",
+              ],
+              closeout: {
+                reason: "excessive_session_continuation",
+                maxRounds,
+                pendingToolCallCount: calls.length,
+                toolName: excessiveSessionContinuation.toolName,
+                toolCallCount: countToolCalls(toolTrace),
+                roundCount,
+                evidenceAvailable: hasUsableEvidence(toolTrace),
+              },
+            };
+            return "excessive_session_continuation";
+          }
+          return null;
+        },
         // Stage 5 PR2c closeout detection: mirror the inline post-execute
         // terminal closeouts. After a tool round runs, inspect the round's
         // results with the same finders the inline loop uses (findCompletedSession
@@ -2528,7 +2766,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // read the signal onAfterExecute stashed on `run`.
           let reasonLines: string[] | undefined;
           let closeout: ToolLoopCloseoutMetadata;
-          if (reason === "completed_sub_agent_final" && run.completedSession) {
+          if (run.pendingCloseout && run.pendingCloseout.closeout.reason === reason) {
+            // PR2d pending-call closeouts: onToolCallsClose already built the
+            // inline reasonLines + metadata for this reason (no trailing
+            // transform — the inline pre-execute closeouts use the synthesis as-is).
+            reasonLines = run.pendingCloseout.reasonLines;
+            closeout = run.pendingCloseout.closeout;
+          } else if (reason === "completed_sub_agent_final" && run.completedSession) {
             const completedSession = run.completedSession;
             const preserveRecoveredTimeoutCloseout = shouldPreserveRecoveredTimeoutCloseout({
               taskPrompt: packet.taskPrompt,
@@ -2619,12 +2863,20 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               evidenceAvailable: hasUsableEvidence(toolTrace),
             };
           }
+          // pseudo_tool_call synthesizes from the malformed assistant text it must
+          // recover from, so append it to the synthesis context (mirrors inline
+          // :1032-1038). agent-core has not yet appended the current assistant
+          // message to state.messages when this pre-execute closeout fires.
+          const synthesisMessages =
+            reason === "pseudo_tool_call"
+              ? [...state.messages, { role: "assistant" as const, content: state.lastText }]
+              : state.messages;
           const generated = await this.generateFinalAfterToolRoundLimit({
             activation,
             packet,
             selection,
             baseGatewayInput: initialGatewayInput,
-            messages: state.messages,
+            messages: synthesisMessages,
             maxRounds,
             modelCallTrace,
             ...(reasonLines ? { reasonLines } : {}),
@@ -5989,7 +6241,10 @@ function forbidsFinalUrls(text: string): boolean {
   );
 }
 
-function containsAnyToolCallForm(result: GenerateTextResult): boolean {
+function containsAnyToolCallForm(result: {
+  text: string;
+  toolCalls?: LLMToolCall[];
+}): boolean {
   if ((result.toolCalls?.length ?? 0) > 0) {
     return true;
   }
