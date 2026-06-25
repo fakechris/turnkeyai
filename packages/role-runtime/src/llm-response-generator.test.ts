@@ -22377,3 +22377,80 @@ test("cutover parity: false-evidence-blocked completed-closeout repair is identi
   assert.doesNotMatch(engine.content, /not accessible/i);
   assert.match(engine.content, /\$10 per month/);
 });
+
+test("cutover parity: missing-requested-next-action completed-closeout repair is identical between inline and engine paths", async () => {
+  // The task asks for the next action the operator should take, but the closeout
+  // synthesis omits any next-action guidance. shouldRepairMissingRequestedNextAction
+  // fires a completed-closeout repair round on both paths (inline re-loops via the
+  // "none" round; engine via the onTerminate repair loop). The scenario is isolated
+  // to this predicate: the task names no sources / product brief / timeout / table /
+  // conclusion, so the earlier cascade predicates (which the engine loop does not yet
+  // check) stay quiet and cannot create a false divergence.
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    result: "The delegated session verified the plan is $10 per month.",
+    final_content: null,
+    payload: null,
+  });
+  const missingNextAction = "The delegated session verified the plan is $10 per month.";
+  const fixedAnswer =
+    "The delegated session verified the plan is $10 per month. Recommended next action: the operator should continue monitoring the pricing page for changes.";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let synthCount = 0;
+    gateway.generate = async (input) => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      if ((input.tools?.length ?? 0) > 0) {
+        // round 0: delegate to a sub-agent.
+        return {
+          ...base,
+          text: "delegating",
+          toolCalls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", task: "check price" } }],
+        };
+      }
+      // tool-free syntheses: 1st = closeout missing the next action, 2nd = the repair.
+      synthCount += 1;
+      return { ...base, text: synthCount === 1 ? missingNextAction : fixedAnswer };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Review the delegated session's pricing finding and tell me the next action the operator should take.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the repair fired on both paths: the next-action guidance the first synthesis
+  // lacked is present, including the wording unique to the repair synthesis.
+  assert.match(inline.content, /next action/i);
+  assert.match(engine.content, /next action/i);
+  assert.match(engine.content, /monitoring the pricing page/);
+});
