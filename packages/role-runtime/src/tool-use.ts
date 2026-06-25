@@ -1,4 +1,4 @@
-import type { LLMToolCall, LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
+import type { LLMMessage, LLMToolCall, LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 import {
   MAX_BROWSER_OPEN_TIMEOUT_MS,
   getInstructions,
@@ -73,6 +73,10 @@ export type RoleToolProgressEvent = ToolProgressEvent;
 export interface RoleToolContext extends ToolContext {
   activation: RoleActivationInput;
   packet: RolePromptPacket;
+  /** Stage 6: the per-run repair-idempotency ledger (injected repair prompts).
+   *  The engine path sets it so `onRepairRound` can guard `shouldRepair*` across
+   *  re-synthesis rounds; absent on contexts that never repair. */
+  repairMarkers?: LLMMessage[];
 }
 
 export interface RoleToolExecutor {

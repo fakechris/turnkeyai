@@ -153,6 +153,62 @@ test("onToolCallsClose returning null lets the round execute normally", async ()
   assert.equal(events.at(-1)?.type === "final" && events.at(-1)!.type, "final");
 });
 
+test("onRepairRound re-synthesizes a tool-free candidate then finalizes", async () => {
+  // round 0: a draft answer (no tools) -> onRepairRound injects a repair + forces
+  // a tool-free round -> round 1: the fixed answer -> onRepairRound returns null
+  // -> finalize with the repaired text.
+  const model = scriptedModel([{ text: "draft" }, { text: "fixed", stopReason: "end_turn" }]);
+  let repaired = false;
+  const events = await run(model, {
+    onRepairRound: (state) => {
+      if (repaired) return null;
+      repaired = true;
+      return {
+        messages: [...state.messages, { role: "user", content: "repair: fix it" }],
+        forceToolChoice: "none",
+      };
+    },
+  });
+  // the repair round was forced tool-free and saw the injected message
+  assert.equal(model.seen[1]!.toolChoice, "none");
+  assert.equal(model.seen[1]!.hadTools, false);
+  assert.equal(model.seen[1]!.messageCount, 2); // ["hi", "repair: fix it"]
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "fixed");
+});
+
+test("onRepairRound returning null finalizes the candidate answer unchanged", async () => {
+  const model = scriptedModel([{ text: "done", stopReason: "end_turn" }]);
+  const events = await run(model, { onRepairRound: () => null });
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "done");
+  assert.equal(model.seen.length, 1); // no extra round
+});
+
+test("onRepairRound runs the repair round even at the round budget edge", async () => {
+  // maxRounds=1: round 0 is the only allowed round. A repair requested on it must
+  // still re-synthesize rather than fall through to round_limit — a repair round
+  // is not a tool round, matching an unbounded host loop that repairs before
+  // checking the round limit.
+  const model = scriptedModel([{ text: "draft" }, { text: "fixed", stopReason: "end_turn" }]);
+  let repaired = false;
+  const events = await run(
+    model,
+    {
+      onRepairRound: (state) => {
+        if (repaired) return null;
+        repaired = true;
+        return { messages: [...state.messages, { role: "user", content: "fix" }], forceToolChoice: "none" };
+      },
+      onTerminate: () => ({ text: "ROUND_LIMIT_SYNTH" }),
+    },
+    [echoTool("search")],
+    1,
+  );
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "fixed"); // the repair ran
+});
+
 test("terminationPredicates fire before the model call and route through onTerminate", async () => {
   const model = scriptedModel([{ text: "unused" }]);
   const events = await run(model, {

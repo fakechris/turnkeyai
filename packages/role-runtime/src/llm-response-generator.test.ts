@@ -22177,3 +22177,55 @@ test("cutover parity: excessive_session_continuation closeout is identical betwe
     (inline.metadata?.["missionReport"] as { status?: string } | undefined)?.status,
   );
 });
+
+// --- Cutover Stage 6: post-synthesis repair parity (onRepairRound) ---
+test("cutover parity: missing-table-columns repair is identical between inline and engine paths", async () => {
+  // The task requests specific table columns; the model's first (tool-free) answer
+  // omits one, so shouldRepairMissingRequestedTableColumns fires a repair round on
+  // both paths (inline re-loops; engine via onRepairRound) and the repaired answer
+  // with all columns is the final result. Neutral columns avoid tripping the other
+  // (not-yet-cut-over) cascade repairs.
+  const missingTable = ["| 名称 | 价格 |", "|---|---|", "| 甲 | 1 |"].join("\n");
+  const fixedTable = ["| 名称 | 价格 | 库存 |", "|---|---|---|", "| 甲 | 1 | 100 |"].join("\n");
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input) => {
+      // tools dropped on the forced tool-free repair round -> the fixed table.
+      const text = (input.tools?.length ?? 0) === 0 ? fixedTable : missingTable;
+      return {
+        text,
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "v" };
+    },
+  });
+  const packet = (): RolePromptPacket => ({
+    ...buildPacket(),
+    taskPrompt: "输出表格列出：名称、价格、库存。",
+  });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: packet() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the repair fired on both paths: the final answer carries the omitted column.
+  assert.match(inline.content, /库存/);
+  assert.match(engine.content, /库存/);
+});
