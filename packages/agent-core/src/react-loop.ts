@@ -75,6 +75,12 @@ export interface ReActHooks<Ctx extends ToolContext> {
   onModelCallError?(error: unknown, state: ReActState, ctx: Ctx): ReActSynthesis | "rethrow";
   /** Normalize/rewrite the requested tool calls before execution. */
   onToolCalls?(calls: LLMToolCall[], round: number, ctx: Ctx): LLMToolCall[];
+  /** Inspect the round's pending (normalized) tool calls before execution;
+   *  return a closeout reason to terminate the run (routed through onTerminate),
+   *  or null to proceed. Runs after onToolCalls and before the empty-round /
+   *  execute steps, so a host can fire pending-call closeouts (budget/cap/loop
+   *  breakers) without executing the round. */
+  onToolCallsClose?(calls: LLMToolCall[], state: ReActState, ctx: Ctx): string | null;
   /** Decide what to do when a round yields no tool calls: terminate, or inject
    *  calls (the forced-continuation override). */
   onRoundEmpty?(state: ReActState, ctx: Ctx): ReActEmptyDecision;

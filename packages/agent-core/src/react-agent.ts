@@ -125,6 +125,16 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           state.lastText = generated.text;
           let toolCalls = generated.toolCalls ?? [];
           if (onToolCalls) toolCalls = onToolCalls(toolCalls, round, ctx) ?? [];
+          // Pending-call closeouts fire before the round is recorded/executed, so
+          // a terminating reason leaves this round out of the trace (matching a
+          // host loop that closes out on the pending calls without executing).
+          const closeReason = hooks.onToolCallsClose
+            ? hooks.onToolCallsClose(toolCalls, state, ctx)
+            : null;
+          if (closeReason) {
+            yield* terminate(closeReason);
+            return;
+          }
           yield emit({ type: "model_response", round, text: generated.text, toolCalls });
 
           if (toolCalls.length === 0) {
