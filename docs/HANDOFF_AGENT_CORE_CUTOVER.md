@@ -42,7 +42,8 @@ Cutover (production generator onto the engine), all flag-gated, production still
 | Stage 5 fix | #490 | rethrow aborts from the engine tool batch (codex P2) |
 | Stage 5 PR2c | #492 | `completed_sub_agent_final` + `sub_agent_timeout` via `onAfterExecute` |
 | Stage 5 PR2d | #493 | `onToolCallsClose` agent-core hook + the 7 pending-call closeouts (graceful `wall_clock_budget` closes the #490 gap) |
-| **Stage 6 prereq** | **#495** | **migrate every `shouldRepair*` idempotency guard off message-scanning onto the `repairMarkers` ledger (the Turnkey-agnostic boundary)** |
+| Stage 6 prereq | #495 | migrate every `shouldRepair*` idempotency guard off message-scanning onto the `repairMarkers` ledger (the Turnkey-agnostic boundary) |
+| **Stage 6 move 1** | **#498** | **`onRepairRound` agent-core hook + cut over `missing-table-columns` repair (natural-finish path); test-gate hygiene #497**|
 
 ## What #490 fixed (context for the next session)
 
@@ -131,26 +132,32 @@ Residual (documented in code, behavior-preserving): `generateFinalAfterToolRound
 internal synthesis-retry keeps message-based idempotency (`repairMarkers: finalMessages`) — a
 shared, already-cutover-safe path with its own message scope.
 
-### Stage 6 per-predicate moves ⏳ NEXT (one predicate per PR)
+### Stage 6 per-predicate moves ⏳ IN PROGRESS (one predicate per PR)
 
-Move each repair's mechanism onto the engine, parity-gated. Plan list (IMPLEMENTATION_PLAN.md
-Stage 6): `shouldRepairMissingBrowserEvidence`, `…RequestedTableColumns`,
+**Mechanism built + first move merged (#498):** agent-core `ReActHooks.onRepairRound?(state,
+ctx): ReActRepairDecision | null` — fires on a tool-free candidate final answer (the
+natural-finish path, where the empty round would otherwise terminate); a non-null
+`{ messages, forceToolChoice? }` runs one more (default tool-free) round instead of finalizing.
+Repair rounds do NOT consume the tool-round budget (`round--`); host idempotency
+(`ctx.repairMarkers`) converges it and agent-core `MAX_REPAIR_ROUNDS` (32) is the hard
+backstop. **`shouldRepairMissingRequestedTableColumns` is cut over** through it (engine
+`onRepairRound`, `ctx.repairMarkers ??= []`), mirroring the inline natural-finish branch
+exactly. Parity test: a task requesting columns whose first answer omits one.
+
+**Established pattern for each remaining predicate (one PR each):** add its `shouldRepairX`
+check to the engine `onRepairRound` (same shape: assistant + `recordRepairPrompt`, forced
+`"none"`), pick a neutral scenario so no *other* cascade predicate fires, add an inline-vs-
+engine parity test. Remaining (plan list): `shouldRepairMissingBrowserEvidence`,
 `…WeakEvidenceSynthesis`, `…FalseEvidenceBlockedSynthesis`, `…SourceEvidenceCarryForward`,
 `…MissingRequestedNextAction`, `findMissingRequiredFinalDeliverables`,
-`shouldSuppressToolsForAwaitingContextSetup` (inverse polarity — fires when calls > 0),
-`buildLocalEvidenceCloseout` fallback → `onModelCallError`.
+`shouldSuppressToolsForAwaitingContextSetup` (pre-execute / inverse polarity — needs
+`onToolCalls`/`onRoundMessages`, not `onRepairRound`), `buildLocalEvidenceCloseout` fallback
+→ `onModelCallError` (largely covered by PR2b's `tool_evidence_fallback`).
 
-**Engine mechanism (the design to confirm first):** the **post-synthesis** repairs are the
-tractable lever — `generateFinalAfterToolRoundLimit` is SHARED (both paths call it via
-`onTerminate`/closeouts) and already runs one post-synthesis repair internally (the
-`shouldRepairExtraneousProviderTableSchema` retry, ~`:3322`). Per-predicate move = **relocate**
-each post-closeout repair from the inline `generate()` closeout-block INTO that shared
-synthesis-retry, so both paths get it — but it must be **gated to fire in exactly the inline
-contexts** (the inline loop applies these selectively per closeout block; a uniform
-post-synthesis pass would fire more broadly → divergence). The **pre-closeout** repairs
-(awaiting-context-setup; the approval ones are Stage 7) and the `buildLocalEvidenceCloseout`
-fallback need `onRoundMessages`/`onModelCallError`. **Highest drift risk** — each move its own
-PR, parity slice expands per predicate, 197 untouched.
+**Scope deferred:** `onRepairRound` covers the **natural-finish** path only. The same repairs
+also run in the inline **completed_sub_agent_final** closeout cascade (`~:1827`); cutting those
+over needs a repair pass after the completed `onTerminate` synthesis (a later extension — the
+parity tests use natural-finish scenarios). Each move is highest-drift-risk; 197 untouched.
 
 - **Stage 7** — approval + session-continuation (peel 7, most entangled, done together).
   This is where the deferred bits land: the forced `permission_result` pre-check (PR2b scope
