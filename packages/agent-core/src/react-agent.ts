@@ -154,6 +154,12 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
               if (repair) {
                 state.messages = repair.messages;
                 pendingRepairToolChoice = repair.forceToolChoice ?? "none";
+                // A repair re-synthesis is not a new tool round, so it must not
+                // consume the round budget: the for-loop's round++ would otherwise
+                // push past maxRounds and mislabel a final-round repair as
+                // round_limit. Cancel the increment (the host's repair-marker
+                // idempotency bounds the re-loop). state.round is reset at the top.
+                round--;
                 continue;
               }
               yield finalEvent(

@@ -2806,6 +2806,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // schema, source-evidence carry-forward, weak/false evidence) follow in
         // later per-predicate moves.
         onRepairRound: (state, ctx) => {
+          // Inline only runs the post-synthesis repair cascade when a tool loop is
+          // active (the cascade lives inside `if (activeToolLoop)`); match that so
+          // a no-tool-loop engine request doesn't make an extra repair round.
+          if (!activeToolLoop) {
+            return null;
+          }
           const repairMarkers = ctx.repairMarkers ?? [];
           if (
             shouldRepairMissingRequestedTableColumns({
