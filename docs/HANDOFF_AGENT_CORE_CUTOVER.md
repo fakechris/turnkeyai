@@ -41,7 +41,8 @@ Cutover (production generator onto the engine), all flag-gated, production still
 | Stage 5 docs | #489 | progress doc |
 | Stage 5 fix | #490 | rethrow aborts from the engine tool batch (codex P2) |
 | Stage 5 PR2c | #492 | `completed_sub_agent_final` + `sub_agent_timeout` via `onAfterExecute` |
-| **Stage 5 PR2d** | **#493** | **`onToolCallsClose` agent-core hook + the 7 pending-call closeouts (graceful `wall_clock_budget` closes the #490 gap)** |
+| Stage 5 PR2d | #493 | `onToolCallsClose` agent-core hook + the 7 pending-call closeouts (graceful `wall_clock_budget` closes the #490 gap) |
+| **Stage 6 prereq** | **#495** | **migrate every `shouldRepair*` idempotency guard off message-scanning onto the `repairMarkers` ledger (the Turnkey-agnostic boundary)** |
 
 ## What #490 fixed (context for the next session)
 
@@ -119,11 +120,38 @@ closeout landed here, closing the #490 gap.** Deferred (codex P2): the post-synt
 passes (`shouldRepairMissingRequestedTableColumns` / `shouldRepairMissingBrowserEvidence
 Dimensions`) and a wall_clock/round_limit final-boundary timing edge (see deferred gaps).
 
-### Stage 6 ⏳ NEXT
+### Stage 6 prereq ✅ MERGED (#495)
 
-- **Stage 6** — repair / recovery (peel 6). **Must first migrate repair idempotency state
-  off `messages` into `ctx`** (today each `shouldRepair*` detects "already tried" by
-  scanning conversation history). Highest drift risk — do each predicate as its own commit.
+Idempotency migrated off message-scanning onto a `repairMarkers: LLMMessage[]` ledger (the
+repair prompts we inject). Every `shouldRepair*` guard now reads `input.repairMarkers`; the
+`hasX*RepairPrompt` helpers are byte-unchanged (still scan an `LLMMessage[]` — fed the
+ledger). Injections go through `recordRepairPrompt(repairMarkers, …)`. Inline owns a
+loop-local ledger; the engine will pass `ctx.repairMarkers` when the per-predicate moves land.
+Residual (documented in code, behavior-preserving): `generateFinalAfterToolRoundLimit`'s own
+internal synthesis-retry keeps message-based idempotency (`repairMarkers: finalMessages`) — a
+shared, already-cutover-safe path with its own message scope.
+
+### Stage 6 per-predicate moves ⏳ NEXT (one predicate per PR)
+
+Move each repair's mechanism onto the engine, parity-gated. Plan list (IMPLEMENTATION_PLAN.md
+Stage 6): `shouldRepairMissingBrowserEvidence`, `…RequestedTableColumns`,
+`…WeakEvidenceSynthesis`, `…FalseEvidenceBlockedSynthesis`, `…SourceEvidenceCarryForward`,
+`…MissingRequestedNextAction`, `findMissingRequiredFinalDeliverables`,
+`shouldSuppressToolsForAwaitingContextSetup` (inverse polarity — fires when calls > 0),
+`buildLocalEvidenceCloseout` fallback → `onModelCallError`.
+
+**Engine mechanism (the design to confirm first):** the **post-synthesis** repairs are the
+tractable lever — `generateFinalAfterToolRoundLimit` is SHARED (both paths call it via
+`onTerminate`/closeouts) and already runs one post-synthesis repair internally (the
+`shouldRepairExtraneousProviderTableSchema` retry, ~`:3322`). Per-predicate move = **relocate**
+each post-closeout repair from the inline `generate()` closeout-block INTO that shared
+synthesis-retry, so both paths get it — but it must be **gated to fire in exactly the inline
+contexts** (the inline loop applies these selectively per closeout block; a uniform
+post-synthesis pass would fire more broadly → divergence). The **pre-closeout** repairs
+(awaiting-context-setup; the approval ones are Stage 7) and the `buildLocalEvidenceCloseout`
+fallback need `onRoundMessages`/`onModelCallError`. **Highest drift risk** — each move its own
+PR, parity slice expands per predicate, 197 untouched.
+
 - **Stage 7** — approval + session-continuation (peel 7, most entangled, done together).
   This is where the deferred bits land: the forced `permission_result` pre-check (PR2b scope
   note), `executeRuntimeForcedToolRound`, the `onRoundEmpty` forced-continuation override.
@@ -162,7 +190,8 @@ copy as templates.
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
 npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (213)
-# read IMPLEMENTATION_PLAN.md (Stage 6) → start Stage 6 off a fresh branch
+# Stage 6 prereq (#495) done → start the Stage 6 per-predicate moves off a fresh branch
+# (confirm the engine repair mechanism first — see "Stage 6 per-predicate moves" above)
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 
