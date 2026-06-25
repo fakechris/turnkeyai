@@ -12,7 +12,12 @@ import { DirectCdpBrowserAdapter } from "@turnkeyai/browser-bridge/transport/dir
 import type { BrowserRawCdpExpertLane } from "@turnkeyai/core-types/team";
 
 const chromePath = resolveChromePath();
-const liveChromeTest = chromePath ? test : test.skip;
+// Opt-in only: this drives a real Chrome over CDP, so it must not run in the
+// default `npm test` gate (it pollutes the gate and flakes with CDP 400s on any
+// machine that happens to have Chrome installed). Run it explicitly with
+// TURNKEYAI_RUN_LIVE_CDP_E2E=1.
+const liveCdpE2eEnabled = process.env.TURNKEYAI_RUN_LIVE_CDP_E2E === "1";
+const liveChromeTest = chromePath && liveCdpE2eEnabled ? test : test.skip;
 
 liveChromeTest(
   "browser raw CDP live e2e controls cross-site iframe shadow DOM and popup targets",
