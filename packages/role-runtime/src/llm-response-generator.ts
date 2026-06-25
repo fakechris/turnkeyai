@@ -2903,7 +2903,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // Stage 5 closeout-answer producer. round_limit (PR2a),
         // completed_sub_agent_final + sub_agent_timeout (PR2c) are reachable;
         // each closeout reason gets its inline reasonLines + status here.
-        onTerminate: async (reason, state) => {
+        onTerminate: async (reason, state, ctx) => {
           // Each closeout reason rebuilds the inline reasonLines + closeout
           // metadata it produced inline; the round_limit defaults remain the
           // fallback for any reason without a bespoke branch. completed/timeout
@@ -3040,20 +3040,95 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // tested here (a browser session would diverge on the continuation, not
           // the appender). For the clean delegated sessions in scope they are
           // no-ops, so redaction alone preserves parity.
-          const closeoutResult =
-            reason === "completed_sub_agent_final"
-              ? maybeRedactForbiddenLocalUrls({ result: generated.result, packet })
-              : reason === "sub_agent_timeout"
-                ? maybeAppendTimeoutContinuationVisibility(generated.result)
-                : generated.result;
-          run.toolLoopCloseout = closeout;
-          run.closeoutResult = closeoutResult;
-          if (generated.reduction) {
-            run.reduction = generated.reduction;
-            run.reductionSnapshot = generated.reductionSnapshot;
-          }
+          let synthesisResult = generated.result;
+          let synthesisReduction = generated.reduction;
+          let synthesisReductionSnapshot = generated.reductionSnapshot;
+          // Push each synthesis's pre-compaction memory flush as it happens (a list,
+          // not a single latest) so completed-repair re-syntheses that also overflow
+          // don't drop earlier flush records — matching the inline append.
           if (generated.memoryFlush) {
             run.memoryFlushes.push(generated.memoryFlush);
+          }
+          // Completed-closeout repair pass: the inline completed block re-synthesizes
+          // when a completed-repair predicate fires on the synthesis against the
+          // delegated session evidence (inline ~:2128). The engine completed path
+          // terminates (it cannot re-enter onRepairRound), so mirror it here with a
+          // forced tool-free re-synthesis — the plain model call the inline loop uses,
+          // NOT the format-contract generateFinalAfterToolRoundLimit. Idempotent via
+          // ctx.repairMarkers; the round cap is the hard backstop.
+          //
+          // Scope: the false-evidence-blocked repair only for now; the rest of the
+          // completed cascade follows as later moves. Deferred edge: a completed repair
+          // whose re-synthesis itself needs a natural-finish repair (compound) is not
+          // chained here — parity tests use single-repair scenarios.
+          if (reason === "completed_sub_agent_final" && run.completedSession) {
+            const completedSession = run.completedSession;
+            const repairMarkers = (ctx.repairMarkers ??= []);
+            const evidenceText = completedSession.finalContents.join("\n\n");
+            let repairMessages = state.messages;
+            const MAX_COMPLETED_REPAIR_ROUNDS = 16;
+            for (let repairRound = 0; repairRound < MAX_COMPLETED_REPAIR_ROUNDS; repairRound++) {
+              let repairPrompt: string | null = null;
+              if (
+                completedSession.finalContents.length > 0 &&
+                shouldRepairFalseEvidenceBlockedSynthesis({
+                  resultText: synthesisResult.text,
+                  messages: repairMessages,
+                  repairMarkers,
+                  evidenceText,
+                })
+              ) {
+                repairPrompt = buildFalseEvidenceBlockedSynthesisRepairPrompt(
+                  completedSession.finalContents,
+                );
+              }
+              if (!repairPrompt) {
+                break;
+              }
+              repairMessages = [
+                ...repairMessages,
+                { role: "assistant", content: synthesisResult.text },
+                recordRepairPrompt(repairMarkers, repairPrompt),
+              ];
+              const repairGatewayMessages = prepareToolHistoryForGateway(repairMessages);
+              const repaired = await this.generateWithEnvelopeRetry({
+                activation,
+                packet,
+                selection,
+                gatewayInput: {
+                  ...withoutToolUse(initialGatewayInput),
+                  messages: repairGatewayMessages,
+                  envelope: {
+                    ...(initialGatewayInput.envelope ?? {}),
+                    toolCount: 0,
+                    toolSchemaBytes: 0,
+                    ...deriveToolResultEnvelope(repairGatewayMessages),
+                  },
+                },
+                modelCallTrace,
+                tracePhase: "final_synthesis_repair",
+              });
+              synthesisResult = repaired.result;
+              if (repaired.reduction) {
+                synthesisReduction = repaired.reduction;
+                synthesisReductionSnapshot = repaired.reductionSnapshot;
+              }
+              if (repaired.memoryFlush) {
+                run.memoryFlushes.push(repaired.memoryFlush);
+              }
+            }
+          }
+          const closeoutResult =
+            reason === "completed_sub_agent_final"
+              ? maybeRedactForbiddenLocalUrls({ result: synthesisResult, packet })
+              : reason === "sub_agent_timeout"
+                ? maybeAppendTimeoutContinuationVisibility(synthesisResult)
+                : synthesisResult;
+          run.toolLoopCloseout = closeout;
+          run.closeoutResult = closeoutResult;
+          if (synthesisReduction) {
+            run.reduction = synthesisReduction;
+            run.reductionSnapshot = synthesisReductionSnapshot;
           }
           return {
             text: closeoutResult.text,
