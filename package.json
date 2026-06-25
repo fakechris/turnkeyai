@@ -41,7 +41,7 @@
     "phase1:baseline": "tsx scripts/phase1-readiness-baseline.ts",
     "soak:long": "tsx scripts/validation-soak-series.ts",
     "soak:ci": "tsx scripts/validation-soak-series.ts --cycles 10 --selectors soak,realworld,acceptance",
-    "test": "tsx --test packages/**/*.test.ts scripts/**/*.test.ts",
+    "test": "node scripts/require-node.mjs && tsx --test packages/**/*.test.ts scripts/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "app": "tsx packages/cli/src/cli.ts app",
     "app:install-launcher": "tsx packages/cli/src/cli.ts app install-launcher",
