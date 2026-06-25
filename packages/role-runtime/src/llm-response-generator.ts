@@ -333,6 +333,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         recoveryToolCallsBeforeActivation,
       });
     }
+    // Stage 6 prereq: repair idempotency ledger. Every `shouldRepair*` "already
+    // tried" guard reads this ledger of injected repair prompts instead of
+    // scanning the full conversation history, so the predicates no longer depend
+    // on how/where messages are stored (the Turnkey-agnostic boundary). Inline
+    // owns a loop-local ledger; the engine will pass `ctx.repairMarkers`.
+    const repairMarkers: LLMMessage[] = [];
     for (let round = 0; ; round++) {
       throwIfAborted(input.signal);
       const maxRounds =
@@ -6251,6 +6257,21 @@ function containsAnyToolCallForm(result: {
   return /<\s*(?:minimax:)?tool_call\b|<\s*invoke\b|<\/\s*(?:minimax:)?tool_call\s*>|\btool_calls?\s*[:=]/i.test(
     result.text,
   );
+}
+
+// Stage 6 prereq: record an injected repair prompt in the idempotency ledger and
+// return it so it can also be appended to the model conversation in one step.
+// Every `shouldRepair*` "already tried" guard scans this ledger (the repair
+// prompts we injected) instead of the full message history, so the guards no
+// longer depend on conversation storage. The hasX*RepairPrompt helpers are
+// unchanged — they still scan an LLMMessage[]; we just pass them this ledger.
+function recordRepairPrompt(
+  repairMarkers: LLMMessage[],
+  content: string,
+): LLMMessage {
+  const message: LLMMessage = { role: "user", content };
+  repairMarkers.push(message);
+  return message;
 }
 
 function shouldRepairMissingApprovalGate(input: {
