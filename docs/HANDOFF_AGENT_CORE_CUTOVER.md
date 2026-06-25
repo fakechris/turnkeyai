@@ -39,7 +39,9 @@ Cutover (production generator onto the engine), all flag-gated, production still
 | Stage 5 PR2a | #487 | closeout infra (per-run `run` state, `onTerminate`, metadata) + `round_limit` |
 | Stage 5 PR2b | #488 | `tool_evidence_fallback` via `onModelCallError` |
 | Stage 5 docs | #489 | progress doc |
-| **Stage 5 fix** | **#490** | **rethrow aborts from the engine tool batch** (this session — codex P2) |
+| Stage 5 fix | #490 | rethrow aborts from the engine tool batch (codex P2) |
+| Stage 5 PR2c | #492 | `completed_sub_agent_final` + `sub_agent_timeout` via `onAfterExecute` |
+| **Stage 5 PR2d** | **#493** | **`onToolCallsClose` agent-core hook + the 7 pending-call closeouts (graceful `wall_clock_budget` closes the #490 gap)** |
 
 ## What #490 fixed (context for the next session)
 
@@ -60,11 +62,12 @@ A rethrown abort propagates: react-agent's loop catch rethrows when `signal?.abo
 (parent cancel); a per-tool wall-clock abort (run signal not aborted) falls to
 `onModelCallError`, which returns `"rethrow"` for `isAbortError`. Both reject the run.
 
-**Known related gap (deferred, NOT a bug introduced here):** the engine still lacks the
-graceful round-top **`wall_clock_budget`** closeout (a future slice — a
-`terminationPredicate`). #490 makes the engine **fail loud** (propagate) instead of
-silently continuing; the graceful closeout that produces a final answer from gathered
-evidence is still inline-only.
+**Update (PR2d #493): the #490 gap is now closed.** The graceful round-top
+**`wall_clock_budget`** closeout landed in PR2d's `onToolCallsClose` hook — when the
+cumulative budget is exhausted at the top of a round, the engine produces a final answer
+from gathered evidence (instead of only failing loud on a mid-execution abort). #490's
+fail-loud rethrow remains for true mid-execution aborts (operator cancel / per-chunk
+wall-clock timeout); the two are complementary.
 
 ## The discipline (hold this for every slice)
 
@@ -93,42 +96,30 @@ evidence is still inline-only.
 
 ## What's next — exact order
 
-### Stage 5 PR2c ⏳ NEXT (the heaviest remaining slice)
+### Stage 5 PR2c ✅ MERGED (#492)
 
 `completed_sub_agent_final` + `sub_agent_timeout` via `onAfterExecute(results, state, ctx)`.
-**This is the riskiest single slice** — a large state-dependent reasonLines block that must
-match inline exactly, plus the discipline of not letting Stage-7 continuation branches leak
-in. Full spec in `IMPLEMENTATION_PLAN.md` Appendix B (PR2c bullet). Key points:
+Signals stashed on `run` in `onAfterExecute`; reasonLines + metadata built in `onTerminate`
+(completed → `maybeRedactForbiddenLocalUrls`; timeout → `maybeAppendTimeoutContinuation
+Visibility`). Deferred (codex P2): the completed-branch browser-recovery / recovered-timeout
+visibility appenders (see deferred gaps below).
 
-- **Use the hook's `results`** (current round's `[...rejected, ...executed]`), **NOT
-  `state.results`** (cumulative).
-- `findSubAgentToolTimeout` (grep it; signal interface near agent-core `react-loop.ts`
-  `ReActState`) scans `sessions_spawn|send` for parsed `status==="timeout"`;
-  `findCompletedSessionEvidence` requires `status==="completed"` / history evidence +
-  `finalContents.length > 0`.
-- The `completed_sub_agent_final` reasonLines (inline, grep
-  `buildCompletedBrowserEvidenceDimensionCarryForwardLines`) are ~20 lines with dynamic
-  parts. **Store `completedSession`/`timeoutSignal` on `run` in `onAfterExecute`; build the
-  reasonLines in `onTerminate`.**
-- **Continuation-scope guard:** the inline post-execute block has many continuation/repair
-  branches that `continue` (supplemental probe, incomplete-approved-browser,
-  independent-evidence-streams, missing-approval-gate, forced-permission-result,
-  weak-evidence) — **those are Stage 7.** `onAfterExecute` must fire ONLY the two terminal
-  closeouts, and parity tests must use scenarios (the `simplePacket()` discipline) where no
-  continuation triggers.
-
-### Stage 5 PR2d ⏳
+### Stage 5 PR2d ✅ MERGED (#493)
 
 New agent-core hook `ReActHooks.onToolCallsClose?(calls, state, ctx): string | null`,
-invoked in `react-agent.ts` right after `onToolCalls` and before execute; if non-null,
-`yield* terminate(reason); return;`. Then the **7 pending-call closeouts in inline
-precedence order**: recovery_tool_budget → operator_cancelled → pseudo_tool_call →
-wall_clock_budget → repeated_tool_failure → repeated_session_inspection →
-excessive_session_continuation. Full spec: Appendix B (PR2d + Hook map).
+invoked in `react-agent.ts` right after `onToolCalls` and **before the `model_response`
+emit** (so a terminating round leaves no trace); if non-null, `yield* terminate(reason);
+return;`. The **7 pending-call closeouts** fire in inline precedence order:
+recovery_tool_budget → operator_cancelled → pseudo_tool_call → wall_clock_budget →
+repeated_tool_failure → repeated_session_inspection → excessive_session_continuation.
+`round_limit` is omitted (the engine's `maxRounds` loop fires it post-loop at exactly
+`round === maxRounds`, where inline's `for(;;)` hits `roundLimitReached`; the hook runs only
+on rounds `0..maxRounds-1`, so precedence is preserved). **The graceful `wall_clock_budget`
+closeout landed here, closing the #490 gap.** Deferred (codex P2): the post-synthesis repair
+passes (`shouldRepairMissingRequestedTableColumns` / `shouldRepairMissingBrowserEvidence
+Dimensions`) and a wall_clock/round_limit final-boundary timing edge (see deferred gaps).
 
-> PR2d is where the graceful `wall_clock_budget` closeout lands (closing the #490 gap).
-
-### Then
+### Stage 6 ⏳ NEXT
 
 - **Stage 6** — repair / recovery (peel 6). **Must first migrate repair idempotency state
   off `messages` into `ctx`** (today each `shouldRepair*` detects "already tried" by
@@ -170,14 +161,23 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (204)
-# read IMPLEMENTATION_PLAN.md Appendix B (PR2c bullet) → start PR2c off a fresh branch
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (213)
+# read IMPLEMENTATION_PLAN.md (Stage 6) → start Stage 6 off a fresh branch
+# NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 
 ## Deferred / known scope gaps (intentional)
 
-- **Graceful `wall_clock_budget` closeout** in the engine — lands in PR2d. (#490 made the
-  engine fail loud meanwhile.)
+- **Post-synthesis repair passes** (PR2d, codex P2) — the engine pending-call closeouts
+  (recovery/cancelled/pseudo/wall-clock) do not re-loop after synthesis to repair missing
+  requested table columns / browser-evidence dimensions (`shouldRepairMissingRequested
+  TableColumns` / `shouldRepairMissingBrowserEvidenceDimensions`). Deferred with Stage 6/7;
+  no-ops for the in-scope scenarios.
+- **wall_clock vs round_limit final-boundary timing edge** (PR2d) — inline checks wall_clock
+  on the extra `round === maxRounds` iteration its `for(;;)` loop runs; the engine exits to
+  round_limit one round earlier. A budget first crossed exactly on that boundary closes as
+  round_limit (engine) vs wall_clock (inline). Common case (budget crossed earlier) is
+  handled; parity tests pin the clock to avoid it.
 - **Stage-7 approval pre-check** before `tool_evidence_fallback` (forced `permission_result`
   round) — engine model-error closeout is scoped to non-approval flows until Stage 7.
 - **Completed-closeout visibility appenders** (PR2c, codex P2) — the engine
