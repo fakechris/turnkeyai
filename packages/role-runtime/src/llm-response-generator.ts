@@ -2843,6 +2843,61 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               forceToolChoice: "none",
             };
           }
+          if (
+            shouldRepairExtraneousProviderTableSchema({
+              activation,
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              repairMarkers,
+              resultText: state.lastText,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildExtraneousProviderTableSchemaRepairPrompt({
+                    taskPrompt: packet.taskPrompt,
+                    resultText: state.lastText,
+                  }),
+                ),
+              ],
+              forceToolChoice: "none",
+            };
+          }
+          // Source-bounded evidence text (mirrors inline ~:1192), used by the
+          // weak-evidence repair below. (source-evidence carry-forward is deferred
+          // to its own move — its dispatcher predicate needs a dedicated scenario.)
+          const sourceBoundedEvidenceText = [
+            collectSourceBoundedEvidenceText({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              toolTrace,
+            }),
+            collectCompletedSessionEvidenceText(toolTrace),
+          ]
+            .filter((text) => text.trim().length > 0)
+            .join("\n\n");
+          if (
+            shouldRepairWeakEvidenceSynthesis({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              evidenceText: sourceBoundedEvidenceText,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(repairMarkers, buildWeakEvidenceSynthesisRepairPrompt()),
+              ],
+              forceToolChoice: "none",
+            };
+          }
           return null;
         },
         // Stage 5 closeout-answer producer. round_limit (PR2a),
