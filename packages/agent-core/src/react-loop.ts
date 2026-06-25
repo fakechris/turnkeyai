@@ -35,6 +35,13 @@ export interface ReActSynthesis {
 /** What to do when the model requests no tools in a round. */
 export type ReActEmptyDecision = { injectedCalls: LLMToolCall[] } | "terminate";
 
+/** A repair directive: rewritten messages for one more (typically tool-free)
+ *  round instead of finalizing the candidate answer. */
+export interface ReActRepairDecision {
+  messages: LLMMessage[];
+  forceToolChoice?: ReActToolChoice;
+}
+
 /** Mutable run state visible to every hook. `agent-core` never inspects `Ctx`. */
 export interface ReActState {
   /** Conversation so far (assistant tool-call + tool-result messages appended each round). */
@@ -55,7 +62,7 @@ export interface ReActState {
  * Category → hook map (see plan Appendix A.4):
  *  - normalization        → onToolCalls (+ onRoundMessages for suppress-and-retry)
  *  - termination/closeout → terminationPredicates + onTerminate
- *  - repair/recovery      → onRoundMessages (inject-and-reloop) + onModelCallError
+ *  - repair/recovery      → onRepairRound (re-synthesize) + onModelCallError
  *  - approval/permission  → filterTools + onToolCalls + onRoundMessages + onBeforeExecute
  *  - session-continuation → onToolCalls + onRoundEmpty + onAfterExecute
  *  - finalization         → onFinalize
@@ -84,6 +91,12 @@ export interface ReActHooks<Ctx extends ToolContext> {
   /** Decide what to do when a round yields no tool calls: terminate, or inject
    *  calls (the forced-continuation override). */
   onRoundEmpty?(state: ReActState, ctx: Ctx): ReActEmptyDecision;
+  /** Inspect a candidate final answer from a tool-free round that would otherwise
+   *  finalize the run; return a repair directive to run one more round (rewritten
+   *  messages + forced tool choice) or null to finalize. The host guards
+   *  idempotency (e.g. via `ctx.repairMarkers`) so this converges; the round
+   *  budget bounds it regardless. */
+  onRepairRound?(state: ReActState, ctx: Ctx): ReActRepairDecision | null;
   /** Gate/split calls before execution (rejected calls become synthetic results). */
   onBeforeExecute?(
     calls: LLMToolCall[],

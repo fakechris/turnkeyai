@@ -95,6 +95,9 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
         );
       }
 
+      // Carries a forced tool choice from an onRepairRound directive into the
+      // next round (the repair re-synthesis), then clears.
+      let pendingRepairToolChoice: ReActToolChoice | undefined;
       for (let round = 0; round < maxRounds; round++) {
         state.round = round;
         throwIfAborted(signal);
@@ -110,6 +113,10 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           const rewritten = hooks.onRoundMessages(state.messages, round, ctx);
           state.messages = rewritten?.messages ?? state.messages;
           forceToolChoice = rewritten?.forceToolChoice;
+        }
+        if (pendingRepairToolChoice !== undefined) {
+          forceToolChoice = pendingRepairToolChoice;
+          pendingRepairToolChoice = undefined;
         }
 
         try {
@@ -140,6 +147,15 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           if (toolCalls.length === 0) {
             const decision = hooks.onRoundEmpty ? hooks.onRoundEmpty(state, ctx) : "terminate";
             if (decision === "terminate" || !decision?.injectedCalls?.length) {
+              // Before finalizing this tool-free candidate answer, let the host
+              // request a repair re-synthesis round (rewritten messages + forced
+              // tool choice). Idempotency + the round budget bound the loop.
+              const repair = hooks.onRepairRound ? hooks.onRepairRound(state, ctx) : null;
+              if (repair) {
+                state.messages = repair.messages;
+                pendingRepairToolChoice = repair.forceToolChoice ?? "none";
+                continue;
+              }
               yield finalEvent(
                 { text: generated.text, ...(generated.stopReason ? { stopReason: generated.stopReason } : {}) },
                 round + 1
