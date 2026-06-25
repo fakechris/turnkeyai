@@ -149,20 +149,28 @@ That is **every repair the natural-finish onRepairRound mechanism can cover.** T
 categorized (by the fan-out) into the next phases below — they need NEW mechanisms, not more
 onRepairRound blocks:
 
-### Stage 6 completed-closeout repair pass ⏳ NEXT (new mechanism — the bulk of what remains)
+### Stage 6 completed-closeout repair pass ✅ MECHANISM BUILT (#502) — predicate additions remain
 
-The inline **completed_sub_agent_final** closeout (and the other closeouts) run a post-synthesis
-repair cascade (`~:1827-2182`) that the engine's `onTerminate` does NOT (it synthesizes once and
-returns terminally). Needs a **post-`onTerminate` completed repair pass** (an agent-core hook
-that re-runs a forced tool-free repair against the closeout answer, with `run.completedSession`
-evidence available). This covers the remaining cascade predicates — **all completed-evidence-
-dependent**, so they cannot fire on the natural-finish path (completed-session evidence forces
-the `completed_sub_agent_final` closeout via `onAfterExecute`, bypassing `onRepairRound`):
-`shouldRepairSourceEvidenceCarryForward` (its label/productBrief branches need completed-session
-evidence — re-categorized here from natural-finish), `…FalseEvidenceBlockedSynthesis`,
-`…MissingRequestedNextAction`, `findMissingRequiredFinalDeliverables`,
-`…TimeoutFollowupFinalGuidance`, `…MissingBrowserEvidenceDimensions`, plus the completed-path
-versions of table-columns/extraneous/weak-evidence.
+The inline **completed_sub_agent_final** closeout runs a post-synthesis repair cascade
+(`~:1827-2182`) the engine's `onTerminate` did not (it synthesized once and returned terminally).
+Mechanism chosen + built: an **`onTerminate` internal repair loop** (NO new agent-core hook —
+`onTerminate` now takes `ctx`). After the closeout synthesis, while a completed-repair predicate
+fires on the result against `run.completedSession.finalContents`, it re-synthesizes via a forced
+tool-free `generateWithEnvelopeRetry` call with the repair prompt — the SAME plain model call the
+inline completed block uses (NOT the format-contract `generateFinalAfterToolRoundLimit`).
+Idempotent via `ctx.repairMarkers`; 16-round cap; each pre-compaction memory flush appended (codex
+P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairFalseEvidenceBlockedSynthesis`
+(#502), `shouldRepairMissingRequestedNextAction` (#503 — placed before false-evidence to match
+inline precedence; needs no evidence plumbing, so a clean isolated move).
+
+**Remaining (follow-on moves on this same loop — add each `if/else if` in inline cascade order +
+a completed-session parity test):** `findMissingRequiredFinalDeliverables`,
+`shouldRepairSourceEvidenceCarryForward` (completed-evidence-dependent, as established — needs
+`completedProductBriefEvidenceText` = finalContents + tool-result text),
+`…TimeoutFollowupFinalGuidance` (also needs that evidence text), `…MissingBrowserEvidenceDimensions`,
+plus the completed-path versions of table-columns/extraneous/weak-evidence. All now fire on the
+completed path (the evidence is present). Deferred edge: a completed repair whose re-synthesis
+itself needs a *natural-finish* repair (compound) is not chained.
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 

@@ -3057,10 +3057,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // NOT the format-contract generateFinalAfterToolRoundLimit. Idempotent via
           // ctx.repairMarkers; the round cap is the hard backstop.
           //
-          // Scope: the false-evidence-blocked repair only for now; the rest of the
-          // completed cascade follows as later moves. Deferred edge: a completed repair
-          // whose re-synthesis itself needs a natural-finish repair (compound) is not
-          // chained here — parity tests use single-repair scenarios.
+          // Scope: cutting over the completed cascade predicate-by-predicate, in the
+          // inline order (post-synthesis cascade at :1826+). Checked here so far:
+          // missing-requested-next-action, false-evidence-blocked. The ordering between
+          // them matches the inline (missing-next-action :1995 precedes false-evidence
+          // :2129), so single-fire scenarios are parity-exact. Still skipped (later
+          // moves): table-columns/extraneous (:1826/:1854), the sessions_spawn browser
+          // repairs (:1880/:1907 — Stage 7), source-evidence + timeout-followup
+          // (:1941/:1968 — need completedProductBriefEvidenceText), deliverables
+          // (:2016), weak-evidence. Deferred edge: a completed repair whose
+          // re-synthesis itself needs a natural-finish repair (compound) is not chained
+          // here — parity tests use single-repair scenarios.
           if (reason === "completed_sub_agent_final" && run.completedSession) {
             const completedSession = run.completedSession;
             const repairMarkers = (ctx.repairMarkers ??= []);
@@ -3070,6 +3077,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             for (let repairRound = 0; repairRound < MAX_COMPLETED_REPAIR_ROUNDS; repairRound++) {
               let repairPrompt: string | null = null;
               if (
+                shouldRepairMissingRequestedNextAction({
+                  taskPrompt: packet.taskPrompt,
+                  resultText: synthesisResult.text,
+                  messages: repairMessages,
+                  repairMarkers,
+                })
+              ) {
+                repairPrompt = buildMissingRequestedNextActionRepairPrompt();
+              }
+              if (
+                !repairPrompt &&
                 completedSession.finalContents.length > 0 &&
                 shouldRepairFalseEvidenceBlockedSynthesis({
                   resultText: synthesisResult.text,
