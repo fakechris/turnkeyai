@@ -93,9 +93,10 @@ export interface ReActHooks<Ctx extends ToolContext> {
   onRoundEmpty?(state: ReActState, ctx: Ctx): ReActEmptyDecision;
   /** Inspect a candidate final answer from a tool-free round that would otherwise
    *  finalize the run; return a repair directive to run one more round (rewritten
-   *  messages + forced tool choice) or null to finalize. The host guards
-   *  idempotency (e.g. via `ctx.repairMarkers`) so this converges; the round
-   *  budget bounds it regardless. */
+   *  messages + forced tool choice) or null to finalize. Repair rounds do NOT
+   *  consume the tool-round budget, so the host must guard idempotency (e.g. via
+   *  `ctx.repairMarkers`) so this converges; agent-core's MAX_REPAIR_ROUNDS is the
+   *  hard backstop. */
   onRepairRound?(state: ReActState, ctx: Ctx): ReActRepairDecision | null;
   /** Gate/split calls before execution (rejected calls become synthetic results). */
   onBeforeExecute?(

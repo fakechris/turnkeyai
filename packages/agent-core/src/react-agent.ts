@@ -13,6 +13,14 @@ import type {
 
 export const DEFAULT_REACT_MAX_ROUNDS = 16;
 
+/**
+ * Hard safety backstop on repair re-synthesis rounds (onRepairRound). Repair
+ * rounds don't consume the tool-round budget, so this caps a non-converging
+ * repair loop. Set well above any realistic repair cascade — host idempotency
+ * (e.g. ctx.repairMarkers) is the normal bound; this only fires on a bug.
+ */
+export const MAX_REPAIR_ROUNDS = 32;
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw signal.reason instanceof Error ? signal.reason : new Error("react loop aborted");
@@ -98,6 +106,10 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
       // Carries a forced tool choice from an onRepairRound directive into the
       // next round (the repair re-synthesis), then clears.
       let pendingRepairToolChoice: ReActToolChoice | undefined;
+      // Repair rounds don't consume the tool-round budget (see `round--` below),
+      // so a separate counter caps them as a safety backstop in case host
+      // idempotency fails to converge. Well above any real repair cascade.
+      let repairRounds = 0;
       for (let round = 0; round < maxRounds; round++) {
         state.round = round;
         throwIfAborted(signal);
@@ -150,15 +162,20 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
               // Before finalizing this tool-free candidate answer, let the host
               // request a repair re-synthesis round (rewritten messages + forced
               // tool choice). Idempotency + the round budget bound the loop.
-              const repair = hooks.onRepairRound ? hooks.onRepairRound(state, ctx) : null;
+              const repair =
+                hooks.onRepairRound && repairRounds < MAX_REPAIR_ROUNDS
+                  ? hooks.onRepairRound(state, ctx)
+                  : null;
               if (repair) {
+                repairRounds++;
                 state.messages = repair.messages;
                 pendingRepairToolChoice = repair.forceToolChoice ?? "none";
                 // A repair re-synthesis is not a new tool round, so it must not
                 // consume the round budget: the for-loop's round++ would otherwise
                 // push past maxRounds and mislabel a final-round repair as
-                // round_limit. Cancel the increment (the host's repair-marker
-                // idempotency bounds the re-loop). state.round is reset at the top.
+                // round_limit. Cancel the increment (host repair-marker idempotency
+                // converges it; repairRounds/MAX_REPAIR_ROUNDS is the hard
+                // backstop). state.round is reset at the top.
                 round--;
                 continue;
               }

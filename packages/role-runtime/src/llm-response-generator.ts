@@ -2812,7 +2812,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!activeToolLoop) {
             return null;
           }
-          const repairMarkers = ctx.repairMarkers ?? [];
+          // Persist the ledger back onto ctx (??=, not ?? []) so the marker we add
+          // below survives into the next round's idempotency check — an ephemeral
+          // local array would let the same repair re-fire. The engine already seeds
+          // ctx.repairMarkers = []; this hardens against an unseeded ctx.
+          const repairMarkers = (ctx.repairMarkers ??= []);
           if (
             shouldRepairMissingRequestedTableColumns({
               activation,
