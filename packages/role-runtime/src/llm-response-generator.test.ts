@@ -22229,3 +22229,82 @@ test("cutover parity: missing-table-columns repair is identical between inline a
   assert.match(inline.content, /库存/);
   assert.match(engine.content, /库存/);
 });
+
+test("cutover parity: extraneous-provider-table-schema repair is identical between inline and engine paths", async () => {
+  // The task asks for a plain pricing + recommendation answer (no provider /
+  // web_search / target-model schema requested). The first (tool-free) candidate
+  // wrongly introduces a provider/search/model-support table, so
+  // shouldRepairExtraneousProviderTableSchema fires a repair round on both paths.
+  const extraneousSchema = ["| provider | web search | 目标模型 |", "|---|---|---|", "| 甲 | 否 | deepseek |"].join("\n");
+  const fixedAnswer = ["| 名称 | 价格 |", "|---|---|", "| 甲 | 10 元 |", "", "推荐：选择甲，价格清晰。"].join("\n");
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input) => {
+      const text = (input.tools?.length ?? 0) === 0 ? fixedAnswer : extraneousSchema;
+      return { text, modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible", adapterName: "test", raw: {} };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "v" };
+    },
+  });
+  const packet = (): RolePromptPacket => ({ ...buildPacket(), taskPrompt: "比较几款产品的价格，并给出一个清晰的推荐。" });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: packet() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.doesNotMatch(inline.content, /web search/);
+  assert.doesNotMatch(engine.content, /web search/);
+  assert.match(inline.content, /推荐/);
+  assert.match(engine.content, /推荐/);
+});
+
+test("cutover parity: weak-evidence-synthesis repair is identical between inline and engine paths", async () => {
+  // The first (tool-free) candidate weakens verified evidence with placeholder
+  // uncertainty ("probably"/"TBD"), so shouldRepairWeakEvidenceSynthesis fires a
+  // repair round on both paths and the confident, verified answer is the result.
+  const weakAnswer = "核心要点：该产品 probably 支持离线模式，定价 TBD。";
+  const fixedAnswer = "核心要点：观察到该产品支持离线模式，定价已验证为每月 9 元。";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input) => {
+      const text = (input.tools?.length ?? 0) === 0 ? fixedAnswer : weakAnswer;
+      return { text, modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible", adapterName: "test", raw: {} };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "该产品支持离线模式，定价每月 9 元。" };
+    },
+  });
+  const packet = (): RolePromptPacket => ({ ...buildPacket(), taskPrompt: "总结这个产品的核心要点。" });
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: packet() });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.doesNotMatch(inline.content, /probably|TBD/i);
+  assert.doesNotMatch(engine.content, /probably|TBD/i);
+  assert.match(inline.content, /已验证/);
+  assert.match(engine.content, /已验证/);
+});
