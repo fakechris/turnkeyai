@@ -139,7 +139,7 @@ The PR sequence is strictly serial (each builds on merged `main`), but the draft
 ## Stage 5: Closeout plumbing + execution-limit gap
 **Goal**: honor execution limits + replicate the 13 closeouts via hooks; delete dead branch. **Status**: In Progress — PR1 #485, PR3 #486, PR2a #487 (round_limit), PR2b #488 (tool_evidence_fallback), abort-rethrow fix #490 merged; PR2c (completed/timeout) + PR2d (onToolCallsClose + 7 pending) remain (Appendix B) ← NEXT. **Resume: `docs/HANDOFF_AGENT_CORE_CUTOVER.md`.**
 ## Stage 6: Repair/recovery (messages→ctx)
-**Goal**: idempotency to ctx; shouldRepair* → hooks. **Status**: In Progress — prereq (idempotency → `repairMarkers` ledger) #495; `onRepairRound` hook + `missing-table-columns` move #498; remaining shouldRepair* predicates next (one per PR, via `onRepairRound`).
+**Goal**: idempotency to ctx; shouldRepair* → hooks. **Status**: In Progress — prereq #495; `onRepairRound` hook + natural-finish repairs (table-columns #498, extraneous-schema + weak-evidence #500) DONE — that completes every repair the natural-finish `onRepairRound` mechanism can cover. Remaining = the completed-closeout repair pass (new post-`onTerminate` mechanism, covers source-evidence/false-evidence/next-action/deliverables/timeout-followup/browser-dimensions + completed-path versions), plus forced-spawn + pre-execute repairs (Stage-7 continuation territory). See handoff doc.
 ## Stage 7: Approval + session-continuation
 **Goal**: onRoundEmpty override + approval machine as hooks. **Status**: Not Started
 ## Stage 8: Flip + delete inline loop

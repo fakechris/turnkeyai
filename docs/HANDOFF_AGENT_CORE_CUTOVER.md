@@ -43,7 +43,8 @@ Cutover (production generator onto the engine), all flag-gated, production still
 | Stage 5 PR2c | #492 | `completed_sub_agent_final` + `sub_agent_timeout` via `onAfterExecute` |
 | Stage 5 PR2d | #493 | `onToolCallsClose` agent-core hook + the 7 pending-call closeouts (graceful `wall_clock_budget` closes the #490 gap) |
 | Stage 6 prereq | #495 | migrate every `shouldRepair*` idempotency guard off message-scanning onto the `repairMarkers` ledger (the Turnkey-agnostic boundary) |
-| **Stage 6 move 1** | **#498** | **`onRepairRound` agent-core hook + cut over `missing-table-columns` repair (natural-finish path); test-gate hygiene #497**|
+| Stage 6 move 1 | #498 | `onRepairRound` agent-core hook + cut over `missing-table-columns` repair (natural-finish path); test-gate hygiene #497 |
+| **Stage 6 move 2** | **#500** | **cut over `extraneous-schema` + `weak-evidence` repairs via `onRepairRound` — completes the natural-finish repair phase** |
 
 ## What #490 fixed (context for the next session)
 
@@ -132,32 +133,47 @@ Residual (documented in code, behavior-preserving): `generateFinalAfterToolRound
 internal synthesis-retry keeps message-based idempotency (`repairMarkers: finalMessages`) — a
 shared, already-cutover-safe path with its own message scope.
 
-### Stage 6 per-predicate moves ⏳ IN PROGRESS (one predicate per PR)
+### Stage 6 natural-finish onRepairRound phase ✅ COMPLETE (#498, #500)
 
-**Mechanism built + first move merged (#498):** agent-core `ReActHooks.onRepairRound?(state,
-ctx): ReActRepairDecision | null` — fires on a tool-free candidate final answer (the
-natural-finish path, where the empty round would otherwise terminate); a non-null
-`{ messages, forceToolChoice? }` runs one more (default tool-free) round instead of finalizing.
-Repair rounds do NOT consume the tool-round budget (`round--`); host idempotency
-(`ctx.repairMarkers`) converges it and agent-core `MAX_REPAIR_ROUNDS` (32) is the hard
-backstop. **`shouldRepairMissingRequestedTableColumns` is cut over** through it (engine
-`onRepairRound`, `ctx.repairMarkers ??= []`), mirroring the inline natural-finish branch
-exactly. Parity test: a task requesting columns whose first answer omits one.
+agent-core `ReActHooks.onRepairRound?(state, ctx): ReActRepairDecision | null` — fires on a
+tool-free candidate final answer (the natural-finish path, where the empty round would
+otherwise terminate); a non-null `{ messages, forceToolChoice? }` runs one more (default
+tool-free) round instead of finalizing. Repair rounds do NOT consume the tool-round budget
+(`round--`); host idempotency (`ctx.repairMarkers`, seeded + persisted via `??=`) converges
+it, `MAX_REPAIR_ROUNDS` (32) is the hard backstop. **Cut over (each with a neutral-scenario
+inline-vs-engine parity test):** `shouldRepairMissingRequestedTableColumns` (#498),
+`shouldRepairExtraneousProviderTableSchema` + `shouldRepairWeakEvidenceSynthesis` (#500). This
+phase used a fan-out workflow (draft-in-parallel → assemble → verify).
 
-**Established pattern for each remaining predicate (one PR each):** add its `shouldRepairX`
-check to the engine `onRepairRound` (same shape: assistant + `recordRepairPrompt`, forced
-`"none"`), pick a neutral scenario so no *other* cascade predicate fires, add an inline-vs-
-engine parity test. Remaining (plan list): `shouldRepairMissingBrowserEvidence`,
-`…WeakEvidenceSynthesis`, `…FalseEvidenceBlockedSynthesis`, `…SourceEvidenceCarryForward`,
+That is **every repair the natural-finish onRepairRound mechanism can cover.** The rest were
+categorized (by the fan-out) into the next phases below — they need NEW mechanisms, not more
+onRepairRound blocks:
+
+### Stage 6 completed-closeout repair pass ⏳ NEXT (new mechanism — the bulk of what remains)
+
+The inline **completed_sub_agent_final** closeout (and the other closeouts) run a post-synthesis
+repair cascade (`~:1827-2182`) that the engine's `onTerminate` does NOT (it synthesizes once and
+returns terminally). Needs a **post-`onTerminate` completed repair pass** (an agent-core hook
+that re-runs a forced tool-free repair against the closeout answer, with `run.completedSession`
+evidence available). This covers the remaining cascade predicates — **all completed-evidence-
+dependent**, so they cannot fire on the natural-finish path (completed-session evidence forces
+the `completed_sub_agent_final` closeout via `onAfterExecute`, bypassing `onRepairRound`):
+`shouldRepairSourceEvidenceCarryForward` (its label/productBrief branches need completed-session
+evidence — re-categorized here from natural-finish), `…FalseEvidenceBlockedSynthesis`,
 `…MissingRequestedNextAction`, `findMissingRequiredFinalDeliverables`,
-`shouldSuppressToolsForAwaitingContextSetup` (pre-execute / inverse polarity — needs
-`onToolCalls`/`onRoundMessages`, not `onRepairRound`), `buildLocalEvidenceCloseout` fallback
-→ `onModelCallError` (largely covered by PR2b's `tool_evidence_fallback`).
+`…TimeoutFollowupFinalGuidance`, `…MissingBrowserEvidenceDimensions`, plus the completed-path
+versions of table-columns/extraneous/weak-evidence.
 
-**Scope deferred:** `onRepairRound` covers the **natural-finish** path only. The same repairs
-also run in the inline **completed_sub_agent_final** closeout cascade (`~:1827`); cutting those
-over needs a repair pass after the completed `onTerminate` synthesis (a later extension — the
-parity tests use natural-finish scenarios). Each move is highest-drift-risk; 197 untouched.
+### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
+
+- `shouldRepairMissingBrowserEvidence` / `…MissingProductSignalBrowserEvidence` — re-arm a real
+  `sessions_spawn` **tool** round (not a tool-free re-synthesis), which collides with
+  `onRepairRound`'s `round--` budget model. Need a forced-evidence-spawn mechanism (a tool round
+  that consumes budget). These are continuation/recovery branches → Stage 7.
+- `shouldSuppressToolsForAwaitingContextSetup` — **pre-execute** (fires when `toolCalls.length > 0`):
+  suppress tools + inject guidance + continue. Needs a suppress-and-continue hook (`onToolCalls`
+  /`onRoundMessages` family), not `onRepairRound`. → Stage 7.
+- `buildLocalEvidenceCloseout` — already done (`onModelCallError` / `tool_evidence_fallback`, PR2b).
 
 - **Stage 7** — approval + session-continuation (peel 7, most entangled, done together).
   This is where the deferred bits land: the forced `permission_result` pre-check (PR2b scope
