@@ -160,10 +160,14 @@ tool-free `generateWithEnvelopeRetry` call with the repair prompt — the SAME p
 inline completed block uses (NOT the format-contract `generateFinalAfterToolRoundLimit`).
 Idempotent via `ctx.repairMarkers`; 16-round cap; each pre-compaction memory flush appended (codex
 P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairMissingRequestedTableColumns`
-(#507 — every-round, FIRST), `shouldRepairSourceEvidenceCarryForward` (#505),
-`shouldRepairTimeoutFollowupFinalGuidance` (#505), `shouldRepairMissingRequestedNextAction` (#503),
-`findMissingRequiredFinalDeliverables` (#504), `shouldRepairFalseEvidenceBlockedSynthesis` (#502).
-Each placed in inline precedence order; single-fire scenarios are parity-exact.
+(#507 — every-round, FIRST), `shouldRepairExtraneousProviderTableSchema` (#508 — every-round, SECOND),
+`shouldRepairSourceEvidenceCarryForward` (#505), `shouldRepairTimeoutFollowupFinalGuidance` (#505),
+`shouldRepairMissingRequestedNextAction` (#503), `findMissingRequiredFinalDeliverables` (#504),
+`shouldRepairFalseEvidenceBlockedSynthesis` (#502). Each placed in inline precedence order; single-fire
+scenarios are parity-exact. NOTE: `generateFinalAfterToolRoundLimit` ALREADY repairs extraneous in the
+FIRST closeout synthesis (its own internal pass at `:3708`), so the onTerminate extraneous block is
+load-bearing only for a later re-synthesis — its parity test is COMPOUND (table-columns round 0 → its
+repair introduces the schema → extraneous catches it round 1; mutation-verified).
 
 **Plumbing landed in #505:** `onAfterExecute` now also stashes `run.completedSessionToolResults`
 (the completing round's results — the same array inline passes to `collectToolResultContentText` at
@@ -188,8 +192,8 @@ its own parity test.
 - **maxToolCallsPerRound over-cap completed round** — the engine `runToolBatch` does not yet honor
   the cap, so it feeds real tool content where inline feeds `tool_call_limit_exceeded` sentinels into
   the evidence; tracked with the tool-cap cutover.
-- **Residual under-repair** — the every-round natural-finish branch has table-columns + source-
-  evidence; extraneous/weak-evidence aren't there yet (the one-at-a-time moves below), and post-round-0
+- **Residual under-repair** — the every-round natural-finish branch has table-columns + extraneous +
+  source-evidence; weak-evidence isn't there yet (the last one-at-a-time move below), and post-round-0
   source-evidence uses `completedProductBriefEvidenceText` rather than inline's natural-finish
   `sourceBoundedEvidenceText` (masked by idempotency once source-evidence fires in round 0).
 - **Timeout/browser visibility appenders** (codex #506 P2) — the engine completed path doesn't run
@@ -200,12 +204,13 @@ its own parity test.
   source-evidence can omit the round-1 timeout visibility inline appends. Closes with the
   appender/continuation cutover (the same stage that handles the pre-synthesis continuation branches).
 
-**Remaining (follow-on moves on this same loop, ONE AT A TIME):** completed-path extraneous (:1854 —
-SECOND, after table-columns), weak-evidence (:2153 — LAST, after the round-0 block) — each every-round
-(both cascades); then `shouldRepairMissingBrowserEvidenceDimensions` (:2100). Then Stage 7
-(forced-spawn + pre-execute). The extraneous/weak designs (placement + isolated parity scenarios +
-cross-fire) are worked out — extraneous goes before source-evidence, weak-evidence after the round-0
-block, both `!repairPrompt`-guarded.
+**Remaining (follow-on moves on this same loop, ONE AT A TIME):** completed-path weak-evidence (:2153 —
+LAST, after the round-0 block, every-round, `!repairPrompt`-guarded); then
+`shouldRepairMissingBrowserEvidenceDimensions` (:2100). Then Stage 7 (forced-spawn + pre-execute). The
+weak-evidence design (WEAK_UNCERTAINTY "maybe"/"TBD" trigger, evidenceText =
+`completedProductBriefEvidenceText`, isolated scenario + cross-fire) is worked out. NOTE: check whether
+`generateFinalAfterToolRoundLimit` also pre-covers weak-evidence (as it does extraneous at :3708) —
+if so its test must be COMPOUND too.
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 
@@ -255,7 +260,7 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (223)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (224)
 # Stage 6 prereq (#495) done → start the Stage 6 per-predicate moves off a fresh branch
 # (confirm the engine repair mechanism first — see "Stage 6 per-predicate moves" above)
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
