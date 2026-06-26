@@ -22807,3 +22807,80 @@ test("cutover parity: compound completed-closeout input does not over-repair on 
   assert.doesNotMatch(inline.content, /Recommended next action/i);
   assert.doesNotMatch(engine.content, /Recommended next action/i);
 });
+
+test("cutover parity: table-columns completed-closeout repair is identical between inline and engine paths", async () => {
+  // table-columns is an every-round member (inline completed :1826 / natural-finish
+  // :1139). The task requests a Markdown table with specific columns; the closeout
+  // synthesis is plain prose with no table, so shouldRepairMissingRequestedTableColumns
+  // fires on both paths and the rewrite adds the requested table. Isolated to this
+  // predicate: the task names no sources / timeout / next action / conclusion / two-row
+  // table, and the evidence carries no labels, so nothing else fires.
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    result:
+      "The delegated explore session checked two open-data transit feeds and confirmed both Helsinki and Tampere publish GTFS-RT vehicle positions updated every 15 seconds.",
+    final_content: null,
+    payload: null,
+  });
+  const noTable =
+    "The delegated explore session confirmed both Helsinki and Tampere publish GTFS-RT vehicle positions refreshed every 15 seconds.";
+  const fixedAnswer =
+    "The delegated explore session confirmed both feeds publish GTFS-RT vehicle positions.\n\n| City | Service | Frequency |\n| --- | --- | --- |\n| Helsinki | GTFS-RT vehicle positions | every 15 seconds |\n| Tampere | GTFS-RT vehicle positions | every 15 seconds |";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let synthCount = 0;
+    gateway.generate = async (input) => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      if ((input.tools?.length ?? 0) > 0) {
+        return {
+          ...base,
+          text: "delegating",
+          toolCalls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", task: "check feeds" } }],
+        };
+      }
+      // tool-free syntheses: 1st = prose with no table, 2nd = the repair (with table).
+      synthCount += 1;
+      return { ...base, text: synthCount === 1 ? noTable : fixedAnswer };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Present the delegated explore session's transit-feed findings as a Markdown table. table: City | Service | Frequency",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the repair fired on both paths: the requested table header the first synthesis
+  // lacked is present, with a row unique to the repair synthesis.
+  assert.match(inline.content, /\| City \| Service \| Frequency \|/);
+  assert.match(engine.content, /\| City \| Service \| Frequency \|/);
+  assert.match(engine.content, /Helsinki \| GTFS-RT vehicle positions \| every 15 seconds/);
+});

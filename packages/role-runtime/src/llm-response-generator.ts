@@ -3087,11 +3087,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           //
           // Scope: cutting over the completed cascade predicate-by-predicate, in the
           // inline order (post-synthesis cascade at :1826+). Checked here so far, in
-          // inline cascade order: source-evidence-carry-forward (:1941), timeout-
-          // followup-final-guidance (:1968), missing-requested-next-action (:1995),
-          // required-deliverables (:2016), false-evidence-blocked (:2129). Their
-          // relative order matches the inline, so single-fire scenarios are parity-
-          // exact. Compound completed inputs are now handled too: inline runs the
+          // inline cascade order: missing-requested-table-columns (:1826), source-
+          // evidence-carry-forward (:1941), timeout-followup-final-guidance (:1968),
+          // missing-requested-next-action (:1995), required-deliverables (:2016),
+          // false-evidence-blocked (:2129). Their relative order matches the inline, so
+          // single-fire scenarios are parity-exact. Compound completed inputs are now
+          // handled too: inline runs the
           // completed cascade exactly once (the round the session completes), then every
           // subsequent repaired answer flows through the narrower tool-free natural-
           // finish cascade (:1110-1272 = table-columns, extraneous, source-evidence,
@@ -3102,10 +3103,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // predicate inline would never re-check (the prior over-repair).
           //
           // Residual under-repair gap (the still-deferred per-predicate moves): the
-          // every-round natural-finish branch only has source-evidence so far; table-
-          // columns (:1826), extraneous (:1854) and weak-evidence (:2153) are NOT yet
-          // here, so a repaired answer that newly needs one of those is left un-repaired
-          // where inline would fix it. Those land as later one-at-a-time moves, each into
+          // every-round natural-finish branch has table-columns and source-evidence so
+          // far; extraneous (:1854) and weak-evidence (:2153) are NOT yet here, so a
+          // repaired answer that newly needs one of those is left un-repaired where
+          // inline would fix it. Those land as later one-at-a-time moves, each into
           // BOTH round 0 and the every-round branch. Also deferred: browser-evidence-
           // dimensions (:2100) and the sessions_spawn browser repairs (:1880/:1907 —
           // Stage 7); and post-round-0 source-evidence (any repairRound >= 1) uses
@@ -3143,15 +3144,39 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             const MAX_COMPLETED_REPAIR_ROUNDS = 16;
             for (let repairRound = 0; repairRound < MAX_COMPLETED_REPAIR_ROUNDS; repairRound++) {
               let repairPrompt: string | null = null;
-              // Source-evidence carry-forward (inline :1941) — FIRST in the cascade,
-              // and the ONLY predicate that runs every repair round. It appears in both
-              // inline cascades: the completed block (:1941) AND the tool-free natural-
-              // finish cascade (:1204), so a repaired answer can re-trip it on a later
-              // round exactly as inline would. It self-suppresses via its repairMarker
-              // after firing once. Truthy-gated on completedProductBriefEvidenceText
-              // exactly like inline (:1940); the label branch reads source labels that
-              // live only in the raw tool-result text, hence the combined evidence.
+              // Missing-requested-table-columns (inline completed :1826 / natural-finish
+              // :1139) — FIRST in the cascade, and an every-round member: it lives in
+              // BOTH inline cascades, so a repaired answer can re-trip it on a later
+              // round exactly as inline would. No evidenceText; self-suppresses via its
+              // repairMarker after firing once. Pass `activation` (inline :1828) so the
+              // requested columns resolve from the same activation context inline uses.
               if (
+                shouldRepairMissingRequestedTableColumns({
+                  activation,
+                  taskPrompt: packet.taskPrompt,
+                  messages: repairMessages,
+                  repairMarkers,
+                  resultText: synthesisResult.text,
+                })
+              ) {
+                repairPrompt = buildMissingRequestedTableColumnsRepairPrompt({
+                  activation,
+                  taskPrompt: packet.taskPrompt,
+                  messages: repairMessages,
+                  resultText: synthesisResult.text,
+                });
+              }
+              // Source-evidence carry-forward (inline :1941) — every repair round. It
+              // appears in both inline cascades: the completed block (:1941) AND the
+              // tool-free natural-finish cascade (:1204), so a repaired answer can re-trip
+              // it on a later round exactly as inline would. It self-suppresses via its
+              // repairMarker after firing once. Truthy-gated on completedProductBrief
+              // EvidenceText exactly like inline (:1940); the label branch reads source
+              // labels that live only in the raw tool-result text, hence the combined
+              // evidence. `!repairPrompt`-guarded so a same-round table-columns hit wins
+              // (inline expresses this precedence via the cascade `continue`).
+              if (
+                !repairPrompt &&
                 completedProductBriefEvidenceText &&
                 shouldRepairSourceEvidenceCarryForward({
                   taskPrompt: packet.taskPrompt,
