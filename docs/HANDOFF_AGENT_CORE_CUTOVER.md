@@ -159,10 +159,11 @@ fires on the result against `run.completedSession.finalContents`, it re-synthesi
 tool-free `generateWithEnvelopeRetry` call with the repair prompt — the SAME plain model call the
 inline completed block uses (NOT the format-contract `generateFinalAfterToolRoundLimit`).
 Idempotent via `ctx.repairMarkers`; 16-round cap; each pre-compaction memory flush appended (codex
-P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairSourceEvidenceCarryForward`
-(#505), `shouldRepairTimeoutFollowupFinalGuidance` (#505), `shouldRepairMissingRequestedNextAction`
-(#503), `findMissingRequiredFinalDeliverables` (#504), `shouldRepairFalseEvidenceBlockedSynthesis`
-(#502). Each placed in inline precedence order; single-fire scenarios are parity-exact.
+P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairMissingRequestedTableColumns`
+(#507 — every-round, FIRST), `shouldRepairSourceEvidenceCarryForward` (#505),
+`shouldRepairTimeoutFollowupFinalGuidance` (#505), `shouldRepairMissingRequestedNextAction` (#503),
+`findMissingRequiredFinalDeliverables` (#504), `shouldRepairFalseEvidenceBlockedSynthesis` (#502).
+Each placed in inline precedence order; single-fire scenarios are parity-exact.
 
 **Plumbing landed in #505:** `onAfterExecute` now also stashes `run.completedSessionToolResults`
 (the completing round's results — the same array inline passes to `collectToolResultContentText` at
@@ -187,8 +188,8 @@ its own parity test.
 - **maxToolCallsPerRound over-cap completed round** — the engine `runToolBatch` does not yet honor
   the cap, so it feeds real tool content where inline feeds `tool_call_limit_exceeded` sentinels into
   the evidence; tracked with the tool-cap cutover.
-- **Residual under-repair** — the every-round natural-finish branch only has source-evidence; table-
-  columns/extraneous/weak-evidence aren't there yet (the one-at-a-time moves below), and post-round-0
+- **Residual under-repair** — the every-round natural-finish branch has table-columns + source-
+  evidence; extraneous/weak-evidence aren't there yet (the one-at-a-time moves below), and post-round-0
   source-evidence uses `completedProductBriefEvidenceText` rather than inline's natural-finish
   `sourceBoundedEvidenceText` (masked by idempotency once source-evidence fires in round 0).
 - **Timeout/browser visibility appenders** (codex #506 P2) — the engine completed path doesn't run
@@ -199,9 +200,12 @@ its own parity test.
   source-evidence can omit the round-1 timeout visibility inline appends. Closes with the
   appender/continuation cutover (the same stage that handles the pre-synthesis continuation branches).
 
-**Remaining (follow-on moves on this same loop, ONE AT A TIME):** completed-path table-columns
-(:1826), extraneous (:1854), weak-evidence (:2153) — each into round 0 + the every-round branch; then
-`shouldRepairMissingBrowserEvidenceDimensions` (:2100). Then Stage 7 (forced-spawn + pre-execute).
+**Remaining (follow-on moves on this same loop, ONE AT A TIME):** completed-path extraneous (:1854 —
+SECOND, after table-columns), weak-evidence (:2153 — LAST, after the round-0 block) — each every-round
+(both cascades); then `shouldRepairMissingBrowserEvidenceDimensions` (:2100). Then Stage 7
+(forced-spawn + pre-execute). The extraneous/weak designs (placement + isolated parity scenarios +
+cross-fire) are worked out — extraneous goes before source-evidence, weak-evidence after the round-0
+block, both `!repairPrompt`-guarded.
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 
@@ -251,7 +255,7 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (222)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (223)
 # Stage 6 prereq (#495) done → start the Stage 6 per-predicate moves off a fresh branch
 # (confirm the engine repair mechanism first — see "Stage 6 per-predicate moves" above)
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
