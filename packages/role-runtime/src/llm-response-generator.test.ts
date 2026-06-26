@@ -22530,3 +22530,185 @@ test("cutover parity: missing-required-deliverables completed-closeout repair is
   assert.match(inline.content, /Conclusion:/);
   assert.match(engine.content, /Conclusion:/);
 });
+
+test("cutover parity: source-evidence-carry-forward completed-closeout repair is identical between inline and engine paths", async () => {
+  // The task asks to keep each source label visible, and the delegated evidence
+  // carries two source labels — but those labels live ONLY in the raw tool-result
+  // JSON (not in finalContents), so this exercises the new completedProductBrief
+  // EvidenceText plumbing (finalContents + the completing round's raw tool-result
+  // text). The first synthesis drops both labels, so shouldRepairSourceEvidence
+  // CarryForward (label branch) fires a completed-closeout repair on both paths
+  // (inline re-loops via the "none" round; engine via the onTerminate repair loop).
+  // Isolated: the evidence carries labels but the task names no product brief /
+  // timeout / next action / deliverable / table, so no earlier predicate fires.
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    result:
+      "The delegated explore session checked two open-data feeds and confirmed both publish GTFS-RT vehicle positions updated every 15 seconds.",
+    final_content: null,
+    payload: null,
+    // labels live only here in the raw tool-result JSON, never in finalContents —
+    // reachable solely via the collectToolResultContentText half of the evidence.
+    sources: [{ label: "Helsinki transit feed" }, { label: "Tampere transit feed" }],
+  });
+  const missingLabels =
+    "The delegated explore session confirmed both open-data feeds publish GTFS-RT vehicle positions updated every 15 seconds.";
+  const fixedAnswer =
+    "The delegated explore session confirmed both open-data feeds publish GTFS-RT vehicle positions updated every 15 seconds. Evidence / Sources: Helsinki transit feed verified the 15-second GTFS-RT vehicle-position refresh; Tampere transit feed verified the same refresh cadence.";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let synthCount = 0;
+    gateway.generate = async (input) => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      if ((input.tools?.length ?? 0) > 0) {
+        return {
+          ...base,
+          text: "delegating",
+          toolCalls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", task: "check feeds" } }],
+        };
+      }
+      // tool-free syntheses: 1st = closeout dropping the labels, 2nd = the repair.
+      synthCount += 1;
+      return { ...base, text: synthCount === 1 ? missingLabels : fixedAnswer };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Review the delegated explore session's findings on the open-data feeds and list the exact sources you checked, keeping each source label visible in the answer.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the repair fired on both paths: both dropped source labels are restored.
+  assert.match(inline.content, /Helsinki transit feed/);
+  assert.match(engine.content, /Helsinki transit feed/);
+  assert.match(inline.content, /Tampere transit feed/);
+  assert.match(engine.content, /Tampere transit feed/);
+  // wording unique to the label-repair re-synthesis (proves the repair, not the
+  // first synthesis, is the final result).
+  assert.match(engine.content, /Evidence \/ Sources/);
+});
+
+test("cutover parity: timeout-followup-final-guidance completed-closeout repair is identical between inline and engine paths", async () => {
+  // The task is a timeout/continuation follow-up, and the delegated evidence reports
+  // a timeout recovery — but the first synthesis omits the unverified-scope and
+  // continuation guidance the task requires. shouldRepairTimeoutFollowupFinalGuidance
+  // fires a completed-closeout repair on both paths. Isolated: the delegated evidence
+  // carries NO source labels (so source-evidence short-circuits on empty labels) and
+  // the task names no product brief / next action / deliverable / table, so timeout-
+  // followup is the only predicate that fires.
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    result:
+      "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+    final_content: null,
+    payload: null,
+  });
+  const missingGuidance = [
+    "The slow source check recovered after the earlier timeout and returned verified content.",
+    "Verified owner: Release Captain.",
+    "Verified risk: runbook gap before the launch approval gate.",
+    "Mitigation: complete the rollback rehearsal before the release gate.",
+    "Release-risk assessment: hold the release until the rollback rehearsal is signed off.",
+  ].join("\n");
+  const fixedAnswer = [
+    "Recovered and resumed after the earlier timeout, the slow source check returned verified content.",
+    "Verified owner: Release Captain.",
+    "Verified risk: runbook gap before the launch approval gate.",
+    "Mitigation: complete the rollback rehearsal before the release gate.",
+    "Release-risk assessment: hold the release until the rollback rehearsal is signed off.",
+    "Unverified scope: response latency and fixture uptime remain not verified and stay source-bounded.",
+    "Continuation guidance: continue or retry the same source-check with a bounded timeout if more release-gated evidence is needed.",
+  ].join("\n");
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let synthCount = 0;
+    gateway.generate = async (input) => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      if ((input.tools?.length ?? 0) > 0) {
+        return {
+          ...base,
+          text: "delegating",
+          toolCalls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", task: "check slow source" } }],
+        };
+      }
+      // tool-free syntheses: 1st = closeout missing the guidance, 2nd = the repair.
+      synthCount += 1;
+      return { ...base, text: synthCount === 1 ? missingGuidance : fixedAnswer };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt: [
+      "Evaluate this slow source for a release-risk note.",
+      "Use a bounded attempt first; if the source does not return in time, close out with the evidence that is available.",
+      "A follow-up may ask you to resume that same source-check context after the earlier timeout.",
+    ].join("\n"),
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the repair fired on both paths: the unverified-scope + continuation guidance the
+  // first synthesis lacked are present.
+  assert.match(inline.content, /Unverified scope/i);
+  assert.match(engine.content, /Unverified scope/i);
+  assert.match(inline.content, /Continuation guidance/i);
+  assert.match(engine.content, /Continuation guidance/i);
+  // wording unique to the repair re-synthesis.
+  assert.match(engine.content, /continue or retry the same source-check with a bounded timeout/);
+});

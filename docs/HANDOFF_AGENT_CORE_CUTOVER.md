@@ -159,20 +159,31 @@ fires on the result against `run.completedSession.finalContents`, it re-synthesi
 tool-free `generateWithEnvelopeRetry` call with the repair prompt — the SAME plain model call the
 inline completed block uses (NOT the format-contract `generateFinalAfterToolRoundLimit`).
 Idempotent via `ctx.repairMarkers`; 16-round cap; each pre-compaction memory flush appended (codex
-P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairMissingRequestedNextAction`
-(#503), `findMissingRequiredFinalDeliverables` (#504 — its evidenceText is the finalContents join
-already in the loop, so no extra plumbing), `shouldRepairFalseEvidenceBlockedSynthesis` (#502).
-Each placed in inline precedence order; single-fire scenarios are parity-exact.
+P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairSourceEvidenceCarryForward`
+(#505), `shouldRepairTimeoutFollowupFinalGuidance` (#505), `shouldRepairMissingRequestedNextAction`
+(#503), `findMissingRequiredFinalDeliverables` (#504), `shouldRepairFalseEvidenceBlockedSynthesis`
+(#502). Each placed in inline precedence order; single-fire scenarios are parity-exact.
 
-**Remaining (follow-on moves on this same loop — add each `if/else if` in inline cascade order +
-a completed-session parity test):** `shouldRepairSourceEvidenceCarryForward` (completed-evidence-
-dependent, as established — needs `completedProductBriefEvidenceText` = finalContents + tool-result
-text), `…TimeoutFollowupFinalGuidance` (also needs that evidence text + timeout context),
-`…MissingBrowserEvidenceDimensions`, plus the completed-path versions of
-table-columns/extraneous/weak-evidence. The next two (source-evidence, timeout-followup) need
-`collectToolResultContentText(toolResults)` plumbed into `onTerminate` (the engine has the completed
-session but not the raw tool results there yet). Deferred edge: a completed repair whose
-re-synthesis itself needs a *natural-finish* repair (compound) is not chained.
+**Plumbing landed in #505:** `onAfterExecute` now also stashes `run.completedSessionToolResults`
+(the completing round's results — the same array inline passes to `collectToolResultContentText` at
+:1933), and `onTerminate` rebuilds `completedProductBriefEvidenceText` = finalContents + raw
+tool-result text byte-for-byte like inline :1933-1938. source-evidence is truthy-gated on it (inline
+:1940); timeout-followup is NOT (inline :1967). deliverables/false-evidence keep the bare
+finalContents `evidenceText`. The missing-next-action block gained a `!repairPrompt` guard (it was
+first; now third).
+
+**Two deferred parity gaps confirmed by adversarial verification (both off the default path,
+un-exercised, documented in-code):** (1) **maxToolCallsPerRound over-cap completed round** — the
+engine `runToolBatch` does not yet honor the cap, so it feeds real tool content where inline feeds
+`tool_call_limit_exceeded` sentinels into the evidence; tracked with the tool-cap cutover. (2)
+**compound completed inputs** — the engine loop re-checks the full completed cascade each round,
+while inline's post-repair round runs only the narrower natural-finish cascade (source-evidence +
+weak-evidence), so a repair whose output trips a second completed predicate makes the engine
+over-repair. Revisit both before flipping the default for completed-heavy roles.
+
+**Remaining (follow-on moves on this same loop):** `shouldRepairMissingBrowserEvidenceDimensions`
+(:2100), plus the completed-path versions of table-columns/extraneous/weak-evidence (:1826/:1854/
+:2153). Then Stage 7 (forced-spawn + pre-execute repairs).
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 
