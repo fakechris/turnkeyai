@@ -3087,12 +3087,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           //
           // Scope: cutting over the completed cascade predicate-by-predicate, in the
           // inline order (post-synthesis cascade at :1826+). Checked here so far, in
-          // inline cascade order: missing-requested-table-columns (:1826), source-
-          // evidence-carry-forward (:1941), timeout-followup-final-guidance (:1968),
-          // missing-requested-next-action (:1995), required-deliverables (:2016),
-          // false-evidence-blocked (:2129). Their relative order matches the inline, so
-          // single-fire scenarios are parity-exact. Compound completed inputs are now
-          // handled too: inline runs the
+          // inline cascade order: missing-requested-table-columns (:1826), extraneous-
+          // provider-table-schema (:1854), source-evidence-carry-forward (:1941),
+          // timeout-followup-final-guidance (:1968), missing-requested-next-action
+          // (:1995), required-deliverables (:2016), false-evidence-blocked (:2129).
+          // Their relative order matches the inline, so single-fire scenarios are parity-
+          // exact. Compound completed inputs are now handled too: inline runs the
           // completed cascade exactly once (the round the session completes), then every
           // subsequent repaired answer flows through the narrower tool-free natural-
           // finish cascade (:1110-1272 = table-columns, extraneous, source-evidence,
@@ -3103,11 +3103,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // predicate inline would never re-check (the prior over-repair).
           //
           // Residual under-repair gap (the still-deferred per-predicate moves): the
-          // every-round natural-finish branch has table-columns and source-evidence so
-          // far; extraneous (:1854) and weak-evidence (:2153) are NOT yet here, so a
-          // repaired answer that newly needs one of those is left un-repaired where
-          // inline would fix it. Those land as later one-at-a-time moves, each into
-          // BOTH round 0 and the every-round branch. Also deferred: browser-evidence-
+          // every-round natural-finish branch has table-columns, extraneous and source-
+          // evidence so far; weak-evidence (:2153) is NOT yet here, so a repaired answer
+          // that newly needs it is left un-repaired where inline would fix it. It lands
+          // as the last one-at-a-time move (after the round-0 block, every round). Also
+          // deferred: browser-evidence-
           // dimensions (:2100) and the sessions_spawn browser repairs (:1880/:1907 —
           // Stage 7); and post-round-0 source-evidence (any repairRound >= 1) uses
           // completedProductBriefEvidenceText rather than inline's natural-finish
@@ -3163,6 +3163,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   activation,
                   taskPrompt: packet.taskPrompt,
                   messages: repairMessages,
+                  resultText: synthesisResult.text,
+                });
+              }
+              // Extraneous-provider-table-schema (inline completed :1854 / natural-finish
+              // :1167) — SECOND, every round (in both inline cascades). Fires when the
+              // synthesis introduces a provider/search/model-support table the original
+              // task never requested. No evidenceText; self-suppresses via its repairMarker.
+              // `!repairPrompt`-guarded so a same-round table-columns hit still wins.
+              // Note: generateFinalAfterToolRoundLimit ALREADY repairs extraneous schema in
+              // the FIRST closeout synthesis (its own internal pass), so this block is
+              // load-bearing only for a LATER re-synthesis (a round-0 repair via
+              // generateWithEnvelopeRetry that introduces the schema) — exactly the case
+              // inline's natural-finish :1167 covers and the parity test exercises.
+              if (
+                !repairPrompt &&
+                shouldRepairExtraneousProviderTableSchema({
+                  activation,
+                  taskPrompt: packet.taskPrompt,
+                  messages: repairMessages,
+                  repairMarkers,
+                  resultText: synthesisResult.text,
+                })
+              ) {
+                repairPrompt = buildExtraneousProviderTableSchemaRepairPrompt({
+                  taskPrompt: packet.taskPrompt,
                   resultText: synthesisResult.text,
                 });
               }

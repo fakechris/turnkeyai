@@ -22884,3 +22884,100 @@ test("cutover parity: table-columns completed-closeout repair is identical betwe
   assert.match(engine.content, /\| City \| Service \| Frequency \|/);
   assert.match(engine.content, /Helsinki \| GTFS-RT vehicle positions \| every 15 seconds/);
 });
+
+test("cutover parity: extraneous-provider-table-schema completed-closeout repair (re-synthesis) is identical between inline and engine paths", async () => {
+  // extraneous-schema is an every-round member (inline completed :1854 / natural-finish
+  // :1167). Crucially generateFinalAfterToolRoundLimit ALREADY repairs extraneous schema
+  // in the FIRST closeout synthesis, so the only divergence this onTerminate block can
+  // fix is a LATER re-synthesis that introduces the schema. So this is a COMPOUND
+  // scenario: round 0 fires table-columns (the synthesis is prose with no table); its
+  // table-columns repair re-synthesis ALSO invents an unrequested provider/search/price
+  // matrix (generateWithEnvelopeRetry has no internal extraneous pass), and round 1's
+  // extraneous block must drop it — exactly what inline's natural-finish :1167 does.
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    result:
+      "The delegated explore session checked two open-data transit feeds and confirmed both Helsinki and Tampere publish GTFS-RT vehicle positions updated every 15 seconds.",
+    final_content: null,
+    payload: null,
+  });
+  // synth 1: prose, no table (trips table-columns; clean of extraneous so
+  // generateFinalAfterToolRoundLimit's internal pass stays quiet).
+  const noTable =
+    "The delegated explore session confirmed both Helsinki and Tampere publish GTFS-RT vehicle positions refreshed every 15 seconds.";
+  // synth 2: the table-columns repair — has the requested City|Service|Frequency table
+  // AND an unrequested provider/search/price matrix (the extraneous schema).
+  const tableWithExtraneous =
+    "| City | Service | Frequency |\n| --- | --- | --- |\n| Helsinki | GTFS-RT vehicle positions | every 15 seconds |\n| Tampere | GTFS-RT vehicle positions | every 15 seconds |\n\nProvider support matrix:\n\n| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |\n| --- | --- | --- | --- |\n| AcmeMaps | 未验证 | 未验证 | 未验证 |";
+  // synth 3: the extraneous repair — the requested table only, no provider matrix.
+  const cleanTable =
+    "The delegated explore session's transit-feed findings:\n\n| City | Service | Frequency |\n| --- | --- | --- |\n| Helsinki | GTFS-RT vehicle positions | every 15 seconds |\n| Tampere | GTFS-RT vehicle positions | every 15 seconds |";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let synthCount = 0;
+    gateway.generate = async (input) => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      if ((input.tools?.length ?? 0) > 0) {
+        return {
+          ...base,
+          text: "delegating",
+          toolCalls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", task: "check feeds" } }],
+        };
+      }
+      synthCount += 1;
+      return {
+        ...base,
+        text:
+          synthCount === 1
+            ? noTable
+            : synthCount === 2
+              ? tableWithExtraneous
+              : cleanTable,
+      };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Present the delegated explore session's transit-feed findings as a Markdown table. table: City | Service | Frequency. Keep it to those columns only — do not add a provider or pricing matrix.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the requested table survived (table-columns) and the unrequested provider matrix
+  // introduced by the re-synthesis was dropped (extraneous, rounds 1+).
+  assert.match(inline.content, /\| City \| Service \| Frequency \|/);
+  assert.match(engine.content, /\| City \| Service \| Frequency \|/);
+  assert.doesNotMatch(inline.content, /是否明确支持 search\/web_search/);
+  assert.doesNotMatch(engine.content, /是否明确支持 search\/web_search/);
+  assert.doesNotMatch(engine.content, /Provider support matrix/);
+  // substring unique to the final extraneous-repaired synthesis.
+  assert.match(engine.content, /transit-feed findings:/);
+});
