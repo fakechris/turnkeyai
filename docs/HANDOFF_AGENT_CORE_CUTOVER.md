@@ -188,9 +188,16 @@ its own parity test.
   the cap, so it feeds real tool content where inline feeds `tool_call_limit_exceeded` sentinels into
   the evidence; tracked with the tool-cap cutover.
 - **Residual under-repair** — the every-round natural-finish branch only has source-evidence; table-
-  columns/extraneous/weak-evidence aren't there yet (the one-at-a-time moves below), and rounds-2+
+  columns/extraneous/weak-evidence aren't there yet (the one-at-a-time moves below), and post-round-0
   source-evidence uses `completedProductBriefEvidenceText` rather than inline's natural-finish
   `sourceBoundedEvidenceText` (masked by idempotency once source-evidence fires in round 0).
+- **Timeout/browser visibility appenders** (codex #506 P2) — the engine completed path doesn't run
+  inline's `maybeAppendBrowserRecoveryVisibility` / recovered-timeout / timeout-continuation appenders
+  (inline `:1782-1814` completed, `:1253-1270` natural-finish). Gating the timeout-followup *repair*
+  to round 0 is parity-faithful (inline's natural-finish has no such repair), but it exposes this
+  pre-existing appender gap: a `sessions_send` resumed-timeout completion whose round-0 repair was
+  source-evidence can omit the round-1 timeout visibility inline appends. Closes with the
+  appender/continuation cutover (the same stage that handles the pre-synthesis continuation branches).
 
 **Remaining (follow-on moves on this same loop, ONE AT A TIME):** completed-path table-columns
 (:1826), extraneous (:1854), weak-evidence (:2153) — each into round 0 + the every-round branch; then

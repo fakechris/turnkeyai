@@ -3048,13 +3048,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // Scope gap (deferred to the browser/recovery cutover stages): the
           // inline completed branch also runs maybeAppendBrowserRecoveryVisibility
           // / maybeAppendBrowserFailureBucketVisibility / the recovered-timeout +
-          // continuation appenders (:1747-1783) before redaction. Those only fire
-          // for browser-recovery or timed-out-then-completed delegated sessions —
-          // scenarios that ALSO trip the inline pre-synthesis continuation
-          // branches this slice doesn't yet handle, so they cannot be parity-
-          // tested here (a browser session would diverge on the continuation, not
-          // the appender). For the clean delegated sessions in scope they are
-          // no-ops, so redaction alone preserves parity.
+          // continuation appenders (:1782-1814) before redaction, and inline's
+          // tool-free natural-finish round runs the same timeout-continuation
+          // appenders (:1253-1270). Those only fire for browser-recovery or timed-
+          // out-then-completed delegated sessions — scenarios that ALSO trip the
+          // inline pre-synthesis continuation branches this slice doesn't yet
+          // handle, so they cannot be parity-tested here (a browser/sessions_send
+          // session would diverge on the continuation, not the appender). For the
+          // clean delegated sessions in scope they are no-ops, so redaction alone
+          // preserves parity.
+          //
+          // Interaction with the round-0 gating below: gating the timeout-followup
+          // REPAIR to repairRound 0 is parity-faithful — inline's natural-finish
+          // has no timeout-followup repair, only the deferred appenders. So a
+          // sessions_send resumed-timeout completion whose round-0 repair was
+          // source-evidence gets its round-1 timeout VISIBILITY from those appenders
+          // on inline, which this engine path does not run yet → it can omit that
+          // guidance until the appender/continuation cutover lands. (Before the
+          // gating, the every-round timeout-followup repair re-synthesized timeout
+          // guidance instead — itself non-faithful, different text than the appender;
+          // the gating just makes the deferred-appender gap the single residual.)
           let synthesisResult = generated.result;
           let synthesisReduction = generated.reduction;
           let synthesisReductionSnapshot = generated.reductionSnapshot;
