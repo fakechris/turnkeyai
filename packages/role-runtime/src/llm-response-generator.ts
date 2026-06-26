@@ -3090,9 +3090,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // inline cascade order: missing-requested-table-columns (:1826), extraneous-
           // provider-table-schema (:1854), source-evidence-carry-forward (:1941),
           // timeout-followup-final-guidance (:1968), missing-requested-next-action
-          // (:1995), required-deliverables (:2016), false-evidence-blocked (:2129).
-          // Their relative order matches the inline, so single-fire scenarios are parity-
-          // exact. Compound completed inputs are now handled too: inline runs the
+          // (:1995), required-deliverables (:2016), false-evidence-blocked (:2129),
+          // weak-evidence-synthesis (:2153). Their relative order matches the inline, so
+          // single-fire scenarios are parity-exact. The every-round members now cover
+          // the FULL inline tool-free natural-finish cascade (:1110-1272 = table-columns,
+          // extraneous, source-evidence, weak-evidence). Compound completed inputs are
+          // handled too: inline runs the
           // completed cascade exactly once (the round the session completes), then every
           // subsequent repaired answer flows through the narrower tool-free natural-
           // finish cascade (:1110-1272 = table-columns, extraneous, source-evidence,
@@ -3102,12 +3105,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // run every round — so a repaired answer can no longer re-trip a completed-only
           // predicate inline would never re-check (the prior over-repair).
           //
-          // Residual under-repair gap (the still-deferred per-predicate moves): the
-          // every-round natural-finish branch has table-columns, extraneous and source-
-          // evidence so far; weak-evidence (:2153) is NOT yet here, so a repaired answer
-          // that newly needs it is left un-repaired where inline would fix it. It lands
-          // as the last one-at-a-time move (after the round-0 block, every round). Also
-          // deferred: browser-evidence-
+          // Residual gaps: the every-round natural-finish branch now has ALL four inline
+          // members (table-columns, extraneous, source-evidence, weak-evidence), so the
+          // prior under-repair gap is closed. What remains: post-round-0 source-evidence
+          // AND weak-evidence use completedProductBriefEvidenceText rather than inline's
+          // natural-finish sourceBoundedEvidenceText (:1192) — masked by idempotency once
+          // they fire in round 0; the eventual cleanup is to switch the every-round branch
+          // to sourceBoundedEvidenceText. Also deferred: browser-evidence-
           // dimensions (:2100) and the sessions_spawn browser repairs (:1880/:1907 —
           // Stage 7); and post-round-0 source-evidence (any repairRound >= 1) uses
           // completedProductBriefEvidenceText rather than inline's natural-finish
@@ -3293,6 +3297,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     completedSession.finalContents,
                   );
                 }
+              }
+              // Weak-evidence-synthesis (inline completed :2154 / natural-finish :1231) —
+              // LAST in the cascade and an every-round member (after the round-0 block, so
+              // a repaired answer can re-trip it exactly as inline's natural-finish does).
+              // self-suppresses via its repairMarker. evidenceText is completedProductBrief
+              // EvidenceText (the documented post-round-0 residual vs inline's natural-
+              // finish sourceBoundedEvidenceText — it only feeds the source-bounded-
+              // extrapolation branch, masked once weak-evidence fires). `!repairPrompt`-
+              // guarded so an earlier same-round repair wins.
+              if (
+                !repairPrompt &&
+                shouldRepairWeakEvidenceSynthesis({
+                  taskPrompt: packet.taskPrompt,
+                  resultText: synthesisResult.text,
+                  messages: repairMessages,
+                  repairMarkers,
+                  evidenceText: completedProductBriefEvidenceText,
+                })
+              ) {
+                repairPrompt = buildWeakEvidenceSynthesisRepairPrompt();
               }
               if (!repairPrompt) {
                 break;

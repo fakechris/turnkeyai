@@ -22981,3 +22981,83 @@ test("cutover parity: extraneous-provider-table-schema completed-closeout repair
   // substring unique to the final extraneous-repaired synthesis.
   assert.match(engine.content, /transit-feed findings:/);
 });
+
+test("cutover parity: weak-evidence-synthesis completed-closeout repair is identical between inline and engine paths", async () => {
+  // weak-evidence is the LAST every-round member (inline completed :2154 / natural-finish
+  // :1231). The closeout synthesis weakens verified evidence with placeholder uncertainty
+  // ("maybe"/"TBD"), so shouldRepairWeakEvidenceSynthesis (WEAK_UNCERTAINTY branch) fires
+  // on both paths and the rewrite states the verified facts plainly. Isolated to this
+  // predicate: the task names no table / sources / timeout / next action / conclusion /
+  // risk, the evidence carries no labels, and the synthesis has no DNS/ban/estimate
+  // wording, so nothing earlier fires (it is checked last, after the round-0 block).
+  // generateFinalAfterToolRoundLimit does NOT pre-repair weak-evidence (unlike
+  // extraneous), so a single-synthesis scenario exercises this block directly.
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    result: "The delegated session verified the plan is $10 per month and supports offline mode.",
+    final_content: null,
+    payload: null,
+  });
+  const weakSynthesis =
+    "The delegated session confirmed the plan; it maybe supports offline mode and pricing is TBD.";
+  const fixedAnswer =
+    "Verified from the delegated session: the plan is $10 per month and offline mode is observed as supported.";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let synthCount = 0;
+    gateway.generate = async (input) => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      if ((input.tools?.length ?? 0) > 0) {
+        return {
+          ...base,
+          text: "delegating",
+          toolCalls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", task: "check pricing" } }],
+        };
+      }
+      // tool-free syntheses: 1st = weakens evidence with maybe/TBD, 2nd = the repair.
+      synthCount += 1;
+      return { ...base, text: synthCount === 1 ? weakSynthesis : fixedAnswer };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt: "Review the delegated session's pricing finding and summarize what was verified.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the repair fired on both paths: the placeholder uncertainty is gone, replaced by
+  // the plainly-stated verified facts (substring unique to the repair).
+  assert.doesNotMatch(inline.content, /maybe|TBD/i);
+  assert.doesNotMatch(engine.content, /maybe|TBD/i);
+  assert.match(inline.content, /Verified from the delegated session/);
+  assert.match(engine.content, /Verified from the delegated session/);
+  assert.match(engine.content, /\$10 per month/);
+});

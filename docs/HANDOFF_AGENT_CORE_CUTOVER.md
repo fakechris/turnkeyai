@@ -163,11 +163,15 @@ P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairMissingRequ
 (#507 — every-round, FIRST), `shouldRepairExtraneousProviderTableSchema` (#508 — every-round, SECOND),
 `shouldRepairSourceEvidenceCarryForward` (#505), `shouldRepairTimeoutFollowupFinalGuidance` (#505),
 `shouldRepairMissingRequestedNextAction` (#503), `findMissingRequiredFinalDeliverables` (#504),
-`shouldRepairFalseEvidenceBlockedSynthesis` (#502). Each placed in inline precedence order; single-fire
-scenarios are parity-exact. NOTE: `generateFinalAfterToolRoundLimit` ALREADY repairs extraneous in the
-FIRST closeout synthesis (its own internal pass at `:3708`), so the onTerminate extraneous block is
-load-bearing only for a later re-synthesis — its parity test is COMPOUND (table-columns round 0 → its
-repair introduces the schema → extraneous catches it round 1; mutation-verified).
+`shouldRepairFalseEvidenceBlockedSynthesis` (#502), `shouldRepairWeakEvidenceSynthesis` (#509 —
+every-round, LAST, after the round-0 block). Each placed in inline precedence order; single-fire
+scenarios are parity-exact. **The every-round branch now covers the FULL inline tool-free natural-finish
+cascade (table-columns, extraneous, source-evidence, weak-evidence), so the rounds-1+ under-repair gap
+is closed.** NOTE: `generateFinalAfterToolRoundLimit` ALREADY repairs extraneous in the FIRST closeout
+synthesis (its own internal pass at `:3708`; it does NOT pre-cover table-columns or weak-evidence), so
+the onTerminate extraneous block is load-bearing only for a later re-synthesis — its parity test is
+COMPOUND (table-columns round 0 → its repair introduces the schema → extraneous catches it round 1;
+mutation-verified). table-columns and weak-evidence use simple single-synthesis tests.
 
 **Plumbing landed in #505:** `onAfterExecute` now also stashes `run.completedSessionToolResults`
 (the completing round's results — the same array inline passes to `collectToolResultContentText` at
@@ -192,10 +196,11 @@ its own parity test.
 - **maxToolCallsPerRound over-cap completed round** — the engine `runToolBatch` does not yet honor
   the cap, so it feeds real tool content where inline feeds `tool_call_limit_exceeded` sentinels into
   the evidence; tracked with the tool-cap cutover.
-- **Residual under-repair** — the every-round natural-finish branch has table-columns + extraneous +
-  source-evidence; weak-evidence isn't there yet (the last one-at-a-time move below), and post-round-0
-  source-evidence uses `completedProductBriefEvidenceText` rather than inline's natural-finish
-  `sourceBoundedEvidenceText` (masked by idempotency once source-evidence fires in round 0).
+- **Residual evidence-formula** — post-round-0 source-evidence AND weak-evidence use
+  `completedProductBriefEvidenceText` rather than inline's natural-finish `sourceBoundedEvidenceText`
+  (masked by idempotency once they fire in round 0). The every-round under-repair gap is now CLOSED
+  (all four natural-finish members present); the eventual cleanup is to switch the every-round branch's
+  source-evidence + weak-evidence evidenceText to `sourceBoundedEvidenceText`.
 - **Timeout/browser visibility appenders** (codex #506 P2) — the engine completed path doesn't run
   inline's `maybeAppendBrowserRecoveryVisibility` / recovered-timeout / timeout-continuation appenders
   (inline `:1782-1814` completed, `:1253-1270` natural-finish). Gating the timeout-followup *repair*
@@ -204,13 +209,10 @@ its own parity test.
   source-evidence can omit the round-1 timeout visibility inline appends. Closes with the
   appender/continuation cutover (the same stage that handles the pre-synthesis continuation branches).
 
-**Remaining (follow-on moves on this same loop, ONE AT A TIME):** completed-path weak-evidence (:2153 —
-LAST, after the round-0 block, every-round, `!repairPrompt`-guarded); then
-`shouldRepairMissingBrowserEvidenceDimensions` (:2100). Then Stage 7 (forced-spawn + pre-execute). The
-weak-evidence design (WEAK_UNCERTAINTY "maybe"/"TBD" trigger, evidenceText =
-`completedProductBriefEvidenceText`, isolated scenario + cross-fire) is worked out. NOTE: check whether
-`generateFinalAfterToolRoundLimit` also pre-covers weak-evidence (as it does extraneous at :3708) —
-if so its test must be COMPOUND too.
+**Remaining (follow-on moves on this same loop):** `shouldRepairMissingBrowserEvidenceDimensions`
+(:2100 — browser-specific, needs its own design + likely a browser-evidence scenario). Then Stage 7
+(forced-spawn + pre-execute). Optional cleanup: switch the every-round source-evidence + weak-evidence
+evidenceText to `sourceBoundedEvidenceText` to close the last residual.
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 
@@ -260,7 +262,7 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (224)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (225)
 # Stage 6 prereq (#495) done → start the Stage 6 per-predicate moves off a fresh branch
 # (confirm the engine repair mechanism first — see "Stage 6 per-predicate moves" above)
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
