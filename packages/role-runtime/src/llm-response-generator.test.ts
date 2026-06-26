@@ -22712,3 +22712,98 @@ test("cutover parity: timeout-followup-final-guidance completed-closeout repair 
   // wording unique to the repair re-synthesis.
   assert.match(engine.content, /continue or retry the same source-check with a bounded timeout/);
 });
+
+test("cutover parity: compound completed-closeout input does not over-repair on the engine path", async () => {
+  // Compound input: the task asks for BOTH visible source labels AND a next action.
+  // The first synthesis drops the labels, so source-evidence fires (round 0). Its
+  // re-synthesis restores the labels but still omits the next action — which WOULD
+  // trip missing-next-action. But inline runs the completed cascade only once, then
+  // its tool-free natural-finish cascade (table-columns/extraneous/source-evidence/
+  // weak-evidence) which does NOT contain missing-next-action, so inline leaves the
+  // next-action gap. The engine must match: with the completed-only predicates gated
+  // to repairRound 0, it stops at the source-repair too. Without that gating the
+  // engine would fire missing-next-action on round 1 and over-repair (third synthesis).
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    result:
+      "The delegated explore session checked two open-data feeds and confirmed both publish GTFS-RT vehicle positions updated every 15 seconds.",
+    final_content: null,
+    payload: null,
+    sources: [{ label: "Helsinki transit feed" }, { label: "Tampere transit feed" }],
+  });
+  const missingBoth =
+    "The delegated explore session confirmed both open-data feeds publish GTFS-RT vehicle positions updated every 15 seconds.";
+  const labelsNoNextAction =
+    "The delegated explore session confirmed both open-data feeds publish GTFS-RT vehicle positions updated every 15 seconds. Evidence / Sources: Helsinki transit feed verified the 15-second refresh; Tampere transit feed verified the same cadence.";
+  // returned only if the engine wrongly over-repairs (the missing-next-action round
+  // the fix suppresses) — its wording must never appear in a parity-correct result.
+  const labelsAndNextAction =
+    labelsNoNextAction +
+    " Recommended next action: the operator should continue monitoring the feeds.";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let synthCount = 0;
+    gateway.generate = async (input) => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      if ((input.tools?.length ?? 0) > 0) {
+        return {
+          ...base,
+          text: "delegating",
+          toolCalls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", task: "check feeds" } }],
+        };
+      }
+      synthCount += 1;
+      return {
+        ...base,
+        text:
+          synthCount === 1
+            ? missingBoth
+            : synthCount === 2
+              ? labelsNoNextAction
+              : labelsAndNextAction,
+      };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Review the delegated explore session's findings on the open-data feeds, list the exact sources you checked keeping each source label visible, and tell me the next action the operator should take.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the source-evidence repair fired on both paths (labels restored)...
+  assert.match(inline.content, /Helsinki transit feed/);
+  assert.match(engine.content, /Helsinki transit feed/);
+  // ...but neither path over-repaired into the completed-only missing-next-action
+  // round that inline's natural-finish cascade never runs.
+  assert.doesNotMatch(inline.content, /Recommended next action/i);
+  assert.doesNotMatch(engine.content, /Recommended next action/i);
+});

@@ -3048,13 +3048,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // Scope gap (deferred to the browser/recovery cutover stages): the
           // inline completed branch also runs maybeAppendBrowserRecoveryVisibility
           // / maybeAppendBrowserFailureBucketVisibility / the recovered-timeout +
-          // continuation appenders (:1747-1783) before redaction. Those only fire
-          // for browser-recovery or timed-out-then-completed delegated sessions —
-          // scenarios that ALSO trip the inline pre-synthesis continuation
-          // branches this slice doesn't yet handle, so they cannot be parity-
-          // tested here (a browser session would diverge on the continuation, not
-          // the appender). For the clean delegated sessions in scope they are
-          // no-ops, so redaction alone preserves parity.
+          // continuation appenders (:1782-1814) before redaction, and inline's
+          // tool-free natural-finish round runs the same timeout-continuation
+          // appenders (:1253-1270). Those only fire for browser-recovery or timed-
+          // out-then-completed delegated sessions — scenarios that ALSO trip the
+          // inline pre-synthesis continuation branches this slice doesn't yet
+          // handle, so they cannot be parity-tested here (a browser/sessions_send
+          // session would diverge on the continuation, not the appender). For the
+          // clean delegated sessions in scope they are no-ops, so redaction alone
+          // preserves parity.
+          //
+          // Interaction with the round-0 gating below: gating the timeout-followup
+          // REPAIR to repairRound 0 is parity-faithful — inline's natural-finish
+          // has no timeout-followup repair, only the deferred appenders. So a
+          // sessions_send resumed-timeout completion whose round-0 repair was
+          // source-evidence gets its round-1 timeout VISIBILITY from those appenders
+          // on inline, which this engine path does not run yet → it can omit that
+          // guidance until the appender/continuation cutover lands. (Before the
+          // gating, the every-round timeout-followup repair re-synthesized timeout
+          // guidance instead — itself non-faithful, different text than the appender;
+          // the gating just makes the deferred-appender gap the single residual.)
           let synthesisResult = generated.result;
           let synthesisReduction = generated.reduction;
           let synthesisReductionSnapshot = generated.reductionSnapshot;
@@ -3078,17 +3091,30 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // followup-final-guidance (:1968), missing-requested-next-action (:1995),
           // required-deliverables (:2016), false-evidence-blocked (:2129). Their
           // relative order matches the inline, so single-fire scenarios are parity-
-          // exact. Still skipped (later moves): table-columns/extraneous (:1826/:1854),
-          // the sessions_spawn browser repairs (:1880/:1907 — Stage 7), browser-
-          // evidence-dimensions (:2100), weak-evidence (:2153). Deferred edge — compound
-          // completed inputs: this loop re-checks the full completed cascade against
-          // each re-synthesis, whereas inline, after a completed repair, `continue`s to
-          // a tool-free round that runs only the narrower natural-finish cascade
-          // (source-evidence + weak-evidence). So an input whose repaired text trips a
-          // SECOND completed predicate (e.g. source-evidence then timeout-followup)
-          // makes the engine over-repair relative to inline. Single-fire inputs (every
-          // parity test) converge; production stays "inline", so this is not yet
-          // load-bearing — revisit before flipping the default for completed-heavy roles.
+          // exact. Compound completed inputs are now handled too: inline runs the
+          // completed cascade exactly once (the round the session completes), then every
+          // subsequent repaired answer flows through the narrower tool-free natural-
+          // finish cascade (:1110-1272 = table-columns, extraneous, source-evidence,
+          // weak-evidence). The loop below mirrors that by gating the completed-ONLY
+          // predicates (timeout-followup/missing-next-action/deliverables/false-evidence)
+          // to repairRound 0, leaving source-evidence (the one cross-cascade member) to
+          // run every round — so a repaired answer can no longer re-trip a completed-only
+          // predicate inline would never re-check (the prior over-repair).
+          //
+          // Residual under-repair gap (the still-deferred per-predicate moves): the
+          // every-round natural-finish branch only has source-evidence so far; table-
+          // columns (:1826), extraneous (:1854) and weak-evidence (:2153) are NOT yet
+          // here, so a repaired answer that newly needs one of those is left un-repaired
+          // where inline would fix it. Those land as later one-at-a-time moves, each into
+          // BOTH round 0 and the every-round branch. Also deferred: browser-evidence-
+          // dimensions (:2100) and the sessions_spawn browser repairs (:1880/:1907 —
+          // Stage 7); and post-round-0 source-evidence (any repairRound >= 1) uses
+          // completedProductBriefEvidenceText rather than inline's natural-finish
+          // sourceBoundedEvidenceText (:1192) — a pre-existing divergence (the prior loop
+          // already ran source-evidence every round with this formula), reachable only
+          // when source-evidence first fires after round 0, and otherwise masked by
+          // idempotency once it fired in round 0. Production stays "inline" until these
+          // close.
           if (reason === "completed_sub_agent_final" && run.completedSession) {
             const completedSession = run.completedSession;
             const repairMarkers = (ctx.repairMarkers ??= []);
@@ -3117,10 +3143,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             const MAX_COMPLETED_REPAIR_ROUNDS = 16;
             for (let repairRound = 0; repairRound < MAX_COMPLETED_REPAIR_ROUNDS; repairRound++) {
               let repairPrompt: string | null = null;
-              // Source-evidence carry-forward (inline :1941) — FIRST in the cascade.
-              // Truthy-gated on completedProductBriefEvidenceText exactly like inline
-              // (:1940). The label branch reads source labels that live only in the
-              // raw tool-result text, which is why this needs the combined evidence.
+              // Source-evidence carry-forward (inline :1941) — FIRST in the cascade,
+              // and the ONLY predicate that runs every repair round. It appears in both
+              // inline cascades: the completed block (:1941) AND the tool-free natural-
+              // finish cascade (:1204), so a repaired answer can re-trip it on a later
+              // round exactly as inline would. It self-suppresses via its repairMarker
+              // after firing once. Truthy-gated on completedProductBriefEvidenceText
+              // exactly like inline (:1940); the label branch reads source labels that
+              // live only in the raw tool-result text, hence the combined evidence.
               if (
                 completedProductBriefEvidenceText &&
                 shouldRepairSourceEvidenceCarryForward({
@@ -3137,73 +3167,82 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   evidenceText: completedProductBriefEvidenceText,
                 });
               }
-              // Timeout-followup final guidance (inline :1968) — SECOND. Inline does
-              // NOT truthy-gate this one (:1967); guard only with !repairPrompt.
-              if (
-                !repairPrompt &&
-                shouldRepairTimeoutFollowupFinalGuidance({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                  evidenceText: completedProductBriefEvidenceText,
-                })
-              ) {
-                repairPrompt = buildTimeoutFollowupFinalGuidanceRepairPrompt({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  evidenceText: completedProductBriefEvidenceText,
-                });
-              }
-              // Missing-next-action (inline :1995) — now THIRD, so it must guard on
-              // !repairPrompt (it was first before source-evidence/timeout-followup
-              // landed ahead of it); without the guard it would clobber an earlier
-              // repair and break inline precedence.
-              if (
-                !repairPrompt &&
-                shouldRepairMissingRequestedNextAction({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                })
-              ) {
-                repairPrompt = buildMissingRequestedNextActionRepairPrompt();
-              }
-              if (!repairPrompt) {
-                // Deliverables follow missing-next-action in the inline cascade
-                // (:2016). evidenceText is the finalContents join already computed
-                // above — no extra plumbing — so this is a clean isolated move.
-                const missingRequiredDeliverables =
-                  findMissingRequiredFinalDeliverables({
-                    taskPrompt: packet.taskPrompt,
-                    resultText: synthesisResult.text,
-                  });
+              // Completed-ONLY predicates: timeout-followup (:1968), missing-next-action
+              // (:1995), deliverables (:2016), false-evidence (:2130). Inline runs the
+              // completed cascade EXACTLY ONCE — the round the session completes — then
+              // every subsequent repaired answer flows through the narrower tool-free
+              // natural-finish cascade (:1110-1272), which contains table-columns,
+              // extraneous, source-evidence and weak-evidence but NONE of these four.
+              // So gate them to the first repair round; otherwise a round-1 repair's
+              // output could re-trip a completed-only predicate the inline natural-finish
+              // path would never check (the compound over-repair). The other natural-
+              // finish members (table-columns/extraneous/weak-evidence) join the every-
+              // round path as later one-at-a-time moves; until then their absence is the
+              // documented under-repair gap, not introduced here.
+              if (repairRound === 0) {
+                // Timeout-followup — inline does NOT truthy-gate this (:1967).
                 if (
-                  missingRequiredDeliverables.length > 0 &&
-                  !hasMissingRequiredFinalDeliverablesRepairPrompt(repairMarkers)
-                ) {
-                  repairPrompt = buildMissingRequiredFinalDeliverablesRepairPrompt({
+                  !repairPrompt &&
+                  shouldRepairTimeoutFollowupFinalGuidance({
                     taskPrompt: packet.taskPrompt,
                     resultText: synthesisResult.text,
-                    missing: missingRequiredDeliverables,
-                    evidenceText,
+                    messages: repairMessages,
+                    repairMarkers,
+                    evidenceText: completedProductBriefEvidenceText,
+                  })
+                ) {
+                  repairPrompt = buildTimeoutFollowupFinalGuidanceRepairPrompt({
+                    taskPrompt: packet.taskPrompt,
+                    resultText: synthesisResult.text,
+                    evidenceText: completedProductBriefEvidenceText,
                   });
                 }
-              }
-              if (
-                !repairPrompt &&
-                completedSession.finalContents.length > 0 &&
-                shouldRepairFalseEvidenceBlockedSynthesis({
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                  evidenceText,
-                })
-              ) {
-                repairPrompt = buildFalseEvidenceBlockedSynthesisRepairPrompt(
-                  completedSession.finalContents,
-                );
+                // Missing-next-action (:1995).
+                if (
+                  !repairPrompt &&
+                  shouldRepairMissingRequestedNextAction({
+                    taskPrompt: packet.taskPrompt,
+                    resultText: synthesisResult.text,
+                    messages: repairMessages,
+                    repairMarkers,
+                  })
+                ) {
+                  repairPrompt = buildMissingRequestedNextActionRepairPrompt();
+                }
+                // Deliverables (:2016) — bare finalContents evidenceText, like inline :2038.
+                if (!repairPrompt) {
+                  const missingRequiredDeliverables =
+                    findMissingRequiredFinalDeliverables({
+                      taskPrompt: packet.taskPrompt,
+                      resultText: synthesisResult.text,
+                    });
+                  if (
+                    missingRequiredDeliverables.length > 0 &&
+                    !hasMissingRequiredFinalDeliverablesRepairPrompt(repairMarkers)
+                  ) {
+                    repairPrompt = buildMissingRequiredFinalDeliverablesRepairPrompt({
+                      taskPrompt: packet.taskPrompt,
+                      resultText: synthesisResult.text,
+                      missing: missingRequiredDeliverables,
+                      evidenceText,
+                    });
+                  }
+                }
+                // False-evidence-blocked (:2130) — bare finalContents, like inline :2134.
+                if (
+                  !repairPrompt &&
+                  completedSession.finalContents.length > 0 &&
+                  shouldRepairFalseEvidenceBlockedSynthesis({
+                    resultText: synthesisResult.text,
+                    messages: repairMessages,
+                    repairMarkers,
+                    evidenceText,
+                  })
+                ) {
+                  repairPrompt = buildFalseEvidenceBlockedSynthesisRepairPrompt(
+                    completedSession.finalContents,
+                  );
+                }
               }
               if (!repairPrompt) {
                 break;

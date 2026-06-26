@@ -172,18 +172,36 @@ tool-result text byte-for-byte like inline :1933-1938. source-evidence is truthy
 finalContents `evidenceText`. The missing-next-action block gained a `!repairPrompt` guard (it was
 first; now third).
 
-**Two deferred parity gaps confirmed by adversarial verification (both off the default path,
-un-exercised, documented in-code):** (1) **maxToolCallsPerRound over-cap completed round** — the
-engine `runToolBatch` does not yet honor the cap, so it feeds real tool content where inline feeds
-`tool_call_limit_exceeded` sentinels into the evidence; tracked with the tool-cap cutover. (2)
-**compound completed inputs** — the engine loop re-checks the full completed cascade each round,
-while inline's post-repair round runs only the narrower natural-finish cascade (source-evidence +
-weak-evidence), so a repair whose output trips a second completed predicate makes the engine
-over-repair. Revisit both before flipping the default for completed-heavy roles.
+**Compound semantics closed out (#506):** inline runs the completed cascade exactly once (the round
+the session completes), then every repaired answer flows through the narrower tool-free natural-
+finish cascade (`:1110-1272` = table-columns, extraneous, source-evidence, weak-evidence). The loop
+now mirrors that — the completed-ONLY predicates (timeout-followup/missing-next-action/deliverables/
+false-evidence) are gated to `repairRound === 0`; source-evidence (the one cross-cascade member)
+runs every round. A compound parity test (source-evidence round 0 → would-be missing-next-action
+round 1) pins it: mutation-verified it fails without the gating. This was the prerequisite for
+moving the natural-finish predicates safely — **do NOT batch table-columns/extraneous/weak-evidence;
+move them one at a time**, each into BOTH `repairRound === 0` and the every-round branch, each with
+its own parity test.
 
-**Remaining (follow-on moves on this same loop):** `shouldRepairMissingBrowserEvidenceDimensions`
-(:2100), plus the completed-path versions of table-columns/extraneous/weak-evidence (:1826/:1854/
-:2153). Then Stage 7 (forced-spawn + pre-execute repairs).
+**Remaining deferred gaps (off the default path, un-exercised, documented in-code):**
+- **maxToolCallsPerRound over-cap completed round** — the engine `runToolBatch` does not yet honor
+  the cap, so it feeds real tool content where inline feeds `tool_call_limit_exceeded` sentinels into
+  the evidence; tracked with the tool-cap cutover.
+- **Residual under-repair** — the every-round natural-finish branch only has source-evidence; table-
+  columns/extraneous/weak-evidence aren't there yet (the one-at-a-time moves below), and post-round-0
+  source-evidence uses `completedProductBriefEvidenceText` rather than inline's natural-finish
+  `sourceBoundedEvidenceText` (masked by idempotency once source-evidence fires in round 0).
+- **Timeout/browser visibility appenders** (codex #506 P2) — the engine completed path doesn't run
+  inline's `maybeAppendBrowserRecoveryVisibility` / recovered-timeout / timeout-continuation appenders
+  (inline `:1782-1814` completed, `:1253-1270` natural-finish). Gating the timeout-followup *repair*
+  to round 0 is parity-faithful (inline's natural-finish has no such repair), but it exposes this
+  pre-existing appender gap: a `sessions_send` resumed-timeout completion whose round-0 repair was
+  source-evidence can omit the round-1 timeout visibility inline appends. Closes with the
+  appender/continuation cutover (the same stage that handles the pre-synthesis continuation branches).
+
+**Remaining (follow-on moves on this same loop, ONE AT A TIME):** completed-path table-columns
+(:1826), extraneous (:1854), weak-evidence (:2153) — each into round 0 + the every-round branch; then
+`shouldRepairMissingBrowserEvidenceDimensions` (:2100). Then Stage 7 (forced-spawn + pre-execute).
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 
@@ -233,7 +251,7 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (213)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (222)
 # Stage 6 prereq (#495) done → start the Stage 6 per-predicate moves off a fresh branch
 # (confirm the engine repair mechanism first — see "Stage 6 per-predicate moves" above)
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
