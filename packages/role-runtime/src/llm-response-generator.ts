@@ -3139,21 +3139,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // run every round — so a repaired answer can no longer re-trip a completed-only
           // predicate inline would never re-check (the prior over-repair).
           //
-          // Residual gaps: the every-round natural-finish branch now has ALL four inline
-          // members (table-columns, extraneous, source-evidence, weak-evidence), so the
-          // prior under-repair gap is closed. What remains: post-round-0 source-evidence
-          // AND weak-evidence use completedProductBriefEvidenceText rather than inline's
-          // natural-finish sourceBoundedEvidenceText (:1192) — masked by idempotency once
-          // they fire in round 0; the eventual cleanup is to switch the every-round branch
-          // to sourceBoundedEvidenceText. Also deferred: browser-evidence-
-          // dimensions (:2100) and the sessions_spawn browser repairs (:1880/:1907 —
-          // Stage 7); and post-round-0 source-evidence (any repairRound >= 1) uses
-          // completedProductBriefEvidenceText rather than inline's natural-finish
-          // sourceBoundedEvidenceText (:1192) — a pre-existing divergence (the prior loop
-          // already ran source-evidence every round with this formula), reachable only
-          // when source-evidence first fires after round 0, and otherwise masked by
-          // idempotency once it fired in round 0. Production stays "inline" until these
-          // close.
+          // The every-round natural-finish branch now has ALL four inline members
+          // (table-columns, extraneous, source-evidence, weak-evidence), AND uses the
+          // round-correct evidence formula: round 0 (the inline completed block) uses
+          // completedProductBriefEvidenceText; round >0 (inline's tool-free natural-finish
+          // cascade) uses sourceBoundedEvidenceText, recomputed per round — see
+          // naturalFinishEvidenceText in the loop. So the post-round-0 evidence-formula
+          // residual is closed: a label from an earlier tool round (visible to the full-
+          // toolTrace sourceBoundedEvidenceText but NOT to the completing-round-only
+          // completedProductBriefEvidenceText) is now seen on re-synthesis, exactly as
+          // inline's natural-finish does. Remaining deferred: browser-evidence-dimensions
+          // (:2100) and the sessions_spawn browser repairs (:1880/:1907 — Stage 7).
+          // Production stays "inline" until those close.
           if (reason === "completed_sub_agent_final" && run.completedSession) {
             const completedSession = run.completedSession;
             const repairMarkers = (ctx.repairMarkers ??= []);
@@ -3182,6 +3179,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             const MAX_COMPLETED_REPAIR_ROUNDS = 16;
             for (let repairRound = 0; repairRound < MAX_COMPLETED_REPAIR_ROUNDS; repairRound++) {
               let repairPrompt: string | null = null;
+              // Evidence for the cross-cascade members (source-evidence, weak-evidence),
+              // round-dependent to match the two inline cascades exactly:
+              //  - round 0 IS the inline completed block: use completedProductBriefEvidence
+              //    Text (finalContents + the completing round's raw tool results, inline
+              //    :1933/:2159).
+              //  - round >0 IS inline's tool-free natural-finish cascade (reached after the
+              //    first completed repair `continue`s): use sourceBoundedEvidenceText
+              //    (inline :1192), recomputed each round from the CURRENT repairMessages so
+              //    a repaired answer is re-evaluated like inline's re-entered cascade. Its
+              //    collectNativeToolTraceEvidenceText spans the WHOLE toolTrace, so it sees
+              //    labels from earlier tool rounds the completing-round-only completed
+              //    ProductBriefEvidenceText cannot — the parity-relevant difference.
+              const naturalFinishEvidenceText =
+                repairRound === 0
+                  ? completedProductBriefEvidenceText
+                  : [
+                      collectSourceBoundedEvidenceText({
+                        taskPrompt: packet.taskPrompt,
+                        messages: repairMessages,
+                        toolTrace,
+                      }),
+                      collectCompletedSessionEvidenceText(toolTrace),
+                    ]
+                      .filter((text) => text.trim().length > 0)
+                      .join("\n\n");
               // Missing-requested-table-columns (inline completed :1826 / natural-finish
               // :1139) — FIRST in the cascade, and an every-round member: it lives in
               // BOTH inline cascades, so a repaired answer can re-trip it on a later
@@ -3229,30 +3251,30 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   resultText: synthesisResult.text,
                 });
               }
-              // Source-evidence carry-forward (inline :1941) — every repair round. It
-              // appears in both inline cascades: the completed block (:1941) AND the
-              // tool-free natural-finish cascade (:1204), so a repaired answer can re-trip
+              // Source-evidence carry-forward — every repair round. It appears in both
+              // inline cascades: the completed block (:1941, round 0) AND the tool-free
+              // natural-finish cascade (:1204, round >0), so a repaired answer can re-trip
               // it on a later round exactly as inline would. It self-suppresses via its
-              // repairMarker after firing once. Truthy-gated on completedProductBrief
-              // EvidenceText exactly like inline (:1940); the label branch reads source
-              // labels that live only in the raw tool-result text, hence the combined
-              // evidence. `!repairPrompt`-guarded so a same-round table-columns hit wins
-              // (inline expresses this precedence via the cascade `continue`).
+              // repairMarker after firing once. evidenceText is naturalFinishEvidenceText
+              // (round-dependent above) so round 0 uses the completed-block formula and
+              // round >0 uses the natural-finish formula — matching inline :1946 vs :1209.
+              // Truthy-gated exactly like inline (:1940/:1203). `!repairPrompt`-guarded so
+              // a same-round table-columns/extraneous hit wins (inline's cascade `continue`).
               if (
                 !repairPrompt &&
-                completedProductBriefEvidenceText &&
+                naturalFinishEvidenceText &&
                 shouldRepairSourceEvidenceCarryForward({
                   taskPrompt: packet.taskPrompt,
                   resultText: synthesisResult.text,
                   messages: repairMessages,
                   repairMarkers,
-                  evidenceText: completedProductBriefEvidenceText,
+                  evidenceText: naturalFinishEvidenceText,
                 })
               ) {
                 repairPrompt = buildSourceEvidenceCarryForwardRepairPrompt({
                   taskPrompt: packet.taskPrompt,
                   resultText: synthesisResult.text,
-                  evidenceText: completedProductBriefEvidenceText,
+                  evidenceText: naturalFinishEvidenceText,
                 });
               }
               // Completed-ONLY predicates: timeout-followup (:1968), missing-next-action
@@ -3335,11 +3357,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               // Weak-evidence-synthesis (inline completed :2154 / natural-finish :1231) —
               // LAST in the cascade and an every-round member (after the round-0 block, so
               // a repaired answer can re-trip it exactly as inline's natural-finish does).
-              // self-suppresses via its repairMarker. evidenceText is completedProductBrief
-              // EvidenceText (the documented post-round-0 residual vs inline's natural-
-              // finish sourceBoundedEvidenceText — it only feeds the source-bounded-
-              // extrapolation branch, masked once weak-evidence fires). `!repairPrompt`-
-              // guarded so an earlier same-round repair wins.
+              // self-suppresses via its repairMarker. evidenceText is naturalFinishEvidence
+              // Text (round-dependent above) so round 0 uses the completed-block formula
+              // (:2159) and round >0 uses the natural-finish sourceBoundedEvidenceText
+              // (:1236) — matching inline. `!repairPrompt`-guarded so an earlier same-round
+              // repair wins.
               if (
                 !repairPrompt &&
                 shouldRepairWeakEvidenceSynthesis({
@@ -3347,7 +3369,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   resultText: synthesisResult.text,
                   messages: repairMessages,
                   repairMarkers,
-                  evidenceText: completedProductBriefEvidenceText,
+                  evidenceText: naturalFinishEvidenceText,
                 })
               ) {
                 repairPrompt = buildWeakEvidenceSynthesisRepairPrompt();
