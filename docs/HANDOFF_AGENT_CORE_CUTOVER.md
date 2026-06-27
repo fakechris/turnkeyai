@@ -15,8 +15,8 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **204-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + the cutover parity tests) — must stay green with **zero
+- Every slice is gated by the **227-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 30 cutover parity tests) — must stay green with **zero
   assertion edits to the 197**.
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
@@ -205,11 +205,12 @@ weak-evidence were moved ONE AT A TIME in #507/#508/#509 — not batched — eac
 - **maxToolCallsPerRound over-cap completed round** — the engine `runToolBatch` does not yet honor
   the cap, so it feeds real tool content where inline feeds `tool_call_limit_exceeded` sentinels into
   the evidence; tracked with the tool-cap cutover.
-- **Residual evidence-formula** — post-round-0 source-evidence AND weak-evidence use
-  `completedProductBriefEvidenceText` rather than inline's natural-finish `sourceBoundedEvidenceText`
-  (masked by idempotency once they fire in round 0). The every-round under-repair gap is now CLOSED
-  (all four natural-finish members present); the eventual cleanup is to switch the every-round branch's
-  source-evidence + weak-evidence evidenceText to `sourceBoundedEvidenceText`.
+- ~~**Residual evidence-formula**~~ ✅ CLOSED (#511) — the completed loop now uses a round-dependent
+  `naturalFinishEvidenceText`: round 0 keeps `completedProductBriefEvidenceText` (the inline completed
+  block, :1946/:2159); round >0 uses `sourceBoundedEvidenceText` recomputed per round (inline's natural-
+  finish, :1209/:1236). A compound parity test (an earlier `lookup` round's label, invisible to the
+  completing-round-only `completedProductBriefEvidenceText` but visible to the full-toolTrace
+  `sourceBoundedEvidenceText`) pins it; mutation-verified.
 - **Timeout/browser visibility appenders** (codex #506 P2) — the engine completed path doesn't run
   inline's `maybeAppendBrowserRecoveryVisibility` / recovered-timeout / timeout-continuation appenders
   (inline `:1782-1814` completed, `:1253-1270` natural-finish). Gating the timeout-followup *repair*
@@ -220,8 +221,7 @@ weak-evidence were moved ONE AT A TIME in #507/#508/#509 — not batched — eac
 
 **Remaining (follow-on moves on this same loop):** `shouldRepairMissingBrowserEvidenceDimensions`
 (:2100 — browser-specific, needs its own design + likely a browser-evidence scenario). Then Stage 7
-(forced-spawn + pre-execute). Optional cleanup: switch the every-round source-evidence + weak-evidence
-evidenceText to `sourceBoundedEvidenceText` to close the last residual.
+(forced-spawn + pre-execute).
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 
@@ -271,10 +271,11 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (226)
-# Stage 6 completed-closeout cascade + onRepairRound natural-finish cascade DONE (#502-#510).
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (227)
+# Stage 6 completed-closeout cascade + onRepairRound natural-finish cascade + the
+# round-dependent evidence-formula cleanup DONE (#502-#511).
 # Next: shouldRepairMissingBrowserEvidenceDimensions (:2100, browser-specific, own design),
-# the optional sourceBoundedEvidenceText cleanup in the completed loop, then Stage 7.
+# then Stage 7 (forced-spawn + pre-execute).
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 

@@ -23125,3 +23125,93 @@ test("cutover parity: weak-evidence-synthesis completed-closeout repair is ident
   assert.match(engine.content, /Verified from the delegated session/);
   assert.match(engine.content, /\$10 per month/);
 });
+
+test("cutover parity: completed-closeout round-1 source-evidence sees an earlier tool round's label", async () => {
+  // Exercises the sourceBoundedEvidenceText cleanup: an earlier `lookup` round carries a
+  // source label, THEN a sessions_spawn completes. The completing round's evidence
+  // (completedProductBriefEvidenceText) does NOT contain that earlier label — only the
+  // full-toolTrace sourceBoundedEvidenceText does. round 0 fires table-columns (the
+  // closeout synthesis has no table); the table-columns repair still drops the label, so
+  // round 1 source-evidence must fire — and it only sees the label via the round->0
+  // natural-finish formula. Inline reaches the same label through its tool-free natural-
+  // finish cascade. With the old every-round completedProductBriefEvidenceText the engine
+  // would never see the earlier label and would diverge (mutation-verified).
+  const lookupEvidence =
+    '{"label":"Helsinki transit feed","evidence":"verified the feed refresh cadence"}';
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    // NB: no "Helsinki transit feed" label here — it lived only in the earlier lookup.
+    result: "The delegated session verified both feeds publish GTFS-RT vehicle positions every 15 seconds.",
+    final_content: null,
+    payload: null,
+  });
+  const noTable =
+    "The transit feeds publish GTFS-RT vehicle positions every 15 seconds.";
+  const tableNoLabel =
+    "| City | Service | Frequency |\n| --- | --- | --- |\n| Helsinki | GTFS-RT vehicle positions | every 15 seconds |\n| Tampere | GTFS-RT vehicle positions | every 15 seconds |";
+  const tableWithLabel =
+    tableNoLabel + "\n\nEvidence / Sources: Helsinki transit feed verified the refresh cadence.";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let callCount = 0;
+    gateway.generate = async () => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      callCount += 1;
+      if (callCount === 1) {
+        return { ...base, text: "looking up", toolCalls: [{ id: "c1", name: "lookup", input: {} }] };
+      }
+      if (callCount === 2) {
+        return { ...base, text: "delegating", toolCalls: [{ id: "c2", name: "sessions_spawn", input: { agent_id: "explore", task: "verify feeds" } }] };
+      }
+      // tool-free syntheses: 3 = no table (trips table-columns), 4 = table w/o label
+      // (trips source-evidence in round 1), 5+ = table + restored label.
+      return { ...base, text: callCount === 3 ? noTable : callCount === 4 ? tableNoLabel : tableWithLabel };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [
+        { name: "lookup", description: "l", inputSchema: { type: "object" } },
+        { name: "sessions_spawn", description: "s", inputSchema: { type: "object" } },
+      ];
+    },
+    async execute(input) {
+      const content = input.call.name === "lookup" ? lookupEvidence : completedEvidence;
+      return { toolCallId: input.call.id, toolName: input.call.name, content };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Look up the transit feeds, then delegate verification. Present the findings as a Markdown table. table: City | Service | Frequency. Also list the exact sources you checked, keeping each source label visible.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // table-columns repaired (round 0) AND the earlier-round source label was carried
+  // forward (round 1, via the natural-finish evidence formula).
+  assert.match(inline.content, /\| City \| Service \| Frequency \|/);
+  assert.match(engine.content, /\| City \| Service \| Frequency \|/);
+  assert.match(inline.content, /Helsinki transit feed/);
+  assert.match(engine.content, /Helsinki transit feed/);
+  assert.match(engine.content, /Evidence \/ Sources/);
+});
