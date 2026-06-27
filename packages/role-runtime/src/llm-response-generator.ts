@@ -2813,13 +2813,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           return null;
         },
         // Stage 6: post-synthesis repairs on the engine's tool-free candidate
-        // answer (the natural-finish path), mirroring the inline cascade one
-        // predicate at a time. Each fires only when its shouldRepair* predicate
-        // detects a deficiency and the repair has not already been injected
-        // (guarded by the ctx.repairMarkers ledger, exactly like inline). The
-        // remaining cascade predicates (browser-evidence dimensions, extraneous
-        // schema, source-evidence carry-forward, weak/false evidence) follow in
-        // later per-predicate moves.
+        // answer (the natural-finish path), mirroring the inline tool-free cascade
+        // (:1110-1272). Each fires only when its shouldRepair* predicate detects a
+        // deficiency and the repair has not already been injected (guarded by the
+        // ctx.repairMarkers ledger, exactly like inline). Cut over, in inline order:
+        // table-columns (:1139), extraneous (:1167), source-evidence (:1202),
+        // weak-evidence (:1231) — the COMPLETE inline natural-finish cascade. (The
+        // completed_sub_agent_final closeout has its own onTerminate repair loop;
+        // browser-evidence-dimensions, which only appears in the pseudo-tool-call and
+        // wall-clock branches, is a later move.)
         onRepairRound: (state, ctx) => {
           // Inline only runs the post-synthesis repair cascade when a tool loop is
           // active (the cascade lives inside `if (activeToolLoop)`); match that so
@@ -2882,9 +2884,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               forceToolChoice: "none",
             };
           }
-          // Source-bounded evidence text (mirrors inline ~:1192), used by the
-          // weak-evidence repair below. (source-evidence carry-forward is deferred
-          // to its own move — its dispatcher predicate needs a dedicated scenario.)
+          // Source-bounded evidence text (mirrors inline :1192), used by the
+          // source-evidence carry-forward and weak-evidence repairs below.
           const sourceBoundedEvidenceText = [
             collectSourceBoundedEvidenceText({
               taskPrompt: packet.taskPrompt,
@@ -2895,6 +2896,39 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ]
             .filter((text) => text.trim().length > 0)
             .join("\n\n");
+          // Source-evidence carry-forward (inline natural-finish :1202, between
+          // extraneous and weak-evidence). Truthy-gated on sourceBoundedEvidenceText
+          // exactly like inline (:1203). This is the natural-finish counterpart of the
+          // completed-closeout source-evidence move (#505); the onTerminate completed
+          // loop uses completedProductBriefEvidenceText, the natural-finish hook uses
+          // sourceBoundedEvidenceText — matching the two distinct inline evidence
+          // formulas (:1933 vs :1192).
+          if (
+            sourceBoundedEvidenceText &&
+            shouldRepairSourceEvidenceCarryForward({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              evidenceText: sourceBoundedEvidenceText,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildSourceEvidenceCarryForwardRepairPrompt({
+                    taskPrompt: packet.taskPrompt,
+                    resultText: state.lastText,
+                    evidenceText: sourceBoundedEvidenceText,
+                  }),
+                ),
+              ],
+              forceToolChoice: "none",
+            };
+          }
           if (
             shouldRepairWeakEvidenceSynthesis({
               taskPrompt: packet.taskPrompt,

@@ -44,7 +44,10 @@ Cutover (production generator onto the engine), all flag-gated, production still
 | Stage 5 PR2d | #493 | `onToolCallsClose` agent-core hook + the 7 pending-call closeouts (graceful `wall_clock_budget` closes the #490 gap) |
 | Stage 6 prereq | #495 | migrate every `shouldRepair*` idempotency guard off message-scanning onto the `repairMarkers` ledger (the Turnkey-agnostic boundary) |
 | Stage 6 move 1 | #498 | `onRepairRound` agent-core hook + cut over `missing-table-columns` repair (natural-finish path); test-gate hygiene #497 |
-| **Stage 6 move 2** | **#500** | **cut over `extraneous-schema` + `weak-evidence` repairs via `onRepairRound` — completes the natural-finish repair phase** |
+| Stage 6 move 2 | #500 | cut over `extraneous-schema` + `weak-evidence` repairs via `onRepairRound` |
+| Stage 6 completed-closeout | #502-#506 | `onTerminate` completed-repair loop: false-evidence (#502), missing-next-action (#503), deliverables (#504), source-evidence + timeout-followup + plumbing (#505), compound round-gating fix (#506) |
+| Stage 6 completed natural-finish members | #507-#509 | table-columns (#507), extraneous (#508), weak-evidence (#509) into the completed-loop every-round branch (one at a time) |
+| **Stage 6 onRepairRound source-evidence** | **#510** | **add `source-evidence-carry-forward` to `onRepairRound` (the member missed in #498/#500) — natural-finish cascade now complete on BOTH paths** |
 
 ## What #490 fixed (context for the next session)
 
@@ -133,21 +136,24 @@ Residual (documented in code, behavior-preserving): `generateFinalAfterToolRound
 internal synthesis-retry keeps message-based idempotency (`repairMarkers: finalMessages`) — a
 shared, already-cutover-safe path with its own message scope.
 
-### Stage 6 natural-finish onRepairRound phase ✅ COMPLETE (#498, #500)
+### Stage 6 natural-finish onRepairRound phase ✅ COMPLETE (#498, #500, #510)
 
 agent-core `ReActHooks.onRepairRound?(state, ctx): ReActRepairDecision | null` — fires on a
 tool-free candidate final answer (the natural-finish path, where the empty round would
 otherwise terminate); a non-null `{ messages, forceToolChoice? }` runs one more (default
 tool-free) round instead of finalizing. Repair rounds do NOT consume the tool-round budget
 (`round--`); host idempotency (`ctx.repairMarkers`, seeded + persisted via `??=`) converges
-it, `MAX_REPAIR_ROUNDS` (32) is the hard backstop. **Cut over (each with a neutral-scenario
-inline-vs-engine parity test):** `shouldRepairMissingRequestedTableColumns` (#498),
-`shouldRepairExtraneousProviderTableSchema` + `shouldRepairWeakEvidenceSynthesis` (#500). This
-phase used a fan-out workflow (draft-in-parallel → assemble → verify).
+it, `MAX_REPAIR_ROUNDS` (32) is the hard backstop. **Cut over (each with an inline-vs-engine
+parity test), in inline natural-finish order (:1139/:1167/:1202/:1231):**
+`shouldRepairMissingRequestedTableColumns` (#498), `shouldRepairExtraneousProviderTableSchema`
++ `shouldRepairWeakEvidenceSynthesis` (#500), and `shouldRepairSourceEvidenceCarryForward`
+(#510 — added between extraneous and weak-evidence, using inline's `sourceBoundedEvidenceText`;
+it had been deferred in #498/#500 and was caught by review as the missing member).
 
-That is **every repair the natural-finish onRepairRound mechanism can cover.** The rest were
-categorized (by the fan-out) into the next phases below — they need NEW mechanisms, not more
-onRepairRound blocks:
+The `onRepairRound` hook now mirrors the **complete** inline tool-free natural-finish cascade
+(table-columns → extraneous → source-evidence → weak-evidence). The rest of the inline cascade
+predicates were categorized (by the fan-out) into the next phases below — they need NEW
+mechanisms, not more onRepairRound blocks:
 
 ### Stage 6 completed-closeout repair pass ✅ MECHANISM BUILT (#502) — predicate additions remain
 
@@ -165,9 +171,12 @@ P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairMissingRequ
 `shouldRepairMissingRequestedNextAction` (#503), `findMissingRequiredFinalDeliverables` (#504),
 `shouldRepairFalseEvidenceBlockedSynthesis` (#502), `shouldRepairWeakEvidenceSynthesis` (#509 —
 every-round, LAST, after the round-0 block). Each placed in inline precedence order; single-fire
-scenarios are parity-exact. **The every-round branch now covers the FULL inline tool-free natural-finish
-cascade (table-columns, extraneous, source-evidence, weak-evidence), so the rounds-1+ under-repair gap
-is closed.** NOTE: `generateFinalAfterToolRoundLimit` ALREADY repairs extraneous in the FIRST closeout
+scenarios are parity-exact. **This onTerminate completed-loop every-round branch now mirrors all four
+inline tool-free natural-finish members (table-columns, extraneous, source-evidence, weak-evidence),
+so the completed-loop rounds-1+ under-repair gap is closed.** (Distinct from the `onRepairRound` hook,
+which is the engine's natural-finish path for NON-completed tool-free answers — that hook also carries
+all four as of #510; see the onRepairRound section above.) NOTE: `generateFinalAfterToolRoundLimit`
+ALREADY repairs extraneous in the FIRST closeout
 synthesis (its own internal pass at `:3708`; it does NOT pre-cover table-columns or weak-evidence), so
 the onTerminate extraneous block is load-bearing only for a later re-synthesis — its parity test is
 COMPOUND (table-columns round 0 → its repair introduces the schema → extraneous catches it round 1;
@@ -188,9 +197,9 @@ now mirrors that — the completed-ONLY predicates (timeout-followup/missing-nex
 false-evidence) are gated to `repairRound === 0`; source-evidence (the one cross-cascade member)
 runs every round. A compound parity test (source-evidence round 0 → would-be missing-next-action
 round 1) pins it: mutation-verified it fails without the gating. This was the prerequisite for
-moving the natural-finish predicates safely — **do NOT batch table-columns/extraneous/weak-evidence;
-move them one at a time**, each into BOTH `repairRound === 0` and the every-round branch, each with
-its own parity test.
+moving the natural-finish predicates safely. (Process note, now historical: table-columns/extraneous/
+weak-evidence were moved ONE AT A TIME in #507/#508/#509 — not batched — each into BOTH
+`repairRound === 0` and the every-round branch with its own mutation-verified parity test.)
 
 **Remaining deferred gaps (off the default path, un-exercised, documented in-code):**
 - **maxToolCallsPerRound over-cap completed round** — the engine `runToolBatch` does not yet honor
@@ -262,9 +271,10 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (225)
-# Stage 6 prereq (#495) done → start the Stage 6 per-predicate moves off a fresh branch
-# (confirm the engine repair mechanism first — see "Stage 6 per-predicate moves" above)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (226)
+# Stage 6 completed-closeout cascade + onRepairRound natural-finish cascade DONE (#502-#510).
+# Next: shouldRepairMissingBrowserEvidenceDimensions (:2100, browser-specific, own design),
+# the optional sourceBoundedEvidenceText cleanup in the completed loop, then Stage 7.
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 

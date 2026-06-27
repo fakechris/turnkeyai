@@ -22309,6 +22309,70 @@ test("cutover parity: weak-evidence-synthesis repair is identical between inline
   assert.match(engine.content, /已验证/);
 });
 
+test("cutover parity: source-evidence-carry-forward natural-finish repair is identical between inline and engine paths", async () => {
+  // The NATURAL-FINISH path (engine onRepairRound, inline :1202) — distinct from the
+  // completed-closeout onTerminate loop. A lookup tool returns a source label; the
+  // tool-free candidate answer drops it, so shouldRepairSourceEvidenceCarryForward
+  // (label branch) fires on both paths using sourceBoundedEvidenceText (which pulls the
+  // label from the tool-trace evidence). Unlike the other natural-finish tests the model
+  // must actually call the tool so the label reaches the tool trace.
+  const lookupEvidence =
+    '{"label":"Helsinki transit feed","evidence":"verified the feed publishes vehicle positions every 15 seconds"}';
+  const droppedLabel =
+    "The lookup confirmed the feed publishes vehicle positions every 15 seconds.";
+  const withLabel =
+    "The lookup confirmed the feed publishes vehicle positions every 15 seconds. Evidence / Sources: Helsinki transit feed verified the refresh cadence.";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let callCount = 0;
+    gateway.generate = async () => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      callCount += 1;
+      if (callCount === 1) {
+        // round 0: call the lookup tool so its label lands in the tool trace.
+        return { ...base, text: "looking up", toolCalls: [{ id: "c1", name: "lookup", input: {} }] };
+      }
+      // call 2 = candidate dropping the label; call 3+ = the repair restoring it.
+      return { ...base, text: callCount === 2 ? droppedLabel : withLabel };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "lookup", description: "l", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: lookupEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Look up the transit feed and list the exact sources you checked, keeping each source label visible in the answer.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the natural-finish source-evidence repair fired on both paths: the dropped label
+  // is restored, with wording unique to the repair synthesis.
+  assert.match(inline.content, /Helsinki transit feed/);
+  assert.match(engine.content, /Helsinki transit feed/);
+  assert.match(engine.content, /Evidence \/ Sources/);
+});
+
 // --- Cutover Stage 6: completed-closeout repair pass parity (onTerminate loop) ---
 test("cutover parity: false-evidence-blocked completed-closeout repair is identical between inline and engine paths", async () => {
   // A completed delegated session returns usable evidence, but the closeout
