@@ -200,16 +200,24 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
                   ? hooks.onRepairRound(state, ctx)
                   : null;
               if (repair) {
-                repairRounds++;
                 state.messages = repair.messages;
                 pendingRepairToolChoice = repair.forceToolChoice ?? "none";
-                // A repair re-synthesis is not a new tool round, so it must not
-                // consume the round budget: the for-loop's round++ would otherwise
-                // push past maxRounds and mislabel a final-round repair as
-                // round_limit. Cancel the increment (host repair-marker idempotency
-                // converges it; repairRounds/MAX_REPAIR_ROUNDS is the hard
-                // backstop). state.round is reset at the top.
-                round--;
+                if (!repair.consumesRound) {
+                  // A tool-free repair re-synthesis is not a new tool round, so it
+                  // must not consume the round budget: the for-loop's round++ would
+                  // otherwise push past maxRounds and mislabel a final-round repair
+                  // as round_limit. Cancel the increment and count it against the
+                  // MAX_REPAIR_ROUNDS backstop (host repair-marker idempotency
+                  // converges it). state.round is reset at the top.
+                  repairRounds++;
+                  round--;
+                }
+                // A consumesRound repair re-arms a REAL tool round (forced
+                // sessions_spawn): keep round++ (charge the budget, exactly like the
+                // inline `continue` after nextToolChoice={type:tool,name:...}) and do
+                // NOT touch repairRounds — it is bounded by maxRounds + the host's
+                // shared repairMarker. forceToolChoice is {name} (not "none"), so the
+                // tools stay attached and the next round executes a real tool call.
                 continue;
               }
               yield finalEvent(
