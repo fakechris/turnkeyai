@@ -153,6 +153,75 @@ test("onToolCallsClose returning null lets the round execute normally", async ()
   assert.equal(events.at(-1)?.type === "final" && events.at(-1)!.type, "final");
 });
 
+test("onSuppressToolCalls drops the round's calls and forces a tool-free next round without executing", async () => {
+  const model = scriptedModel([
+    { text: "go", toolCalls: [call("c1", "search")] },
+    { text: "acknowledged", stopReason: "end_turn" },
+  ]);
+  let fired = 0;
+  const events = await run(model, {
+    onSuppressToolCalls: (calls, state) =>
+      calls.length > 0 && fired++ === 0
+        ? { messages: [...state.messages, { role: "user", content: "setup-only" }], forceToolChoice: "none" }
+        : null,
+  });
+  // the suppressed round was NOT emitted/executed/traced...
+  assert.equal(events.filter((e) => e.type === "tool_started").length, 0);
+  assert.equal(events.filter((e) => e.type === "tool_result").length, 0);
+  assert.equal(events.filter((e) => e.type === "model_response").length, 1); // only round 1
+  // ...the next round was forced tool-free (tools dropped, toolChoice "none") with
+  // the injected message, and finalized on the 2nd turn.
+  assert.equal(model.seen[1]!.toolChoice, "none");
+  assert.equal(model.seen[1]!.hadTools, false);
+  assert.equal(model.seen[1]!.messageCount, 2); // injected "setup-only" message persisted
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "acknowledged");
+});
+
+test("onToolCallsClose wins over onSuppressToolCalls (a pre-execute closeout precedes suppression)", async () => {
+  // A host that orders some pending-call closeouts BEFORE its suppression branch
+  // keeps them in onToolCallsClose; the engine must check onToolCallsClose first so
+  // those closeouts win over a drop (e.g. operator-cancelled beats setup-only).
+  const model = scriptedModel([{ text: "go", toolCalls: [call("c1", "search")] }, { text: "unreached" }]);
+  let suppressFired = false;
+  const events = await run(model, {
+    onToolCallsClose: (calls) => (calls.length > 0 ? "cancelled" : null),
+    onSuppressToolCalls: (_calls, state) => {
+      suppressFired = true;
+      return { messages: state.messages, forceToolChoice: "none" };
+    },
+    onTerminate: (reason) => ({ text: `closed: ${reason}` }),
+  });
+  assert.equal(suppressFired, false); // the closeout short-circuited before suppression
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "closed: cancelled");
+  assert.equal(final?.type === "final" && final.closeoutReason, "cancelled");
+});
+
+test("onSuppressToolCalls consumes the round budget (it is not a free repair round)", async () => {
+  // The model always asks for a tool and the host always suppresses. If suppression
+  // were a free repair (round--), the round index would never advance and the loop
+  // would never terminate; because the suppressed round consumes the budget, the
+  // loop is bounded by maxRounds (NOT MAX_REPAIR_ROUNDS=32).
+  const model = scriptedModel([{ text: "go", toolCalls: [call("c1", "search")] }]);
+  const events = await run(
+    model,
+    {
+      onSuppressToolCalls: (calls, state) =>
+        calls.length > 0
+          ? { messages: [...state.messages, { role: "user", content: "again" }], forceToolChoice: "none" }
+          : null,
+      onTerminate: (reason) => ({ text: `closed: ${reason}` }),
+    },
+    [echoTool("search")],
+    3,
+  );
+  // bounded by maxRounds (3 suppressed rounds), not the 32-round repair backstop.
+  assert.ok(model.seen.length <= 4, `expected <=4 model calls, got ${model.seen.length}`);
+  assert.equal(events.filter((e) => e.type === "tool_result").length, 0);
+  assert.equal(events.at(-1)?.type === "final" && events.at(-1)!.type, "final");
+});
+
 test("onRepairRound re-synthesizes a tool-free candidate then finalizes", async () => {
   // round 0: a draft answer (no tools) -> onRepairRound injects a repair + forces
   // a tool-free round -> round 1: the fixed answer -> onRepairRound returns null

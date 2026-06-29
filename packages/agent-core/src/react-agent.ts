@@ -106,6 +106,11 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
       // Carries a forced tool choice from an onRepairRound directive into the
       // next round (the repair re-synthesis), then clears.
       let pendingRepairToolChoice: ReActToolChoice | undefined;
+      // Carries a forced tool choice from an onSuppressToolCalls directive into
+      // the next round, then clears. Unlike a repair, a suppressed round still
+      // consumes the round budget (no round-- below), matching an inline loop that
+      // drops the calls and continues a normal round.
+      let pendingForceToolChoice: ReActToolChoice | undefined;
       // Repair rounds don't consume the tool-round budget (see `round--` below),
       // so a separate counter caps them as a safety backstop in case host
       // idempotency fails to converge. Well above any real repair cascade.
@@ -130,6 +135,10 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           forceToolChoice = pendingRepairToolChoice;
           pendingRepairToolChoice = undefined;
         }
+        if (pendingForceToolChoice !== undefined) {
+          forceToolChoice = pendingForceToolChoice;
+          pendingForceToolChoice = undefined;
+        }
 
         try {
           const generated = await options.model.generate({
@@ -147,12 +156,36 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           // Pending-call closeouts fire before the round is recorded/executed, so
           // a terminating reason leaves this round out of the trace (matching a
           // host loop that closes out on the pending calls without executing).
+          // Runs BEFORE onSuppressToolCalls: a host's pre-execute closeouts that
+          // precede a suppression branch (e.g. an operator-cancelled or recovery-
+          // budget closeout) must win over the drop, so the host keeps them in
+          // onToolCallsClose and the suppress check sits after. The closeouts a host
+          // orders AFTER its suppression branch only fire once tool rounds have
+          // accrued, which the round-0 suppression precludes, so this single split
+          // preserves the host's pre-execute precedence.
           const closeReason = hooks.onToolCallsClose
             ? hooks.onToolCallsClose(toolCalls, state, ctx)
             : null;
           if (closeReason) {
             yield* terminate(closeReason);
             return;
+          }
+          // Pre-execute suppression: a host may drop this round's tool calls and
+          // re-prompt the next round (e.g. a setup-only turn that should not run
+          // tools). The dropped round is NOT emitted/executed/traced, and the
+          // forced choice carries into the next round — which still consumes the
+          // budget (no round--), unlike an onRepairRound re-synthesis. Edge: if a
+          // suppression fires on the final budgeted round (round === maxRounds-1),
+          // the forced retry cannot run (the loop exits to a budget closeout) — a
+          // host that lets a forced tool-free synthesis run past the budget must
+          // bound suppression away from that boundary (matching maxRounds).
+          const suppress = hooks.onSuppressToolCalls
+            ? hooks.onSuppressToolCalls(toolCalls, state, ctx)
+            : null;
+          if (suppress) {
+            state.messages = suppress.messages;
+            pendingForceToolChoice = suppress.forceToolChoice ?? "none";
+            continue;
           }
           yield emit({ type: "model_response", round, text: generated.text, toolCalls });
 

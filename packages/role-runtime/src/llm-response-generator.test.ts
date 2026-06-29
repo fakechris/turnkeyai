@@ -23298,3 +23298,74 @@ test("cutover parity: browser-evidence-dimensions completed-closeout repair is i
   // ...replacing the dimension-less first synthesis.
   assert.doesNotMatch(engine.content, /is cleared and the sign-off was recorded/);
 });
+
+test("cutover parity: setup-only awaiting-context tool suppression is identical between inline and engine paths", async () => {
+  // Stage 7 S1 (pre-execute). The model returns a memory_search tool call on a
+  // setup-only "awaiting context" turn; both paths SUPPRESS the call (drop it +
+  // force a tool-free guidance round) rather than executing — engine via the new
+  // onSuppressToolCalls hook, inline via its pre-execute suppress branch (:1010).
+  const finalText =
+    "Helios-47 launch-planning thread is ready. No research is queued; the mission can continue when launch context is provided.";
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt: [
+      "Start a launch-planning thread for Helios-47.",
+      "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+    ].join("\n"),
+  };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const inputs: GenerateTextInput[] = [];
+    let executeCalled = false;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      inputs.push(input);
+      if (inputs.length === 1) {
+        return toolCallResult("toolu-memory", "memory_search", {
+          query: "Helios-47 launch planning mission context",
+        });
+      }
+      return {
+        text: finalText,
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "memory_search",
+            description: "Search durable memory",
+            inputSchema: { type: "object", properties: { query: { type: "string" } } },
+          },
+        ];
+      },
+      async execute() {
+        executeCalled = true;
+        throw new Error("setup-only turn must not execute tools");
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+    return { result, inputs, executeCalled };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // both suppressed: tools never executed, exactly 2 gateway calls, and the 2nd
+  // round is forced tool-free ("none") with the guidance prompt.
+  assert.equal(inline.executeCalled, false);
+  assert.equal(engine.executeCalled, false);
+  assert.equal(inline.inputs.length, 2);
+  assert.equal(engine.inputs.length, 2);
+  assert.equal(inline.inputs[1]?.toolChoice, "none");
+  assert.equal(engine.inputs[1]?.toolChoice, "none");
+  assert.match(engine.result.content, /No research is queued/);
+});

@@ -61,6 +61,7 @@ export interface ReActState {
  *
  * Category → hook map (see plan Appendix A.4):
  *  - normalization        → onToolCalls (+ onRoundMessages for suppress-and-retry)
+ *  - pre-execute suppress → onSuppressToolCalls (drop calls + re-prompt a normal round)
  *  - termination/closeout → terminationPredicates + onTerminate
  *  - repair/recovery      → onRepairRound (re-synthesize) + onModelCallError
  *  - approval/permission  → filterTools + onToolCalls + onRoundMessages + onBeforeExecute
@@ -82,6 +83,20 @@ export interface ReActHooks<Ctx extends ToolContext> {
   onModelCallError?(error: unknown, state: ReActState, ctx: Ctx): ReActSynthesis | "rethrow";
   /** Normalize/rewrite the requested tool calls before execution. */
   onToolCalls?(calls: LLMToolCall[], round: number, ctx: Ctx): LLMToolCall[];
+  /** Suppress the round's pending tool calls BEFORE execution: drop them, inject
+   *  guidance, and force the next round. Return a directive (rewritten messages +
+   *  optional forced tool choice) to suppress + re-prompt, or null to proceed to
+   *  execution. Runs AFTER `onToolCallsClose` (so a host's pre-execute closeouts
+   *  win over the drop) and before the `model_response` emit. Unlike onRepairRound
+   *  this does NOT cancel the round budget (round--): the dropped round still
+   *  counts, matching an inline loop that drops the calls and `continue`s a normal
+   *  round. The host guards idempotency (e.g. via `ctx.repairMarkers`) so it
+   *  converges. */
+  onSuppressToolCalls?(
+    calls: LLMToolCall[],
+    state: ReActState,
+    ctx: Ctx
+  ): { messages: LLMMessage[]; forceToolChoice?: ReActToolChoice } | null;
   /** Inspect the round's pending (normalized) tool calls before execution;
    *  return a closeout reason to terminate the run (routed through onTerminate),
    *  or null to proceed. Runs after onToolCalls and before the empty-round /
