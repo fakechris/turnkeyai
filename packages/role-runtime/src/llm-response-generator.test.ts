@@ -23614,3 +23614,104 @@ test("cutover parity: empty-round sessions_send continuation injection is identi
   assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
   assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
 });
+
+test("cutover parity: an empty-round continuation injection past the wall-clock budget closes out instead of executing, identically on both paths", async () => {
+  // Stage 7 S4 wall-clock guard (codex #515 P2). After a real tool round has run and
+  // the wall-clock budget is exhausted, an EMPTY model round with a pending
+  // continuation directive must NOT inject + execute another sessions_send — it must
+  // close out wall_clock_budget. Inline injects the synthetic call (:577) BEFORE the
+  // wall-clock check (:1285), so the budget closeout wins and the continuation never
+  // runs. The engine's onRoundEmpty injects AFTER onToolCallsClose, so the wall-clock
+  // pre-check in onToolCallsClose (step 4b) must fire on the empty round using the
+  // would-be-injected call. Without it the engine would run a tool round past budget.
+  const taskPrompt = [
+    "Task brief:",
+    "Continue from the cancelled source-check attempt in this mission.",
+    "",
+    "Recent turns:",
+    "[user] Continue from the cancelled source-check attempt in this mission.",
+    '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"cancelled","session_key":"worker:explore:task-1:toolu-cancelled","agent_id":"explore","result":"operator cancelled active source verification"}',
+  ].join("\n");
+  const finalSynthesis = "Final answer after wall-clock budget.";
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let now = 0;
+    let toolRounds = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      if ((input.tools?.length ?? 0) === 0) {
+        return { ...base, text: finalSynthesis }; // wall-clock final synthesis
+      }
+      toolRounds += 1;
+      if (toolRounds === 1) {
+        // round 0: a neutral tool round — establishes a tool round in the trace and
+        // burns the budget. Its result has no "session_key"/"sessions" token, so it
+        // does NOT enter buildContinuationDirectiveContext: the round-1 continuation
+        // directive stays == the taskPrompt directive on BOTH paths (no divergence).
+        return toolCallResult("toolu-note-0", "record_note", { note: "checked" });
+      }
+      // round 1: an EMPTY round; onRoundEmpty WOULD inject a sessions_send, but the
+      // budget is now exhausted, so the wall-clock closeout must win.
+      return { ...base, text: "Still thinking." };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "record_note",
+            description: "record",
+            inputSchema: { type: "object", properties: { note: { type: "string" } } },
+          },
+          {
+            name: "sessions_send",
+            description: "continue",
+            inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        now = 200; // advance past the 100ms budget so the next round is over budget
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ ok: true }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128, maxWallClockMs: 100 },
+      clock: { now: () => now },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(engine.result.content, finalSynthesis);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // The continuation was NEVER executed on either path: only the round-0 listing ran.
+  assert.equal(engine.executed.length, 1);
+  assert.equal(inline.executed.length, 1);
+  assert.equal(engine.executed[0]?.name, "record_note");
+  assert.equal(inline.executed[0]?.name, "record_note");
+  assert.ok(!engine.executed.some((call) => call.name === "sessions_send"));
+  assert.ok(!inline.executed.some((call) => call.name === "sessions_send"));
+  const engineCloseout = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; pendingToolCallCount?: number; toolCallCount?: number; roundCount?: number } | undefined;
+  const inlineCloseout = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; pendingToolCallCount?: number; toolCallCount?: number; roundCount?: number } | undefined;
+  assert.equal(engineCloseout?.reason, "wall_clock_budget");
+  assert.equal(inlineCloseout?.reason, "wall_clock_budget");
+  assert.equal(engineCloseout?.pendingToolCallCount, 1);
+  assert.equal(inlineCloseout?.pendingToolCallCount, 1);
+  assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
+  assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
+});

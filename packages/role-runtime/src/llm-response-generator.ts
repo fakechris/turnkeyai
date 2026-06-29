@@ -52,7 +52,7 @@ import {
   toolCallSignature,
 } from "./react/predicates";
 import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
-import type { ModelClient } from "@turnkeyai/agent-core/react-loop";
+import type { ModelClient, ReActState } from "@turnkeyai/agent-core/react-loop";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type {
   PreCompactionMemoryFlusher,
@@ -2479,6 +2479,47 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       pendingCloseout: undefined,
     };
     const toolTrace: NativeToolRoundTrace[] = [];
+    // Stage 7 S4: the synthetic sessions_send the empty-round continuation would
+    // inject (inline :567-587), or null. Shared by onToolCallsClose (the wall-clock
+    // pre-check below) and onRoundEmpty (the actual injection) so both agree on
+    // whether a continuation is pending — mirroring inline, where the injection at
+    // :577 populates toolCalls BEFORE the wall-clock check at :1285 sees it.
+    const computeEmptyRoundContinuationCall = (
+      state: ReActState,
+    ): LLMToolCall | null => {
+      if (!activeToolLoop) {
+        return null;
+      }
+      const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
+        state.messages,
+      );
+      const continuationContext = buildContinuationDirectiveContext(
+        packet.taskPrompt,
+        state.messages,
+      );
+      const contextualDirective = !probePending
+        ? findSessionContinuationDirective(continuationContext)
+        : null;
+      const directive = probePending
+        ? null
+        : (contextualDirective ??
+          findSessionContinuationDirective(packet.taskPrompt));
+      if (
+        directive &&
+        !hasExecutedSessionsSend(toolTrace, directive.sessionKey) &&
+        hasToolDefinition(initialGatewayInput.tools, "sessions_send")
+      ) {
+        return {
+          id: `runtime-continuation-${state.round + 1}`,
+          name: "sessions_send",
+          input: {
+            session_key: directive.sessionKey,
+            message: directive.messageHint,
+          },
+        };
+      }
+      return null;
+    };
     const agent = createReActAgent<RoleToolContext>({
       model,
       toolkit,
@@ -2736,6 +2777,56 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               return "wall_clock_budget";
             }
           }
+          // 4b. wall_clock_budget on an EMPTY round that WOULD inject a continuation.
+          //     Inline injects the synthetic sessions_send (:577) BEFORE the wall-clock
+          //     check (:1285), so the budget closeout fires with the injected call as
+          //     the pending call — the continuation never executes past budget. The
+          //     engine's onRoundEmpty injects AFTER this hook, so without this branch
+          //     an expired-budget empty round would inject + execute another tool round
+          //     past the budget. Pre-check the same condition here with the would-be
+          //     call so the closeout wins, exactly as inline.
+          if (calls.length === 0) {
+            const continuationCall = computeEmptyRoundContinuationCall(state);
+            if (continuationCall) {
+              const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+                ...(activeToolLoop.maxWallClockMs !== undefined
+                  ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
+                  : {}),
+                toolCalls: [continuationCall],
+              });
+              const requiredTimeoutContinuationPastWallClock =
+                shouldAllowRequiredTimeoutContinuationPastWallClock({
+                  taskPrompt: packet.taskPrompt,
+                  messages: state.messages,
+                  toolCalls: [continuationCall],
+                  toolTrace,
+                });
+              if (
+                !requiredTimeoutContinuationPastWallClock &&
+                toolTrace.length > 0 &&
+                isPositiveFiniteBudget(maxWallClockMs) &&
+                this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
+              ) {
+                run.pendingCloseout = {
+                  reasonLines: [
+                    `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
+                    "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+                    "State uncertainties and missing verification explicitly instead of trying another lookup.",
+                  ],
+                  closeout: {
+                    reason: "wall_clock_budget",
+                    maxRounds,
+                    maxWallClockMs,
+                    pendingToolCallCount: 1,
+                    toolCallCount: countToolCalls(toolTrace),
+                    roundCount,
+                    evidenceAvailable: hasUsableEvidence(toolTrace),
+                  },
+                };
+                return "wall_clock_budget";
+              }
+            }
+          }
           // round_limit: handled by the engine's maxRounds loop (see header).
           // 5. repeated_tool_failure — a pending call's signature already failed
           //    twice in the trace.
@@ -2859,40 +2950,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // S2/S3 forced-spawn exactly as inline :567 pre-empts :748. (The sessions_list
         // lookup branch at inline :588-605 is a later sub-slice.)
         onRoundEmpty: (state) => {
-          if (!activeToolLoop) {
-            return "terminate";
-          }
-          const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
-            state.messages,
-          );
-          const continuationContext = buildContinuationDirectiveContext(
-            packet.taskPrompt,
-            state.messages,
-          );
-          const contextualDirective = !probePending
-            ? findSessionContinuationDirective(continuationContext)
-            : null;
-          const directive = probePending
-            ? null
-            : (contextualDirective ??
-              findSessionContinuationDirective(packet.taskPrompt));
-          if (
-            directive &&
-            !hasExecutedSessionsSend(toolTrace, directive.sessionKey) &&
-            hasToolDefinition(initialGatewayInput.tools, "sessions_send")
-          ) {
-            return {
-              injectedCalls: [
-                {
-                  id: `runtime-continuation-${state.round + 1}`,
-                  name: "sessions_send",
-                  input: {
-                    session_key: directive.sessionKey,
-                    message: directive.messageHint,
-                  },
-                },
-              ],
-            };
+          const continuationCall = computeEmptyRoundContinuationCall(state);
+          if (continuationCall) {
+            return { injectedCalls: [continuationCall] };
           }
           return "terminate";
         },
