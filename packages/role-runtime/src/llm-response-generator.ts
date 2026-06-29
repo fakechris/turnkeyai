@@ -2868,6 +2868,61 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // local array would let the same repair re-fire. The engine already seeds
           // ctx.repairMarkers = []; this hardens against an unseeded ctx.
           const repairMarkers = (ctx.repairMarkers ??= []);
+          // Stage 7 S2/S3: forced-spawn browser-evidence repairs — FIRST in the
+          // natural-finish cascade (inline :748 browser-evidence, :776 product-
+          // signal, both before table-columns). Unlike the tool-free repairs below,
+          // these re-arm a REAL sessions_spawn tool round, so they return
+          // forceToolChoice {name:"sessions_spawn"} + consumesRound:true (the round
+          // is charged, matching the inline `nextToolChoice={type:tool,...}` + round++).
+          // Both share one idempotency marker (hasMissingBrowserEvidenceRepairPrompt),
+          // so once either fires neither re-fires. The {name} form (NOT {type,name})
+          // is what the engine model adapter expects.
+          if (
+            shouldRepairMissingBrowserEvidence({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+              tools: initialGatewayInput.tools,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildMissingBrowserEvidenceRepairPrompt(packet.taskPrompt),
+                ),
+              ],
+              forceToolChoice: { name: "sessions_spawn" },
+              consumesRound: true,
+            };
+          }
+          if (
+            shouldRepairMissingProductSignalBrowserEvidence({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+              tools: initialGatewayInput.tools,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildMissingProductSignalBrowserEvidenceRepairPrompt(packet.taskPrompt),
+                ),
+              ],
+              forceToolChoice: { name: "sessions_spawn" },
+              consumesRound: true,
+            };
+          }
           if (
             shouldRepairMissingRequestedTableColumns({
               activation,

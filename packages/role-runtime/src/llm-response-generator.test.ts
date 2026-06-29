@@ -23369,3 +23369,155 @@ test("cutover parity: setup-only awaiting-context tool suppression is identical 
   assert.equal(engine.inputs[1]?.toolChoice, "none");
   assert.match(engine.result.content, /No research is queued/);
 });
+
+test("cutover parity: forced-spawn missing-browser-evidence is identical between inline and engine paths", async () => {
+  // Stage 7 S2 (forced-spawn). A tool-free candidate admits it used a raw HTTP fetch
+  // instead of the browser; shouldRepairMissingBrowserEvidence re-arms a REAL
+  // sessions_spawn round (engine via onRepairRound + consumesRound:true, inline via
+  // nextToolChoice={type:tool,name:sessions_spawn}). The spawn returns a completed
+  // browser session, so both paths converge on the completed-closeout synthesis.
+  const completedBrowserSession = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:browser:task-1:s1",
+    agent_id: "browser",
+    status: "completed",
+    tool_chain: [],
+    result: "Browser session read the rendered dashboard DOM: 12 open, 3 shipped, 1 cancelled.",
+    final_content: null,
+    payload: null,
+  });
+  const round0Candidate =
+    "I used a raw HTTP fetch of the server HTML instead of a browser, so the rendered DOM state was not verified.";
+  const finalSynthesis =
+    "Browser-verified order statuses: 12 open, 3 shipped, 1 cancelled (read from the rendered dashboard DOM).";
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) return { ...base, text: round0Candidate }; // tool-free candidate
+      if (n === 2) {
+        // the forced sessions_spawn round
+        return { ...base, text: "spawning a browser session", toolCalls: [{ id: "s1", name: "sessions_spawn", input: { agent_id: "browser", task: "open the dashboard and read the rendered DOM" } }] };
+      }
+      return { ...base, text: finalSynthesis }; // completed-closeout synthesis
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedBrowserSession };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Open the live dashboard at http://127.0.0.1:7000/orders and report the rendered DOM order-status values exactly as a user would see them in the browser. Use the browser-visible page, not raw server HTML.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the forced sessions_spawn round fired on both paths (1 tool call) and both
+  // converged on the completed-closeout synthesis, not the deficient candidate.
+  assert.equal(
+    (engine.metadata?.["toolUse"] as { toolCallCount?: number } | undefined)?.toolCallCount,
+    (inline.metadata?.["toolUse"] as { toolCallCount?: number } | undefined)?.toolCallCount,
+  );
+  assert.equal((engine.metadata?.["toolUse"] as { toolCallCount?: number } | undefined)?.toolCallCount, 1);
+  assert.equal(
+    (engine.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "completed_sub_agent_final",
+  );
+  assert.equal(
+    (inline.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined)?.reason,
+    "completed_sub_agent_final",
+  );
+  assert.match(engine.content, /12 open, 3 shipped, 1 cancelled/);
+  assert.doesNotMatch(engine.content, /raw HTTP fetch/);
+});
+
+test("cutover parity: forced-spawn missing-product-signal-evidence is identical between inline and engine paths", async () => {
+  // Stage 7 S3 (forced-spawn, product-signal branch). A tool-free candidate reports
+  // only the static HTML shell; shouldRepairMissingProductSignalBrowserEvidence
+  // re-arms a sessions_spawn round (same consumesRound mechanism). The spawn returns
+  // PLAIN evidence (not a completed session), so both paths continue to a round-2
+  // natural-finish synthesis. Isolated to product-signal: the task is not browser-
+  // evidence-requiring, so browser-evidence (checked first, shared marker) stays quiet.
+  const round0Candidate =
+    "I fetched the static server HTML shell, but the product-signals counters were not confirmed because the browser rendering could not be verified.";
+  const finalSynthesis =
+    "Product-signals (browser-rendered): signups 142, activation rate 38%, churn 4 — read from the live counters on the rendered page.";
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) return { ...base, text: round0Candidate }; // tool-free candidate
+      if (n === 2) {
+        return { ...base, text: "spawning a browser session", toolCalls: [{ id: "s1", name: "sessions_spawn", input: { agent_id: "browser", task: "open the product-signals page and read the live counters" } }] };
+      }
+      return { ...base, text: finalSynthesis }; // round-2 natural-finish synthesis
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      // PLAIN evidence (not a completed session_tool_result) → no completed closeout.
+      return { toolCallId: input.call.id, toolName: input.call.name, content: "Browser session observed the live counters on the rendered product-signals page." };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Inspect the product-signals page at http://127.0.0.1:7000/product-signals and report the live counter totals shown there. Return the exact visible counter values.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the product-signal forced spawn fired on both paths (1 tool call); plain evidence
+  // → no completed closeout, a round-2 natural finish on both.
+  assert.equal(
+    (engine.metadata?.["toolUse"] as { toolCallCount?: number } | undefined)?.toolCallCount,
+    (inline.metadata?.["toolUse"] as { toolCallCount?: number } | undefined)?.toolCallCount,
+  );
+  assert.equal((engine.metadata?.["toolUse"] as { toolCallCount?: number } | undefined)?.toolCallCount, 1);
+  assert.equal(engine.metadata?.["toolLoopCloseout"], undefined);
+  assert.equal(inline.metadata?.["toolLoopCloseout"], undefined);
+  assert.match(engine.content, /signups 142/);
+  assert.doesNotMatch(engine.content, /static server HTML shell/);
+});

@@ -222,6 +222,36 @@ test("onSuppressToolCalls consumes the round budget (it is not a free repair rou
   assert.equal(events.at(-1)?.type === "final" && events.at(-1)!.type, "final");
 });
 
+test("onRepairRound consumesRound charges the forced tool round against the budget", async () => {
+  // round 0 is a tool-free candidate; onRepairRound re-arms a REAL tool round with
+  // consumesRound:true (a forced search). The forced round and each greedy follow-up
+  // consume the budget, so with maxRounds=4 exactly 3 tool rounds execute before the
+  // limit. Without consumesRound the forced round would be freed (round--) and a 4th
+  // tool round would fit — so this count is the load-bearing guard for the flag.
+  const model = scriptedModel([{ text: "draft" }, { text: "go", toolCalls: [call("c", "search")] }]);
+  const events = await run(
+    model,
+    {
+      onRepairRound: (state) =>
+        state.lastText === "draft"
+          ? {
+              messages: [...state.messages, { role: "user", content: "get evidence" }],
+              forceToolChoice: { name: "search" },
+              consumesRound: true,
+            }
+          : null,
+      onTerminate: (reason) => ({ text: `closed: ${reason}` }),
+    },
+    [echoTool("search")],
+    4,
+  );
+  // the forced round is charged: exactly 3 tool rounds fit before maxRounds (a freed
+  // round-- forced round would allow 4).
+  assert.equal(events.filter((e) => e.type === "tool_result").length, 3);
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.type, "final");
+});
+
 test("onRepairRound re-synthesizes a tool-free candidate then finalizes", async () => {
   // round 0: a draft answer (no tools) -> onRepairRound injects a repair + forces
   // a tool-free round -> round 1: the fixed answer -> onRepairRound returns null

@@ -40,6 +40,14 @@ export type ReActEmptyDecision = { injectedCalls: LLMToolCall[] } | "terminate";
 export interface ReActRepairDecision {
   messages: LLMMessage[];
   forceToolChoice?: ReActToolChoice;
+  /** When true, the repair re-arms a REAL tool round (e.g. a forced
+   *  `sessions_spawn`) that must CONSUME the round budget — agent-core keeps the
+   *  for-loop's `round++` (no `round--`) and does NOT bump `repairRounds`, so the
+   *  forced round is bounded by `maxRounds` + the host's repairMarker idempotency,
+   *  not by `MAX_REPAIR_ROUNDS`. Omitted/false (the default) keeps the tool-free
+   *  re-synthesis semantics: `round--` (a free round) counted against
+   *  `MAX_REPAIR_ROUNDS`. */
+  consumesRound?: boolean;
 }
 
 /** Mutable run state visible to every hook. `agent-core` never inspects `Ctx`. */
@@ -108,10 +116,13 @@ export interface ReActHooks<Ctx extends ToolContext> {
   onRoundEmpty?(state: ReActState, ctx: Ctx): ReActEmptyDecision;
   /** Inspect a candidate final answer from a tool-free round that would otherwise
    *  finalize the run; return a repair directive to run one more round (rewritten
-   *  messages + forced tool choice) or null to finalize. Repair rounds do NOT
-   *  consume the tool-round budget, so the host must guard idempotency (e.g. via
-   *  `ctx.repairMarkers`) so this converges; agent-core's MAX_REPAIR_ROUNDS is the
-   *  hard backstop. */
+   *  messages + forced tool choice) or null to finalize. A default (tool-free)
+   *  repair does NOT consume the tool-round budget, so the host must guard
+   *  idempotency (e.g. via `ctx.repairMarkers`) so this converges; agent-core's
+   *  MAX_REPAIR_ROUNDS is the hard backstop. A `consumesRound: true` repair instead
+   *  re-arms a REAL tool round that DOES consume the budget (bounded by `maxRounds`
+   *  + the host's repairMarker, not `MAX_REPAIR_ROUNDS`); it is still only ARMED
+   *  while `repairRounds < MAX_REPAIR_ROUNDS`, but never increments that counter. */
   onRepairRound?(state: ReActState, ctx: Ctx): ReActRepairDecision | null;
   /** Gate/split calls before execution (rejected calls become synthetic results). */
   onBeforeExecute?(
