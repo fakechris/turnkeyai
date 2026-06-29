@@ -3124,9 +3124,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // inline cascade order: missing-requested-table-columns (:1826), extraneous-
           // provider-table-schema (:1854), source-evidence-carry-forward (:1941),
           // timeout-followup-final-guidance (:1968), missing-requested-next-action
-          // (:1995), required-deliverables (:2016), false-evidence-blocked (:2129),
-          // weak-evidence-synthesis (:2153). Their relative order matches the inline, so
-          // single-fire scenarios are parity-exact. The every-round members now cover
+          // (:1995), required-deliverables (:2016), missing-browser-evidence-dimensions
+          // (:2100), false-evidence-blocked (:2129), weak-evidence-synthesis (:2153).
+          // That is the COMPLETE tool-free completed cascade (the remaining inline
+          // predicates :1880/:1907 re-arm a sessions_spawn TOOL round — Stage 7). Their
+          // relative order matches the inline, so single-fire scenarios are parity-exact.
+          // The every-round members now cover
           // the FULL inline tool-free natural-finish cascade (:1110-1272 = table-columns,
           // extraneous, source-evidence, weak-evidence). Compound completed inputs are
           // handled too: inline runs the
@@ -3148,9 +3151,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // residual is closed: a label from an earlier tool round (visible to the full-
           // toolTrace sourceBoundedEvidenceText but NOT to the completing-round-only
           // completedProductBriefEvidenceText) is now seen on re-synthesis, exactly as
-          // inline's natural-finish does. Remaining deferred: browser-evidence-dimensions
-          // (:2100) and the sessions_spawn browser repairs (:1880/:1907 — Stage 7).
-          // Production stays "inline" until those close.
+          // inline's natural-finish does. Remaining deferred: the sessions_spawn browser
+          // repairs (:1880/:1907 — they re-arm a real TOOL round, Stage 7). Production
+          // stays "inline" until those close.
           if (reason === "completed_sub_agent_final" && run.completedSession) {
             const completedSession = run.completedSession;
             const repairMarkers = (ctx.repairMarkers ??= []);
@@ -3337,6 +3340,32 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                       evidenceText,
                     });
                   }
+                }
+                // Missing-browser-evidence-dimensions (inline completed :2100) — between
+                // deliverables (:2016) and false-evidence (:2128) to match inline
+                // precedence. Completed-ONLY (absent from the tool-free natural-finish
+                // cascade :1110-1272 — its other inline sites :1082/:1327 are the pseudo-
+                // tool-call / wall-clock closeouts), so it belongs in the repairRound===0
+                // block. Bare finalContents evidenceText, like inline :2107 (NOT the
+                // combined/source-bounded texts). generateFinalAfterToolRoundLimit does
+                // not pre-repair this (only extraneous + pseudo-tool), so the first
+                // closeout synthesis reaches here unrepaired.
+                if (
+                  !repairPrompt &&
+                  completedSession.finalContents.length > 0 &&
+                  shouldRepairMissingBrowserEvidenceDimensions({
+                    taskPrompt: packet.taskPrompt,
+                    resultText: synthesisResult.text,
+                    messages: repairMessages,
+                    repairMarkers,
+                    evidenceText,
+                  })
+                ) {
+                  repairPrompt = buildMissingBrowserEvidenceDimensionsRepairPrompt({
+                    taskPrompt: packet.taskPrompt,
+                    resultText: synthesisResult.text,
+                    evidenceText,
+                  });
                 }
                 // False-evidence-blocked (:2130) — bare finalContents, like inline :2134.
                 if (

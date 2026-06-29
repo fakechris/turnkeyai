@@ -15,8 +15,8 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **227-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 30 cutover parity tests) — must stay green with **zero
+- Every slice is gated by the **228-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 31 cutover parity tests) — must stay green with **zero
   assertion edits to the 197**.
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
@@ -169,9 +169,12 @@ P2 fix). **Cut over so far (in inline cascade order):** `shouldRepairMissingRequ
 (#507 — every-round, FIRST), `shouldRepairExtraneousProviderTableSchema` (#508 — every-round, SECOND),
 `shouldRepairSourceEvidenceCarryForward` (#505), `shouldRepairTimeoutFollowupFinalGuidance` (#505),
 `shouldRepairMissingRequestedNextAction` (#503), `findMissingRequiredFinalDeliverables` (#504),
-`shouldRepairFalseEvidenceBlockedSynthesis` (#502), `shouldRepairWeakEvidenceSynthesis` (#509 —
-every-round, LAST, after the round-0 block). Each placed in inline precedence order; single-fire
-scenarios are parity-exact. **This onTerminate completed-loop every-round branch now mirrors all four
+`shouldRepairMissingBrowserEvidenceDimensions` (#512 — round-0, between deliverables and false-
+evidence; bare finalContents evidenceText), `shouldRepairFalseEvidenceBlockedSynthesis` (#502),
+`shouldRepairWeakEvidenceSynthesis` (#509 — every-round, LAST, after the round-0 block). **That is
+the COMPLETE tool-free completed cascade** — every inline completed-cascade predicate except the two
+`sessions_spawn` browser repairs (:1880/:1907), which re-arm a real TOOL round (Stage 7). Each placed
+in inline precedence order; single-fire scenarios are parity-exact. **This onTerminate completed-loop every-round branch now mirrors all four
 inline tool-free natural-finish members (table-columns, extraneous, source-evidence, weak-evidence),
 so the completed-loop rounds-1+ under-repair gap is closed.** (Distinct from the `onRepairRound` hook,
 which is the engine's natural-finish path for NON-completed tool-free answers — that hook also carries
@@ -219,9 +222,9 @@ weak-evidence were moved ONE AT A TIME in #507/#508/#509 — not batched — eac
   source-evidence can omit the round-1 timeout visibility inline appends. Closes with the
   appender/continuation cutover (the same stage that handles the pre-synthesis continuation branches).
 
-**Remaining (follow-on moves on this same loop):** `shouldRepairMissingBrowserEvidenceDimensions`
-(:2100 — browser-specific, needs its own design + likely a browser-evidence scenario). Then Stage 7
-(forced-spawn + pre-execute).
+**The tool-free completed cascade is now COMPLETE (#502-#512).** The only repair predicates left in
+the inline completed block are the two `sessions_spawn` browser repairs — they re-arm a real TOOL
+round, so they belong to Stage 7 (below), not this loop.
 
 ### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
 
@@ -271,11 +274,10 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (227)
-# Stage 6 completed-closeout cascade + onRepairRound natural-finish cascade + the
-# round-dependent evidence-formula cleanup DONE (#502-#511).
-# Next: shouldRepairMissingBrowserEvidenceDimensions (:2100, browser-specific, own design),
-# then Stage 7 (forced-spawn + pre-execute).
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (228)
+# Stage 6 tool-free completed cascade COMPLETE (#502-#512): completed-closeout loop +
+# onRepairRound natural-finish cascade + round-dependent evidence + browser-dims.
+# Next: Stage 7 (forced-spawn sessions_spawn browser repairs + pre-execute tool suppression).
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 
