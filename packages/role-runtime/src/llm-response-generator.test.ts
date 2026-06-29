@@ -23215,3 +23215,86 @@ test("cutover parity: completed-closeout round-1 source-evidence sees an earlier
   assert.match(engine.content, /Helsinki transit feed/);
   assert.match(engine.content, /Evidence \/ Sources/);
 });
+
+test("cutover parity: browser-evidence-dimensions completed-closeout repair is identical between inline and engine paths", async () => {
+  // browser-evidence-dimensions is the last completed-cascade predicate (inline :2100,
+  // between deliverables and false-evidence). It is completed-ONLY (absent from the
+  // tool-free natural-finish cascade), so it lives in the repairRound===0 block and uses
+  // the bare finalContents evidenceText. The task requests a browser dimension (details
+  // popup); the completed evidence shows it; the closeout synthesis omits the "popup"
+  // dimension, so shouldRepairMissingBrowserEvidenceDimensions fires on both paths and
+  // the rewrite carries the popup/P-42/manager-acknowledgement forward. Isolated to the
+  // "details popup state" dimension (the only one with no `negated` field): no table /
+  // sources / timeout / next-action / conclusion / risk in the task, no labels in the
+  // evidence. generateFinalAfterToolRoundLimit does not pre-repair browser-dims, so a
+  // single-synthesis test exercises the block directly (mutation-verified).
+  const completedEvidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    session_key: "worker:explore:task-1:c1",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: [],
+    result:
+      "The delegated session opened the details popup on the release board: the popup opened on row P-42 and recorded the manager acknowledgement for sign-off.",
+    final_content: null,
+    payload: null,
+  });
+  const noPopupDimension =
+    "The delegated session confirmed row P-42 on the release board is cleared and the sign-off was recorded.";
+  const fixedAnswer =
+    "The details popup opened for row P-42 and recorded the manager acknowledgement for sign-off; residual risk: external exposure remains not verified.";
+  const makeGateway = (): LLMGateway => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let synthCount = 0;
+    gateway.generate = async (input) => {
+      const base = {
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible" as const,
+        adapterName: "test",
+        raw: {},
+      };
+      if ((input.tools?.length ?? 0) > 0) {
+        return {
+          ...base,
+          text: "delegating",
+          toolCalls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", task: "open popup" } }],
+        };
+      }
+      // tool-free syntheses: 1st omits the popup dimension, 2nd = the repair.
+      synthCount += 1;
+      return { ...base, text: synthCount === 1 ? noPopupDimension : fixedAnswer };
+    };
+    return gateway;
+  };
+  const makeExecutor = (): RoleToolExecutor => ({
+    definitions() {
+      return [{ name: "sessions_spawn", description: "s", inputSchema: { type: "object" } }];
+    },
+    async execute(input) {
+      return { toolCallId: input.call.id, toolName: input.call.name, content: completedEvidence };
+    },
+  });
+  const packet: RolePromptPacket = {
+    ...buildPacket(),
+    taskPrompt:
+      "Review the delegated browser session and tell me what the details popup on the release board showed.",
+  };
+  const run = (reactEngine: "inline" | "engine") =>
+    new LLMRoleResponseGenerator({
+      gateway: makeGateway(),
+      toolLoop: { executor: makeExecutor(), maxRounds: 8 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  // the repair fired on both paths: the requested popup dimension is carried forward...
+  assert.match(inline.content, /details popup opened for row P-42/);
+  assert.match(engine.content, /details popup opened for row P-42/);
+  assert.match(engine.content, /manager acknowledgement/);
+  // ...replacing the dimension-less first synthesis.
+  assert.doesNotMatch(engine.content, /is cleared and the sign-off was recorded/);
+});
