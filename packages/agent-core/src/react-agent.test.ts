@@ -178,6 +178,26 @@ test("onSuppressToolCalls drops the round's calls and forces a tool-free next ro
   assert.equal(final?.type === "final" && final.text, "acknowledged");
 });
 
+test("onToolCallsClose wins over onSuppressToolCalls (a pre-execute closeout precedes suppression)", async () => {
+  // A host that orders some pending-call closeouts BEFORE its suppression branch
+  // keeps them in onToolCallsClose; the engine must check onToolCallsClose first so
+  // those closeouts win over a drop (e.g. operator-cancelled beats setup-only).
+  const model = scriptedModel([{ text: "go", toolCalls: [call("c1", "search")] }, { text: "unreached" }]);
+  let suppressFired = false;
+  const events = await run(model, {
+    onToolCallsClose: (calls) => (calls.length > 0 ? "cancelled" : null),
+    onSuppressToolCalls: (_calls, state) => {
+      suppressFired = true;
+      return { messages: state.messages, forceToolChoice: "none" };
+    },
+    onTerminate: (reason) => ({ text: `closed: ${reason}` }),
+  });
+  assert.equal(suppressFired, false); // the closeout short-circuited before suppression
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "closed: cancelled");
+  assert.equal(final?.type === "final" && final.closeoutReason, "cancelled");
+});
+
 test("onSuppressToolCalls consumes the round budget (it is not a free repair round)", async () => {
   // The model always asks for a tool and the host always suppresses. If suppression
   // were a free repair (round--), the round index would never advance and the loop

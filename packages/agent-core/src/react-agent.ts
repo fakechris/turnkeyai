@@ -153,11 +153,32 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           state.lastText = generated.text;
           let toolCalls = generated.toolCalls ?? [];
           if (onToolCalls) toolCalls = onToolCalls(toolCalls, round, ctx) ?? [];
+          // Pending-call closeouts fire before the round is recorded/executed, so
+          // a terminating reason leaves this round out of the trace (matching a
+          // host loop that closes out on the pending calls without executing).
+          // Runs BEFORE onSuppressToolCalls: a host's pre-execute closeouts that
+          // precede a suppression branch (e.g. an operator-cancelled or recovery-
+          // budget closeout) must win over the drop, so the host keeps them in
+          // onToolCallsClose and the suppress check sits after. The closeouts a host
+          // orders AFTER its suppression branch only fire once tool rounds have
+          // accrued, which the round-0 suppression precludes, so this single split
+          // preserves the host's pre-execute precedence.
+          const closeReason = hooks.onToolCallsClose
+            ? hooks.onToolCallsClose(toolCalls, state, ctx)
+            : null;
+          if (closeReason) {
+            yield* terminate(closeReason);
+            return;
+          }
           // Pre-execute suppression: a host may drop this round's tool calls and
           // re-prompt the next round (e.g. a setup-only turn that should not run
           // tools). The dropped round is NOT emitted/executed/traced, and the
           // forced choice carries into the next round — which still consumes the
-          // budget (no round--), unlike an onRepairRound re-synthesis.
+          // budget (no round--), unlike an onRepairRound re-synthesis. Edge: if a
+          // suppression fires on the final budgeted round (round === maxRounds-1),
+          // the forced retry cannot run (the loop exits to a budget closeout) — a
+          // host that lets a forced tool-free synthesis run past the budget must
+          // bound suppression away from that boundary (matching maxRounds).
           const suppress = hooks.onSuppressToolCalls
             ? hooks.onSuppressToolCalls(toolCalls, state, ctx)
             : null;
@@ -165,16 +186,6 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             state.messages = suppress.messages;
             pendingForceToolChoice = suppress.forceToolChoice ?? "none";
             continue;
-          }
-          // Pending-call closeouts fire before the round is recorded/executed, so
-          // a terminating reason leaves this round out of the trace (matching a
-          // host loop that closes out on the pending calls without executing).
-          const closeReason = hooks.onToolCallsClose
-            ? hooks.onToolCallsClose(toolCalls, state, ctx)
-            : null;
-          if (closeReason) {
-            yield* terminate(closeReason);
-            return;
           }
           yield emit({ type: "model_response", round, text: generated.text, toolCalls });
 

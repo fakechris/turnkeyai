@@ -17,7 +17,7 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   engine path is exercised only by parity tests until then.
 - Every slice is gated by the **229-test oracle** (`llm-response-generator.test.ts` =
   197 inline behavior tests + 32 cutover parity tests) — must stay green with **zero
-  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (20 tests).
+  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (21 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
 single tool round, order-dependent serialization, throwing-tool isolation, **`round_limit`**
@@ -240,7 +240,13 @@ host-authored forced rounds (permission_result). Plus wiring two already-defined
 - **S1 ✅ #513** — pre-execute `shouldSuppressToolsForAwaitingContextSetup` via the new
   `onSuppressToolCalls` hook (react-loop.ts + react-agent.ts `pendingForceToolChoice`, no `round--`;
   role-runtime wiring; parity test reuses the existing awaiting-context oracle :3333; agent-core unit
-  tests incl. a budget-consumption test; mutation-verified).
+  tests incl. a budget-consumption test; mutation-verified). The hook fires **after** `onToolCallsClose`
+  so a host's pre-execute closeouts that precede suppression inline (recovery_tool_budget :612,
+  operator_cancelled :686) win over the drop (codex #513 P2; the closeouts inline orders *after*
+  suppression — wall_clock/repeated_* — can't fire on the round-0 suppress round, so one split suffices).
+  Deferred edge (codex #513 P2, documented in-code): a suppression on the final budgeted round
+  (`round === maxRounds-1`) routes to a budget closeout instead of running the forced tool-free retry —
+  needs a degenerate small `maxRounds`; analogous to the wall_clock/round_limit boundary edge.
 - **S2/S3** — forced-spawn `shouldRepairMissingBrowserEvidence` / `…MissingProductSignalBrowserEvidence`
   (inline natural-finish :748/:776) via `onRepairRound` + the new `consumesRound` flag. Re-arms a
   budget-consuming `sessions_spawn` round. **Use the `{name}` toolChoice form** (the engine adapter maps
@@ -302,7 +308,7 @@ copy as templates.
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
 npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (229)
-npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (20)
+npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (21)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
 # S1 pre-execute suppression DONE (#513, onSuppressToolCalls hook). Next: S2/S3 forced-spawn
 # browser-evidence via onRepairRound + a new consumesRound flag (see the Stage 7 section).
