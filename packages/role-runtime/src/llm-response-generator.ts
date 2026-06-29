@@ -52,7 +52,7 @@ import {
   toolCallSignature,
 } from "./react/predicates";
 import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
-import type { ModelClient } from "@turnkeyai/agent-core/react-loop";
+import type { ModelClient, ReActState } from "@turnkeyai/agent-core/react-loop";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type {
   PreCompactionMemoryFlusher,
@@ -2479,6 +2479,47 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       pendingCloseout: undefined,
     };
     const toolTrace: NativeToolRoundTrace[] = [];
+    // Stage 7 S4: the synthetic sessions_send the empty-round continuation would
+    // inject (inline :567-587), or null. Shared by onToolCallsClose (the wall-clock
+    // pre-check below) and onRoundEmpty (the actual injection) so both agree on
+    // whether a continuation is pending — mirroring inline, where the injection at
+    // :577 populates toolCalls BEFORE the wall-clock check at :1285 sees it.
+    const computeEmptyRoundContinuationCall = (
+      state: ReActState,
+    ): LLMToolCall | null => {
+      if (!activeToolLoop) {
+        return null;
+      }
+      const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
+        state.messages,
+      );
+      const continuationContext = buildContinuationDirectiveContext(
+        packet.taskPrompt,
+        state.messages,
+      );
+      const contextualDirective = !probePending
+        ? findSessionContinuationDirective(continuationContext)
+        : null;
+      const directive = probePending
+        ? null
+        : (contextualDirective ??
+          findSessionContinuationDirective(packet.taskPrompt));
+      if (
+        directive &&
+        !hasExecutedSessionsSend(toolTrace, directive.sessionKey) &&
+        hasToolDefinition(initialGatewayInput.tools, "sessions_send")
+      ) {
+        return {
+          id: `runtime-continuation-${state.round + 1}`,
+          name: "sessions_send",
+          input: {
+            session_key: directive.sessionKey,
+            message: directive.messageHint,
+          },
+        };
+      }
+      return null;
+    };
     const agent = createReActAgent<RoleToolContext>({
       model,
       toolkit,
@@ -2624,6 +2665,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return null;
           }
           const roundCount = toolTrace.length;
+          // Stage 7 S4: the synthetic sessions_send an empty round WOULD inject (or
+          // null). Inline injects it (:567) BEFORE the pseudo_tool_call closeout
+          // (:1035) and the wall-clock check (:1285): the injection turns the round
+          // into a tool round, so the empty-gated pseudo closeout is bypassed while
+          // the wall-clock budget still applies to the injected call. Mirror that
+          // precedence below — recovery_tool_budget (step 1, inline :539) still runs
+          // BEFORE the injection, so it is computed after step 1.
+          let pendingContinuation: LLMToolCall | null = null;
           // 1. recovery_tool_budget — the final recovery attempt's tool budget is
           //    exhausted (fires regardless of pending-call count).
           if (recoveryToolBudget) {
@@ -2646,6 +2695,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               return "recovery_tool_budget";
             }
           }
+          // Now that recovery_tool_budget (the only closeout inline checks BEFORE the
+          // empty-round injection) has run, resolve the pending continuation: every
+          // closeout below either gates on calls.length > 0 (so it no-ops here) or,
+          // for the empty-gated pseudo_tool_call, must yield to the injection (which
+          // inline performs first). operator_cancelled cannot collide — a live
+          // continuation directive means the user DID ask to continue, so its
+          // shouldCloseoutCancelledSessionWithoutContinuation guard is false.
+          pendingContinuation =
+            calls.length === 0 ? computeEmptyRoundContinuationCall(state) : null;
           // 2. operator_cancelled — a prior session was cancelled and the latest
           //    user message did not ask to continue (pending calls present).
           if (
@@ -2673,9 +2731,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return "operator_cancelled";
           }
           // 3. pseudo_tool_call — no native calls, but the text emitted tool-call
-          //    markup (XML/JSON/pseudo).
+          //    markup (XML/JSON/pseudo). Skip when a continuation is pending: inline
+          //    injects the synthetic sessions_send (:567) before this empty-gated
+          //    closeout (:1035), so the injection wins and the continuation runs.
           if (
             calls.length === 0 &&
+            !pendingContinuation &&
             containsAnyToolCallForm({ text: state.lastText, toolCalls: calls })
           ) {
             run.pendingCloseout = {
@@ -2734,6 +2795,56 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 },
               };
               return "wall_clock_budget";
+            }
+          }
+          // 4b. wall_clock_budget on an EMPTY round that WOULD inject a continuation.
+          //     Inline injects the synthetic sessions_send (:577) BEFORE the wall-clock
+          //     check (:1285), so the budget closeout fires with the injected call as
+          //     the pending call — the continuation never executes past budget. The
+          //     engine's onRoundEmpty injects AFTER this hook, so without this branch
+          //     an expired-budget empty round would inject + execute another tool round
+          //     past the budget. Pre-check the same condition here with the would-be
+          //     call so the closeout wins, exactly as inline.
+          if (calls.length === 0) {
+            const continuationCall = pendingContinuation;
+            if (continuationCall) {
+              const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+                ...(activeToolLoop.maxWallClockMs !== undefined
+                  ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
+                  : {}),
+                toolCalls: [continuationCall],
+              });
+              const requiredTimeoutContinuationPastWallClock =
+                shouldAllowRequiredTimeoutContinuationPastWallClock({
+                  taskPrompt: packet.taskPrompt,
+                  messages: state.messages,
+                  toolCalls: [continuationCall],
+                  toolTrace,
+                });
+              if (
+                !requiredTimeoutContinuationPastWallClock &&
+                toolTrace.length > 0 &&
+                isPositiveFiniteBudget(maxWallClockMs) &&
+                this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
+              ) {
+                run.pendingCloseout = {
+                  reasonLines: [
+                    `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
+                    "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+                    "State uncertainties and missing verification explicitly instead of trying another lookup.",
+                  ],
+                  closeout: {
+                    reason: "wall_clock_budget",
+                    maxRounds,
+                    maxWallClockMs,
+                    pendingToolCallCount: 1,
+                    toolCallCount: countToolCalls(toolTrace),
+                    roundCount,
+                    evidenceAvailable: hasUsableEvidence(toolTrace),
+                  },
+                };
+                return "wall_clock_budget";
+              }
             }
           }
           // round_limit: handled by the engine's maxRounds loop (see header).
@@ -2845,6 +2956,25 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return "sub_agent_timeout";
           }
           return null;
+        },
+        // Stage 7 S4: empty-round session-continuation injection. When the model
+        // returns no tool calls but a pending continuation directive names an unsent
+        // session, the inline loop injects a synthetic sessions_send to continue it
+        // (inline :567-587). Mirror that via onRoundEmpty's injectedCalls. The
+        // directive is recomputed here (the engine doesn't run the inline tool-call
+        // normalization pipeline): the per-round contextual directive ?? the base
+        // directive — matching inline :449-462. The base is findSessionContinuation
+        // Directive(taskPrompt) (inline :261, a pure function of the task), recomputed
+        // rather than threaded since it is deterministic. Returning "terminate" (no
+        // injection) falls through to onRepairRound, so the inject pre-empts the
+        // S2/S3 forced-spawn exactly as inline :567 pre-empts :748. (The sessions_list
+        // lookup branch at inline :588-605 is a later sub-slice.)
+        onRoundEmpty: (state) => {
+          const continuationCall = computeEmptyRoundContinuationCall(state);
+          if (continuationCall) {
+            return { injectedCalls: [continuationCall] };
+          }
+          return "terminate";
         },
         // Stage 6: post-synthesis repairs on the engine's tool-free candidate
         // answer (the natural-finish path), mirroring the inline tool-free cascade
@@ -3610,6 +3740,29 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             progress: [],
           };
           toolTrace.push(currentRound);
+        }
+      } else if (event.type === "tool_started") {
+        // Injected-round support (onRoundEmpty, Stage 7 S4): when the host injects
+        // calls on an empty round, that round's model_response carried the model's
+        // (empty) calls, so no round was opened above. Open one from the first
+        // tool_started of a round the model_response didn't record — matching the
+        // inline path which pushes an injected round unconditionally (:1510-1520).
+        // No-op for normal rounds: their round is already open with these calls.
+        if (!currentRound || currentRound.round !== event.round + 1) {
+          currentRound = {
+            round: event.round + 1,
+            calls: [],
+            results: [],
+            progress: [],
+          };
+          toolTrace.push(currentRound);
+        }
+        if (!currentRound.calls.some((existing) => existing.id === event.call.id)) {
+          currentRound.calls.push({
+            id: event.call.id,
+            name: event.call.name,
+            input: event.call.input,
+          });
         }
       } else if (event.type === "tool_result" && currentRound) {
         currentRound.results.push({
