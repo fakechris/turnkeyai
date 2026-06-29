@@ -2665,6 +2665,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return null;
           }
           const roundCount = toolTrace.length;
+          // Stage 7 S4: the synthetic sessions_send an empty round WOULD inject (or
+          // null). Inline injects it (:567) BEFORE the pseudo_tool_call closeout
+          // (:1035) and the wall-clock check (:1285): the injection turns the round
+          // into a tool round, so the empty-gated pseudo closeout is bypassed while
+          // the wall-clock budget still applies to the injected call. Mirror that
+          // precedence below — recovery_tool_budget (step 1, inline :539) still runs
+          // BEFORE the injection, so it is computed after step 1.
+          let pendingContinuation: LLMToolCall | null = null;
           // 1. recovery_tool_budget — the final recovery attempt's tool budget is
           //    exhausted (fires regardless of pending-call count).
           if (recoveryToolBudget) {
@@ -2687,6 +2695,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               return "recovery_tool_budget";
             }
           }
+          // Now that recovery_tool_budget (the only closeout inline checks BEFORE the
+          // empty-round injection) has run, resolve the pending continuation: every
+          // closeout below either gates on calls.length > 0 (so it no-ops here) or,
+          // for the empty-gated pseudo_tool_call, must yield to the injection (which
+          // inline performs first). operator_cancelled cannot collide — a live
+          // continuation directive means the user DID ask to continue, so its
+          // shouldCloseoutCancelledSessionWithoutContinuation guard is false.
+          pendingContinuation =
+            calls.length === 0 ? computeEmptyRoundContinuationCall(state) : null;
           // 2. operator_cancelled — a prior session was cancelled and the latest
           //    user message did not ask to continue (pending calls present).
           if (
@@ -2714,9 +2731,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return "operator_cancelled";
           }
           // 3. pseudo_tool_call — no native calls, but the text emitted tool-call
-          //    markup (XML/JSON/pseudo).
+          //    markup (XML/JSON/pseudo). Skip when a continuation is pending: inline
+          //    injects the synthetic sessions_send (:567) before this empty-gated
+          //    closeout (:1035), so the injection wins and the continuation runs.
           if (
             calls.length === 0 &&
+            !pendingContinuation &&
             containsAnyToolCallForm({ text: state.lastText, toolCalls: calls })
           ) {
             run.pendingCloseout = {
@@ -2786,7 +2806,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           //     past the budget. Pre-check the same condition here with the would-be
           //     call so the closeout wins, exactly as inline.
           if (calls.length === 0) {
-            const continuationCall = computeEmptyRoundContinuationCall(state);
+            const continuationCall = pendingContinuation;
             if (continuationCall) {
               const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
                 ...(activeToolLoop.maxWallClockMs !== undefined

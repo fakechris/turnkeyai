@@ -23715,3 +23715,92 @@ test("cutover parity: an empty-round continuation injection past the wall-clock 
   assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
   assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
 });
+
+test("cutover parity: an empty round with pseudo tool-call markup still injects the continuation instead of closing out pseudo_tool_call, identically on both paths", async () => {
+  // Stage 7 S4 pseudo precedence (codex #515 P2). The model returns NO native tool
+  // calls but its text carries tool-call markup, AND the task is an explicit
+  // continuation of a cancelled session. Inline injects the synthetic sessions_send
+  // (:567) BEFORE the pseudo_tool_call closeout (:1035), so the injection wins and
+  // the continuation runs. The engine's onToolCallsClose checks pseudo_tool_call
+  // (step 3) before onRoundEmpty could inject, so without the pendingContinuation
+  // guard it would wrongly close out pseudo_tool_call and SKIP the required
+  // continuation — diverging from inline.
+  const taskPrompt = [
+    "Task brief:",
+    "Continue from the cancelled source-check attempt in this mission.",
+    "",
+    "Recent turns:",
+    "[user] Continue from the cancelled source-check attempt in this mission.",
+    '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"cancelled","session_key":"worker:explore:task-1:toolu-cancelled","agent_id":"explore","result":"operator cancelled active source verification"}',
+  ].join("\n");
+  const finalSynthesis = "Final answer from resumed cancelled session.";
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      if ((input.tools?.length ?? 0) === 0) {
+        return { ...base, text: finalSynthesis }; // completed-closeout synthesis
+      }
+      // round 0: NO native tool calls, but tool-call markup in the text — the
+      // pseudo_tool_call trigger that must NOT win over the continuation injection.
+      return { ...base, text: "<tool_call>resume</tool_call>" };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "continue",
+            inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-1",
+            session_key: input.call.input.session_key,
+            agent_id: "explore",
+            status: "completed",
+            result: "Cancelled session resumed with source evidence.",
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(engine.result.content, finalSynthesis);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the continuation was injected + executed on BOTH paths despite the markup.
+  assert.equal(engine.executed.length, 1);
+  assert.equal(inline.executed.length, 1);
+  assert.equal(engine.executed[0]?.name, "sessions_send");
+  assert.equal(inline.executed[0]?.name, "sessions_send");
+  assert.equal(engine.executed[0]?.input.session_key, "worker:explore:task-1:toolu-cancelled");
+  const engineCloseout = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; toolCallCount?: number } | undefined;
+  const inlineCloseout = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; toolCallCount?: number } | undefined;
+  // NOT pseudo_tool_call — the continuation completed.
+  assert.equal(engineCloseout?.reason, "completed_sub_agent_final");
+  assert.equal(inlineCloseout?.reason, "completed_sub_agent_final");
+  assert.equal(engineCloseout?.toolCallCount, 1);
+  assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
+});
