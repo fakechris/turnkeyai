@@ -106,6 +106,11 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
       // Carries a forced tool choice from an onRepairRound directive into the
       // next round (the repair re-synthesis), then clears.
       let pendingRepairToolChoice: ReActToolChoice | undefined;
+      // Carries a forced tool choice from an onSuppressToolCalls directive into
+      // the next round, then clears. Unlike a repair, a suppressed round still
+      // consumes the round budget (no round-- below), matching an inline loop that
+      // drops the calls and continues a normal round.
+      let pendingForceToolChoice: ReActToolChoice | undefined;
       // Repair rounds don't consume the tool-round budget (see `round--` below),
       // so a separate counter caps them as a safety backstop in case host
       // idempotency fails to converge. Well above any real repair cascade.
@@ -130,6 +135,10 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           forceToolChoice = pendingRepairToolChoice;
           pendingRepairToolChoice = undefined;
         }
+        if (pendingForceToolChoice !== undefined) {
+          forceToolChoice = pendingForceToolChoice;
+          pendingForceToolChoice = undefined;
+        }
 
         try {
           const generated = await options.model.generate({
@@ -144,6 +153,19 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           state.lastText = generated.text;
           let toolCalls = generated.toolCalls ?? [];
           if (onToolCalls) toolCalls = onToolCalls(toolCalls, round, ctx) ?? [];
+          // Pre-execute suppression: a host may drop this round's tool calls and
+          // re-prompt the next round (e.g. a setup-only turn that should not run
+          // tools). The dropped round is NOT emitted/executed/traced, and the
+          // forced choice carries into the next round — which still consumes the
+          // budget (no round--), unlike an onRepairRound re-synthesis.
+          const suppress = hooks.onSuppressToolCalls
+            ? hooks.onSuppressToolCalls(toolCalls, state, ctx)
+            : null;
+          if (suppress) {
+            state.messages = suppress.messages;
+            pendingForceToolChoice = suppress.forceToolChoice ?? "none";
+            continue;
+          }
           // Pending-call closeouts fire before the round is recorded/executed, so
           // a terminating reason leaves this round out of the trace (matching a
           // host loop that closes out on the pending calls without executing).

@@ -15,9 +15,9 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **228-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 31 cutover parity tests) — must stay green with **zero
-  assertion edits to the 197**.
+- Every slice is gated by the **229-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 32 cutover parity tests) — must stay green with **zero
+  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (20 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
 single tool round, order-dependent serialization, throwing-tool isolation, **`round_limit`**
@@ -226,21 +226,48 @@ weak-evidence were moved ONE AT A TIME in #507/#508/#509 — not batched — eac
 the inline completed block are the two `sessions_spawn` browser repairs — they re-arm a real TOOL
 round, so they belong to Stage 7 (below), not this loop.
 
-### Stage 6 / 7 boundary — forced-spawn + pre-execute repairs ⏳ (Stage-7 continuation territory)
+### Stage 7 — forced-spawn + pre-execute + approval/continuation 🔄 IN PROGRESS
 
-- `shouldRepairMissingBrowserEvidence` / `…MissingProductSignalBrowserEvidence` — re-arm a real
-  `sessions_spawn` **tool** round (not a tool-free re-synthesis), which collides with
-  `onRepairRound`'s `round--` budget model. Need a forced-evidence-spawn mechanism (a tool round
-  that consumes budget). These are continuation/recovery branches → Stage 7.
-- `shouldSuppressToolsForAwaitingContextSetup` — **pre-execute** (fires when `toolCalls.length > 0`):
-  suppress tools + inject guidance + continue. Needs a suppress-and-continue hook (`onToolCalls`
-  /`onRoundMessages` family), not `onRepairRound`. → Stage 7.
-- `buildLocalEvidenceCloseout` — already done (`onModelCallError` / `tool_evidence_fallback`, PR2b).
+Scoped by a 4-agent workflow. **Three new agent-core mechanisms** are needed (the rest reuses
+existing hooks): (1) a `consumesRound?: boolean` flag on `ReActRepairDecision` so a forced
+`sessions_spawn` repair round consumes the budget (suppresses the `onRepairRound` `round--`);
+(2) **`onSuppressToolCalls`** — drop the round's calls + re-prompt a normal round, pre-execute
+(✅ landed #513); (3) `onAfterExecuteContinue` — budget-consuming post-execute continuation +
+host-authored forced rounds (permission_result). Plus wiring two already-defined-but-unused hooks:
+`onRoundEmpty` (synthetic `sessions_send`) and `onToolCalls` (approval-gate normalizer).
 
-- **Stage 7** — approval + session-continuation (peel 7, most entangled, done together).
-  This is where the deferred bits land: the forced `permission_result` pre-check (PR2b scope
-  note), `executeRuntimeForcedToolRound`, the `onRoundEmpty` forced-continuation override.
+**Slice order (least-entangled → hardest):**
+- **S1 ✅ #513** — pre-execute `shouldSuppressToolsForAwaitingContextSetup` via the new
+  `onSuppressToolCalls` hook (react-loop.ts + react-agent.ts `pendingForceToolChoice`, no `round--`;
+  role-runtime wiring; parity test reuses the existing awaiting-context oracle :3333; agent-core unit
+  tests incl. a budget-consumption test; mutation-verified).
+- **S2/S3** — forced-spawn `shouldRepairMissingBrowserEvidence` / `…MissingProductSignalBrowserEvidence`
+  (inline natural-finish :748/:776) via `onRepairRound` + the new `consumesRound` flag. Re-arms a
+  budget-consuming `sessions_spawn` round. **Use the `{name}` toolChoice form** (the engine adapter maps
+  `{name}`→`{type:"tool",name}`), NOT the inline `{type,name}` form. Parity test asserts equal
+  `roundCount`/`toolCallCount` (proves the round is charged, not freed).
+- **S4** — `onRoundEmpty` synthetic `sessions_send` injection (inline :567) via the existing hook's
+  `injectedCalls`. Independent.
+- **S5/S6** — forced `permission_result` (`buildForcedPendingApprovalWaitTimeoutPermissionResultCall` +
+  `executeRuntimeForcedToolRound`, inline :1692; and the :388 model-error variant) via
+  `onAfterExecuteContinue`'s no-model-call `forcedToolCalls` mode (+ widen `onModelCallError` for S6).
+- **S7** — the 4 timed-out continuation branches (`shouldContinueTimedOutApprovedBrowserSession` +
+  `…TimedOutSiblingSession` + `shouldRunSupplementalLocalTimeoutProbe` + `findIncompleteApprovedBrowser
+  Session`) via `onAfterExecuteContinue`, in exact inline precedence. **Must land together** (shared
+  guard chains + strict precedence; needs a multi-round timed-out-then-approved fixture).
+- **S8** — `shouldContinueIndependentEvidenceStreams` (inline :1648, `sessions_spawn`) via
+  `onAfterExecuteContinue`. Independent.
+- **S9** — `shouldRepairMissingApprovalGate` (natural-finish :807 + post-execute :1672) **+ port
+  `enforceMissingApprovalGateRepairToolCalls` into the engine `onToolCalls`** (the normalizer + both
+  sites must land in one slice or parity is structurally impossible).
+- **S10** — completed-cascade forced `sessions_spawn` (inline :1881/:1907): teach the `onTerminate`
+  internal completed-repair loop to break out and run a budget-consuming forced round. Hardest; do last.
+
 - **Stage 8** — flip `reactEngine` default to `"engine"`, delete the inline loop, e2e.
+
+Full scoping (per-area inline maps, budget accounting, open questions) is in the workflow result; the
+key open question is the budget rule for `consumesRound` (exclude from BOTH `round--` AND
+`repairRounds`/`MAX_REPAIR_ROUNDS`, bounded only by `maxRounds` + the host repairMarker).
 
 ## Key anchors (grep these; line numbers drift)
 
@@ -274,10 +301,11 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (228)
-# Stage 6 tool-free completed cascade COMPLETE (#502-#512): completed-closeout loop +
-# onRepairRound natural-finish cascade + round-dependent evidence + browser-dims.
-# Next: Stage 7 (forced-spawn sessions_spawn browser repairs + pre-execute tool suppression).
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (229)
+npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (20)
+# Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
+# S1 pre-execute suppression DONE (#513, onSuppressToolCalls hook). Next: S2/S3 forced-spawn
+# browser-evidence via onRepairRound + a new consumesRound flag (see the Stage 7 section).
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 

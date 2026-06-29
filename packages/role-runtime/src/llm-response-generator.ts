@@ -2557,6 +2557,40 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           return results;
         },
+        // Stage 7 S1: pre-execute tool suppression. When the model returns tool
+        // calls on a setup-only "awaiting context" turn, the inline loop drops
+        // them and forces a tool-free round (inline :1010-1034). Mirror that via
+        // onSuppressToolCalls: drop the calls, append the assistant text + the
+        // guidance prompt, and force "none" for the next round (which still
+        // consumes the budget — no round--, matching inline). Idempotent via
+        // ctx.repairMarkers, exactly like inline (the same ledger the Stage 6
+        // cascade uses). Gated on activeToolLoop + calls.length > 0 like inline.
+        onSuppressToolCalls: (calls, state, ctx) => {
+          if (!activeToolLoop || calls.length === 0) {
+            return null;
+          }
+          const repairMarkers = (ctx.repairMarkers ??= []);
+          if (
+            !shouldSuppressToolsForAwaitingContextSetup({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              repairMarkers,
+            })
+          ) {
+            return null;
+          }
+          return {
+            messages: [
+              ...state.messages,
+              { role: "assistant", content: state.lastText },
+              recordRepairPrompt(
+                repairMarkers,
+                buildAwaitingContextSetupNoToolRepairPrompt(packet.taskPrompt),
+              ),
+            ],
+            forceToolChoice: "none",
+          };
+        },
         // Stage 5 PR2d pending-call closeouts: mirror the inline pre-execute
         // closeouts that fire on the round's pending (normalized) tool calls, in
         // inline precedence order. Each builds the inline reasonLines + closeout
