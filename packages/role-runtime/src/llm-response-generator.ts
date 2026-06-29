@@ -2846,6 +2846,56 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           return null;
         },
+        // Stage 7 S4: empty-round session-continuation injection. When the model
+        // returns no tool calls but a pending continuation directive names an unsent
+        // session, the inline loop injects a synthetic sessions_send to continue it
+        // (inline :567-587). Mirror that via onRoundEmpty's injectedCalls. The
+        // directive is recomputed here (the engine doesn't run the inline tool-call
+        // normalization pipeline): the per-round contextual directive ?? the base
+        // directive — matching inline :449-462. The base is findSessionContinuation
+        // Directive(taskPrompt) (inline :261, a pure function of the task), recomputed
+        // rather than threaded since it is deterministic. Returning "terminate" (no
+        // injection) falls through to onRepairRound, so the inject pre-empts the
+        // S2/S3 forced-spawn exactly as inline :567 pre-empts :748. (The sessions_list
+        // lookup branch at inline :588-605 is a later sub-slice.)
+        onRoundEmpty: (state) => {
+          if (!activeToolLoop) {
+            return "terminate";
+          }
+          const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
+            state.messages,
+          );
+          const continuationContext = buildContinuationDirectiveContext(
+            packet.taskPrompt,
+            state.messages,
+          );
+          const contextualDirective = !probePending
+            ? findSessionContinuationDirective(continuationContext)
+            : null;
+          const directive = probePending
+            ? null
+            : (contextualDirective ??
+              findSessionContinuationDirective(packet.taskPrompt));
+          if (
+            directive &&
+            !hasExecutedSessionsSend(toolTrace, directive.sessionKey) &&
+            hasToolDefinition(initialGatewayInput.tools, "sessions_send")
+          ) {
+            return {
+              injectedCalls: [
+                {
+                  id: `runtime-continuation-${state.round + 1}`,
+                  name: "sessions_send",
+                  input: {
+                    session_key: directive.sessionKey,
+                    message: directive.messageHint,
+                  },
+                },
+              ],
+            };
+          }
+          return "terminate";
+        },
         // Stage 6: post-synthesis repairs on the engine's tool-free candidate
         // answer (the natural-finish path), mirroring the inline tool-free cascade
         // (:1110-1272). Each fires only when its shouldRepair* predicate detects a
@@ -3610,6 +3660,29 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             progress: [],
           };
           toolTrace.push(currentRound);
+        }
+      } else if (event.type === "tool_started") {
+        // Injected-round support (onRoundEmpty, Stage 7 S4): when the host injects
+        // calls on an empty round, that round's model_response carried the model's
+        // (empty) calls, so no round was opened above. Open one from the first
+        // tool_started of a round the model_response didn't record — matching the
+        // inline path which pushes an injected round unconditionally (:1510-1520).
+        // No-op for normal rounds: their round is already open with these calls.
+        if (!currentRound || currentRound.round !== event.round + 1) {
+          currentRound = {
+            round: event.round + 1,
+            calls: [],
+            results: [],
+            progress: [],
+          };
+          toolTrace.push(currentRound);
+        }
+        if (!currentRound.calls.some((existing) => existing.id === event.call.id)) {
+          currentRound.calls.push({
+            id: event.call.id,
+            name: event.call.name,
+            input: event.call.input,
+          });
         }
       } else if (event.type === "tool_result" && currentRound) {
         currentRound.results.push({

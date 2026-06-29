@@ -15,8 +15,8 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **231-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 34 cutover parity tests) — must stay green with **zero
+- Every slice is gated by the **232-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 35 cutover parity tests) — must stay green with **zero
   assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (22 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
@@ -257,8 +257,18 @@ host-authored forced rounds (permission_result). Plus wiring two already-defined
   before maxRounds) — the `consumesRound` mutation guard is a dedicated **agent-core unit test**
   (maxRounds=4, greedy model → exactly 3 charged tool rounds; defeating the guard → 4). All
   mutation-verified.
-- **S4** — `onRoundEmpty` synthetic `sessions_send` injection (inline :567) via the existing hook's
-  `injectedCalls`. Independent.
+- **S4 ✅ #515** — `onRoundEmpty` synthetic `sessions_send` injection (inline :567) via the existing
+  hook's `injectedCalls`. The engine recomputes the continuation directive in the hook (contextual ??
+  base `findSessionContinuationDirective(taskPrompt)`, inline :449-462) since `runViaReActEngine` lacks
+  the inline normalization pipeline. **Two role-runtime changes** (no agent-core): the hook AND a
+  host event-consumer fix — the injected round's `model_response` carries the model's *empty* calls
+  (the injection happens after the emit), so the host now opens a `toolTrace` round from the first
+  `tool_started` of a round `model_response` didn't record (no-op for normal rounds). Without it the
+  engine reports 0 tool rounds and the `hasExecutedSessionsSend` re-injection guard breaks (audit
+  catch). Parity test: empty round → injected `sessions_send` → completed closeout; the closeout
+  `toolCallCount`/`roundCount === 1` assertions pin the event-consumer fix. Both fixes mutation-verified.
+  The `sessions_list` lookup branch (inline :588-605) is wired-able but deferred (it loops with no crisp
+  closeout to assert).
 - **S5/S6** — forced `permission_result` (`buildForcedPendingApprovalWaitTimeoutPermissionResultCall` +
   `executeRuntimeForcedToolRound`, inline :1692; and the :388 model-error variant) via
   `onAfterExecuteContinue`'s no-model-call `forcedToolCalls` mode (+ widen `onModelCallError` for S6).
@@ -312,12 +322,12 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (231)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (232)
 npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (22)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
 # S1 pre-execute suppression (#513), S2/S3 forced-spawn browser-evidence + consumesRound
-# flag (#514) DONE. Next: S4 — onRoundEmpty synthetic sessions_send injection (inline
-# :567) via the existing onRoundEmpty hook's injectedCalls (see the Stage 7 section).
+# flag (#514), S4 onRoundEmpty sessions_send injection + toolTrace fix (#515) DONE.
+# Next: S5/S6 — forced permission_result via a new onAfterExecuteContinue hook (Stage 7 section).
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 
