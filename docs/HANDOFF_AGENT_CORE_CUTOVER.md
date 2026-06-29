@@ -315,8 +315,9 @@ npx tsc --noEmit -p tsconfig.json                                   # clean
 npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (231)
 npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (22)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
-# S1 pre-execute suppression DONE (#513, onSuppressToolCalls hook). Next: S2/S3 forced-spawn
-# browser-evidence via onRepairRound + a new consumesRound flag (see the Stage 7 section).
+# S1 pre-execute suppression (#513), S2/S3 forced-spawn browser-evidence + consumesRound
+# flag (#514) DONE. Next: S4 — onRoundEmpty synthetic sessions_send injection (inline
+# :567) via the existing onRoundEmpty hook's injectedCalls (see the Stage 7 section).
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 
