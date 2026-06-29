@@ -86,11 +86,12 @@ export interface ReActHooks<Ctx extends ToolContext> {
   /** Suppress the round's pending tool calls BEFORE execution: drop them, inject
    *  guidance, and force the next round. Return a directive (rewritten messages +
    *  optional forced tool choice) to suppress + re-prompt, or null to proceed to
-   *  execution. Runs after onToolCalls and before onToolCallsClose. Unlike
-   *  onRepairRound this does NOT cancel the round budget (round--): the dropped
-   *  round still counts, matching an inline loop that drops the calls and
-   *  `continue`s a normal round. The host guards idempotency (e.g. via
-   *  `ctx.repairMarkers`) so it converges. */
+   *  execution. Runs AFTER `onToolCallsClose` (so a host's pre-execute closeouts
+   *  win over the drop) and before the `model_response` emit. Unlike onRepairRound
+   *  this does NOT cancel the round budget (round--): the dropped round still
+   *  counts, matching an inline loop that drops the calls and `continue`s a normal
+   *  round. The host guards idempotency (e.g. via `ctx.repairMarkers`) so it
+   *  converges. */
   onSuppressToolCalls?(
     calls: LLMToolCall[],
     state: ReActState,
