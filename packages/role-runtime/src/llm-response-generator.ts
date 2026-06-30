@@ -4488,6 +4488,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             this.clock.now(),
           ),
         );
+        // Stage 8B (native-tool-message persistence): persist the pending/"started"
+        // native tool message BEFORE the tool runs, mirroring inline's executeToolCalls
+        // (which persists on the "started" progress with forceBlocking). The agent yields
+        // every tool_started before runToolBatch executes, so this lands while the tool is
+        // still running. forceBlocking keeps it synchronous so observers see the pending
+        // state even when deferToolObservability is set.
+        await this.persistNativeToolTraceSafely(activation, toolTrace, {
+          forceBlocking: true,
+        });
       } else if (event.type === "tool_result" && currentRound) {
         currentRound.results.push({
           toolCallId: event.result.toolCallId,
@@ -4537,6 +4546,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             this.clock.now(),
           ),
         );
+        // Stage 8B (native-tool-message persistence): persist the completed native tool
+        // message (assistant toolStatus + the tool-result message) after the round's
+        // result lands, mirroring inline's executeToolCalls onResult persistence.
+        await this.persistNativeToolTraceSafely(activation, toolTrace);
       } else if (event.type === "final") {
         finalText = event.text;
       }
