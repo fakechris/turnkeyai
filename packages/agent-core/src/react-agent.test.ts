@@ -188,6 +188,27 @@ test("onAfterExecuteContinue runs another round and pre-empts the onAfterExecute
   assert.equal(model.seen[1]!.messageCount, 4); // user + assistant-toolcall + tool-result + injected
 });
 
+test("onAfterExecuteContinue forceToolChoice is carried into the next model call", async () => {
+  // A re-prompt continuation (append a message + force a tool choice, like an inline
+  // timeout-continuation that forces sessions_send) carries forceToolChoice into the
+  // next round's model call.
+  const model = scriptedModel([
+    { text: "go", toolCalls: [call("c1", "search")] },
+    { text: "done", stopReason: "end_turn" },
+  ]);
+  let continued = 0;
+  await run(model, {
+    onAfterExecuteContinue: (_results, state) => {
+      if (continued > 0) return null;
+      continued += 1;
+      return { messages: [...state.messages, { role: "user", content: "continue via the forced tool" }], forceToolChoice: { name: "sessions_send" } };
+    },
+  });
+  assert.equal(model.seen.length, 2);
+  assert.deepEqual(model.seen[1]!.toolChoice, { name: "sessions_send" }); // carried into round 1
+  assert.equal(model.seen[1]!.hadTools, true); // a real (non-"none") forced round keeps tool schemas
+});
+
 test("onAfterExecuteContinue returning null falls through to onAfterExecute", async () => {
   const model = scriptedModel([{ text: "go", toolCalls: [call("c1", "search")] }, { text: "unreached" }]);
   const events = await run(model, {

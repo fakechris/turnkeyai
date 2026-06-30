@@ -15,9 +15,9 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **236-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 39 cutover parity tests) — must stay green with **zero
-  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (26 tests).
+- Every slice is gated by the **238-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 41 cutover parity tests) — must stay green with **zero
+  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (27 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
 single tool round, order-dependent serialization, throwing-tool isolation, **`round_limit`**
@@ -286,10 +286,27 @@ host-authored forced rounds (permission_result). Plus wiring two already-defined
   a completed session (which would pre-empt via S5 / the completed closeout). agent-core unit tests:
   `onAfterExecuteContinue` (pre-empts + null fall-through) and `onModelCallError` `{ messages }` (+ async
   await). All mutation-verified.
-- **S7** — the 4 timed-out continuation branches (`shouldContinueTimedOutApprovedBrowserSession` +
-  `…TimedOutSiblingSession` + `shouldRunSupplementalLocalTimeoutProbe` + `findIncompleteApprovedBrowser
-  Session`) via `onAfterExecuteContinue`, in exact inline precedence. **Must land together** (shared
-  guard chains + strict precedence; needs a multi-round timed-out-then-approved fixture).
+- **S7 ✅ #517** — the 4 post-execute continuation branches (`shouldContinueTimedOutApprovedBrowser
+  Session` + `…TimedOutSiblingSession` + `shouldRunSupplementalLocalTimeoutProbe` + `findIncomplete
+  ApprovedBrowserSession`) via `onAfterExecuteContinue`, in exact inline precedence (:1562-1646, all
+  BEFORE the S5 forced permission_result). **Mechanism widened**: `onAfterExecuteContinue` now also
+  returns an optional `forceToolChoice` carried into the next model call (reusing react-agent's
+  `pendingForceToolChoice`), so a re-prompt branch appends a continuation prompt + forces sessions_send/
+  sessions_spawn — a normal budget-consuming round (no `round--`), exactly like the inline
+  `continue` after `nextToolChoice = {...}`. **Also closes the PR2c-deferred completed-branch
+  recovered-timeout visibility gap** (engine `completed_sub_agent_final` now appends the recovered-
+  timeout / timeout-continuation visibility before redaction, inline :1796-1814) — the timeout-resume
+  branches converge a timed-out session into a completed one, so this is required for their parity.
+  Parity+mutation verified: **branch 1** (timed-out approved browser → sessions_send) and **branch 4**
+  (incomplete approved browser → sessions_send) — covering both continuation shapes (timeoutSignal-gated
+  and completedSession-gated). agent-core: `onAfterExecuteContinue` forceToolChoice carry test.
+  **Branches 2 & 3 fixtures DEFERRED** (the implementation lands faithful to inline; the dedicated
+  parity fixtures are blocked by not-yet-cut-over normalizers the engine doesn't run): branch 2's
+  coverage-critical task triggers the deferred `sessions_list` continuation-lookup normalization (inline
+  rewrites the round-0 `sessions_spawn` → `sessions_list`); branch 3's bounded-timeout source-check task
+  triggers `normalizeBoundedTimeoutSourceSpawnAgents`. Both unblock when S8/S9 + the sessions_list lookup
+  sub-slice land. Their mechanism (timeout→sessions_send / completedSession→sessions_spawn forceToolChoice)
+  is already verified by branches 1/4 + S2/S3's forced sessions_spawn.
 - **S8** — `shouldContinueIndependentEvidenceStreams` (inline :1648, `sessions_spawn`) via
   `onAfterExecuteContinue`. Independent.
 - **S9** — `shouldRepairMissingApprovalGate` (natural-finish :807 + post-execute :1672) **+ port
@@ -336,12 +353,12 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (236)
-npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (26)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (238)
+npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (27)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
 # S1 pre-execute suppression (#513), S2/S3 forced-spawn browser-evidence + consumesRound
 # flag (#514), S4 onRoundEmpty sessions_send injection + toolTrace fix (#515) DONE.
-# Next: S7 — the 4 timed-out continuation branches via onAfterExecuteContinue (must land together).
+# Next: S8 — shouldContinueIndependentEvidenceStreams via onAfterExecuteContinue (independent).
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 

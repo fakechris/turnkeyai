@@ -24006,3 +24006,145 @@ test("cutover parity: a model-call error with a pending approval forces permissi
   assert.equal(inlineCloseout?.reason, "tool_evidence_fallback");
   assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
 });
+
+test("cutover parity: a timed-out approved browser session is continued via sessions_send before the timeout closeout, identically on both paths", async () => {
+  // Stage 7 S7 branch 1 (shouldContinueTimedOutApprovedBrowserSession, inline :1562).
+  // An already-approved browser action times out before verification; both paths
+  // append the approved-browser timeout-continuation prompt and force a sessions_send
+  // round to resume it — BEFORE the sub_agent_timeout closeout — then close out from
+  // the resumed completed evidence.
+  const taskPrompt = [
+    "Operator decision recorded for approval ap-1.",
+    "Action: browser.form.submit.",
+    "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied.",
+    "Do not call permission tools again. Continue from the approved point: perform only the approved scoped action now and verify the result before the final answer.",
+  ].join("\n");
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const sessionKey = "worker:browser:approved-submit:toolu-submit";
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "Spawning the approved browser action.", toolCalls: [{ id: "toolu-submit", name: "sessions_spawn", input: { agent_id: "browser", task: "Perform the already-approved dry-run browser.form.submit and verify the post-submit page." } }] };
+      }
+      if (calls === 2) {
+        return { ...base, text: "Continuing the timed-out approved session.", toolCalls: [{ id: "toolu-continue", name: "sessions_send", input: { session_key: sessionKey, message: "Continue the approved browser.form.submit action and verify the post-submit page state." } }] };
+      }
+      return { ...base, text: "Approved browser.form.submit completed. Post-submit evidence: TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally.", toolCalls: [] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "sessions_spawn", description: "spawn", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" } } } },
+          { name: "sessions_send", description: "continue", inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "sessions_send") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-approved-submit", session_key: sessionKey, agent_id: "browser", status: "completed", tool_chain: ["browser_act"], result: "Approved dry-run submit completed.", final_content: "Approved browser.form.submit completed. TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally.", payload: { mode: "llm_sub_agent", workerType: "browser", content: "Approved browser.form.submit completed. TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally." } }) };
+        }
+        // sessions_spawn → timeout (isError) so findSubAgentToolTimeout fires.
+        return { toolCallId: input.call.id, toolName: input.call.name, isError: true, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-approved-submit", session_key: sessionKey, agent_id: "browser", status: "timeout", timeout_seconds: 45, evidence_available: true, evidence_summary: "Execution paused before completion. Reason: sessions_spawn timed out after 45s.", result: "Sub-agent session timed out after 45s before post-submit verification.", final_content: null }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // both continued the timed-out session via sessions_send (the forced branch).
+  assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
+  assert.deepEqual(engine.executed.map((c) => c.name), ["sessions_spawn", "sessions_send"]);
+  assert.equal(engine.executed[1]?.input.session_key, sessionKey);
+  const engineCloseout = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
+  assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
+});
+
+test("cutover parity: an incomplete approved browser session is continued via sessions_send before the completed closeout, identically on both paths", async () => {
+  // Stage 7 S7 branch 4 (findIncompleteApprovedBrowserSession, inline :1626). An
+  // already-applied approval delegated a browser action, but the completed session
+  // only inspected the form (no submission ran). Both paths append the incomplete-
+  // approved-browser continuation prompt and force a sessions_send round to finish the
+  // approved action before the completed_sub_agent_final closeout.
+  const taskPrompt = [
+    "Operator decision recorded for approval ap-1.",
+    "Action: browser.form.submit.",
+    "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied.",
+    "Do not call permission tools again. Continue from the approved point: perform only the approved scoped action now and verify the result before the final answer.",
+  ].join("\n");
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const sessionKey = "worker:browser:approved-submit:toolu-submit";
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "Spawning the approved browser action.", toolCalls: [{ id: "toolu-submit", name: "sessions_spawn", input: { agent_id: "browser", task: "Perform the already-approved dry-run browser.form.submit and verify the post-submit page." } }] };
+      }
+      if (calls === 2) {
+        return { ...base, text: "Finishing the approved action.", toolCalls: [{ id: "toolu-continue", name: "sessions_send", input: { session_key: sessionKey, message: "Complete the approved browser.form.submit and verify the post-submit page state." } }] };
+      }
+      return { ...base, text: "Approved browser.form.submit completed. Post-submit evidence: TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally.", toolCalls: [] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "sessions_spawn", description: "spawn", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" } } } },
+          { name: "sessions_send", description: "continue", inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "sessions_send") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-approved-submit", session_key: sessionKey, agent_id: "browser", status: "completed", tool_chain: ["browser_act"], result: "Approved dry-run submit completed.", final_content: "Approved browser.form.submit completed. TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally.", payload: { mode: "llm_sub_agent", workerType: "browser", content: "Approved browser.form.submit completed. TURNKEYAI_APPROVAL_FIXTURE_OK submitted locally." } }) };
+        }
+        // sessions_spawn → a COMPLETED browser session that only inspected the form:
+        // the approved action is incomplete (matches the incomplete-action patterns).
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-approved-submit", session_key: sessionKey, agent_id: "browser", status: "completed", tool_chain: ["browser_snapshot"], result: "Pre-approval inspection: the approval form rendered. No form submission ran.", final_content: "Pre-approval inspection: the approval form rendered with TURNKEYAI_APPROVAL_FIXTURE_OK. No form submission ran; the approved action was not executed.", payload: { mode: "llm_sub_agent", workerType: "browser", content: "Pre-approval inspection: the approval form rendered with TURNKEYAI_APPROVAL_FIXTURE_OK. No form submission ran; the approved action was not executed." } }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
+  assert.deepEqual(engine.executed.map((c) => c.name), ["sessions_spawn", "sessions_send"]);
+  assert.equal(engine.executed[1]?.input.session_key, sessionKey);
+  const engineCloseout2 = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout2 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout2?.reason, inlineCloseout2?.reason);
+  assert.equal(engineCloseout2?.roundCount, inlineCloseout2?.roundCount);
+});

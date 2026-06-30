@@ -279,6 +279,12 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             const cont = await hooks.onAfterExecuteContinue(results, state, ctx);
             if (cont) {
               state.messages = cont.messages;
+              // A re-prompt continuation carries a forced tool choice into the next
+              // model call (a normal budget-consuming round, like a suppression — no
+              // round--); a host-executed forced round leaves it unset (auto round).
+              if (cont.forceToolChoice !== undefined) {
+                pendingForceToolChoice = cont.forceToolChoice;
+              }
               continue;
             }
           }
