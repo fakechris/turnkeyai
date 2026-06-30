@@ -24668,3 +24668,75 @@ test("cutover parity: when an S10 re-armed browser round times out, the later su
   assert.equal(engineCloseout9?.reason, inlineCloseout9?.reason);
   assert.equal(engineCloseout9?.reason, "sub_agent_timeout");
 });
+
+test("cutover parity (8B): the pending-approval-wait-timeout-check repair forces permission_result on a tool-free candidate, identically on both paths", async () => {
+  // Stage 8B slice 1 — shouldRepairPendingApprovalWaitTimeoutCheck (inline :833). An
+  // approval-wait-timeout task queried approval (latest permission tool = permission_query)
+  // then the model returns a tool-free "still pending" candidate. Both paths re-arm a
+  // forced permission_result round (consumesRound) to observe the decision before
+  // finalizing — inline at :833, engine via the ported onRepairRound block. The model
+  // emits permission_query DIRECTLY (no approval-gated-spawn normalizer needed), so this
+  // isolates the repair from the T4 normalizer cluster (slice 1b).
+  const taskPrompt = [
+    "Open the local approval form and prepare a safe dry-run form submission for operator review.",
+    "Request approval before applying the action.",
+    "If the operator decision remains pending after the bounded wait, close out honestly as an approval wait-timeout and do not perform the submission.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const completeCloseout = "The approval is still pending after the bounded wait timeout. The action was not submitted and no side effects were performed. Residual risk: the submit step remains unverified because pending approval remains. Next action: ask the operator to approve or deny, then re-run the attempt.";
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      const allText = input.messages.map((m) => readToolContent(m.content)).join("\n");
+      const hasResult = allText.includes("approval_wait_timeout");
+      const hasQuery = allText.includes("\"status\":\"pending\"") && allText.includes("ap-1");
+      const tc = input.toolChoice as { name?: string } | string | undefined;
+      const forcedResult = typeof tc === "object" && tc?.name === "permission_result";
+      if (hasResult) {
+        return { ...base, toolCalls: [], text: completeCloseout }; // decision observed → finalize
+      }
+      if (forcedResult) {
+        return { ...base, text: "Checking the pending approval.", toolCalls: [{ id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } }] };
+      }
+      if (hasQuery) {
+        // round 1: query done, not forced → a tool-free premature "pending" answer that
+        // triggers the pending-approval-wait-timeout-check repair.
+        return { ...base, toolCalls: [], text: "The approval request is pending; I'll stop here." };
+      }
+      // round 0: request approval directly.
+      return { ...base, text: "Requesting approval.", toolCalls: [{ id: "toolu-query", name: "permission_query", input: { action: "form.submit" } }] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+          { name: "permission_result", description: "read approval", inputSchema: { type: "object", properties: { approval_id: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "permission_query") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "pending", approval_id: "ap-1" }) };
+        }
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "approval_wait_timeout", approval_id: "ap-1" }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the repair forced permission_result after the pending query on BOTH paths.
+  assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
+  assert.deepEqual(engine.executed.map((c) => c.name), ["permission_query", "permission_result"]);
+  const engineCloseout10 = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  const inlineCloseout10 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  assert.equal(engineCloseout10?.reason, inlineCloseout10?.reason);
+});

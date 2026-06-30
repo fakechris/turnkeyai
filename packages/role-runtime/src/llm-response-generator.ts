@@ -3315,6 +3315,146 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               consumesRound: true,
             };
           }
+          // Stage 8B slice 1: the approval-wait-timeout repair family (inline :833-1009),
+          // ported in inline precedence — AFTER the S9 missing-approval-gate repair and
+          // BEFORE table-columns. Each mirrors an inline natural-finish block: append the
+          // candidate + the recorded repair prompt, then either re-arm a forced tool
+          // round (permission_result / sessions_spawn → consumesRound) or a tool-free
+          // re-synthesis ("none"). Marker idempotency (each build*RepairPrompt is recorded)
+          // bounds them. The hard fallback closeout (shouldForceApprovalWaitTimeoutLocal
+          // CloseoutAfterFailedRepair, inline :955-983) is NOT here — it forces a
+          // tool_evidence_fallback closeout, which onRepairRound cannot express; it lands
+          // in a follow-up slice with the closeout mechanism.
+          if (
+            shouldRepairPendingApprovalWaitTimeoutCheck({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
+                ),
+              ],
+              forceToolChoice: { name: "permission_result" },
+              consumesRound: true,
+            };
+          }
+          if (
+            shouldRepairPrematurePendingApprovalFinal({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildPrematurePendingApprovalRepairPrompt(),
+                ),
+              ],
+              forceToolChoice: { name: "permission_result" },
+              consumesRound: true,
+            };
+          }
+          if (
+            shouldRepairStalePendingApproval({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildStalePendingApprovalRepairPrompt(),
+                ),
+              ],
+              forceToolChoice: { name: "sessions_spawn" },
+              consumesRound: true,
+            };
+          }
+          if (
+            shouldRepairStaleDeniedApproval({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildStaleDeniedApprovalRepairPrompt(),
+                ),
+              ],
+              forceToolChoice: "none",
+            };
+          }
+          if (
+            shouldRepairApprovalWaitTimeoutCloseout({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildApprovalWaitTimeoutCloseoutRepairPrompt(),
+                ),
+              ],
+              forceToolChoice: "none",
+            };
+          }
+          if (
+            shouldRepairIncompleteApprovedBrowserAction({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildIncompleteApprovedBrowserActionRepairPrompt(),
+                ),
+              ],
+              forceToolChoice: { name: "sessions_spawn" },
+              consumesRound: true,
+            };
+          }
           if (
             shouldRepairMissingRequestedTableColumns({
               activation,
