@@ -24740,3 +24740,174 @@ test("cutover parity (8B): the pending-approval-wait-timeout-check repair forces
   const inlineCloseout10 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
   assert.equal(engineCloseout10?.reason, inlineCloseout10?.reason);
 });
+
+test("cutover parity (8B-1b): a premature mutating browser spawn is gated into a permission_query, identically on both paths", async () => {
+  // Stage 8B slice 1b — normalizeApprovalGatedBrowserSpawnCalls (inline :508), now in the
+  // engine onToolCalls. The model prematurely spawns a mutating approval-gated browser
+  // action before any approval; both paths rewrite it PRE-execute into a pre-approval
+  // inspection spawn + a permission_query, so no mutating browser session runs ungated.
+  const taskPrompt = [
+    "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+    "Actually carry the safe local dry-run through the approval gate; do not stop at a plan.",
+    "Request approval before applying the browser action, then report what was approved and what evidence the page showed.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "Spawning the browser to submit.", toolCalls: [{ id: "toolu-browser-too-early", name: "sessions_spawn", input: { agent_id: "browser", label: "Inspect local approval form", task: "Open http://127.0.0.1:56633/approval-form and submit the dry-run form." } }] };
+      }
+      return { ...base, toolCalls: [], text: "Permission request is pending operator decision." };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+          { name: "sessions_spawn", description: "spawn browser", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" }, label: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "sessions_spawn") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", status: "completed", agent_id: "browser", result: "Rendered approval form observed. Marker TURNKEYAI_APPROVAL_FIXTURE_OK visible. No form submission ran.", evidence_summary: "Final URL: http://127.0.0.1:56633/approval-form\nVisible marker: TURNKEYAI_APPROVAL_FIXTURE_OK." }) };
+        }
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "pending", approval_id: "ap-1" }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 2 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the premature mutating browser spawn was gated into a permission_query on BOTH paths
+  // (the original submit-the-form spawn never ran ungated).
+  assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
+  assert.ok(engine.executed.some((c) => c.name === "permission_query"));
+  assert.ok(!engine.executed.some((c) => c.name === "sessions_spawn" && /submit the dry-run form/i.test(String(c.input.task))));
+});
+
+test("cutover parity (8B-1b): a read-only permission_query is suppressed and re-prompted tool-free, identically on both paths", async () => {
+  // Stage 8B slice 1b — shouldSuppressReadOnlyPermissionQueryToolCalls (inline :518), now
+  // in the engine onSuppressToolCalls. A read-only inspection task that disclaims mutation
+  // but emits a permission_query has the call dropped + a tool-free re-prompt; the approval
+  // flow never runs (the executor throws if permission_query reaches execution).
+  const taskPrompt = [
+    "Use the completed browser evidence from the product signal dashboard.",
+    "This is a read-only inspection: open, snapshot, screenshot, and scroll only.",
+    "Do not submit any form or mutate browser state.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    let calls = 0;
+    let executedPermissionQuery = false;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "Requesting approval.", toolCalls: [{ id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit", level: "approval", scope: "mutate", worker_kind: "browser", rationale: "Applies an approval-gated browser form submission in an isolated local dry-run page.", payload: { url: "http://127.0.0.1:4100/app#/product-signals" } } }] };
+      }
+      return { ...base, toolCalls: [], text: "Completed from existing browser evidence: Stuck missions is 6, weak answer rate is 24%, and no form submission or browser mutation ran." };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [{ name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } }];
+      },
+      async execute() {
+        executedPermissionQuery = true;
+        throw new Error("read-only permission query must not enter native approval flow");
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executedPermissionQuery };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  // suppressed (never executed) on BOTH paths, and the same evidence-based answer.
+  assert.equal(engine.executedPermissionQuery, false);
+  assert.equal(inline.executedPermissionQuery, false);
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.match(engine.result.content, /no form submission or browser mutation ran/i);
+});
+
+test("cutover parity (8B-1b): the read-only suppression pre-empts a same-round wall_clock_budget closeout, identically on both paths", async () => {
+  // Stage 8B slice 1b precedence (codex #523 P2). The read-only suppression runs BEFORE
+  // the pending-call closeouts inline (:518 < the wall_clock check), so a read-only
+  // permission_query emitted on a round where the wall-clock budget is already exhausted
+  // is SUPPRESSED, not closed out. The engine pre-empts onToolCallsClose when the read-
+  // only suppression applies, so both paths suppress + re-prompt tool-free rather than
+  // finalizing with wall_clock_budget.
+  const taskPrompt = [
+    "Use the completed browser evidence from the product signal dashboard.",
+    "This is a read-only inspection: open, snapshot, screenshot, and scroll only.",
+    "Do not submit any form or mutate browser state.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    let calls = 0;
+    let now = 0;
+    let executedPermissionQuery = false;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        // round 0: a neutral tool round that burns the wall-clock budget.
+        return { ...base, text: "Gathering evidence.", toolCalls: [{ id: "toolu-note", name: "record_note", input: { note: "checked" } }] };
+      }
+      if (calls === 2) {
+        // round 1: a read-only permission_query while the budget is exhausted — must be
+        // suppressed (pre-empts wall_clock_budget), not closed out.
+        return { ...base, text: "Requesting approval.", toolCalls: [{ id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit", scope: "mutate", worker_kind: "browser" } }] };
+      }
+      return { ...base, toolCalls: [], text: "Completed from existing browser evidence: no form submission or browser mutation ran." };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "record_note", description: "record", inputSchema: { type: "object", properties: { note: { type: "string" } } } },
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        if (input.call.name === "permission_query") {
+          executedPermissionQuery = true;
+          throw new Error("read-only permission query must not enter native approval flow");
+        }
+        now = 200; // past the 100ms budget
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ ok: true }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128, maxWallClockMs: 100 },
+      clock: { now: () => now },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executedPermissionQuery };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  // suppressed on BOTH paths despite the exhausted budget; the answer is the same, and
+  // the closeout is NOT wall_clock_budget.
+  assert.equal(engine.executedPermissionQuery, false);
+  assert.equal(inline.executedPermissionQuery, false);
+  assert.equal(engine.result.content, inline.result.content);
+  const engineCloseout = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  const inlineCloseout = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
+  assert.notEqual(engineCloseout?.reason, "wall_clock_budget");
+});
