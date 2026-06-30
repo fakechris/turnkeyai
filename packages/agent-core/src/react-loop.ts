@@ -71,9 +71,9 @@ export interface ReActState {
  *  - normalization        → onToolCalls (+ onRoundMessages for suppress-and-retry)
  *  - pre-execute suppress → onSuppressToolCalls (drop calls + re-prompt a normal round)
  *  - termination/closeout → terminationPredicates + onTerminate
- *  - repair/recovery      → onRepairRound (re-synthesize) + onModelCallError
- *  - approval/permission  → filterTools + onToolCalls + onRoundMessages + onBeforeExecute
- *  - session-continuation → onToolCalls + onRoundEmpty + onAfterExecute
+ *  - repair/recovery      → onRepairRound (re-synthesize) + onModelCallError (forced round / fallback)
+ *  - approval/permission  → filterTools + onToolCalls + onRoundMessages + onBeforeExecute + onAfterExecuteContinue
+ *  - session-continuation → onToolCalls + onRoundEmpty + onAfterExecuteContinue + onAfterExecute
  *  - finalization         → onFinalize
  *  - execution/budget     → onBeforeExecute + terminationPredicates
  */
@@ -87,8 +87,20 @@ export interface ReActHooks<Ctx extends ToolContext> {
     round: number,
     ctx: Ctx
   ): { messages: LLMMessage[]; forceToolChoice?: ReActToolChoice };
-  /** Recover from a model-call error: return a terminal synthesis or rethrow. */
-  onModelCallError?(error: unknown, state: ReActState, ctx: Ctx): ReActSynthesis | "rethrow";
+  /** Recover from a model-call error. Return a terminal synthesis (finalize with
+   *  `closeoutReason: "model_call_error"`), `"rethrow"` to propagate, or a
+   *  `{ messages }` continuation to adopt rewritten messages and run another round
+   *  (e.g. a host-authored forced tool round executed inside the hook before the
+   *  fallback synthesis). May be async. */
+  onModelCallError?(
+    error: unknown,
+    state: ReActState,
+    ctx: Ctx
+  ):
+    | ReActSynthesis
+    | "rethrow"
+    | { messages: LLMMessage[] }
+    | Promise<ReActSynthesis | "rethrow" | { messages: LLMMessage[] }>;
   /** Normalize/rewrite the requested tool calls before execution. */
   onToolCalls?(calls: LLMToolCall[], round: number, ctx: Ctx): LLMToolCall[];
   /** Suppress the round's pending tool calls BEFORE execution: drop them, inject
@@ -142,6 +154,20 @@ export interface ReActHooks<Ctx extends ToolContext> {
     runOne: (call: LLMToolCall) => Promise<ToolResult>,
     ctx: Ctx
   ): Promise<ToolResult[]>;
+  /** After a round executes and its messages are appended, optionally run a
+   *  host-authored CONTINUATION instead of finalizing: return rewritten messages to
+   *  adopt and run another round, or null to fall through to onAfterExecute. The
+   *  host executes any forced tool round itself (inside the hook) and returns the
+   *  resulting messages; the engine just adopts them and continues (round++), so the
+   *  forced round is bounded by `maxRounds`. Runs BEFORE onAfterExecute so a
+   *  post-execute continuation (e.g. a forced `permission_result` check) pre-empts a
+   *  terminal closeout the results would otherwise trigger. May be async. The host
+   *  guards idempotency (e.g. via the trace it inspects) so this converges. */
+  onAfterExecuteContinue?(
+    results: ToolResult[],
+    state: ReActState,
+    ctx: Ctx
+  ): Promise<{ messages: LLMMessage[] } | null> | { messages: LLMMessage[] } | null;
   /** Inspect results after a round; return a closeout reason to stop, or null. */
   onAfterExecute?(results: ToolResult[], state: ReActState, ctx: Ctx): string | null;
   /** Ordered closeout predicates checked each round (round/budget/cap closeouts). */

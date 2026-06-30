@@ -23804,3 +23804,205 @@ test("cutover parity: an empty round with pseudo tool-call markup still injects 
   assert.equal(engineCloseout?.toolCallCount, 1);
   assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
 });
+
+test("cutover parity: forced permission_result before a completed-session closeout is identical between inline and engine paths", async () => {
+  // Stage 7 S5. A round completes a delegated session for an approval-wait-timeout
+  // task whose latest permission step is a still-pending permission_query. Both paths
+  // run a forced permission_result round (host-authored, no model call) to observe the
+  // operator decision BEFORE the completed-session closeout — inline at :1691, engine
+  // via the new onAfterExecuteContinue hook. The permission_result reports
+  // approval_wait_timeout, so both converge on the same closeout from that evidence.
+  const taskPrompt = [
+    "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+    "Request approval before applying the browser action.",
+    "If the operator decision remains pending after the bounded wait, close out honestly as an approval wait-timeout and do not perform the form submission.",
+  ].join("\n");
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const completedSessionContent = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-approval-inspect",
+    session_key: "worker:explore:task-approval-inspect:toolu-spawn",
+    agent_id: "explore",
+    status: "completed",
+    tool_chain: ["explore"],
+    result:
+      "Rendered approval form observed. Marker TURNKEYAI_APPROVAL_FIXTURE_OK visible. Submit control present. No form submission ran.",
+    final_content:
+      "Inspect local approval form: rendered approval form observed. Marker TURNKEYAI_APPROVAL_FIXTURE_OK visible. Submit control present. No form submission ran.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "explore",
+      content:
+        "Inspect local approval form: rendered approval form observed. Marker TURNKEYAI_APPROVAL_FIXTURE_OK visible. Submit control present. No form submission ran.",
+    },
+  });
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        // round 0: spawn a completed (non-browser) session AND query a still-pending
+        // approval — the model emits both directly (no normalization pipeline needed).
+        return {
+          ...base,
+          text: "Spawning evidence and querying approval.",
+          toolCalls: [
+            { id: "toolu-spawn", name: "sessions_spawn", input: { agent_id: "explore", task: "inspect approval form" } },
+            { id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit" } },
+          ],
+        };
+      }
+      // round 1 (after the forced permission_result round): a tool-free closeout that
+      // is ALREADY a complete approval-wait-timeout closeout, so the inline-only
+      // approval-wait-timeout repair (shouldRepairApprovalWaitTimeoutCloseout, a
+      // natural-finish repair not yet cut over) does NOT fire on either path — isolating
+      // S5's forced permission_result as the only behavioral difference under test.
+      return {
+        ...base,
+        text: "The approval is still pending after the bounded wait timeout. The form was not submitted and no side effects were performed. Residual risk: the submit step remains unverified because pending approval remains. Next action: ask the operator to approve or deny, then re-run the attempt.",
+        toolCalls: [],
+      };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "sessions_spawn", description: "spawn", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" } } } },
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+          { name: "permission_result", description: "read approval", inputSchema: { type: "object", properties: { approval_id: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "permission_query") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "pending", approval_id: "ap-1" }) };
+        }
+        if (input.call.name === "permission_result") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "approval_wait_timeout", approval_id: "ap-1" }) };
+        }
+        return { toolCallId: input.call.id, toolName: input.call.name, content: completedSessionContent };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the forced permission_result ran on BOTH paths, with the pending approval_id.
+  const engineNames = engine.executed.map((c) => c.name);
+  const inlineNames = inline.executed.map((c) => c.name);
+  assert.deepEqual(engineNames, inlineNames);
+  assert.ok(engineNames.includes("permission_result"));
+  const enginePR = engine.executed.find((c) => c.name === "permission_result");
+  const inlinePR = inline.executed.find((c) => c.name === "permission_result");
+  assert.equal(enginePR?.input.approval_id, "ap-1");
+  assert.equal(inlinePR?.input.approval_id, "ap-1");
+  // closeout parity (reason + the forced round is counted in BOTH traces).
+  const engineCloseout = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
+  assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
+});
+
+test("cutover parity: a model-call error with a pending approval forces permission_result before the evidence fallback, identically on both paths", async () => {
+  // Stage 7 S6. A tool round queried a still-pending approval; the NEXT model call
+  // then throws. Before the tool_evidence_fallback closeout, both paths run a forced
+  // permission_result round (host-authored, no model call) to observe the operator
+  // decision — inline at :388, engine via the widened onModelCallError { messages }
+  // continuation. The decision is approval_wait_timeout; the following model call also
+  // throws, so both fall back to the same local-evidence closeout (the forced
+  // permission_result is now in the trace, so the check is idempotent — no loop).
+  const taskPrompt = [
+    "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+    "Request approval before applying the browser action.",
+    "If the operator decision remains pending after the bounded wait, close out honestly as an approval wait-timeout and do not perform the form submission.",
+  ].join("\n");
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        // round 0: gather real (non-control-plane) evidence AND query a still-pending
+        // approval. No completed session — so neither the completed-session closeout
+        // nor the S5 post-execute forced check pre-empts the model-error path, and the
+        // search evidence lets the fallback synthesize (permission tools alone are
+        // control-plane and would force a rethrow).
+        return {
+          ...base,
+          text: "Gathering evidence and querying approval.",
+          toolCalls: [
+            { id: "toolu-search", name: "search", input: { query: "approval form status" } },
+            { id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit" } },
+          ],
+        };
+      }
+      // every later model call throws — the forced permission_result round runs once,
+      // then the next throw falls back to the local-evidence closeout.
+      throw new Error("final synthesis provider unavailable");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "search", description: "search", inputSchema: { type: "object", properties: { query: { type: "string" } } } },
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+          { name: "permission_result", description: "read approval", inputSchema: { type: "object", properties: { approval_id: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "search") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ summary: "The local approval form renders with marker TURNKEYAI_APPROVAL_FIXTURE_OK; submit control present; no submission ran." }) };
+        }
+        if (input.call.name === "permission_query") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "pending", approval_id: "ap-1" }) };
+        }
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "approval_wait_timeout", approval_id: "ap-1" }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the forced permission_result ran on BOTH paths, with the pending approval_id.
+  assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
+  assert.deepEqual(engine.executed.map((c) => c.name), ["search", "permission_query", "permission_result"]);
+  const enginePR = engine.executed.find((c) => c.name === "permission_result");
+  const inlinePR = inline.executed.find((c) => c.name === "permission_result");
+  assert.equal(enginePR?.input.approval_id, "ap-1");
+  assert.equal(inlinePR?.input.approval_id, "ap-1");
+  // both fall back to the same local-evidence closeout after the second throw.
+  const engineCloseout = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout?.reason, "tool_evidence_fallback");
+  assert.equal(inlineCloseout?.reason, "tool_evidence_fallback");
+  assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
+});

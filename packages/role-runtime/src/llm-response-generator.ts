@@ -2924,6 +2924,53 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           return null;
         },
+        // Stage 7 S5: forced permission_result continuation. When a round completes a
+        // delegated session for an approval-wait-timeout task whose latest permission
+        // step is still a pending permission_query, the inline loop runs a forced
+        // permission_result round (host-authored, no model call) to observe the
+        // approval decision BEFORE the completed-session closeout (inline :1691-1712,
+        // inside `if (completedSession)`). Mirror that via onAfterExecuteContinue,
+        // which runs BEFORE onAfterExecute, so the forced check pre-empts the
+        // completed_sub_agent_final closeout. The host executes the forced round
+        // itself (executeRuntimeForcedToolRound — same method, same trace/persistence
+        // as inline; it pushes the round onto the shared toolTrace) and returns the
+        // rewritten messages; the engine adopts them and loops. The builder's guards
+        // (approval-wait-timeout task + pending permission_query + a pending
+        // approval_id) are the idempotency: once permission_result lands in the trace,
+        // latestPermissionToolName !== "permission_query" so it does not re-fire.
+        // (Inline runs the S7/S8/S9 continuations BEFORE this; until those land the
+        // engine reaches this branch directly after a completed session.)
+        onAfterExecuteContinue: async (results, state) => {
+          if (!activeToolLoop) {
+            return null;
+          }
+          const completedSession = findCompletedSessionEvidence(results);
+          if (!completedSession) {
+            return null;
+          }
+          const forcedPermissionResultCall =
+            buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
+              taskPrompt: packet.taskPrompt,
+              toolTrace,
+              tools: initialGatewayInput.tools,
+            });
+          if (!forcedPermissionResultCall) {
+            return null;
+          }
+          const forcedRound = await this.executeRuntimeForcedToolRound({
+            activation,
+            packet,
+            messages: state.messages,
+            toolTrace,
+            toolCalls: [forcedPermissionResultCall],
+            round: toolTrace.length + 1,
+            toolLoopStartedAtMs,
+            ...(signal ? { signal } : {}),
+            assistantText:
+              "Checking the pending approval result before closing out.",
+          });
+          return { messages: forcedRound.messages };
+        },
         // Stage 5 PR2c closeout detection: mirror the inline post-execute
         // terminal closeouts. After a tool round runs, inspect the round's
         // results with the same finders the inline loop uses (findCompletedSession
@@ -2934,11 +2981,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         //
         // Scope: this fires ONLY the two TERMINAL closeouts. The inline
         // post-execute block also has continuation/repair branches (supplemental
-        // probe, approval-gate repair, independent-evidence streams, forced
-        // permission_result, weak-evidence) that `continue` the loop instead of
-        // closing out — those are the approval/recovery cutover stages. Until
-        // they land, the engine path is exercised only by parity scenarios that
-        // trip none of them.
+        // probe, approval-gate repair, independent-evidence streams, weak-evidence)
+        // that `continue` the loop instead of closing out — those are the remaining
+        // approval/recovery cutover stages (the forced permission_result continuation
+        // landed via onAfterExecuteContinue above). Until they land, the engine path
+        // is exercised only by parity scenarios that trip none of them.
         onAfterExecute: (results) => {
           const completedSession = findCompletedSessionEvidence(results);
           if (completedSession) {
@@ -3681,15 +3728,40 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // (closeoutReason "model_call_error") — NOT via onTerminate; the host
         // closeout reason is tool_evidence_fallback. Aborts must rethrow.
         //
-        // Stage 7 scope gap: the inline path first checks for a pending approval
-        // (buildForcedPendingApprovalWaitTimeoutPermissionResultCall → a forced
-        // permission_result round) before this fallback, so an approval/denial
-        // that arrived before the provider error is observed. That forced-round
-        // machinery is the approval/continuation cutover stage; until it lands,
-        // the engine model-error closeout is scoped to non-approval flows.
-        onModelCallError: (error, state, _ctx) => {
+        // Stage 7 S6: before the fallback, mirror the inline model-error path
+        // (:388-410) — if usable evidence shows a still-pending approval, run a forced
+        // permission_result round (host-authored, no model call) and return a
+        // { messages } continuation so the engine retries the model call with the
+        // approval decision observed, instead of closing out blind to it. The forced
+        // round's permission_result lands in the trace, so latestPermissionToolName is
+        // no longer "permission_query" and the builder returns null on a repeat error
+        // (idempotent — no loop). Aborts must rethrow.
+        onModelCallError: async (error, state, _ctx) => {
           if (isAbortError(error)) {
             return "rethrow";
+          }
+          const forcedPermissionResultCall =
+            activeToolLoop && hasUsableEvidence(toolTrace)
+              ? buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
+                  taskPrompt: packet.taskPrompt,
+                  toolTrace,
+                  tools: initialGatewayInput.tools,
+                })
+              : null;
+          if (forcedPermissionResultCall) {
+            const forcedRound = await this.executeRuntimeForcedToolRound({
+              activation,
+              packet,
+              messages: state.messages,
+              toolTrace,
+              toolCalls: [forcedPermissionResultCall],
+              round: toolTrace.length + 1,
+              toolLoopStartedAtMs,
+              ...(signal ? { signal } : {}),
+              assistantText:
+                "Checking the pending approval result before closing out.",
+            });
+            return { messages: forcedRound.messages };
           }
           const localResult =
             activeToolLoop && hasUsableEvidence(toolTrace)

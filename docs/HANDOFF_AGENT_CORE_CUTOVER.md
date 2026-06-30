@@ -15,9 +15,9 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **234-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 37 cutover parity tests) — must stay green with **zero
-  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (22 tests).
+- Every slice is gated by the **236-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 39 cutover parity tests) — must stay green with **zero
+  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (26 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
 single tool round, order-dependent serialization, throwing-tool isolation, **`round_limit`**
@@ -269,9 +269,23 @@ host-authored forced rounds (permission_result). Plus wiring two already-defined
   `toolCallCount`/`roundCount === 1` assertions pin the event-consumer fix. Both fixes mutation-verified.
   The `sessions_list` lookup branch (inline :588-605) is wired-able but deferred (it loops with no crisp
   closeout to assert).
-- **S5/S6** — forced `permission_result` (`buildForcedPendingApprovalWaitTimeoutPermissionResultCall` +
-  `executeRuntimeForcedToolRound`, inline :1692; and the :388 model-error variant) via
-  `onAfterExecuteContinue`'s no-model-call `forcedToolCalls` mode (+ widen `onModelCallError` for S6).
+- **S5/S6 ✅ #516** — forced `permission_result` (`buildForcedPendingApprovalWaitTimeoutPermissionResult
+  Call` + `executeRuntimeForcedToolRound`) via a **new `onAfterExecuteContinue` agent-core hook** (S5,
+  inline :1691 post-execute) **+ widening `onModelCallError`** to return a `{ messages }` continuation
+  (S6, inline :388 model-error). The host runs the forced round itself inside the hook (same method/
+  trace/persistence as inline; it pushes the round onto the shared `toolTrace`) and hands back the
+  rewritten messages; the engine adopts them and loops (round++, bounded by `maxRounds`).
+  `onAfterExecuteContinue` runs BEFORE `onAfterExecute`, so the forced check pre-empts the
+  `completed_sub_agent_final` closeout (gated on a completed session in the round, mirroring inline's
+  `if (completedSession)`); the builder's pending-`permission_query` guard is the idempotency (once
+  `permission_result` lands, `latestPermissionToolName !== "permission_query"` → no re-fire/no loop).
+  S6 closes the documented model-error approval gap. KEY test-isolation finding: a clean S5 parity
+  fixture must make the post-forced-round candidate ALREADY a complete approval-wait-timeout closeout,
+  else the inline-only `shouldRepairApprovalWaitTimeoutCloseout` natural-finish repair (not yet cut over)
+  fires and diverges; S6 needs real (non-control-plane) evidence so the fallback can synthesize without
+  a completed session (which would pre-empt via S5 / the completed closeout). agent-core unit tests:
+  `onAfterExecuteContinue` (pre-empts + null fall-through) and `onModelCallError` `{ messages }` (+ async
+  await). All mutation-verified.
 - **S7** — the 4 timed-out continuation branches (`shouldContinueTimedOutApprovedBrowserSession` +
   `…TimedOutSiblingSession` + `shouldRunSupplementalLocalTimeoutProbe` + `findIncompleteApprovedBrowser
   Session`) via `onAfterExecuteContinue`, in exact inline precedence. **Must land together** (shared
@@ -322,12 +336,12 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (234)
-npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (22)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (236)
+npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (26)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
 # S1 pre-execute suppression (#513), S2/S3 forced-spawn browser-evidence + consumesRound
 # flag (#514), S4 onRoundEmpty sessions_send injection + toolTrace fix (#515) DONE.
-# Next: S5/S6 — forced permission_result via a new onAfterExecuteContinue hook (Stage 7 section).
+# Next: S7 — the 4 timed-out continuation branches via onAfterExecuteContinue (must land together).
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 
