@@ -52,7 +52,7 @@ import {
   toolCallSignature,
 } from "./react/predicates";
 import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
-import type { ModelClient, ReActState } from "@turnkeyai/agent-core/react-loop";
+import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/react-loop";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type {
   PreCompactionMemoryFlusher,
@@ -3668,9 +3668,87 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               .filter((text) => text.trim().length > 0)
               .join("\n\n");
             let repairMessages = state.messages;
+            // Stage 7 S10: the browser-evidence / product-signal completed-cascade
+            // repairs (inline :1880/:1907) re-arm a REAL sessions_spawn TOOL round — they
+            // cannot re-synthesize in place. This helper builds the reArm directive for
+            // whichever fires (browser-evidence first, then product-signal). It reads the
+            // current loop state (repairMessages / synthesisResult / synthesisReduction)
+            // by closure. `productSignalEvidenceText` is the round-dependent product-
+            // signal evidence: the completed-block join on round 0 (inline :1914),
+            // undefined on round >0 (inline natural-finish :776). Persisting the pending
+            // reduction before the reArm mirrors inline recording `generated.reduction`
+            // before it `continue`s (codex #520 P2) — the early return otherwise skips
+            // the run.reduction assignment after the loop.
+            const maybeReArmForMissingBrowserEvidence = (
+              productSignalEvidenceText: string | undefined,
+            ): ReActReArm | null => {
+              const persistAndReArm = (repairPrompt: string): ReActReArm => {
+                if (synthesisReduction) {
+                  run.reduction = synthesisReduction;
+                  run.reductionSnapshot = synthesisReductionSnapshot;
+                }
+                return {
+                  reArm: {
+                    messages: [
+                      ...repairMessages,
+                      { role: "assistant", content: synthesisResult.text },
+                      recordRepairPrompt(repairMarkers, repairPrompt),
+                    ],
+                    forceToolChoice: { name: "sessions_spawn" },
+                  },
+                };
+              };
+              if (
+                shouldRepairMissingBrowserEvidence({
+                  taskPrompt: packet.taskPrompt,
+                  resultText: synthesisResult.text,
+                  messages: repairMessages,
+                  repairMarkers,
+                  toolTrace,
+                  tools: initialGatewayInput.tools,
+                })
+              ) {
+                return persistAndReArm(
+                  buildMissingBrowserEvidenceRepairPrompt(packet.taskPrompt),
+                );
+              }
+              if (
+                shouldRepairMissingProductSignalBrowserEvidence({
+                  taskPrompt: packet.taskPrompt,
+                  resultText: synthesisResult.text,
+                  messages: repairMessages,
+                  repairMarkers,
+                  toolTrace,
+                  tools: initialGatewayInput.tools,
+                  ...(productSignalEvidenceText !== undefined
+                    ? { evidenceText: productSignalEvidenceText }
+                    : {}),
+                })
+              ) {
+                return persistAndReArm(
+                  buildMissingProductSignalBrowserEvidenceRepairPrompt(
+                    packet.taskPrompt,
+                  ),
+                );
+              }
+              return null;
+            };
             const MAX_COMPLETED_REPAIR_ROUNDS = 16;
             for (let repairRound = 0; repairRound < MAX_COMPLETED_REPAIR_ROUNDS; repairRound++) {
               let repairPrompt: string | null = null;
+              // Round >0 IS inline's tool-free natural-finish cascade, where browser-
+              // evidence / product-signal are checked FIRST — before table-columns /
+              // extraneous (inline :748/:776 precede :1139/:1167). Check them at the top
+              // here so a repaired completed answer that still lacks browser evidence
+              // re-arms a sessions_spawn round rather than taking a tool-free table/
+              // extraneous repair (codex #520 P2). Round 0 (the completed block) keeps
+              // the inline completed-block order (after extraneous, below).
+              if (repairRound > 0) {
+                const browserReArm = maybeReArmForMissingBrowserEvidence(undefined);
+                if (browserReArm) {
+                  return browserReArm;
+                }
+              }
               // Evidence for the cross-cascade members (source-evidence, weak-evidence),
               // round-dependent to match the two inline cascades exactly:
               //  - round 0 IS the inline completed block: use completedProductBriefEvidence
@@ -3743,71 +3821,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   resultText: synthesisResult.text,
                 });
               }
-              // Stage 7 S10: the browser-evidence / product-signal completed-cascade
-              // repairs (inline :1880/:1907) re-arm a REAL sessions_spawn TOOL round —
-              // they cannot re-synthesize in place like the tool-free repairs around
-              // them. They sit after extraneous and before source-evidence, and are in
-              // BOTH inline cascades (the completed block AND the natural-finish cascade
-              // :748/:776), so they are checked every repair round, `!repairPrompt`-
-              // guarded (a same-round table-columns/extraneous hit wins, matching the
-              // inline first-match-wins `continue`). When one fires, RETURN a reArm
-              // directive: the engine aborts the completed closeout and runs a forced
-              // sessions_spawn round (budget-consuming, bounded by maxRounds). The
-              // recorded repair marker is the idempotency — once the browser evidence
-              // round completes and re-enters this loop, the predicate is suppressed and
-              // the synthesis finalizes.
-              if (
-                !repairPrompt &&
-                shouldRepairMissingBrowserEvidence({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                  toolTrace,
-                  tools: initialGatewayInput.tools,
-                })
-              ) {
-                return {
-                  reArm: {
-                    messages: [
-                      ...repairMessages,
-                      { role: "assistant", content: synthesisResult.text },
-                      recordRepairPrompt(
-                        repairMarkers,
-                        buildMissingBrowserEvidenceRepairPrompt(packet.taskPrompt),
-                      ),
-                    ],
-                    forceToolChoice: { name: "sessions_spawn" },
-                  },
-                };
-              }
-              if (
-                !repairPrompt &&
-                shouldRepairMissingProductSignalBrowserEvidence({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                  toolTrace,
-                  tools: initialGatewayInput.tools,
-                  evidenceText,
-                })
-              ) {
-                return {
-                  reArm: {
-                    messages: [
-                      ...repairMessages,
-                      { role: "assistant", content: synthesisResult.text },
-                      recordRepairPrompt(
-                        repairMarkers,
-                        buildMissingProductSignalBrowserEvidenceRepairPrompt(
-                          packet.taskPrompt,
-                        ),
-                      ),
-                    ],
-                    forceToolChoice: { name: "sessions_spawn" },
-                  },
-                };
+              // Stage 7 S10 (round 0 = the inline completed block, :1880/:1907): the
+              // browser-evidence / product-signal repairs sit AFTER extraneous here,
+              // `!repairPrompt`-guarded (a same-round table-columns/extraneous hit wins,
+              // matching inline's first-match-wins `continue`). The round >0 ordering is
+              // DIFFERENT (browser/product FIRST) and is handled at the top of the loop —
+              // see the maybeReArmForMissingBrowserEvidence call before table-columns.
+              // Round 0 passes the completed-block product-signal evidenceText (inline
+              // :1914); round >0 passes none (inline natural-finish :776).
+              if (repairRound === 0 && !repairPrompt) {
+                const browserReArm = maybeReArmForMissingBrowserEvidence(evidenceText);
+                if (browserReArm) {
+                  return browserReArm;
+                }
               }
               // Source-evidence carry-forward — every repair round. It appears in both
               // inline cascades: the completed block (:1941, round 0) AND the tool-free
