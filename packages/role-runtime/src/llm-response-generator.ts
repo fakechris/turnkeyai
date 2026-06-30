@@ -4471,6 +4471,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             input: event.call.input,
           });
         }
+        // Stage 8B (progress observability, codex #525 P2): emit the "started" lifecycle
+        // phase into round.progress, mirroring inline's executeToolCalls. Once round.
+        // progress is non-empty, buildRoundToolProgress treats it as authoritative and
+        // stops synthesizing started/completed from calls/results — so the engine must
+        // record the FULL lifecycle (started here + result.progress + completed below),
+        // not just the custom progress, or native tool messages lose the completed phase.
+        currentRound.progress?.push(
+          toNativeToolProgressTrace(
+            { id: event.call.id, name: event.call.name, input: event.call.input },
+            {
+              phase: "started",
+              toolName: event.call.name,
+              summary: `Tool call started: ${event.call.name}`,
+            },
+            this.clock.now(),
+          ),
+        );
       } else if (event.type === "tool_result" && currentRound) {
         currentRound.results.push({
           toolCallId: event.result.toolCallId,
@@ -4488,19 +4505,38 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // via executeToolCalls' onProgress. The agent-core ToolResult does not declare a
         // progress field, but the role-runtime executor result carries it at runtime.
         const roleToolResult = event.result as RoleToolExecutionResult;
+        const progressCall = {
+          id: event.result.toolCallId,
+          name: event.result.toolName,
+          input: {},
+        };
         for (const progress of roleToolResult.progress ?? []) {
           currentRound.progress?.push(
-            toNativeToolProgressTrace(
-              {
-                id: event.result.toolCallId,
-                name: event.result.toolName,
-                input: {},
-              },
-              progress,
-              this.clock.now(),
-            ),
+            toNativeToolProgressTrace(progressCall, progress, this.clock.now()),
           );
         }
+        // The terminal lifecycle phase (codex #525 P2), after the custom progress —
+        // matching inline's executeToolCalls ordering (started → result.progress →
+        // completed/failed/cancelled).
+        currentRound.progress?.push(
+          toNativeToolProgressTrace(
+            progressCall,
+            {
+              phase: roleToolResult.cancelled
+                ? "cancelled"
+                : roleToolResult.isError
+                  ? "failed"
+                  : "completed",
+              toolName: event.result.toolName,
+              summary: roleToolResult.cancelled
+                ? `Tool call cancelled: ${event.result.toolName}`
+                : roleToolResult.isError
+                  ? `Tool call failed: ${event.result.toolName}`
+                  : `Tool call completed: ${event.result.toolName}`,
+            },
+            this.clock.now(),
+          ),
+        );
       } else if (event.type === "final") {
         finalText = event.text;
       }
