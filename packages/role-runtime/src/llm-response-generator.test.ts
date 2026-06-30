@@ -24975,3 +24975,75 @@ test("cutover parity (8B-1c): the hard approval-wait-timeout local closeout fire
   assert.equal(engineC?.reason, inlineC?.reason);
   assert.equal(engineC?.reason, "tool_evidence_fallback");
 });
+
+test("cutover parity (8B progress-observability): a permission.applied progress event drives the stale-pending repair to sessions_spawn, identically on both paths", async () => {
+  // Stage 8B progress observability. The permission_query result carries progress events
+  // (permission.query / permission.result(approved) / permission.applied). The engine now
+  // captures result.progress into the round trace, so hasPermissionAppliedEvidence is true
+  // — and the stale-pending-approval repair forces a sessions_spawn (the approved action),
+  // matching inline. Without the capture the engine would instead fire the premature-
+  // pending repair (permission_result), diverging.
+  const taskPrompt = [
+    "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+    "Actually carry the safe local dry-run through the approval gate; do not stop at a plan.",
+    "Request approval before applying the browser action, then report what was approved and the evidence.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "Requesting approval.", toolCalls: [{ id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit", worker_kind: "browser" } }] };
+      }
+      if (calls === 2) {
+        return { ...base, toolCalls: [], text: "Approval is pending. Once the operator responds with permission_result, I will submit the dry-run form." };
+      }
+      const tc = input.toolChoice as { name?: string } | string | undefined;
+      if (typeof tc === "object" && tc?.name === "sessions_spawn") {
+        return { ...base, text: "Submitting the approved action.", toolCalls: [{ id: "toolu-browser-approved", name: "sessions_spawn", input: { agent_id: "browser", task: "Submit the approved local dry-run form and verify the submitted status." } }] };
+      }
+      return { ...base, toolCalls: [], text: "The approved browser dry-run was submitted and verified." };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+          { name: "sessions_spawn", description: "spawn browser", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "permission_query") {
+          return {
+            toolCallId: input.call.id,
+            toolName: input.call.name,
+            content: JSON.stringify({ status: "pending", approval_id: "ap-1" }),
+            progress: [
+              { phase: "progress", toolName: input.call.name, summary: "Approval required before browser.form.submit.", detail: { eventType: "permission.query", status: "pending", approvalId: "ap-1" } },
+              { phase: "progress", toolName: input.call.name, summary: "Operator approved browser.form.submit.", detail: { eventType: "permission.result", status: "approved", approvalId: "ap-1" } },
+              { phase: "progress", toolName: input.call.name, summary: "Permission request was applied.", detail: { eventType: "permission.applied", status: "applied", approvalId: "ap-1" } },
+            ],
+          };
+        }
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-1", session_key: "worker:browser:task-1:toolu-browser-approved", agent_id: "browser", status: "completed", tool_chain: ["browser"], result: "Approved dry-run submit completed.", final_content: "Approved dry-run submit completed. Browser verified the submitted status." }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the progress-applied approval drove a sessions_spawn (the approved action), not a
+  // permission_result, on BOTH paths.
+  assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
+  assert.deepEqual(engine.executed.map((c) => c.name), ["permission_query", "sessions_spawn"]);
+});
