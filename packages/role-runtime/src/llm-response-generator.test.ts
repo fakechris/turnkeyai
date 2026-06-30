@@ -25047,3 +25047,55 @@ test("cutover parity (8B progress-observability): a permission.applied progress 
   assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
   assert.deepEqual(engine.executed.map((c) => c.name), ["permission_query", "sessions_spawn"]);
 });
+
+test("cutover parity (8B native-tool-message persistence): the engine persists native tool messages with the full started+custom+completed lifecycle, identically on both paths", async () => {
+  // Stage 8B native-tool-message persistence. The engine now persists native tool
+  // messages (persistNativeToolTraceSafely on tool_started + tool_result), so the
+  // assistant message carries the full toolProgress lifecycle (started + custom +
+  // completed) via buildRoundToolProgress — matching inline. Both paths produce the
+  // same persisted phases.
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    let calls = 0;
+    let now = 1000;
+    const stored = new Map<string, { id: string; role: string; toolStatus?: string; toolProgress?: Array<{ phase: string }> }>();
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "Snapshotting.", toolCalls: [{ id: "toolu-snap", name: "snapshot", input: { url: "local" } }] };
+      }
+      return { ...base, toolCalls: [], text: "Done." };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [{ name: "snapshot", description: "snapshot", inputSchema: { type: "object", properties: { url: { type: "string" } } } }];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: "Example snapshot",
+          progress: [{ phase: "progress", toolName: input.call.name, summary: "Snapshot captured", detail: { eventType: "browser.snapshot" } }],
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 4 },
+      nativeToolMessageStore: { async append(message: { id: string; role: string; toolStatus?: string; toolProgress?: Array<{ phase: string }> }) { stored.set(message.id, message); } },
+      clock: { now: () => now++ },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    const assistant = [...stored.values()].filter((m) => m.role === "assistant" && (m.toolProgress?.length ?? 0) > 0).at(-1);
+    return { content: result.content, status: assistant?.toolStatus, phases: (assistant?.toolProgress ?? []).map((p) => p.phase) };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.equal(engine.status, inline.status);
+  assert.deepEqual(engine.phases, inline.phases);
+  assert.ok(engine.phases.includes("started"), "missing started lifecycle phase");
+  assert.ok(engine.phases.includes("progress"), "missing custom progress phase");
+  assert.ok(engine.phases.includes("completed"), "missing completed lifecycle phase");
+});
