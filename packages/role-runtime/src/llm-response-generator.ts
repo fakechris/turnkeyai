@@ -4481,6 +4481,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ...(event.result.cancelled ? { cancelled: true } : {}),
           ...(event.result.skipped ? { skipped: true } : {}),
         });
+        // Stage 8B (progress observability): capture the executor's progress events into
+        // the round trace, so progress-dependent predicates (hasPermissionAppliedEvidence,
+        // latestPendingPermissionQueryApprovalId, latestPermissionResultStatus, …) see the
+        // same evidence inline does — inline emits result.progress into roundTrace.progress
+        // via executeToolCalls' onProgress. The agent-core ToolResult does not declare a
+        // progress field, but the role-runtime executor result carries it at runtime.
+        const roleToolResult = event.result as RoleToolExecutionResult;
+        for (const progress of roleToolResult.progress ?? []) {
+          currentRound.progress?.push(
+            toNativeToolProgressTrace(
+              {
+                id: event.result.toolCallId,
+                name: event.result.toolName,
+                input: {},
+              },
+              progress,
+              this.clock.now(),
+            ),
+          );
+        }
       } else if (event.type === "final") {
         finalText = event.text;
       }
