@@ -32,6 +32,16 @@ export interface ReActSynthesis {
   stopReason?: string;
 }
 
+/** An onTerminate directive to ABORT the closeout and run another round instead:
+ *  adopt rewritten messages + an optional forced tool choice, then re-enter the loop
+ *  (round++, a budget-consuming round, bounded by `maxRounds`). The host returns this
+ *  when a closeout-time check (e.g. a completed-session synthesis that still lacks
+ *  required browser evidence) must re-arm a real tool round rather than finalize. The
+ *  host guards idempotency (e.g. via a recorded repair marker) so this converges. */
+export interface ReActReArm {
+  reArm: { messages: LLMMessage[]; forceToolChoice?: ReActToolChoice };
+}
+
 /** What to do when the model requests no tools in a round. */
 export type ReActEmptyDecision = { injectedCalls: LLMToolCall[] } | "terminate";
 
@@ -181,8 +191,15 @@ export interface ReActHooks<Ctx extends ToolContext> {
   /** Ordered closeout predicates checked each round (round/budget/cap closeouts). */
   terminationPredicates?: Array<(state: ReActState, ctx: Ctx) => string | null>;
   /** Produce the terminal answer for a closeout reason (default: a tool-free
-   *  synthesis model call). */
-  onTerminate?(reason: string, state: ReActState, ctx: Ctx): ReActSynthesis | Promise<ReActSynthesis>;
+   *  synthesis model call). May instead return a {@link ReActReArm} directive to
+   *  abort the closeout and run another (budget-consuming) round — e.g. a completed-
+   *  session synthesis that still lacks required browser evidence re-arms a forced
+   *  `sessions_spawn` round instead of finalizing. */
+  onTerminate?(
+    reason: string,
+    state: ReActState,
+    ctx: Ctx
+  ): ReActSynthesis | ReActReArm | Promise<ReActSynthesis | ReActReArm>;
   /** Final text transform chain (visibility appends, redaction, shaping). */
   onFinalize?(text: string, state: ReActState, ctx: Ctx): string;
   /** Fire-and-forget observability for every emitted event. */

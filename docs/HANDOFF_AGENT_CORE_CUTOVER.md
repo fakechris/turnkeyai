@@ -15,9 +15,9 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **243-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 46 cutover parity tests) — must stay green with **zero
-  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (27 tests).
+- Every slice is gated by the **244-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 47 cutover parity tests) — must stay green with **zero
+  assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (28 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
 single tool round, order-dependent serialization, throwing-tool isolation, **`round_limit`**
@@ -331,8 +331,24 @@ host-authored forced rounds (permission_result). Plus wiring two already-defined
   `normalizeApprovalGatedBrowserSpawnCalls` premature-spawn normalizer (not cut over) prevents from arising
   cleanly (round-0 divergence). Its predicate + recordRepairPrompt + forced `permission_query` + the marker
   the normalizer consumes are all already verified by the natural-finish + normalizer tests.
-- **S10** — completed-cascade forced `sessions_spawn` (inline :1881/:1907): teach the `onTerminate`
-  internal completed-repair loop to break out and run a budget-consuming forced round. Hardest; do last.
+- **S10 ✅ #520** — completed-cascade forced `sessions_spawn` (inline :1880/:1907). **New agent-core
+  mechanism: `onTerminate` can return a `ReActReArm` directive** (`{ reArm: { messages, forceToolChoice } }`)
+  to ABORT the closeout and run another budget-consuming round; `terminate()` returns it to the caller,
+  and all three `terminate()` callers adopt the messages + `pendingForceToolChoice` and `continue`. The
+  engine's `onTerminate` completed-repair loop now checks `shouldRepairMissingBrowserEvidence` /
+  `…ProductSignalBrowserEvidence` (after extraneous, before source-evidence, every repair round,
+  `!repairPrompt`-guarded) and RETURNS a reArm forcing `sessions_spawn` instead of re-synthesizing
+  tool-free. **Also fixes the completed-closeout metadata to be sticky** (`run.toolLoopCloseout ??=`,
+  set on the FIRST completed session before the re-arm) so the metadata's `roundCount`/`toolCallCount`
+  reflect the first completion, not the later browser round — mirroring inline's `toolLoopCloseout ??=`
+  (:1729); the final TEXT still comes from the last synthesis. Parity+mutation verified (browser-evidence
+  variant: completed non-browser session → synthesis admits missing browser evidence → re-arm browser
+  spawn → re-synthesize → finalize, with `roundCount` parity pinning the sticky-metadata fix). agent-core:
+  the `onTerminate` reArm unit test. The product-signal variant lands faithful (identical reArm + the
+  S3 predicate family); its dedicated fixture is covered-by-mechanism.
+
+**Stage 7 COMPLETE** (S1–S10, #513–#520). Deferred dedicated fixtures (mechanism verified elsewhere,
+blocked by not-yet-cut-over normalizers): S7 branches 2/3, S9 post-execute, S10 product-signal.
 
 - **Stage 8** — flip `reactEngine` default to `"engine"`, delete the inline loop, e2e.
 
@@ -372,13 +388,12 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (243)
-npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (27)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (244)
+npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (28)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
 # S1 pre-execute suppression (#513), S2/S3 forced-spawn browser-evidence + consumesRound
 # flag (#514), S4 onRoundEmpty sessions_send injection + toolTrace fix (#515) DONE.
-# Next: S10 — completed-cascade forced sessions_spawn (inline :1881/:1907): teach the onTerminate
-# internal completed-repair loop to break out and run a budget-consuming forced round. Hardest; last.
+# Next: STAGE 8 — flip reactEngine default to "engine", delete the inline loop, e2e.
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 

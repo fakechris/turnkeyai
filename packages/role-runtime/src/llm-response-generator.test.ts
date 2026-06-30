@@ -24543,3 +24543,69 @@ test("cutover parity: after the missing-approval-gate repair, a stubborn browser
   assert.equal(engineCloseout7?.reason, inlineCloseout7?.reason);
   assert.equal(engineCloseout7?.roundCount, inlineCloseout7?.roundCount);
 });
+
+test("cutover parity: a completed-session synthesis that still lacks required browser evidence re-arms a forced sessions_spawn round, identically on both paths", async () => {
+  // Stage 7 S10 (the completed-cascade forced sessions_spawn, inline :1880). A
+  // browser-evidence task completes a non-browser session; the completed synthesis
+  // admits it used a raw fetch (browser evidence missing). Both paths abort the
+  // completed closeout and re-arm a forced sessions_spawn round — inline by `continue`,
+  // the engine via onTerminate's new reArm directive — gather the browser session, then
+  // re-synthesize and finalize. The recorded marker stops it re-firing (it converges).
+  const taskPrompt = [
+    "Review the operator dashboard and report the visible state.",
+    "Use browser-visible evidence for the rendered dashboard, as an operator would see it.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const completedSession = (id: string, agentId: string, content: string) =>
+    JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: `task-${id}`, session_key: `worker:${agentId}:task-${id}`, agent_id: agentId, status: "completed", tool_chain: [agentId], result: content, final_content: content, payload: { mode: "llm_sub_agent", workerType: agentId, content } });
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      const tools = input.tools?.length ?? 0;
+      const text = (m: GenerateTextInput["messages"][number] | undefined) => (m ? readToolContent(m.content) : "");
+      const hasBrowserCompleted = input.messages.some((m) => { const t = text(m); return t.includes("\"agent_id\":\"browser\"") && t.includes("\"status\":\"completed\""); });
+      if (tools === 0) {
+        // closeout synthesis: admit missing browser evidence until a browser session ran.
+        return { ...base, toolCalls: [], text: hasBrowserCompleted
+          ? "Rendered dashboard verified: backlog 7, owner risk desk, popup P-42 acknowledged."
+          : "I used raw HTTP fetch because the browser tools are unavailable, so the rendered DOM, frame, shadow component, and popup were not verified." };
+      }
+      // tool round: after the browser-evidence repair prompt, spawn browser; else explore.
+      if (text(input.messages.at(-1)).includes("Runtime correction: browser-visible evidence is missing")) {
+        return { ...base, text: "Spawning the browser session.", toolCalls: [{ id: "toolu-browser", name: "sessions_spawn", input: { agent_id: "browser", task: "Inspect the rendered dashboard frame, shadow component, and popup." } }] };
+      }
+      return { ...base, text: "Spawning the explore session.", toolCalls: [{ id: "toolu-explore", name: "sessions_spawn", input: { agent_id: "explore", task: "Summarize the dashboard backlog from available data." } }] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [{ name: "sessions_spawn", description: "spawn", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" } } } }];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        const agentId = String(input.call.input.agent_id);
+        const content = agentId === "browser"
+          ? "Rendered frame: backlog 7. Shadow review: risk desk approval required. Popup P-42 acknowledged."
+          : "Backlog summary from available data; rendered page state not captured.";
+        return { toolCallId: input.call.id, toolName: input.call.name, content: completedSession(String(input.call.id), agentId, content) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt, capabilityInspection: { availableWorkers: ["browser", "explore"], connectorStates: [], apiStates: [], skillStates: [], transportPreferences: [], unavailableCapabilities: [], generatedAt: 1 } } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the completed synthesis re-armed a browser sessions_spawn on BOTH paths.
+  assert.deepEqual(engine.executed.map((c) => c.input.agent_id), inline.executed.map((c) => c.input.agent_id));
+  assert.deepEqual(engine.executed.map((c) => c.input.agent_id), ["explore", "browser"]);
+  const engineCloseout8 = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout8 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout8?.reason, inlineCloseout8?.reason);
+  assert.equal(engineCloseout8?.roundCount, inlineCloseout8?.roundCount);
+});

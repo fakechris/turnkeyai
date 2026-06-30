@@ -3498,6 +3498,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               roundCount: toolTrace.length,
               evidenceAvailable: true,
             };
+            // Sticky completed-closeout metadata (inline `toolLoopCloseout ??=`, :1729):
+            // captured on the FIRST completed session, BEFORE the S10 browser-evidence
+            // repair re-arms a sessions_spawn round. So the metadata (roundCount/
+            // toolCallCount) reflects the round the session first completed, not the
+            // later browser round — exactly like inline, whose `??=` no-ops on the
+            // re-entered completed block. The final TEXT still comes from the last
+            // synthesis (run.closeoutResult below).
+            run.toolLoopCloseout ??= closeout;
           } else if (reason === "sub_agent_timeout" && run.timeoutSignal) {
             const timeoutSignal = run.timeoutSignal;
             reasonLines = [
@@ -3735,6 +3743,72 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   resultText: synthesisResult.text,
                 });
               }
+              // Stage 7 S10: the browser-evidence / product-signal completed-cascade
+              // repairs (inline :1880/:1907) re-arm a REAL sessions_spawn TOOL round —
+              // they cannot re-synthesize in place like the tool-free repairs around
+              // them. They sit after extraneous and before source-evidence, and are in
+              // BOTH inline cascades (the completed block AND the natural-finish cascade
+              // :748/:776), so they are checked every repair round, `!repairPrompt`-
+              // guarded (a same-round table-columns/extraneous hit wins, matching the
+              // inline first-match-wins `continue`). When one fires, RETURN a reArm
+              // directive: the engine aborts the completed closeout and runs a forced
+              // sessions_spawn round (budget-consuming, bounded by maxRounds). The
+              // recorded repair marker is the idempotency — once the browser evidence
+              // round completes and re-enters this loop, the predicate is suppressed and
+              // the synthesis finalizes.
+              if (
+                !repairPrompt &&
+                shouldRepairMissingBrowserEvidence({
+                  taskPrompt: packet.taskPrompt,
+                  resultText: synthesisResult.text,
+                  messages: repairMessages,
+                  repairMarkers,
+                  toolTrace,
+                  tools: initialGatewayInput.tools,
+                })
+              ) {
+                return {
+                  reArm: {
+                    messages: [
+                      ...repairMessages,
+                      { role: "assistant", content: synthesisResult.text },
+                      recordRepairPrompt(
+                        repairMarkers,
+                        buildMissingBrowserEvidenceRepairPrompt(packet.taskPrompt),
+                      ),
+                    ],
+                    forceToolChoice: { name: "sessions_spawn" },
+                  },
+                };
+              }
+              if (
+                !repairPrompt &&
+                shouldRepairMissingProductSignalBrowserEvidence({
+                  taskPrompt: packet.taskPrompt,
+                  resultText: synthesisResult.text,
+                  messages: repairMessages,
+                  repairMarkers,
+                  toolTrace,
+                  tools: initialGatewayInput.tools,
+                  evidenceText,
+                })
+              ) {
+                return {
+                  reArm: {
+                    messages: [
+                      ...repairMessages,
+                      { role: "assistant", content: synthesisResult.text },
+                      recordRepairPrompt(
+                        repairMarkers,
+                        buildMissingProductSignalBrowserEvidenceRepairPrompt(
+                          packet.taskPrompt,
+                        ),
+                      ),
+                    ],
+                    forceToolChoice: { name: "sessions_spawn" },
+                  },
+                };
+              }
               // Source-evidence carry-forward — every repair round. It appears in both
               // inline cascades: the completed block (:1941, round 0) AND the tool-free
               // natural-finish cascade (:1204, round >0), so a repaired answer can re-trip
@@ -3969,7 +4043,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               : reason === "sub_agent_timeout"
                 ? maybeAppendTimeoutContinuationVisibility(synthesisResult)
                 : synthesisResult;
-          run.toolLoopCloseout = closeout;
+          // `??=`: the completed branch may have set this early (sticky, above) so the
+          // S10 re-armed round does not overwrite the first-completion metadata; for
+          // every other reason this is the first and only set.
+          run.toolLoopCloseout ??= closeout;
           run.closeoutResult = closeoutResult;
           if (synthesisReduction) {
             run.reduction = synthesisReduction;
