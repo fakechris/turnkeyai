@@ -156,18 +156,26 @@ export interface ReActHooks<Ctx extends ToolContext> {
   ): Promise<ToolResult[]>;
   /** After a round executes and its messages are appended, optionally run a
    *  host-authored CONTINUATION instead of finalizing: return rewritten messages to
-   *  adopt and run another round, or null to fall through to onAfterExecute. The
-   *  host executes any forced tool round itself (inside the hook) and returns the
-   *  resulting messages; the engine just adopts them and continues (round++), so the
-   *  forced round is bounded by `maxRounds`. Runs BEFORE onAfterExecute so a
-   *  post-execute continuation (e.g. a forced `permission_result` check) pre-empts a
-   *  terminal closeout the results would otherwise trigger. May be async. The host
-   *  guards idempotency (e.g. via the trace it inspects) so this converges. */
+   *  adopt and run another round, or null to fall through to onAfterExecute. Two
+   *  shapes of continuation are supported, both bounded by `maxRounds`:
+   *   - a re-prompt: rewritten `messages` plus an optional `forceToolChoice` carried
+   *     into the next model call (e.g. append a timeout-continuation prompt and force
+   *     `sessions_send`); the budget-consuming round semantics match an inline loop
+   *     that appends a message, sets the next tool choice, and `continue`s.
+   *   - a host-executed forced round: the host runs the tool round itself inside the
+   *     hook and returns the resulting `messages` (no `forceToolChoice`); the next
+   *     model call is a normal auto round.
+   *  Runs BEFORE onAfterExecute so a post-execute continuation pre-empts a terminal
+   *  closeout the results would otherwise trigger. May be async. The host guards
+   *  idempotency (e.g. via the trace/messages it inspects) so this converges. */
   onAfterExecuteContinue?(
     results: ToolResult[],
     state: ReActState,
     ctx: Ctx
-  ): Promise<{ messages: LLMMessage[] } | null> | { messages: LLMMessage[] } | null;
+  ):
+    | Promise<{ messages: LLMMessage[]; forceToolChoice?: ReActToolChoice } | null>
+    | { messages: LLMMessage[]; forceToolChoice?: ReActToolChoice }
+    | null;
   /** Inspect results after a round; return a closeout reason to stop, or null. */
   onAfterExecute?(results: ToolResult[], state: ReActState, ctx: Ctx): string | null;
   /** Ordered closeout predicates checked each round (round/budget/cap closeouts). */

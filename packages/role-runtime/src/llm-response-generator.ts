@@ -2924,30 +2924,127 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           return null;
         },
-        // Stage 7 S5: forced permission_result continuation. When a round completes a
-        // delegated session for an approval-wait-timeout task whose latest permission
-        // step is still a pending permission_query, the inline loop runs a forced
-        // permission_result round (host-authored, no model call) to observe the
-        // approval decision BEFORE the completed-session closeout (inline :1691-1712,
-        // inside `if (completedSession)`). Mirror that via onAfterExecuteContinue,
-        // which runs BEFORE onAfterExecute, so the forced check pre-empts the
-        // completed_sub_agent_final closeout. The host executes the forced round
-        // itself (executeRuntimeForcedToolRound — same method, same trace/persistence
-        // as inline; it pushes the round onto the shared toolTrace) and returns the
-        // rewritten messages; the engine adopts them and loops. The builder's guards
-        // (approval-wait-timeout task + pending permission_query + a pending
-        // approval_id) are the idempotency: once permission_result lands in the trace,
-        // latestPermissionToolName !== "permission_query" so it does not re-fire.
-        // (Inline runs the S7/S8/S9 continuations BEFORE this; until those land the
-        // engine reaches this branch directly after a completed session.)
+        // Stage 7 S7 + S5: post-execute continuation branches. After a tool round, the
+        // inline loop runs an ordered cascade of continuations BEFORE the completed/
+        // timeout closeout (inline :1562-1712). onAfterExecuteContinue runs BEFORE
+        // onAfterExecute, so each branch pre-empts the closeout the round's results
+        // would otherwise trigger. Two continuation shapes (see the agent-core hook):
+        //   - S7 re-prompts: append a continuation prompt + force the next tool choice
+        //     (a normal budget-consuming round, like an inline `continue` after setting
+        //     nextToolChoice); the host guards idempotency via the prompt-presence
+        //     checks each predicate already runs against `messages`.
+        //   - S5 forced round: the host executes a forced permission_result round
+        //     itself (executeRuntimeForcedToolRound — same method/trace/persistence as
+        //     inline; pushes the round onto the shared toolTrace) and returns its
+        //     messages; the next model call is a normal auto round.
+        // Precedence mirrors inline exactly. (S8 independent-evidence-streams and S9
+        // missing-approval-gate sit between branch 4 and S5 inline; until they land the
+        // engine reaches S5 directly after branch 4.)
         onAfterExecuteContinue: async (results, state) => {
           if (!activeToolLoop) {
             return null;
           }
+          // S7 branches 1-2: a sub-agent TIMEOUT signal that should be continued via
+          // sessions_send, before the sub_agent_timeout closeout (inline :1562, :1583).
+          const timeoutSignal = findSubAgentToolTimeout(results);
+          if (
+            timeoutSignal &&
+            shouldContinueTimedOutApprovedBrowserSession({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              toolTrace,
+              timeoutSignal,
+              tools: initialGatewayInput.tools,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                {
+                  role: "user",
+                  content:
+                    buildApprovedBrowserTimeoutContinuationPrompt(timeoutSignal),
+                },
+              ],
+              forceToolChoice: { name: "sessions_send" },
+            };
+          }
+          if (
+            timeoutSignal &&
+            shouldContinueTimedOutSiblingSession({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              toolTrace,
+              timeoutSignal,
+              tools: initialGatewayInput.tools,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                {
+                  role: "user",
+                  content: buildCoverageTimeoutContinuationPrompt(timeoutSignal),
+                },
+              ],
+              forceToolChoice: { name: "sessions_send" },
+            };
+          }
+          // S7 branches 3-4 + S5: a COMPLETED delegated session, continued before the
+          // completed_sub_agent_final closeout (inline :1603-1712, inside completedSession).
           const completedSession = findCompletedSessionEvidence(results);
           if (!completedSession) {
             return null;
           }
+          // S7 branch 3: supplemental local timeout probe via sessions_spawn (:1604).
+          const supplementalLocalTimeoutProbe = shouldRunSupplementalLocalTimeoutProbe({
+            taskPrompt: packet.taskPrompt,
+            messages: state.messages,
+            toolTrace,
+            evidenceText: completedSession.finalContents.join("\n\n"),
+            tools: initialGatewayInput.tools,
+            browserAvailable: allowsSupplementalBrowserProbe(packet),
+          });
+          if (supplementalLocalTimeoutProbe) {
+            return {
+              messages: [
+                ...state.messages,
+                {
+                  role: "user",
+                  content: buildSupplementalLocalTimeoutProbePrompt(
+                    supplementalLocalTimeoutProbe,
+                  ),
+                },
+              ],
+              forceToolChoice: { name: "sessions_spawn" },
+            };
+          }
+          // S7 branch 4: incomplete approved browser session via sessions_send (:1626).
+          const incompleteApprovedBrowserSession = findIncompleteApprovedBrowserSession({
+            results,
+            taskPrompt: packet.taskPrompt,
+            messages: state.messages,
+            toolTrace,
+            tools: initialGatewayInput.tools,
+          });
+          if (incompleteApprovedBrowserSession) {
+            return {
+              messages: [
+                ...state.messages,
+                {
+                  role: "user",
+                  content: buildIncompleteApprovedBrowserSessionContinuationPrompt(
+                    incompleteApprovedBrowserSession,
+                  ),
+                },
+              ],
+              forceToolChoice: { name: "sessions_send" },
+            };
+          }
+          // S5: forced permission_result round (host-authored, no model call). The
+          // builder's guards (approval-wait-timeout task + pending permission_query +
+          // a pending approval_id) are the idempotency: once permission_result lands,
+          // latestPermissionToolName !== "permission_query" so it does not re-fire.
           const forcedPermissionResultCall =
             buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
               taskPrompt: packet.taskPrompt,
@@ -3705,9 +3802,52 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               }
             }
           }
+          // Stage 7 (with S7): mirror the inline completed-closeout visibility
+          // appenders (inline :1796-1814) — a completed session that recovered a
+          // prior timeout (or a task that requested a timeout-continuation closeout)
+          // gets a user-visible recovered-timeout / continuation line BEFORE redaction.
+          // This closes the PR2c-deferred recovered-timeout visibility gap that the S7
+          // timeout-continuation branches (which resume a timed-out session into a
+          // completed one) would otherwise diverge on.
+          const appendCompletedTimeoutVisibility = (
+            synth: GenerateTextResult,
+          ): GenerateTextResult => {
+            const preserveRecoveredTimeoutCloseout = run.completedSession
+              ? shouldPreserveRecoveredTimeoutCloseout({
+                  taskPrompt: packet.taskPrompt,
+                  messages: state.messages,
+                  toolTrace,
+                  evidenceText: run.completedSession.finalContents.join("\n\n"),
+                })
+              : false;
+            if (
+              preserveRecoveredTimeoutCloseout ||
+              shouldAppendRecoveredTimeoutCloseoutVisibility({
+                resultText: synth.text,
+                taskPrompt: packet.taskPrompt,
+                messages: state.messages,
+                toolTrace,
+              })
+            ) {
+              return maybeAppendRecoveredTimeoutCloseoutVisibility(synth);
+            }
+            if (
+              shouldAppendTimeoutContinuationVisibility({
+                taskPrompt: packet.taskPrompt,
+                messages: state.messages,
+                toolTrace,
+              })
+            ) {
+              return maybeAppendTimeoutContinuationVisibility(synth);
+            }
+            return synth;
+          };
           const closeoutResult =
             reason === "completed_sub_agent_final"
-              ? maybeRedactForbiddenLocalUrls({ result: synthesisResult, packet })
+              ? maybeRedactForbiddenLocalUrls({
+                  result: appendCompletedTimeoutVisibility(synthesisResult),
+                  packet,
+                })
               : reason === "sub_agent_timeout"
                 ? maybeAppendTimeoutContinuationVisibility(synthesisResult)
                 : synthesisResult;
