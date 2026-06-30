@@ -144,8 +144,15 @@ export interface ReActHooks<Ctx extends ToolContext> {
    *  MAX_REPAIR_ROUNDS is the hard backstop. A `consumesRound: true` repair instead
    *  re-arms a REAL tool round that DOES consume the budget (bounded by `maxRounds`
    *  + the host's repairMarker, not `MAX_REPAIR_ROUNDS`); it is still only ARMED
-   *  while `repairRounds < MAX_REPAIR_ROUNDS`, but never increments that counter. */
-  onRepairRound?(state: ReActState, ctx: Ctx): ReActRepairDecision | null;
+   *  while `repairRounds < MAX_REPAIR_ROUNDS`, but never increments that counter.
+   *  A `{ closeout }` directive instead ABORTS the candidate and terminates the run
+   *  with that closeout reason (routed through onTerminate) — a loop-breaker for a
+   *  repair that has failed (e.g. force a local-evidence fallback after a repair
+   *  re-synthesis still left the answer incomplete). */
+  onRepairRound?(
+    state: ReActState,
+    ctx: Ctx
+  ): ReActRepairDecision | { closeout: string } | null;
   /** Gate/split calls before execution (rejected calls become synthetic results). */
   onBeforeExecute?(
     calls: LLMToolCall[],

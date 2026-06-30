@@ -223,6 +223,20 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
                 hooks.onRepairRound && repairRounds < MAX_REPAIR_ROUNDS
                   ? hooks.onRepairRound(state, ctx)
                   : null;
+              if (repair && "closeout" in repair) {
+                // A loop-breaker: abort the candidate and terminate the run with this
+                // closeout reason (routed through onTerminate), instead of repairing or
+                // finalizing the still-incomplete candidate.
+                const reArm = yield* terminate(repair.closeout);
+                if (reArm) {
+                  state.messages = reArm.reArm.messages;
+                  if (reArm.reArm.forceToolChoice !== undefined) {
+                    pendingForceToolChoice = reArm.reArm.forceToolChoice;
+                  }
+                  continue;
+                }
+                return;
+              }
               if (repair) {
                 state.messages = repair.messages;
                 pendingRepairToolChoice = repair.forceToolChoice ?? "none";
