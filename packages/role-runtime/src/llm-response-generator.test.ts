@@ -24309,3 +24309,87 @@ test("cutover parity: the S8 forced continuation round caps over-spawned streams
   assert.equal(engineCloseout4?.reason, inlineCloseout4?.reason);
   assert.equal(engineCloseout4?.roundCount, inlineCloseout4?.roundCount);
 });
+
+test("cutover parity: the S8 cap keeps the inline function's behavior even when the forced round repeats an already-completed label first", async () => {
+  // Stage 7 S8 cap, adversarial ordering (codex #518 follow-up). The forced round
+  // repeats the already-completed label ("orchestration") FIRST, then two remaining
+  // labels. limitIndependentEvidenceSpawnCalls keeps the first `remaining` spawns
+  // regardless of label, so it drops the LAST one. This is a property of the SHARED
+  // inline function (used by production inline at :513) — the engine onToolCalls hook
+  // calls the identical function, so both paths drop the same spawn and finalize
+  // identically. The cutover is behavior-preserving: deduping completed labels would
+  // be a production-inline behavior change, out of scope for a parity slice (a
+  // potential follow-up that must land in the shared function for BOTH paths).
+  const taskPrompt = [
+    "Prepare a product-ready brief about the next release.",
+    "These are three independent evidence streams.",
+    "Research source: orchestration.",
+    "Capability source: bridge.",
+    "Live signal dashboard: signals.",
+  ].join("\n");
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const completed = (id: string, label: string) =>
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      task_id: `task-${id}`,
+      session_key: `worker:explore:task-${id}`,
+      agent_id: "explore",
+      status: "completed",
+      tool_chain: ["explore"],
+      result: `${label} evidence complete.`,
+      final_content: `${label} verified evidence. Residual risk: local fixture only.`,
+      payload: { mode: "llm_sub_agent", workerType: "explore", content: `${label} verified evidence. Residual risk: local fixture only.` },
+    });
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "Spawning the first stream.", toolCalls: [{ id: "toolu-one", name: "sessions_spawn", input: { agent_id: "explore", task: "Check orchestration source only.", label: "orchestration" } }] };
+      }
+      if (calls === 2) {
+        // repeats the completed "orchestration" label FIRST, then the two remaining.
+        return { ...base, text: "Spawning streams (repeats a completed label first).", toolCalls: [
+          { id: "toolu-orch-dup", name: "sessions_spawn", input: { agent_id: "explore", task: "Re-check orchestration source.", label: "orchestration" } },
+          { id: "toolu-bridge", name: "sessions_spawn", input: { agent_id: "explore", task: "Check capability bridge source only.", label: "bridge" } },
+          { id: "toolu-signals", name: "sessions_spawn", input: { agent_id: "explore", task: "Check live signals source only.", label: "signals" } },
+        ] };
+      }
+      return { ...base, text: "Final brief from the gathered independent streams.", toolCalls: [] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [{ name: "sessions_spawn", description: "spawn", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" }, label: { type: "string" } } } }];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        return { toolCallId: input.call.id, toolName: input.call.name, content: completed(String(input.call.id), String(input.call.input.label ?? input.call.id)) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  // the engine faithfully mirrors the shared inline function in this adversarial
+  // ordering: identical executed spawns, identical content/closeout.
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.deepEqual(engine.executed.map((c) => c.id), inline.executed.map((c) => c.id));
+  const engineCloseout5 = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout5 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout5?.reason, inlineCloseout5?.reason);
+  assert.equal(engineCloseout5?.roundCount, inlineCloseout5?.roundCount);
+});
