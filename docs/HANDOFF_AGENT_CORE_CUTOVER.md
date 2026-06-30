@@ -15,8 +15,8 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **238-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 41 cutover parity tests) — must stay green with **zero
+- Every slice is gated by the **241-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 44 cutover parity tests) — must stay green with **zero
   assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (27 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
@@ -307,8 +307,16 @@ host-authored forced rounds (permission_result). Plus wiring two already-defined
   triggers `normalizeBoundedTimeoutSourceSpawnAgents`. Both unblock when S8/S9 + the sessions_list lookup
   sub-slice land. Their mechanism (timeout→sessions_send / completedSession→sessions_spawn forceToolChoice)
   is already verified by branches 1/4 + S2/S3's forced sessions_spawn.
-- **S8** — `shouldContinueIndependentEvidenceStreams` (inline :1648, `sessions_spawn`) via
-  `onAfterExecuteContinue`. Independent.
+- **S8 ✅ #518** — `shouldContinueIndependentEvidenceStreams` (inline :1648, forced `sessions_spawn`)
+  via `onAfterExecuteContinue`, between branch 4 and the S5 forced permission_result. Role-runtime-only
+  (reuses S7's `forceToolChoice` mechanism — no agent-core change). A multi-stream delegation that has
+  completed fewer than its required streams continues via a forced `sessions_spawn` round BEFORE the
+  completed-session closeout; the predicate's continuation-prompt presence makes it fire exactly once
+  (the model then spawns the remaining streams). Parity+mutation verified with a clean 3-explore-stream
+  fixture (no continuation language → no `sessions_list` lookup; no browser/URLs → no spawn normalization).
+  Fully verified — no deferred fixtures. Also adds the engine `onToolCalls` hook running
+  `limitIndependentEvidenceSpawnCalls` (inline :513) so the forced round cannot over-spawn beyond the
+  remaining streams (codex #518 P2); S9 extends this same hook with the approval-gate normalizer.
 - **S9** — `shouldRepairMissingApprovalGate` (natural-finish :807 + post-execute :1672) **+ port
   `enforceMissingApprovalGateRepairToolCalls` into the engine `onToolCalls`** (the normalizer + both
   sites must land in one slice or parity is structurally impossible).
@@ -353,12 +361,13 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (238)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (241)
 npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (27)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
 # S1 pre-execute suppression (#513), S2/S3 forced-spawn browser-evidence + consumesRound
 # flag (#514), S4 onRoundEmpty sessions_send injection + toolTrace fix (#515) DONE.
-# Next: S8 — shouldContinueIndependentEvidenceStreams via onAfterExecuteContinue (independent).
+# Next: S9 — shouldRepairMissingApprovalGate (natural-finish + post-execute) + port
+# enforceMissingApprovalGateRepairToolCalls into the engine onToolCalls (one slice).
 # NOTE: RTK wrapper mangles `npx`; run gates via `rtk proxy npx tsc …` / `rtk proxy npx tsx …`
 ```
 

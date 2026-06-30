@@ -2525,6 +2525,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       toolkit,
       maxRounds,
       hooks: {
+        // Tool-call normalization (the engine's slice of the inline pipeline). Only
+        // the normalizers a cut-over slice needs are ported here; the rest stay
+        // inline-only until their slice lands. Stage 7 S8: limitIndependentEvidence
+        // SpawnCalls caps a round's sessions_spawn calls to the streams still
+        // required (inline :513), so the S8 forced-continuation round cannot
+        // over-spawn child sessions when the model repeats labels. Runs before the
+        // current round is recorded in toolTrace, so the completed-stream count
+        // reflects only prior rounds — matching inline.
+        onToolCalls: (calls) => {
+          if (!activeToolLoop) {
+            return calls;
+          }
+          return limitIndependentEvidenceSpawnCalls(calls, {
+            taskPrompt: packet.taskPrompt,
+            toolTrace,
+          });
+        },
         // Honor the execution limits the per-call default bypasses: order-dependent
         // serialization, bounded concurrency, and per-chunk wall-clock aborts —
         // reusing the same helpers the inline executeToolCalls uses, rather than
@@ -3039,6 +3056,36 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 },
               ],
               forceToolChoice: { name: "sessions_send" },
+            };
+          }
+          // S8: independent evidence streams — a multi-stream delegation task that has
+          // not yet completed all required streams continues via a forced sessions_spawn
+          // round (inline :1648), between branch 4 and S5. Idempotency: the predicate
+          // returns false once its continuation prompt is in `messages`, so it fires at
+          // most once; the model is then expected to spawn the remaining streams.
+          if (
+            shouldContinueIndependentEvidenceStreams({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              toolTrace,
+              tools: initialGatewayInput.tools,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                {
+                  role: "user",
+                  content: buildIndependentEvidenceStreamContinuationPrompt({
+                    requiredStreams: inferIndependentEvidenceStreamCount(
+                      packet.taskPrompt,
+                    ),
+                    completedSessions:
+                      countCompletedSessionEvidenceResults(toolTrace),
+                  }),
+                },
+              ],
+              forceToolChoice: { name: "sessions_spawn" },
             };
           }
           // S5: forced permission_result round (host-authored, no model call). The
