@@ -269,6 +269,20 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           state.messages = appendToolResultMessages(state.messages, results);
           state.results.push(...results);
 
+          // Post-execute continuation: the host may run a forced tool round itself
+          // and hand back rewritten messages to run another round, pre-empting a
+          // terminal closeout the results would otherwise trigger (e.g. a forced
+          // permission_result check before a completed-session closeout). The forced
+          // round is the host's own; the engine just adopts the messages and loops
+          // (round++), so it is bounded by maxRounds.
+          if (hooks.onAfterExecuteContinue) {
+            const cont = await hooks.onAfterExecuteContinue(results, state, ctx);
+            if (cont) {
+              state.messages = cont.messages;
+              continue;
+            }
+          }
+
           const postReason = hooks.onAfterExecute ? hooks.onAfterExecute(results, state, ctx) : null;
           if (postReason) {
             yield* terminate(postReason);
@@ -278,8 +292,17 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           // Re-thrown abort (cooperative cancellation) must propagate, not be
           // swallowed by the model-call error hook.
           if (signal?.aborted) throw error;
-          const recovery = hooks.onModelCallError ? hooks.onModelCallError(error, state, ctx) : "rethrow";
+          const recovery = hooks.onModelCallError
+            ? await hooks.onModelCallError(error, state, ctx)
+            : "rethrow";
           if (recovery === "rethrow") throw error;
+          // A { messages } continuation: the host ran a forced recovery round (e.g.
+          // a forced permission_result check) and handed back rewritten messages —
+          // adopt them and run another round instead of finalizing.
+          if ("messages" in recovery) {
+            state.messages = recovery.messages;
+            continue;
+          }
           yield finalEvent(recovery, round, "model_call_error");
           return;
         }

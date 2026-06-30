@@ -81,6 +81,39 @@ test("onModelCallError recovers a thrown model call into a terminal synthesis", 
   assert.equal(final?.type === "final" && final.closeoutReason, "model_call_error");
 });
 
+test("onModelCallError { messages } continuation runs another round instead of finalizing", async () => {
+  // round 0 throws; the hook hands back rewritten messages (a host forced-recovery
+  // round) so the engine adopts them and runs round 1 instead of closing out.
+  const model = scriptedModel([
+    { text: "", throws: "transient model error" },
+    { text: "answer after forced recovery", stopReason: "end_turn" },
+  ]);
+  let recovered = 0;
+  const events = await run(model, {
+    onModelCallError: (_error, state) => {
+      recovered += 1;
+      return { messages: [...state.messages, { role: "user", content: "forced recovery evidence" }] };
+    },
+  });
+  const final = events.at(-1);
+  // continued to a real answer, NOT a model_call_error finalize
+  assert.equal(final?.type === "final" && final.text, "answer after forced recovery");
+  assert.notEqual(final?.type === "final" && final.closeoutReason, "model_call_error");
+  assert.equal(recovered, 1); // the recovery fired exactly once
+  assert.equal(model.seen.length, 2); // round 0 (threw) + round 1 (the adopted continuation)
+  assert.equal(model.seen[1]!.messageCount, 2); // the injected recovery message was adopted
+});
+
+test("onModelCallError is awaited (an async recovery synthesis still finalizes)", async () => {
+  const model = scriptedModel([{ text: "", throws: "boom" }]);
+  const events = await run(model, {
+    onModelCallError: async () => ({ text: "async recovery" }),
+  });
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "async recovery");
+  assert.equal(final?.type === "final" && final.closeoutReason, "model_call_error");
+});
+
 test("onRoundEmpty injects calls to override natural termination (forced continuation)", async () => {
   // model never asks for a tool; onRoundEmpty forces one search on round 0
   const model = scriptedModel([
@@ -126,6 +159,44 @@ test("onAfterExecute can close out the loop with a reason", async () => {
   const final = events.at(-1);
   assert.equal(final?.type === "final" && final.text, "closed: evidence_complete");
   assert.equal(final?.type === "final" && final.closeoutReason, "evidence_complete");
+});
+
+test("onAfterExecuteContinue runs another round and pre-empts the onAfterExecute closeout", async () => {
+  // round 0 executes a tool; the continuation hook fires once (handing back rewritten
+  // messages, as a host forced round would) so the engine loops to round 1 instead of
+  // letting onAfterExecute close the run out. The continuation must run BEFORE
+  // onAfterExecute, so the closeout never fires on round 0.
+  const model = scriptedModel([
+    { text: "go", toolCalls: [call("c1", "search")] },
+    { text: "final after forced round", stopReason: "end_turn" },
+  ]);
+  let continued = 0;
+  const events = await run(model, {
+    onAfterExecuteContinue: (_results, state) => {
+      if (continued > 0) return null;
+      continued += 1;
+      return { messages: [...state.messages, { role: "user", content: "forced permission_result evidence" }] };
+    },
+    onAfterExecute: () => "would_close_out", // must be pre-empted on round 0
+    onTerminate: (reason) => ({ text: `closed: ${reason}` }),
+  });
+  const final = events.at(-1);
+  // the continuation pre-empted the closeout: a real answer, not "closed: would_close_out"
+  assert.equal(final?.type === "final" && final.text, "final after forced round");
+  assert.equal(continued, 1);
+  assert.equal(model.seen.length, 2); // round 0 + the adopted continuation round
+  assert.equal(model.seen[1]!.messageCount, 4); // user + assistant-toolcall + tool-result + injected
+});
+
+test("onAfterExecuteContinue returning null falls through to onAfterExecute", async () => {
+  const model = scriptedModel([{ text: "go", toolCalls: [call("c1", "search")] }, { text: "unreached" }]);
+  const events = await run(model, {
+    onAfterExecuteContinue: () => null,
+    onAfterExecute: () => "evidence_complete",
+    onTerminate: (reason) => ({ text: `closed: ${reason}` }),
+  });
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "closed: evidence_complete");
 });
 
 test("onToolCallsClose closes out on the pending calls before they execute", async () => {
