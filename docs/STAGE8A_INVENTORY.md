@@ -1,7 +1,7 @@
 # Stage 8A Inventory — Inline Response Generator → Engine Cutover
 
 Source of behavior rows: classified inline-response-generator audit (Stage 8A).
-Source of empirical parity: `/tmp/stage8a-full.txt` (full inline test suite run with `TURNKEYAI_REACT_ENGINE=engine`), with `/tmp/stage8a-probe.txt` as an earlier capped corroborating run.
+Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-check.ts`, chunked + recovery + force-exit runner, Batch A) → `docs/STAGE8B_PARITY_STATUS.md`. The original capped probes (`/tmp/stage8a-full.txt`, `/tmp/stage8a-probe.txt`) are superseded — they only reached subtest 54 before the engine wall-clock crash; the runner now runs the whole suite to completion.
 
 > Closeout / repair **precedence** in this document is transcribed verbatim from the rows. It is the single most bug-prone surface in this codebase — do not reorder when extracting into 8C–8I.
 
@@ -9,48 +9,32 @@ Source of empirical parity: `/tmp/stage8a-full.txt` (full inline test suite run 
 
 ## 1. Parity Dashboard (engine = `TURNKEYAI_REACT_ENGINE=engine`)
 
-**Probe status: PARTIAL.** `/tmp/stage8a-full.txt` contains no terminal TAP plan (`1..N`) line and no `# tests/# pass/# fail` summary footer. The capture ends mid-stream after subtest **54** (`...extends wall-clock for slow loopback browser session tools`). All counts below are over subtest lines actually present (the file-wrapper line is ignored).
+**Probe status: COMPLETE (Batch A).** The chunked runner (`npm run parity:engine`) now runs the whole suite to completion and writes `docs/STAGE8B_PARITY_STATUS.md`. The original probe was only partial (stalled at subtest 54 on the engine wall-clock crash); these are the first authoritative full-suite numbers.
 
 | Metric | Value |
 |---|---|
-| Inline behavior tests observed (last subtest reached) | **54** (partial — run did not emit `1..N`) |
-| Pass on engine (`ok N -`) | **33** |
-| Fail on engine (`not ok N -`) | **21** |
-| Hang / timeout | **0 true infinite loops** (bounded by `maxRounds`), BUT subtest **#55 `does not abort active browser sessions at the parent wall-clock boundary` (test.ts:5756) does not terminate in a reasonable time on the engine path** — both the capped and uncapped probes stall there. Treat it as a **convergence-risk repro**: the engine almost certainly does not honor the per-tool wall-clock abort the way inline does, so it churns rounds until `maxRounds`. 8B must root-cause it (likely the `runToolBatch` per-chunk wall-clock + `extendWallClockForActiveBrowserSession` path) and add a per-test timeout to the parity CI job so the rest of the suite runs past it. |
-| Corroboration (`/tmp/stage8a-probe.txt`) | also reaches 54, 33 ok / 22 not ok — consistent (one extra fail in the capped run; treat full run's 21 as authoritative). |
+| Inline behavior tests (baseline, `npm run parity:inline`) | **252 pass / 0 fail** |
+| Engine tests run to completion | **250** (2 skipped — see below) |
+| Pass on engine | **185** |
+| Fail on engine | **65** |
+| Incomplete after recovery | **0** (chunked + per-test re-run recovers cross-test leak crashes) |
+| Skipped — known engine crash/non-termination | **2**, both documented in the runner's `KNOWN_HANGS`: (Batch E) `does not abort active browser sessions at the parent wall-clock boundary` (test.ts:5756) — engine does not abort/tear down the active browser session at the parent wall-clock boundary; its leaked timer fires ~2 min in and crashes the run (this is the old "#55" stall, now understood as a leaked-timer crash, not an infinite loop). (Batch B) `does not treat resumable partial session output as completion evidence` — engine churns to `maxRounds` even in isolation where inline converges (a continuation-completion divergence). |
 
-### Failing tests grouped by the target layer most likely responsible
+**Harness note.** A single-process engine run dies after ~54 tests because the leaked browser-session timer crashes whatever test is executing when it fires. The runner therefore executes the suite in small fresh-process chunks (so a leak at most kills one chunk), force-exits each chunk, applies a per-test timeout, reaps the process group on an OS backstop, and re-runs any unreported test individually to recover blameless neighbours and isolate the true crasher. This is what makes parity "known, categorized, and runnable to completion."
 
-**T4-permission + T9-repair — approval-gate & approval-wait-timeout repair family (the dominant cluster, 13 fails)**
-This is the single largest failure block and maps directly to the `engineStatus=gap` approval-wait-timeout repair family that was never ported into `onRepairRound` (inline `:833–984`).
-- `not ok 10 - gates premature approval browser spawns with permission_query` (`normalizeApprovalGatedBrowserSpawnCalls`, **partial**)
-- `not ok 13 - suppresses read-only permission queries that disclaim submission` (`shouldSuppressReadOnlyPermissionQueryToolCalls`, gap)
-- `not ok 14 - suppresses AsiaWalk read-only planning permission queries` (same, gap)
-- `not ok 15 - suppresses provider pricing read-only permission queries` (same, gap)
-- `not ok 21 - checks permission_result before approval wait-timeout closeout` (`shouldRepairPendingApprovalWaitTimeoutCheck`, gap)
-- `not ok 22 - repairs stale pending answers after approval is applied` (`shouldRepairStalePendingApproval`, gap)
-- `not ok 23 - repairs incomplete approved browser action when approval is daemon-applied` (approval repair family, gap)
-- `not ok 24 - repairs stale pending answers after daemon-applied approval continuation` (`shouldRepairStalePendingApproval`, gap)
-- `not ok 25 - repairs pending answer from applied approval continuation text` (`shouldRepairPendingApprovalWaitTimeoutCheck`, gap)
-- `not ok 26 - repairs stale pending answers after progress-applied approval` (`shouldRepairStalePendingApproval`, gap)
-- `not ok 27 - repairs approval-applied delegation-only browser finals` (`shouldRepairMissingApprovalGate` / family, gap)
-- `not ok 28 - repairs approved browser actions that claim tools are unavailable` (`shouldRepairPrematurePendingApprovalFinal` / family, gap)
-- `not ok 30 - repairs stale pending answers after approval is denied` (approval repair family, gap)
+### Failing tests grouped by owning batch
 
-**C5-memory-compaction — envelope retry / memory-flush / pruning / compaction (4 fails)**
-Maps to the inline-only reduction/flush capture and pruning-telemetry gaps.
-- `not ok 1 - retries with a smaller request envelope after overflow` (`generateWithEnvelopeRetry` + `reductionSnapshot` carry-forward gap)
-- `not ok 2 - flushes memory once before request-envelope reduction` (`flushPreCompactionMemorySafely` + `memoryFlushes` accumulation gap)
-- `not ok 39 - prunes older oversized tool results before later rounds` (`pruneToolResultMessagesForGateway` / `summarizeToolResultPruning` gap)
-- `not ok 47 - compacts older tool history before message-count overflow` (`compactOlderToolHistoryForGateway` / pruning-telemetry gap)
+Full per-test list lives in `docs/STAGE8B_PARITY_STATUS.md` (regenerated by `npm run parity:engine`). Cluster regexes in `scripts/engine-parity-check.ts` are the single source of truth and map to the campaign batches:
 
-**T7-execution / loop-control (3 fails)**
-- `not ok 7 - runs native tool-use loop and feeds tool results back` (core engine tool-round wiring; gated by normalizer-pipeline gaps below)
-- `not ok 36 - disables native tools when packet requests no tool use` (tool-disable path / `shouldSuppressToolsForAwaitingContextSetup`-adjacent)
-- `not ok 37 - persists native tool progress while the tool is running` (progress observability; relates to inline-only `recordToolResultPruningBoundarySafely`)
+| Cluster | Fails | Owning batch |
+|---|---|---|
+| **T2 tool normalization / continuation** | **40** | Batch B (tool normalization + continuation plane) |
+| **T10 browser / session finalization & visibility** | **11** | Batch C (browser/session finalization plane) |
+| **C5 memory / compaction / envelope** | **5** | Batch D (memory/compaction/envelope plane) |
+| **T7 execution budget / wall-clock** | **4** | Batch E (execution budget/wall-clock plane) + the 2 skipped |
+| **Other (closeout / misc)** | **5** | spread across B/E (native-loop wiring, no-tool-use disable, failed-only closeout) |
 
-**T8-closeout (1 fail)**
-- `not ok 48 - synthesizes instead of falling back when tool round limit is reached` (closeout synthesis path; adjacent to `tool_evidence_fallback` gap which is engineStatus=gap)
+**Now DONE on the engine path (merged #515–#526, Stage 8B slices 1a–native-persistence).** The original dominant fail cluster — the 13-fail approval-gate + approval-wait-timeout repair family, the read-only permission-query suppression, the 1c hard `tool_evidence_fallback` closeout, the progress-observability lifecycle, and native-tool-message persistence — is green on engine and no longer appears in the fail list. The remaining 65 fails are the Batch B–E coding surface above.
 
 ---
 
@@ -421,7 +405,7 @@ End-of-loop:
 
 Out-of-band (pre-empts loop):
 
-- **tool_evidence_fallback** — inline :420-431 only. *Fires on RequestEnvelopeOverflowError; `engineStatus=gap` (engine doesn't handle envelope overflow). Also the hard-closeout target of `shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair` (:955-983).*
+- **tool_evidence_fallback** — inline :420-431. *The hard-closeout target of `shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair` (:955-983) is **DONE on engine** (slice 1c, merged #524): `onRepairRound` returns `{closeout: "tool_evidence_fallback"}` and `onTerminate` builds the deterministic local-evidence closeout. The remaining gap is the **RequestEnvelopeOverflowError** trigger path (envelope overflow → fallback), which is Batch D (memory/compaction/envelope).*
 
 All 11 reasons map through `missionTerminalStatusForCloseout` (:111-130): `completed_sub_agent_final`→completed; `wall_clock_budget`/`round_limit`/`sub_agent_timeout`/`repeated_session_inspection`/`excessive_session_continuation`/`tool_evidence_fallback`/`pseudo_tool_call`→(evidenceAvailable?partial:blocked); `operator_cancelled`/`repeated_tool_failure`/`recovery_tool_budget`→blocked.
 
