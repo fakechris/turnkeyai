@@ -5,6 +5,7 @@ import type {
   ReActEvent,
   ReActLoop,
   ReActLoopOptions,
+  ReActReArm,
   ReActRunInput,
   ReActState,
   ReActSynthesis,
@@ -84,11 +85,19 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
       // Produce a terminal answer for a closeout reason. The host's onTerminate
       // wins; the default is a single tool-free synthesis model call (mirrors the
       // existing generator's generateFinalAfterToolRoundLimit), surfaced as a
-      // model_response so observers still see it.
-      async function* terminate(reason: string): AsyncGenerator<ReActEvent, void> {
+      // model_response so observers still see it. Returns a ReActReArm directive when
+      // onTerminate aborts the closeout to run another round (no `final` is emitted);
+      // the caller adopts the rewritten messages + forced choice and continues.
+      async function* terminate(
+        reason: string
+      ): AsyncGenerator<ReActEvent, ReActReArm | undefined> {
         if (hooks.onTerminate) {
-          yield finalEvent(await hooks.onTerminate(reason, state, ctx), state.round, reason);
-          return;
+          const outcome = await hooks.onTerminate(reason, state, ctx);
+          if (outcome && "reArm" in outcome) {
+            return outcome;
+          }
+          yield finalEvent(outcome, state.round, reason);
+          return undefined;
         }
         throwIfAborted(signal);
         const response = await options.model.generate({
@@ -101,6 +110,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           state.round,
           reason
         );
+        return undefined;
       }
 
       // Carries a forced tool choice from an onRepairRound directive into the
@@ -121,7 +131,14 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
 
         const preReason = runPredicates(hooks.terminationPredicates, state, ctx);
         if (preReason) {
-          yield* terminate(preReason);
+          const reArm = yield* terminate(preReason);
+          if (reArm) {
+            state.messages = reArm.reArm.messages;
+            if (reArm.reArm.forceToolChoice !== undefined) {
+              pendingForceToolChoice = reArm.reArm.forceToolChoice;
+            }
+            continue;
+          }
           return;
         }
 
@@ -167,7 +184,14 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             ? hooks.onToolCallsClose(toolCalls, state, ctx)
             : null;
           if (closeReason) {
-            yield* terminate(closeReason);
+            const reArm = yield* terminate(closeReason);
+            if (reArm) {
+              state.messages = reArm.reArm.messages;
+              if (reArm.reArm.forceToolChoice !== undefined) {
+              pendingForceToolChoice = reArm.reArm.forceToolChoice;
+            }
+              continue;
+            }
             return;
           }
           // Pre-execute suppression: a host may drop this round's tool calls and
@@ -291,7 +315,18 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
 
           const postReason = hooks.onAfterExecute ? hooks.onAfterExecute(results, state, ctx) : null;
           if (postReason) {
-            yield* terminate(postReason);
+            // onTerminate may abort this closeout to re-arm a forced tool round (e.g.
+            // a completed-session synthesis that still lacks required browser evidence
+            // re-arms a sessions_spawn round): adopt its messages + forced choice and
+            // continue (round++, a budget-consuming round bounded by maxRounds).
+            const reArm = yield* terminate(postReason);
+            if (reArm) {
+              state.messages = reArm.reArm.messages;
+              if (reArm.reArm.forceToolChoice !== undefined) {
+              pendingForceToolChoice = reArm.reArm.forceToolChoice;
+            }
+              continue;
+            }
             return;
           }
         } catch (error) {

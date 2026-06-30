@@ -376,6 +376,35 @@ test("onRepairRound returning null finalizes the candidate answer unchanged", as
   assert.equal(model.seen.length, 1); // no extra round
 });
 
+test("onTerminate can re-arm a forced round instead of finalizing", async () => {
+  // The closeout fires (onAfterExecute), but onTerminate ABORTS it the first time —
+  // returning a reArm directive (rewritten messages + a forced tool choice) to run
+  // another round (like a completed synthesis that still needs browser evidence). The
+  // second time it finalizes. No `final` is emitted for the aborted closeout.
+  const model = scriptedModel([
+    { text: "r0", toolCalls: [call("c1", "search")] },
+    { text: "r1", toolCalls: [call("c2", "search")] },
+  ]);
+  let terminates = 0;
+  const events = await run(model, {
+    onAfterExecute: () => "needs_more",
+    onTerminate: (_reason, state) => {
+      terminates += 1;
+      if (terminates === 1) {
+        return { reArm: { messages: [...state.messages, { role: "user", content: "gather more" }], forceToolChoice: { name: "search" } } };
+      }
+      return { text: `closed after ${terminates} terminates` };
+    },
+  });
+  const finals = events.filter((e) => e.type === "final");
+  assert.equal(finals.length, 1); // the aborted closeout emitted no final
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "closed after 2 terminates");
+  assert.equal(terminates, 2);
+  assert.equal(model.seen.length, 2); // round 0 + the re-armed round 1
+  assert.deepEqual(model.seen[1]!.toolChoice, { name: "search" }); // the forced choice carried
+});
+
 test("onRepairRound runs the repair round even at the round budget edge", async () => {
   // maxRounds=1: round 0 is the only allowed round. A repair requested on it must
   // still re-synthesize rather than fall through to round_limit — a repair round
