@@ -2479,6 +2479,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       pendingCloseout: undefined,
     };
     const toolTrace: NativeToolRoundTrace[] = [];
+    // Stage 8B slice 1b: the engine's onToolCalls hook has no state.messages, so the
+    // sessionContext the inline normalizers compute via buildContinuationDirectiveContext
+    // (taskPrompt + tool-result messages carrying session_key/"sessions") is rebuilt from
+    // the SHARED toolTrace results instead. At onToolCalls time the trace holds only prior
+    // rounds (the current round is not recorded yet), exactly like inline's pre-normalize
+    // messages — so the two contexts are equivalent.
+    const buildSessionContextFromTrace = (): string => {
+      const toolEvidence = toolTrace
+        .flatMap((round) => round.results)
+        .map((result) => result.content ?? "")
+        .filter(
+          (content) =>
+            content.includes("session_key") || content.includes('"sessions"'),
+        )
+        .join("\n");
+      return toolEvidence ? `${packet.taskPrompt}\n${toolEvidence}` : packet.taskPrompt;
+    };
     // Stage 7 S4: the synthetic sessions_send the empty-round continuation would
     // inject (inline :567-587), or null. Shared by onToolCallsClose (the wall-clock
     // pre-check below) and onRoundEmpty (the actual injection) so both agree on
@@ -2547,6 +2564,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             messages: [],
             repairMarkers: hookCtx.repairMarkers ?? [],
             taskPrompt: packet.taskPrompt,
+            toolTrace,
+          });
+          // Stage 8B slice 1b: normalizeApprovalGatedBrowserSpawnCalls (inline :508,
+          // between enforce :474 and limit :513). Rewrites a premature mutating browser
+          // sessions_spawn for an approval-gated task into a permission_query (so the
+          // approval gate is enforced PRE-execute, not via a later repair), and dedups
+          // duplicate browser spawns in a round. sessionContext mirrors inline's
+          // buildContinuationDirectiveContext but reads the SHARED toolTrace results
+          // (onToolCalls has no state.messages); both surface only prior-round session
+          // evidence at this point, so they are equivalent. Its own permission-evidence
+          // guards (hasPermissionGateContextEvidence / hasPermissionGateEvidence) keep it
+          // a no-op once the gate has been observed.
+          normalized = normalizeApprovalGatedBrowserSpawnCalls(normalized, {
+            taskPrompt: packet.taskPrompt,
+            sessionContext: buildSessionContextFromTrace(),
             toolTrace,
           });
           normalized = limitIndependentEvidenceSpawnCalls(normalized, {
@@ -2639,6 +2671,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         onSuppressToolCalls: (calls, state, ctx) => {
           if (!activeToolLoop || calls.length === 0) {
             return null;
+          }
+          // Stage 8B slice 1b: read-only permission-query suppression (inline :518).
+          // A source-backed/read-only task (or one disclaiming browser mutation) that
+          // emits a permission_query gets the calls dropped + a tool-free re-prompt, so
+          // it does not gate a non-mutating read. No marker: the forced tool-free round
+          // converges (no calls → no re-suppress). Checked BEFORE the awaiting-context
+          // suppression (inline :518 precedes :1013). sessionContext is the inline
+          // continuation-directive context over state.messages.
+          if (
+            shouldSuppressReadOnlyPermissionQueryToolCalls(calls, {
+              taskPrompt: packet.taskPrompt,
+              sessionContext: buildContinuationDirectiveContext(
+                packet.taskPrompt,
+                state.messages,
+              ),
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                {
+                  role: "user",
+                  content: buildReadOnlyPermissionQuerySuppressionPrompt(),
+                },
+              ],
+              forceToolChoice: "none",
+            };
           }
           const repairMarkers = (ctx.repairMarkers ??= []);
           if (
