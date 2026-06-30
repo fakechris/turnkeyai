@@ -24843,3 +24843,71 @@ test("cutover parity (8B-1b): a read-only permission_query is suppressed and re-
   assert.deepEqual(engine.result.mentions, inline.result.mentions);
   assert.match(engine.result.content, /no form submission or browser mutation ran/i);
 });
+
+test("cutover parity (8B-1b): the read-only suppression pre-empts a same-round wall_clock_budget closeout, identically on both paths", async () => {
+  // Stage 8B slice 1b precedence (codex #523 P2). The read-only suppression runs BEFORE
+  // the pending-call closeouts inline (:518 < the wall_clock check), so a read-only
+  // permission_query emitted on a round where the wall-clock budget is already exhausted
+  // is SUPPRESSED, not closed out. The engine pre-empts onToolCallsClose when the read-
+  // only suppression applies, so both paths suppress + re-prompt tool-free rather than
+  // finalizing with wall_clock_budget.
+  const taskPrompt = [
+    "Use the completed browser evidence from the product signal dashboard.",
+    "This is a read-only inspection: open, snapshot, screenshot, and scroll only.",
+    "Do not submit any form or mutate browser state.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    let calls = 0;
+    let now = 0;
+    let executedPermissionQuery = false;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        // round 0: a neutral tool round that burns the wall-clock budget.
+        return { ...base, text: "Gathering evidence.", toolCalls: [{ id: "toolu-note", name: "record_note", input: { note: "checked" } }] };
+      }
+      if (calls === 2) {
+        // round 1: a read-only permission_query while the budget is exhausted — must be
+        // suppressed (pre-empts wall_clock_budget), not closed out.
+        return { ...base, text: "Requesting approval.", toolCalls: [{ id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit", scope: "mutate", worker_kind: "browser" } }] };
+      }
+      return { ...base, toolCalls: [], text: "Completed from existing browser evidence: no form submission or browser mutation ran." };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "record_note", description: "record", inputSchema: { type: "object", properties: { note: { type: "string" } } } },
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        if (input.call.name === "permission_query") {
+          executedPermissionQuery = true;
+          throw new Error("read-only permission query must not enter native approval flow");
+        }
+        now = 200; // past the 100ms budget
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ ok: true }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128, maxWallClockMs: 100 },
+      clock: { now: () => now },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executedPermissionQuery };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  // suppressed on BOTH paths despite the exhausted budget; the answer is the same, and
+  // the closeout is NOT wall_clock_budget.
+  assert.equal(engine.executedPermissionQuery, false);
+  assert.equal(inline.executedPermissionQuery, false);
+  assert.equal(engine.result.content, inline.result.content);
+  const engineCloseout = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  const inlineCloseout = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
+  assert.notEqual(engineCloseout?.reason, "wall_clock_budget");
+});

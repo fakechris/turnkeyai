@@ -2754,6 +2754,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!activeToolLoop) {
             return null;
           }
+          // Stage 8B slice 1b (codex #523 P2): the read-only permission-query suppression
+          // runs BEFORE the pending-call closeouts inline (:518 precedes :539+), but the
+          // engine's onSuppressToolCalls runs AFTER this hook. So pre-empt the closeouts:
+          // when the read-only suppression would fire, return null here (no closeout this
+          // round) and let onSuppressToolCalls perform the drop + tool-free re-prompt —
+          // preserving the inline ordering for the read-only + closeout compound case.
+          if (
+            shouldSuppressReadOnlyPermissionQueryToolCalls(calls, {
+              taskPrompt: packet.taskPrompt,
+              sessionContext: buildContinuationDirectiveContext(
+                packet.taskPrompt,
+                state.messages,
+              ),
+            })
+          ) {
+            return null;
+          }
           const roundCount = toolTrace.length;
           // Stage 7 S4: the synthetic sessions_send an empty round WOULD inject (or
           // null). Inline injects it (:567) BEFORE the pseudo_tool_call closeout
