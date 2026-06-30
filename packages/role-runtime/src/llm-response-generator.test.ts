@@ -14,7 +14,10 @@ import type {
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
-import { LLMRoleResponseGenerator } from "./llm-response-generator";
+import {
+  LLMRoleResponseGenerator,
+  ENGINE_TOOL_CALL_NORMALIZATION_ORDER,
+} from "./llm-response-generator";
 import type { PreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
 import type {
@@ -21276,6 +21279,29 @@ function fixedAnswerGateway(text: string): LLMGateway {
   });
   return gateway;
 }
+
+// Stage 8B Batch B: pin the engine tool-call normalization order. Order is the
+// single most parity-bug-prone surface in this cutover, so it is asserted as a
+// golden sequence — a reorder must be a deliberate, reviewed change. Each step
+// mirrors the inline pipeline (llm-response-generator inline :473-516) in order.
+test("cutover parity: engine tool-call normalization runs the inline pipeline order", () => {
+  assert.deepEqual(ENGINE_TOOL_CALL_NORMALIZATION_ORDER, [
+    "sessionToolAlias", // inline :475
+    "enforceMissingApprovalGateRepair", // inline :474
+    "supplementalLocalTimeoutProbe", // inline :473
+    "sessionContinuationDirective", // inline :489
+    "sessionContinuationLookupDirective", // inline :490
+    "explicitContinuationHistory", // inline :491
+    "sessionToolCalls", // inline :492
+    "privateUrlResearchSpawn", // inline :493
+    "localUrlWebFetch", // inline :498
+    "boundedTimeoutSourceSpawn", // inline :499
+    "boundedTimeoutDuplicateSourceSpawn", // inline :504
+    "sessionContinuationDirectiveRepeat", // inline :507
+    "approvalGatedBrowserSpawn", // inline :508
+    "limitIndependentEvidenceSpawn", // inline :513
+  ]);
+});
 
 test("cutover parity: no-tool reply is identical between inline and engine paths", async () => {
   const run = (reactEngine: "inline" | "engine") =>

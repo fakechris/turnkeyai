@@ -176,6 +176,152 @@ const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
 const SUPPLEMENTAL_LOCAL_TIMEOUT_PROBE_TIMEOUT_SECONDS = 45;
 const SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS = 10_000;
 
+/**
+ * Context a tool-call normalization step may read. Built ONCE per round by the
+ * engine's `onToolCalls` hook (the shared context builder) so each step reads the
+ * same pre-resolved values instead of reassembling session context itself. The
+ * directive fields are computed from the live `messages` exactly as the inline
+ * loop does (llm-response-generator inline :449-472).
+ */
+interface ToolCallNormalizationContext {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  repairMarkers: LLMMessage[];
+  /** buildContinuationDirectiveContext(taskPrompt, messages) — shared by the
+   *  session-key and approval-gate steps (inline uses `sessionContinuationContext`). */
+  sessionContinuationContext: string;
+  sessionContinuationDirective: SessionContinuationDirective | null;
+  sessionContinuationLookupDirective: SessionContinuationLookupDirective | null;
+  browserAvailable: boolean;
+  exploreAvailable: boolean;
+}
+
+interface ToolCallNormalizationStep {
+  name: string;
+  apply(calls: LLMToolCall[], ctx: ToolCallNormalizationContext): LLMToolCall[];
+}
+
+/**
+ * The engine's slice of the inline tool-call normalization pipeline, declared as
+ * DATA so the order is explicit and table-test-assertable. Order is the single
+ * most bug-prone surface in this cutover, so each step is annotated with the
+ * inline call site it mirrors. This is engine-only (used inside `runViaReActEngine`);
+ * the inline loop keeps its own flattened sequence (inline :473-516) until 8C+.
+ *
+ * Mirrors inline EXACTLY, in order:
+ *   1. normalizeSessionToolAliasCalls                (inline :475)
+ *   2. enforceMissingApprovalGateRepairToolCalls     (inline :474)
+ *   3. enforceSupplementalLocalTimeoutProbeToolCall  (inline :473)
+ *   4. applySessionContinuationDirective             (inline :489)
+ *   5. applySessionContinuationLookupDirective       (inline :490)
+ *   6. normalizeExplicitContinuationHistoryCalls     (inline :491)
+ *   7. normalizeSessionToolCalls                     (inline :492)
+ *   8. normalizePrivateUrlResearchSpawnCalls         (inline :493)
+ *   9. normalizeLocalUrlWebFetchCalls                (inline :498)
+ *  10. normalizeBoundedTimeoutSourceSpawnAgents      (inline :499)
+ *  11. normalizeBoundedTimeoutDuplicateSourceSpawns  (inline :504)
+ *  12. applySessionContinuationDirective (repeat)    (inline :507)
+ *  13. normalizeApprovalGatedBrowserSpawnCalls       (inline :508)
+ *  14. limitIndependentEvidenceSpawnCalls            (inline :513)
+ */
+const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
+  { name: "sessionToolAlias", apply: (c) => normalizeSessionToolAliasCalls(c) },
+  {
+    name: "enforceMissingApprovalGateRepair",
+    apply: (c, x) =>
+      enforceMissingApprovalGateRepairToolCalls(c, {
+        messages: x.messages,
+        repairMarkers: x.repairMarkers,
+        taskPrompt: x.taskPrompt,
+        toolTrace: x.toolTrace,
+      }),
+  },
+  {
+    name: "supplementalLocalTimeoutProbe",
+    apply: (c, x) => enforceSupplementalLocalTimeoutProbeToolCall(c, x.messages),
+  },
+  {
+    name: "sessionContinuationDirective",
+    apply: (c, x) => applySessionContinuationDirective(c, x.sessionContinuationDirective),
+  },
+  {
+    name: "sessionContinuationLookupDirective",
+    apply: (c, x) =>
+      applySessionContinuationLookupDirective(c, x.sessionContinuationLookupDirective),
+  },
+  {
+    name: "explicitContinuationHistory",
+    apply: (c, x) => normalizeExplicitContinuationHistoryCalls(c, x.taskPrompt),
+  },
+  {
+    name: "sessionToolCalls",
+    apply: (c, x) => normalizeSessionToolCalls(c, x.sessionContinuationContext),
+  },
+  {
+    name: "privateUrlResearchSpawn",
+    apply: (c, x) =>
+      normalizePrivateUrlResearchSpawnCalls(c, {
+        browserAvailable: x.browserAvailable,
+        taskPrompt: x.taskPrompt,
+      }),
+  },
+  {
+    name: "localUrlWebFetch",
+    apply: (c, x) => normalizeLocalUrlWebFetchCalls(c, { taskPrompt: x.taskPrompt }),
+  },
+  {
+    name: "boundedTimeoutSourceSpawn",
+    apply: (c, x) =>
+      normalizeBoundedTimeoutSourceSpawnAgents(c, {
+        exploreAvailable: x.exploreAvailable,
+        taskPrompt: x.taskPrompt,
+      }),
+  },
+  {
+    name: "boundedTimeoutDuplicateSourceSpawn",
+    apply: (c, x) =>
+      normalizeBoundedTimeoutDuplicateSourceSpawns(c, { taskPrompt: x.taskPrompt }),
+  },
+  {
+    name: "sessionContinuationDirectiveRepeat",
+    apply: (c, x) => applySessionContinuationDirective(c, x.sessionContinuationDirective),
+  },
+  {
+    name: "approvalGatedBrowserSpawn",
+    apply: (c, x) =>
+      normalizeApprovalGatedBrowserSpawnCalls(c, {
+        taskPrompt: x.taskPrompt,
+        sessionContext: x.sessionContinuationContext,
+        toolTrace: x.toolTrace,
+      }),
+  },
+  {
+    name: "limitIndependentEvidenceSpawn",
+    apply: (c, x) =>
+      limitIndependentEvidenceSpawnCalls(c, {
+        taskPrompt: x.taskPrompt,
+        toolTrace: x.toolTrace,
+      }),
+  },
+];
+
+/** Canonical step order, exported so a table-driven test can pin it (a reorder
+ *  must be deliberate). Mirrors the inline sequence above. */
+export const ENGINE_TOOL_CALL_NORMALIZATION_ORDER: readonly string[] =
+  ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE.map((step) => step.name);
+
+/** Run the engine normalization pipeline left-to-right over the pending calls. */
+function runEngineToolCallNormalizationPipeline(
+  calls: LLMToolCall[],
+  ctx: ToolCallNormalizationContext,
+): LLMToolCall[] {
+  return ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE.reduce(
+    (acc, step) => step.apply(acc, ctx),
+    calls,
+  );
+}
+
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
@@ -2479,23 +2625,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       pendingCloseout: undefined,
     };
     const toolTrace: NativeToolRoundTrace[] = [];
-    // Stage 8B slice 1b: the engine's onToolCalls hook has no state.messages, so the
-    // sessionContext the inline normalizers compute via buildContinuationDirectiveContext
-    // (taskPrompt + tool-result messages carrying session_key/"sessions") is rebuilt from
-    // the SHARED toolTrace results instead. At onToolCalls time the trace holds only prior
-    // rounds (the current round is not recorded yet), exactly like inline's pre-normalize
-    // messages — so the two contexts are equivalent.
-    const buildSessionContextFromTrace = (): string => {
-      const toolEvidence = toolTrace
-        .flatMap((round) => round.results)
-        .map((result) => result.content ?? "")
-        .filter(
-          (content) =>
-            content.includes("session_key") || content.includes('"sessions"'),
-        )
-        .join("\n");
-      return toolEvidence ? `${packet.taskPrompt}\n${toolEvidence}` : packet.taskPrompt;
-    };
     // Stage 7 S4: the synthetic sessions_send the empty-round continuation would
     // inject (inline :567-587), or null. Shared by onToolCallsClose (the wall-clock
     // pre-check below) and onRoundEmpty (the actual injection) so both agree on
@@ -2542,50 +2671,60 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       toolkit,
       maxRounds,
       hooks: {
-        // Tool-call normalization (the engine's slice of the inline pipeline). Only
-        // the normalizers a cut-over slice needs are ported here; the rest stay
-        // inline-only until their slice lands. Order mirrors inline.
-        //   - Stage 7 S9: enforceMissingApprovalGateRepairToolCalls (inline :474) —
-        //     once the missing-approval-gate repair prompt has been recorded, if the
-        //     model still tries a browser sessions_spawn instead of permission_query
-        //     for an approval-gated task, rewrite it into a permission_query so the
-        //     gate cannot be bypassed. Keys on ctx.repairMarkers (the recorded marker),
-        //     the task, and the trace — `messages` is unused by the normalizer.
-        //   - Stage 7 S8: limitIndependentEvidenceSpawnCalls (inline :513) — cap a
-        //     round's sessions_spawn calls to the streams still required, so the S8
-        //     forced-continuation round cannot over-spawn when the model repeats labels.
-        // Both run before the current round is recorded in toolTrace, so their trace
-        // reads reflect only prior rounds — matching inline.
-        onToolCalls: (calls, _round, hookCtx) => {
+        // Tool-call normalization — the engine's full port of the inline pipeline
+        // (Stage 8B Batch B). Runs every active-loop round before execution and
+        // before the current round is recorded in toolTrace, so each step's trace
+        // reads reflect only prior rounds — matching inline's pre-normalize point.
+        // The ordered steps live in ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE; here we
+        // build the SHARED context once (inline :449-472) from `state.messages` —
+        // now that onToolCalls receives `state`, the session-continuation directives
+        // are computed from the live message history exactly as inline does, not
+        // approximated from the trace. Side-effect permission gating is unchanged:
+        // the approval-gate steps still rewrite premature mutating spawns into
+        // permission_query PRE-execute, and read-only suppression stays in
+        // onSuppressToolCalls (which runs after this and before runToolBatch).
+        onToolCalls: (calls, state, hookCtx) => {
           if (!activeToolLoop) {
             return calls;
           }
-          let normalized = enforceMissingApprovalGateRepairToolCalls(calls, {
-            messages: [],
+          const messages = state.messages;
+          const probePending =
+            hasLatestSupplementalLocalTimeoutProbePrompt(messages);
+          const sessionContinuationContext = buildContinuationDirectiveContext(
+            packet.taskPrompt,
+            messages,
+          );
+          const contextualDirective = !probePending
+            ? findSessionContinuationDirective(sessionContinuationContext)
+            : null;
+          const sessionContinuationDirective = probePending
+            ? null
+            : (contextualDirective ??
+              findSessionContinuationDirective(packet.taskPrompt));
+          const sessionContinuationLookupDirective =
+            !probePending &&
+            !sessionContinuationDirective &&
+            !isAppliedApprovalBrowserContinuation(packet.taskPrompt)
+              ? findSessionContinuationLookupDirective(
+                  sessionContinuationContext,
+                  sessionContinuationContext,
+                )
+              : null;
+          return runEngineToolCallNormalizationPipeline(calls, {
+            taskPrompt: packet.taskPrompt,
+            messages,
+            toolTrace,
             repairMarkers: hookCtx.repairMarkers ?? [],
-            taskPrompt: packet.taskPrompt,
-            toolTrace,
+            sessionContinuationContext,
+            sessionContinuationDirective,
+            sessionContinuationLookupDirective,
+            browserAvailable:
+              packet.capabilityInspection?.availableWorkers?.includes("browser") ??
+              false,
+            exploreAvailable:
+              packet.capabilityInspection?.availableWorkers?.includes("explore") ??
+              false,
           });
-          // Stage 8B slice 1b: normalizeApprovalGatedBrowserSpawnCalls (inline :508,
-          // between enforce :474 and limit :513). Rewrites a premature mutating browser
-          // sessions_spawn for an approval-gated task into a permission_query (so the
-          // approval gate is enforced PRE-execute, not via a later repair), and dedups
-          // duplicate browser spawns in a round. sessionContext mirrors inline's
-          // buildContinuationDirectiveContext but reads the SHARED toolTrace results
-          // (onToolCalls has no state.messages); both surface only prior-round session
-          // evidence at this point, so they are equivalent. Its own permission-evidence
-          // guards (hasPermissionGateContextEvidence / hasPermissionGateEvidence) keep it
-          // a no-op once the gate has been observed.
-          normalized = normalizeApprovalGatedBrowserSpawnCalls(normalized, {
-            taskPrompt: packet.taskPrompt,
-            sessionContext: buildSessionContextFromTrace(),
-            toolTrace,
-          });
-          normalized = limitIndependentEvidenceSpawnCalls(normalized, {
-            taskPrompt: packet.taskPrompt,
-            toolTrace,
-          });
-          return normalized;
         },
         // Honor the execution limits the per-call default bypasses: order-dependent
         // serialization, bounded concurrency, and per-chunk wall-clock aborts —

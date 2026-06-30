@@ -169,7 +169,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           });
           state.lastText = generated.text;
           let toolCalls = generated.toolCalls ?? [];
-          if (onToolCalls) toolCalls = onToolCalls(toolCalls, round, ctx) ?? [];
+          if (onToolCalls) toolCalls = onToolCalls(toolCalls, state, ctx) ?? [];
           // Pending-call closeouts fire before the round is recorded/executed, so
           // a terminating reason leaves this round out of the trace (matching a
           // host loop that closes out on the pending calls without executing).

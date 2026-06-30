@@ -15,8 +15,8 @@ Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-chec
 |---|---|
 | Inline behavior tests (baseline, `npm run parity:inline`) | **252 pass / 0 fail** |
 | Engine tests run to completion | **250** (2 skipped — see below) |
-| Pass on engine | **185** |
-| Fail on engine | **65** |
+| Pass on engine | **185** at Batch A → **222** after Batch B |
+| Fail on engine | **65** at Batch A → **28** after Batch B (T2 40→7, T10 11→8, Other 5→4; C5/T7 unchanged) |
 | Incomplete after recovery | **0** (chunked + per-test re-run recovers cross-test leak crashes) |
 | Skipped — known engine crash/non-termination | **2**, both documented in the runner's `KNOWN_HANGS`: (Batch E) `does not abort active browser sessions at the parent wall-clock boundary` (test.ts:5756) — engine does not abort/tear down the active browser session at the parent wall-clock boundary; its leaked timer fires ~2 min in and crashes the run (this is the old "#55" stall, now understood as a leaked-timer crash, not an infinite loop). (Batch B) `does not treat resumable partial session output as completion evidence` — engine churns to `maxRounds` even in isolation where inline converges (a continuation-completion divergence). |
 
