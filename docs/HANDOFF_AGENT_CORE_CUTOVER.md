@@ -15,8 +15,8 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **244-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 47 cutover parity tests) — must stay green with **zero
+- Every slice is gated by the **245-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 48 cutover parity tests) — must stay green with **zero
   assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (28 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
@@ -388,7 +388,7 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (244)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (245)
 npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (28)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
 # S1 pre-execute suppression (#513), S2/S3 forced-spawn browser-evidence + consumesRound

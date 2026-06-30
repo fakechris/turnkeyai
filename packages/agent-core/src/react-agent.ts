@@ -134,7 +134,9 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           const reArm = yield* terminate(preReason);
           if (reArm) {
             state.messages = reArm.reArm.messages;
-            pendingForceToolChoice = reArm.reArm.forceToolChoice ?? "none";
+            if (reArm.reArm.forceToolChoice !== undefined) {
+              pendingForceToolChoice = reArm.reArm.forceToolChoice;
+            }
             continue;
           }
           return;
@@ -185,7 +187,9 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             const reArm = yield* terminate(closeReason);
             if (reArm) {
               state.messages = reArm.reArm.messages;
-              pendingForceToolChoice = reArm.reArm.forceToolChoice ?? "none";
+              if (reArm.reArm.forceToolChoice !== undefined) {
+              pendingForceToolChoice = reArm.reArm.forceToolChoice;
+            }
               continue;
             }
             return;
@@ -318,7 +322,9 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             const reArm = yield* terminate(postReason);
             if (reArm) {
               state.messages = reArm.reArm.messages;
-              pendingForceToolChoice = reArm.reArm.forceToolChoice ?? "none";
+              if (reArm.reArm.forceToolChoice !== undefined) {
+              pendingForceToolChoice = reArm.reArm.forceToolChoice;
+            }
               continue;
             }
             return;

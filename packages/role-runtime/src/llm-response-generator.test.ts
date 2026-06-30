@@ -24609,3 +24609,62 @@ test("cutover parity: a completed-session synthesis that still lacks required br
   assert.equal(engineCloseout8?.reason, inlineCloseout8?.reason);
   assert.equal(engineCloseout8?.roundCount, inlineCloseout8?.roundCount);
 });
+
+test("cutover parity: when an S10 re-armed browser round times out, the later sub_agent_timeout closeout replaces the completed metadata, identically on both paths", async () => {
+  // Stage 7 S10 metadata stickiness boundary (codex #520 P2). The completed-session
+  // synthesis re-arms a browser sessions_spawn (missing browser evidence), but that
+  // forced round TIMES OUT. The final closeout must be sub_agent_timeout — NOT the
+  // earlier completed_sub_agent_final whose metadata was set sticky. Only completed is
+  // sticky (`??=`); a later terminal reason overwrites (`=`), matching inline.
+  const taskPrompt = [
+    "Review the operator dashboard and report the visible state.",
+    "Use browser-visible evidence for the rendered dashboard, as an operator would see it.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      const tools = input.tools?.length ?? 0;
+      const text = (m: GenerateTextInput["messages"][number] | undefined) => (m ? readToolContent(m.content) : "");
+      if (tools === 0) {
+        return { ...base, toolCalls: [], text: "I used raw HTTP fetch because the browser tools are unavailable, so the rendered DOM, frame, shadow component, and popup were not verified." };
+      }
+      if (text(input.messages.at(-1)).includes("Runtime correction: browser-visible evidence is missing")) {
+        return { ...base, text: "Spawning the browser session.", toolCalls: [{ id: "toolu-browser", name: "sessions_spawn", input: { agent_id: "browser", task: "Inspect the rendered dashboard frame, shadow component, and popup." } }] };
+      }
+      return { ...base, text: "Spawning the explore session.", toolCalls: [{ id: "toolu-explore", name: "sessions_spawn", input: { agent_id: "explore", task: "Summarize the dashboard backlog from available data." } }] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [{ name: "sessions_spawn", description: "spawn", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" } } } }];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        const agentId = String(input.call.input.agent_id);
+        if (agentId === "browser") {
+          // the re-armed browser round TIMES OUT.
+          return { toolCallId: input.call.id, toolName: input.call.name, isError: true, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-browser", session_key: "worker:browser:task-browser", agent_id: "browser", status: "timeout", timeout_seconds: 45, evidence_available: false, evidence_summary: "Execution paused before completion. Reason: sessions_spawn timed out after 45s.", result: "Sub-agent session timed out after 45s.", final_content: null }) };
+        }
+        const content = "Backlog summary from available data; rendered page state not captured.";
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-explore", session_key: "worker:explore:task-explore", agent_id: "explore", status: "completed", tool_chain: ["explore"], result: content, final_content: content, payload: { mode: "llm_sub_agent", workerType: "explore", content } }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt, capabilityInspection: { availableWorkers: ["browser", "explore"], connectorStates: [], apiStates: [], skillStates: [], transportPreferences: [], unavailableCapabilities: [], generatedAt: 1 } } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.executed.map((c) => c.input.agent_id), inline.executed.map((c) => c.input.agent_id));
+  assert.deepEqual(engine.executed.map((c) => c.input.agent_id), ["explore", "browser"]);
+  const engineCloseout9 = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  const inlineCloseout9 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  // the later timeout overwrote the sticky completed metadata on BOTH paths.
+  assert.equal(engineCloseout9?.reason, inlineCloseout9?.reason);
+  assert.equal(engineCloseout9?.reason, "sub_agent_timeout");
+});

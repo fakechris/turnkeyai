@@ -4043,10 +4043,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               : reason === "sub_agent_timeout"
                 ? maybeAppendTimeoutContinuationVisibility(synthesisResult)
                 : synthesisResult;
-          // `??=`: the completed branch may have set this early (sticky, above) so the
-          // S10 re-armed round does not overwrite the first-completion metadata; for
-          // every other reason this is the first and only set.
-          run.toolLoopCloseout ??= closeout;
+          // Reason-gated, matching inline: ONLY completed_sub_agent_final is sticky
+          // (`??=`, inline :1729) — the completed branch set it early so an S10 re-armed
+          // round keeps the first-completion metadata. Every OTHER reason OVERWRITES
+          // (`=`): if a re-armed round later ends in a different terminal closeout
+          // (sub_agent_timeout / round_limit / a pending-call closeout), that reason's
+          // metadata must replace the stale completed one, exactly as inline reassigns
+          // `toolLoopCloseout =` for non-completed reasons (codex #520 P2).
+          if (reason === "completed_sub_agent_final") {
+            run.toolLoopCloseout ??= closeout;
+          } else {
+            run.toolLoopCloseout = closeout;
+          }
           run.closeoutResult = closeoutResult;
           if (synthesisReduction) {
             run.reduction = synthesisReduction;
