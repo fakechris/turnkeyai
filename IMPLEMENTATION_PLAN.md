@@ -100,10 +100,10 @@ Already landed — reuse, do not rebuild:
 **Moves:** `onRoundEmpty` forced send/list injection (546-584); `filterTools` permission-def stripping (`filterToolDefinitionsForTask` 3366); `onBeforeExecute` browser side-effect gating; the 8 sequential approval gates (804-976); forced `permission_result` rounds (348/1651 via `executeRuntimeForcedToolRound` 2864); approval-wait-timeout closeouts (924/11118); continuation/lookup directives (7392/7562), spawn→send rewrites (8507), timeout detection (`findSubAgentToolTimeout` 4163) + auto-continue (1523/1544/1565), `canonicalizeSessionToolTraceCalls` (1501/3895). Approval (§D) and continuation (§E) share `permission_*`/`session_tool_result.v1` trace machinery and the `onRoundEmpty` override, so extract them in one milestone.
 **Verify:** parity slice expands to approval/continuation/timeout scenarios. **Risk: Highest.**
 
-### Stage 8 — Flip + delete inline loop
-**Goal:** Make the engine the default and remove the old loop.
-**Steps:** confirm full **197 parity with the flag on**; switch default to `"engine"` at the composition root; delete the inline loop body so `generate()` is a thin shell over `runViaReActEngine`; remove the flag (or keep `"inline"` removed) after a soak.
-**Verify:** 197 green on the engine path; `tsc` 0; e2e via `npm run mission:e2e` / `scripts/tool-use-e2e.ts`. **Risk: Medium (cleanup).**
+### Stage 8 — Policy architecture extraction + full engine flip
+**Goal:** Replace the old one-step "flip + delete inline loop" cleanup with parity-first policy re-architecture. The engine path must continuously close the remaining inline behavior gap, then move the now-covered behavior into typed context, tool semantics, evidence ledger, permission/approval policy, continuation state machine, closeout registry, repair registry, and finalization policy.
+**Spec:** `docs/STAGE8_REACT_ENGINE_ARCHITECTURE_SPEC.md` is the source of truth. Start with Stage 8A inventory + timeout-capped full-suite engine parity job; do not leave full parity as a final big-bang gate. Production flips only after parity is green and the two non-negotiable invariants hold: permission decisions before side-effect execution, and regex never authorizes or retroactively validates side effects.
+**Verify:** full inline suite green in inline mode and engine mode; `tsc` 0; e2e via `npm run mission:e2e` / `scripts/tool-use-e2e.ts`; no unresolved flip-blocking Stage 8 inventory rows; no new policy regex outside detector modules. **Risk: High (architecture boundary + parity).**
 
 ---
 
@@ -142,8 +142,8 @@ The PR sequence is strictly serial (each builds on merged `main`), but the draft
 **Goal**: idempotency to ctx; shouldRepair* → hooks. **Status**: In Progress — prereq #495; `onRepairRound` hook + natural-finish repairs (table-columns #498, extraneous-schema + weak-evidence #500) DONE — that completes every repair the natural-finish `onRepairRound` mechanism can cover. Remaining = the completed-closeout repair pass (new post-`onTerminate` mechanism, covers source-evidence/false-evidence/next-action/deliverables/timeout-followup/browser-dimensions + completed-path versions), plus forced-spawn + pre-execute repairs (Stage-7 continuation territory). See handoff doc.
 ## Stage 7: Approval + session-continuation
 **Goal**: onRoundEmpty override + approval machine as hooks. **Status**: Not Started
-## Stage 8: Flip + delete inline loop
-**Goal**: engine default; remove inline loop; e2e. **Status**: Not Started
+## Stage 8: Policy architecture extraction + full engine flip
+**Goal**: close engine parity continuously, enforce pre-execute permission + regex governance, extract covered behavior into layered policy modules, then default to engine and remove inline after soak. **Status**: Not Started — see `docs/STAGE8_REACT_ENGINE_ARCHITECTURE_SPEC.md`
 
 ---
 
