@@ -24393,3 +24393,153 @@ test("cutover parity: the S8 cap keeps the inline function's behavior even when 
   assert.equal(engineCloseout5?.reason, inlineCloseout5?.reason);
   assert.equal(engineCloseout5?.roundCount, inlineCloseout5?.roundCount);
 });
+
+test("cutover parity: an approval-gated answer that skipped the approval gate is repaired via a forced permission_query, identically on both paths", async () => {
+  // Stage 7 S9 natural-finish (shouldRepairMissingApprovalGate, inline :804). The model
+  // finalizes an approval-gated browser task WITHOUT going through the approval gate
+  // (no permission_* in the trace). Both paths re-arm a forced permission_query round
+  // (a consumesRound onRepairRound repair), then the model walks the approval flow
+  // (permission_query → result → applied → browser spawn) and closes out.
+  const taskPrompt = [
+    "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+    "Actually carry the safe local dry-run through the approval gate.",
+    "Request approval before applying the browser action, then report what was approved and what evidence the page showed.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        // tool-free finalize that skipped the approval gate → triggers the repair.
+        return { ...base, text: "The approved browser dry-run is complete and verified.", toolCalls: [] };
+      }
+      if (calls === 2) {
+        return { ...base, text: "Requesting approval.", toolCalls: [{ id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit", title: "Approve local dry-run form submit", level: "approval", scope: "mutate", worker_kind: "browser" } }] };
+      }
+      if (calls === 3) {
+        return { ...base, text: "Apply the approved permission.", toolCalls: [
+          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
+          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+        ] };
+      }
+      if (calls === 4) {
+        return { ...base, text: "Spawning the approved browser action.", toolCalls: [{ id: "toolu-browser", name: "sessions_spawn", input: { agent_id: "browser", task: "Open the approval form, submit the approved dry-run, and verify the post-submit status." } }] };
+      }
+      return { ...base, text: "The approved browser dry-run was submitted and verified.", toolCalls: [] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+          { name: "permission_result", description: "read approval", inputSchema: { type: "object", properties: { approval_id: { type: "string" } } } },
+          { name: "permission_applied", description: "mark applied", inputSchema: { type: "object", properties: { approval_id: { type: "string" } } } },
+          { name: "sessions_spawn", description: "spawn browser", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "permission_query") return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "pending", approval_id: "ap-1" }) };
+        if (input.call.name === "permission_result") return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "approved", approval_id: "ap-1" }) };
+        if (input.call.name === "permission_applied") return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "applied", approval_id: "ap-1" }) };
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-1", session_key: "worker:browser:task-1:toolu-browser", agent_id: "browser", status: "completed", tool_chain: ["browser"], result: "Approved dry-run submit completed.", final_content: "Approved dry-run submit completed. Browser verified the submitted status.", payload: { mode: "llm_sub_agent", workerType: "browser", content: "Approved dry-run submit completed. Browser verified the submitted status." } }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the forced permission_query repair drove the full approval flow on BOTH paths.
+  assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
+  assert.deepEqual(engine.executed.map((c) => c.name), ["permission_query", "permission_result", "permission_applied", "sessions_spawn"]);
+  const engineCloseout6 = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout6 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout6?.reason, inlineCloseout6?.reason);
+  assert.equal(engineCloseout6?.roundCount, inlineCloseout6?.roundCount);
+});
+
+test("cutover parity: after the missing-approval-gate repair, a stubborn browser spawn is rewritten to permission_query, identically on both paths", async () => {
+  // Stage 7 S9 normalizer (enforceMissingApprovalGateRepairToolCalls, inline :474). After
+  // the natural-finish repair records its marker and forces permission_query, the model
+  // still returns a browser sessions_spawn (ignoring the forced choice). Both paths
+  // rewrite that spawn into a permission_query so the approval gate cannot be bypassed —
+  // the engine via the onToolCalls hook, inline via the same normalizer — then walk the
+  // approval flow to a completed close-out.
+  const taskPrompt = [
+    "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+    "Actually carry the safe local dry-run through the approval gate.",
+    "Request approval before applying the browser action, then report what was approved and what evidence the page showed.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "The approved browser dry-run is complete and verified.", toolCalls: [] };
+      }
+      if (calls === 2) {
+        // stubborn: a browser spawn instead of the forced permission_query — the
+        // enforce-gate normalizer must rewrite it to permission_query.
+        return { ...base, text: "Spawning the browser action directly.", toolCalls: [{ id: "toolu-spawn-early", name: "sessions_spawn", input: { agent_id: "browser", task: "Submit the dry-run browser.form.submit now." } }] };
+      }
+      if (calls === 3) {
+        return { ...base, text: "Apply the approved permission.", toolCalls: [
+          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
+          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+        ] };
+      }
+      if (calls === 4) {
+        return { ...base, text: "Spawning the approved browser action.", toolCalls: [{ id: "toolu-browser", name: "sessions_spawn", input: { agent_id: "browser", task: "Open the approval form, submit the approved dry-run, and verify the post-submit status." } }] };
+      }
+      return { ...base, text: "The approved browser dry-run was submitted and verified.", toolCalls: [] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+          { name: "permission_result", description: "read approval", inputSchema: { type: "object", properties: { approval_id: { type: "string" } } } },
+          { name: "permission_applied", description: "mark applied", inputSchema: { type: "object", properties: { approval_id: { type: "string" } } } },
+          { name: "sessions_spawn", description: "spawn browser", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        if (input.call.name === "permission_query") return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "pending", approval_id: "ap-1" }) };
+        if (input.call.name === "permission_result") return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "approved", approval_id: "ap-1" }) };
+        if (input.call.name === "permission_applied") return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "applied", approval_id: "ap-1" }) };
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ protocol: "turnkeyai.session_tool_result.v1", task_id: "task-1", session_key: "worker:browser:task-1:toolu-browser", agent_id: "browser", status: "completed", tool_chain: ["browser"], result: "Approved dry-run submit completed.", final_content: "Approved dry-run submit completed. Browser verified the submitted status.", payload: { mode: "llm_sub_agent", workerType: "browser", content: "Approved dry-run submit completed. Browser verified the submitted status." } }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the stubborn round-1 browser spawn was rewritten to permission_query on BOTH paths:
+  // no browser session ran before the approval gate.
+  assert.deepEqual(engine.executed.map((c) => c.name), inline.executed.map((c) => c.name));
+  assert.equal(engine.executed[0]?.name, "permission_query");
+  assert.ok(!engine.executed.slice(0, 1).some((c) => c.name === "sessions_spawn"));
+  const engineCloseout7 = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout7 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout7?.reason, inlineCloseout7?.reason);
+  assert.equal(engineCloseout7?.roundCount, inlineCloseout7?.roundCount);
+});
