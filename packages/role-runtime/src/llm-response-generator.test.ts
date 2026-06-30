@@ -24911,3 +24911,67 @@ test("cutover parity (8B-1b): the read-only suppression pre-empts a same-round w
   assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
   assert.notEqual(engineCloseout?.reason, "wall_clock_budget");
 });
+
+test("cutover parity (8B-1c): the hard approval-wait-timeout local closeout fires after a failed repair, identically on both paths", async () => {
+  // Stage 8B slice 1c — shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair
+  // (inline :955). The approval-wait-timeout-closeout repair fires (records its marker)
+  // but the candidate stays incomplete, so both paths break the loop with a
+  // deterministic tool_evidence_fallback local-evidence closeout — inline at :966-982,
+  // engine via the onRepairRound { closeout } directive + the onTerminate branch.
+  const taskPrompt = [
+    "Open the local approval form and prepare a safe dry-run form submission for operator review.",
+    "Request approval before applying the action.",
+    "If the operator decision remains pending after the bounded wait, close out honestly as an approval wait-timeout and do not perform the submission.",
+  ].join("\n");
+  const base = { modelId: "claude-test", providerId: "anthropic", protocol: "anthropic-compatible" as const, adapterName: "test", raw: {} };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      const allText = input.messages.map((m) => readToolContent(m.content)).join("\n");
+      const hasResult = allText.includes("approval_wait_timeout");
+      const hasQuery = allText.includes("\"status\":\"pending\"") && allText.includes("ap-1");
+      const tc = input.toolChoice as { name?: string } | string | undefined;
+      const forcedResult = typeof tc === "object" && tc?.name === "permission_result";
+      if (forcedResult) {
+        return { ...base, text: "Checking approval.", toolCalls: [{ id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } }] };
+      }
+      if (!hasQuery && !hasResult) {
+        return { ...base, text: "Requesting approval.", toolCalls: [{ id: "toolu-query", name: "permission_query", input: { action: "form.submit" } }] };
+      }
+      // tool-free candidate that is NOT a complete approval-wait-timeout closeout — on
+      // round 1 it triggers the pending-check repair; after the result it triggers the
+      // wait-timeout-closeout repair, then the hard fallback.
+      return { ...base, toolCalls: [], text: "The approval is still pending." };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          { name: "permission_query", description: "request approval", inputSchema: { type: "object", properties: { action: { type: "string" } } } },
+          { name: "permission_result", description: "read approval", inputSchema: { type: "object", properties: { approval_id: { type: "string" } } } },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        if (input.call.name === "permission_query") {
+          return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "pending", approval_id: "ap-1" }) };
+        }
+        return { toolCallId: input.call.id, toolName: input.call.name, content: JSON.stringify({ status: "approval_wait_timeout", approval_id: "ap-1" }) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  // both broke the loop with the deterministic local-evidence closeout.
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.match(engine.result.content, /Approval wait-timeout closeout confirmed/);
+  const engineC = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  const inlineC = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string } | undefined;
+  assert.equal(engineC?.reason, inlineC?.reason);
+  assert.equal(engineC?.reason, "tool_evidence_fallback");
+});

@@ -376,6 +376,21 @@ test("onRepairRound returning null finalizes the candidate answer unchanged", as
   assert.equal(model.seen.length, 1); // no extra round
 });
 
+test("onRepairRound { closeout } aborts the candidate and terminates with that reason", async () => {
+  // A loop-breaker: instead of repairing or finalizing the candidate, onRepairRound
+  // forces a closeout (routed through onTerminate) — e.g. a local-evidence fallback
+  // after a repair re-synthesis still left the answer incomplete.
+  const model = scriptedModel([{ text: "incomplete candidate" }]);
+  const events = await run(model, {
+    onRepairRound: () => ({ closeout: "forced_fallback" }),
+    onTerminate: (reason) => ({ text: `closed: ${reason}` }),
+  });
+  const final = events.at(-1);
+  assert.equal(final?.type === "final" && final.text, "closed: forced_fallback");
+  assert.equal(final?.type === "final" && final.closeoutReason, "forced_fallback");
+  assert.equal(model.seen.length, 1); // no repair round ran; the candidate was aborted
+});
+
 test("onTerminate can re-arm a forced round instead of finalizing", async () => {
   // The closeout fires (onAfterExecute), but onTerminate ABORTS it the first time —
   // returning a reArm directive (rewritten messages + a forced tool choice) to run

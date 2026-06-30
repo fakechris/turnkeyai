@@ -3510,6 +3510,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               forceToolChoice: "none",
             };
           }
+          // Stage 8B slice 1c: the hard approval-wait-timeout local closeout (inline
+          // :955-983). When the approval-wait-timeout-closeout repair above already fired
+          // (its marker is recorded) but the candidate STILL is not a complete closeout,
+          // break the loop with a deterministic tool_evidence_fallback closeout rather
+          // than finalizing the incomplete answer. onRepairRound cannot finalize, so it
+          // returns a { closeout } directive; onTerminate builds the local-evidence text
+          // directly (no model synthesis) for that reason.
+          if (
+            shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+            })
+          ) {
+            return { closeout: "tool_evidence_fallback" };
+          }
           if (
             shouldRepairIncompleteApprovedBrowserAction({
               taskPrompt: packet.taskPrompt,
@@ -3651,6 +3669,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // completed_sub_agent_final + sub_agent_timeout (PR2c) are reachable;
         // each closeout reason gets its inline reasonLines + status here.
         onTerminate: async (reason, state, ctx) => {
+          // Stage 8B slice 1c: the hard approval-wait-timeout local closeout (inline
+          // :966-982), reached via the onRepairRound { closeout } directive. The answer
+          // is built DETERMINISTICALLY (no model synthesis), so this short-circuits the
+          // standard reasonLines + generateFinalAfterToolRoundLimit path below.
+          if (reason === "tool_evidence_fallback") {
+            const fallbackCloseout: ToolLoopCloseoutMetadata = {
+              reason: "tool_evidence_fallback",
+              maxRounds,
+              toolCallCount: countToolCalls(toolTrace),
+              roundCount: toolTrace.length,
+              evidenceAvailable: true,
+            };
+            const fallbackResult = maybeRedactForbiddenLocalUrls({
+              result: buildApprovalWaitTimeoutLocalEvidenceCloseout({
+                selection,
+                evidenceText: collectApprovalWaitTimeoutRuntimeEvidence(toolTrace),
+                error: new Error(
+                  "approval wait-timeout repair omitted required pending evidence",
+                ),
+              }),
+              packet,
+            });
+            run.toolLoopCloseout = fallbackCloseout;
+            run.closeoutResult = fallbackResult;
+            return {
+              text: fallbackResult.text,
+              ...(fallbackResult.stopReason
+                ? { stopReason: fallbackResult.stopReason }
+                : {}),
+            };
+          }
           // Each closeout reason rebuilds the inline reasonLines + closeout
           // metadata it produced inline; the round_limit defaults remain the
           // fallback for any reason without a bespoke branch. completed/timeout
