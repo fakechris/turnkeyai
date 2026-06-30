@@ -2527,20 +2527,33 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       hooks: {
         // Tool-call normalization (the engine's slice of the inline pipeline). Only
         // the normalizers a cut-over slice needs are ported here; the rest stay
-        // inline-only until their slice lands. Stage 7 S8: limitIndependentEvidence
-        // SpawnCalls caps a round's sessions_spawn calls to the streams still
-        // required (inline :513), so the S8 forced-continuation round cannot
-        // over-spawn child sessions when the model repeats labels. Runs before the
-        // current round is recorded in toolTrace, so the completed-stream count
-        // reflects only prior rounds — matching inline.
-        onToolCalls: (calls) => {
+        // inline-only until their slice lands. Order mirrors inline.
+        //   - Stage 7 S9: enforceMissingApprovalGateRepairToolCalls (inline :474) —
+        //     once the missing-approval-gate repair prompt has been recorded, if the
+        //     model still tries a browser sessions_spawn instead of permission_query
+        //     for an approval-gated task, rewrite it into a permission_query so the
+        //     gate cannot be bypassed. Keys on ctx.repairMarkers (the recorded marker),
+        //     the task, and the trace — `messages` is unused by the normalizer.
+        //   - Stage 7 S8: limitIndependentEvidenceSpawnCalls (inline :513) — cap a
+        //     round's sessions_spawn calls to the streams still required, so the S8
+        //     forced-continuation round cannot over-spawn when the model repeats labels.
+        // Both run before the current round is recorded in toolTrace, so their trace
+        // reads reflect only prior rounds — matching inline.
+        onToolCalls: (calls, _round, hookCtx) => {
           if (!activeToolLoop) {
             return calls;
           }
-          return limitIndependentEvidenceSpawnCalls(calls, {
+          let normalized = enforceMissingApprovalGateRepairToolCalls(calls, {
+            messages: [],
+            repairMarkers: hookCtx.repairMarkers ?? [],
             taskPrompt: packet.taskPrompt,
             toolTrace,
           });
+          normalized = limitIndependentEvidenceSpawnCalls(normalized, {
+            taskPrompt: packet.taskPrompt,
+            toolTrace,
+          });
+          return normalized;
         },
         // Honor the execution limits the per-call default bypasses: order-dependent
         // serialization, bounded concurrency, and per-chunk wall-clock aborts —
@@ -2957,7 +2970,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // Precedence mirrors inline exactly. (S8 independent-evidence-streams and S9
         // missing-approval-gate sit between branch 4 and S5 inline; until they land the
         // engine reaches S5 directly after branch 4.)
-        onAfterExecuteContinue: async (results, state) => {
+        onAfterExecuteContinue: async (results, state, hookCtx) => {
           if (!activeToolLoop) {
             return null;
           }
@@ -3086,6 +3099,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 },
               ],
               forceToolChoice: { name: "sessions_spawn" },
+            };
+          }
+          // S9 (post-execute): an approval-gated browser task whose completed session
+          // never went through the approval gate re-arms a forced permission_query round
+          // (inline :1672) — after S8, before the S5 forced permission_result. Unlike the
+          // natural-finish variant it does NOT append assistant text (the round's
+          // assistant tool-call message is already in the trace). The recorded marker is
+          // the idempotency AND the key the onToolCalls enforce-gate normalizer reads.
+          const s9RepairMarkers = (hookCtx.repairMarkers ??= []);
+          if (
+            shouldRepairMissingApprovalGate({
+              taskPrompt: packet.taskPrompt,
+              resultText: completedSession.finalContents.join("\n\n"),
+              messages: state.messages,
+              repairMarkers: s9RepairMarkers,
+              toolTrace,
+              tools: initialGatewayInput.tools,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                recordRepairPrompt(
+                  s9RepairMarkers,
+                  buildMissingApprovalGateRepairPrompt(),
+                ),
+              ],
+              forceToolChoice: { name: "permission_query" },
             };
           }
           // S5: forced permission_result round (host-authored, no model call). The
@@ -3241,6 +3282,36 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 ),
               ],
               forceToolChoice: { name: "sessions_spawn" },
+              consumesRound: true,
+            };
+          }
+          // Stage 7 S9 (natural-finish): an approval-gated browser task whose tool-free
+          // candidate never went through the approval gate re-arms a forced permission_
+          // query round (inline :804) — after the S2/S3 browser-evidence repairs, before
+          // the tool-free table-columns repair. Like S2/S3 this re-arms a REAL tool round
+          // (consumesRound), so the budget is charged. The recorded repair marker is the
+          // idempotency AND the key the onToolCalls enforce-gate normalizer reads to
+          // rewrite a resistant browser spawn into permission_query.
+          if (
+            shouldRepairMissingApprovalGate({
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+              tools: initialGatewayInput.tools,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildMissingApprovalGateRepairPrompt(),
+                ),
+              ],
+              forceToolChoice: { name: "permission_query" },
               consumesRound: true,
             };
           }
