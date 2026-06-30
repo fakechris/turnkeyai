@@ -3041,6 +3041,36 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               forceToolChoice: { name: "sessions_send" },
             };
           }
+          // S8: independent evidence streams — a multi-stream delegation task that has
+          // not yet completed all required streams continues via a forced sessions_spawn
+          // round (inline :1648), between branch 4 and S5. Idempotency: the predicate
+          // returns false once its continuation prompt is in `messages`, so it fires at
+          // most once; the model is then expected to spawn the remaining streams.
+          if (
+            shouldContinueIndependentEvidenceStreams({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              toolTrace,
+              tools: initialGatewayInput.tools,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                {
+                  role: "user",
+                  content: buildIndependentEvidenceStreamContinuationPrompt({
+                    requiredStreams: inferIndependentEvidenceStreamCount(
+                      packet.taskPrompt,
+                    ),
+                    completedSessions:
+                      countCompletedSessionEvidenceResults(toolTrace),
+                  }),
+                },
+              ],
+              forceToolChoice: { name: "sessions_spawn" },
+            };
+          }
           // S5: forced permission_result round (host-authored, no model call). The
           // builder's guards (approval-wait-timeout task + pending permission_query +
           // a pending approval_id) are the idempotency: once permission_result lands,
