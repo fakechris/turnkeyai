@@ -24227,3 +24227,85 @@ test("cutover parity: a multi-stream delegation is not finalized after one strea
   assert.equal(engineCloseout3?.reason, inlineCloseout3?.reason);
   assert.equal(engineCloseout3?.roundCount, inlineCloseout3?.roundCount);
 });
+
+test("cutover parity: the S8 forced continuation round caps over-spawned streams to the remaining count, identically on both paths", async () => {
+  // Stage 7 S8 cap (codex #518 P2). After one of three required streams completes, the
+  // forced continuation round returns THREE sessions_spawn (the model repeats all
+  // labels), but only two streams remain. Inline caps the round to the remaining count
+  // (limitIndependentEvidenceSpawnCalls, inline :513); the engine now mirrors it via the
+  // onToolCalls hook, so both execute exactly the two remaining streams and drop the
+  // extra — without it the engine would over-spawn a child session and break parity.
+  const taskPrompt = [
+    "Prepare a product-ready brief about the next release.",
+    "These are three independent evidence streams.",
+    "Research source: orchestration.",
+    "Capability source: bridge.",
+    "Live signal dashboard: signals.",
+  ].join("\n");
+  const base = {
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible" as const,
+    adapterName: "test",
+    raw: {},
+  };
+  const completed = (id: string, label: string) =>
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      task_id: `task-${id}`,
+      session_key: `worker:explore:task-${id}`,
+      agent_id: "explore",
+      status: "completed",
+      tool_chain: ["explore"],
+      result: `${label} evidence complete.`,
+      final_content: `${label} verified evidence. Residual risk: local fixture only.`,
+      payload: { mode: "llm_sub_agent", workerType: "explore", content: `${label} verified evidence. Residual risk: local fixture only.` },
+    });
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executed: RoleToolExecutionInput["call"][] = [];
+    let calls = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...base, text: "Spawning the first stream.", toolCalls: [{ id: "toolu-one", name: "sessions_spawn", input: { agent_id: "explore", task: "Check orchestration source only.", label: "orchestration" } }] };
+      }
+      if (calls === 2) {
+        // over-spawn: THREE spawns when only two streams remain — the cap must drop one.
+        return { ...base, text: "Spawning the remaining streams (over-spawned).", toolCalls: [
+          { id: "toolu-two", name: "sessions_spawn", input: { agent_id: "explore", task: "Check capability bridge source only.", label: "bridge" } },
+          { id: "toolu-three", name: "sessions_spawn", input: { agent_id: "explore", task: "Check live signals source only.", label: "signals" } },
+          { id: "toolu-four", name: "sessions_spawn", input: { agent_id: "explore", task: "Check a redundant extra source.", label: "extra" } },
+        ] };
+      }
+      return { ...base, text: "Final brief from three independent streams: orchestration, bridge, and signals all verified.", toolCalls: [] };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [{ name: "sessions_spawn", description: "spawn", inputSchema: { type: "object", properties: { agent_id: { type: "string" }, task: { type: "string" }, label: { type: "string" } } } }];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push(input.call);
+        return { toolCallId: input.call.id, toolName: input.call.name, content: completed(String(input.call.id), String(input.call.input.label ?? input.call.id)) };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: { ...buildPacket(), taskPrompt } });
+    return { result, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // the redundant 4th spawn was capped on BOTH paths: exactly the two remaining ran.
+  assert.deepEqual(engine.executed.map((c) => c.id), inline.executed.map((c) => c.id));
+  assert.deepEqual(engine.executed.map((c) => c.id), ["toolu-one", "toolu-two", "toolu-three"]);
+  assert.ok(!engine.executed.some((c) => c.id === "toolu-four"));
+  const engineCloseout4 = engine.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  const inlineCloseout4 = inline.result.metadata?.["toolLoopCloseout"] as { reason?: string; roundCount?: number } | undefined;
+  assert.equal(engineCloseout4?.reason, inlineCloseout4?.reason);
+  assert.equal(engineCloseout4?.roundCount, inlineCloseout4?.roundCount);
+});

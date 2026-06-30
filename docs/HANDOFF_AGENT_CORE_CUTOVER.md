@@ -15,8 +15,8 @@ it**, one bounded, behavior-preserving slice at a time, **behind a flag**:
   (default **`"inline"`**, env override `TURNKEYAI_REACT_ENGINE=engine`).
 - **Production runs `"inline"` and stays inline until the final flip (Stage 8).** The
   engine path is exercised only by parity tests until then.
-- Every slice is gated by the **239-test oracle** (`llm-response-generator.test.ts` =
-  197 inline behavior tests + 42 cutover parity tests) — must stay green with **zero
+- Every slice is gated by the **240-test oracle** (`llm-response-generator.test.ts` =
+  197 inline behavior tests + 43 cutover parity tests) — must stay green with **zero
   assertion edits to the 197**. agent-core has its own `react-agent.test.ts` (27 tests).
 
 The engine path (`runViaReActEngine`) is real and **parity-proven** for: no-tool reply,
@@ -314,7 +314,9 @@ host-authored forced rounds (permission_result). Plus wiring two already-defined
   completed-session closeout; the predicate's continuation-prompt presence makes it fire exactly once
   (the model then spawns the remaining streams). Parity+mutation verified with a clean 3-explore-stream
   fixture (no continuation language → no `sessions_list` lookup; no browser/URLs → no spawn normalization).
-  Fully verified — no deferred fixtures.
+  Fully verified — no deferred fixtures. Also adds the engine `onToolCalls` hook running
+  `limitIndependentEvidenceSpawnCalls` (inline :513) so the forced round cannot over-spawn beyond the
+  remaining streams (codex #518 P2); S9 extends this same hook with the approval-gate normalizer.
 - **S9** — `shouldRepairMissingApprovalGate` (natural-finish :807 + post-execute :1672) **+ port
   `enforceMissingApprovalGateRepairToolCalls` into the engine `onToolCalls`** (the normalizer + both
   sites must land in one slice or parity is structurally impossible).
@@ -359,7 +361,7 @@ copy as templates.
 ```bash
 git checkout main && git pull --ff-only origin main
 npx tsc --noEmit -p tsconfig.json                                   # clean
-npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (239)
+npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts   # all green (240)
 npx tsx --test packages/agent-core/src/react-agent.test.ts                # all green (27)
 # Stage 6 tool-free completed cascade COMPLETE (#502-#512). Stage 7 IN PROGRESS:
 # S1 pre-execute suppression (#513), S2/S3 forced-spawn browser-evidence + consumesRound
