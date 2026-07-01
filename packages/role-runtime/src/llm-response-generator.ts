@@ -2613,6 +2613,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       // inline reasonLines + closeout metadata it built here; onTerminate runs
       // the synthesis for the reason it returned.
       pendingCloseout: { reasonLines: string[]; closeout: ToolLoopCloseoutMetadata } | undefined;
+      // Stage 8C (Batch C — T10 finalization plane): the final message list at the
+      // time the closeout synthesized. The inline generate() epilogue (:2407-2433)
+      // runs the required-timeout-followup / residual-risk / full-trace failure-bucket
+      // appenders against the running `messages` array; the engine hooks only see
+      // `state.messages`, so onTerminate / onModelCallError stash it here for the
+      // post-loop epilogue below to consume.
+      finalMessages: LLMMessage[] | undefined;
     } = {
       toolLoopCloseout: undefined,
       closeoutResult: undefined,
@@ -2623,6 +2630,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       completedSessionToolResults: undefined,
       timeoutSignal: undefined,
       pendingCloseout: undefined,
+      finalMessages: undefined,
     };
     const toolTrace: NativeToolRoundTrace[] = [];
     // Stage 7 S4: the synthetic sessions_send the empty-round continuation would
@@ -3808,6 +3816,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // completed_sub_agent_final + sub_agent_timeout (PR2c) are reachable;
         // each closeout reason gets its inline reasonLines + status here.
         onTerminate: async (reason, state, ctx) => {
+          // Stage 8C (Batch C — T10 finalization plane): stash the terminal message
+          // list so the post-loop epilogue can run the inline generate() finalization
+          // appenders (:2407-2433) against the same context the inline path sees.
+          run.finalMessages = state.messages;
           // Stage 8B slice 1c: the hard approval-wait-timeout local closeout (inline
           // :966-982), reached via the onRepairRound { closeout } directive. The answer
           // is built DETERMINISTICALLY (no model synthesis), so this short-circuits the
@@ -4465,10 +4477,65 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             }
             return synth;
           };
+          // Stage 8C (Batch C — T10 browser/session finalization plane): mirror the
+          // inline completed-closeout visibility appender chain (inline :1928-1960)
+          // in EXACT order before redaction:
+          //   1. maybeAppendBrowserRecoveryVisibility     (inline :1928)
+          //   2. maybeAppendBrowserFailureBucketVisibility (inline :1933)
+          //   3. recovered-timeout OR continuation appender (inline :1942-1960,
+          //      handled by appendCompletedTimeoutVisibility above)
+          //   4. maybeRedactForbiddenLocalUrls           (inline :1961)
+          // The recovery + failure-bucket appenders were previously deferred (see the
+          // scope-gap comment at :3976). They are pure post-synthesis transforms that
+          // append at most once when their own guards fire (no repair marker, no
+          // re-synthesis loop), so ordering — not idempotency — is load-bearing.
+          //
+          // browserRecoverySummaries mirror inline :1924-1927: the completed session's
+          // own summaries merged with any collected from the full tool trace. The
+          // failure-bucket evidence text mirrors inline :1936-1940 (the completing
+          // round's tool-result text + the recovery summaries + the final contents).
+          //
+          // Scope: the natural-finish-only appenders (maybeAppendRequiredTimeout-
+          // FollowupVisibility / maybeAppendBrowserRecoveryResidualRiskVisibility,
+          // inline :2417-2432) are intentionally NOT run here — they fire only in the
+          // inline natural-finish loop (which the engine does not yet port), so running
+          // them for completed/non-completed engine closeouts would diverge. Deferred to
+          // the natural-finish loop cutover (Stage 8F).
+          const appendCompletedBrowserVisibility = (
+            synth: GenerateTextResult,
+          ): GenerateTextResult => {
+            if (!run.completedSession) {
+              return synth;
+            }
+            const completedSession = run.completedSession;
+            const browserRecoverySummaries = dedupeStrings([
+              ...completedSession.browserRecoverySummaries,
+              ...collectBrowserRecoverySummariesFromToolTrace(toolTrace),
+            ]);
+            let visible = maybeAppendBrowserRecoveryVisibility({
+              result: synth,
+              taskPrompt: packet.taskPrompt,
+              browserRecoverySummaries,
+            });
+            visible = maybeAppendBrowserFailureBucketVisibility({
+              result: visible,
+              taskPrompt: packet.taskPrompt,
+              evidenceText: [
+                collectToolResultContentText(
+                  run.completedSessionToolResults ?? [],
+                ),
+                ...browserRecoverySummaries,
+                ...completedSession.finalContents,
+              ].join("\n\n"),
+            });
+            return visible;
+          };
           const closeoutResult =
             reason === "completed_sub_agent_final"
               ? maybeRedactForbiddenLocalUrls({
-                  result: appendCompletedTimeoutVisibility(synthesisResult),
+                  result: appendCompletedTimeoutVisibility(
+                    appendCompletedBrowserVisibility(synthesisResult),
+                  ),
                   packet,
                 })
               : reason === "sub_agent_timeout"
@@ -4514,6 +4581,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (isAbortError(error)) {
             return "rethrow";
           }
+          run.finalMessages = state.messages;
           const forcedPermissionResultCall =
             activeToolLoop && hasUsableEvidence(toolTrace)
               ? buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
@@ -4700,6 +4768,58 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     if (run.reductionSnapshot) {
       await this.recordReductionBoundarySafely(activation, packet, selection, run.reductionSnapshot);
     }
+
+    // Stage 8C (Batch C — T10 finalization plane): mirror the inline generate()
+    // finalization epilogue (:2407-2433), which runs UNCONDITIONALLY at the end of
+    // the loop — for every closeout AND the plain natural-finish result — in this
+    // exact order, AFTER the per-reason onTerminate appenders/redaction:
+    //   1. recovered-timeout-closeout visibility   (inline :2407-2415)
+    //   2. required-timeout-followup visibility     (inline :2417-2422)
+    //   3. browser-recovery residual-risk visibility (inline :2423-2428)
+    //   4. browser-failure-bucket visibility (FULL-trace evidence) (inline :2429-2433)
+    // These are idempotent guarded appenders (no repair marker, append-at-most-once),
+    // so re-running #1/#4 after the completed-cascade pass is a no-op when they already
+    // fired. #2 (required-timeout-followup) and #3 (residual-risk) run ONLY here in
+    // inline (they never appear in the completed cascade), so this is where a resumed-
+    // timeout completion whose model final omitted the continuation-guidance / unverified-
+    // scope / residual-risk lines gets them deterministically appended — the parity
+    // residual the onTerminate scope comment (:3976) flagged as deferred. `finalMessages`
+    // was stashed by onTerminate/onModelCallError; fall back to the initial gateway
+    // messages if no closeout ran (the plain natural-finish result path).
+    const epilogueMessages =
+      run.finalMessages ?? initialGatewayInput.messages;
+    let finalResult: GenerateTextResult = {
+      ...(run.closeoutResult ?? lastResult ?? {}),
+      text: finalText,
+    } as GenerateTextResult;
+    if (
+      shouldAppendRecoveredTimeoutCloseoutVisibility({
+        resultText: finalResult.text,
+        taskPrompt: packet.taskPrompt,
+        messages: epilogueMessages,
+        toolTrace,
+      })
+    ) {
+      finalResult = maybeAppendRecoveredTimeoutCloseoutVisibility(finalResult);
+    }
+    finalResult = maybeAppendRequiredTimeoutFollowupVisibility({
+      result: finalResult,
+      taskPrompt: packet.taskPrompt,
+      messages: epilogueMessages,
+      toolTrace,
+    });
+    finalResult = maybeAppendBrowserRecoveryResidualRiskVisibility({
+      result: finalResult,
+      taskPrompt: packet.taskPrompt,
+      messages: epilogueMessages,
+      toolTrace,
+    });
+    finalResult = maybeAppendBrowserFailureBucketVisibility({
+      result: finalResult,
+      taskPrompt: packet.taskPrompt,
+      evidenceText: collectToolTraceResultContent(toolTrace),
+    });
+    finalText = finalResult.text;
 
     const content = enforceRequestedThreeLineLabelShape({
       taskPrompt: packet.taskPrompt,

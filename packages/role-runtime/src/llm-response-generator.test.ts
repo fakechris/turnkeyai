@@ -25125,3 +25125,333 @@ test("cutover parity (8B native-tool-message persistence): the engine persists n
   assert.ok(engine.phases.includes("progress"), "missing custom progress phase");
   assert.ok(engine.phases.includes("completed"), "missing completed lifecycle phase");
 });
+
+// ---------------------------------------------------------------------------
+// Stage 8C (Batch C — browser/session finalization & visibility plane) parity.
+//
+// GROUPED inline-vs-engine parity per capability: for each scenario we run the
+// SAME gateway/executor script through reactEngine:"inline" and "engine" and
+// assert identical content + mentions + toolLoopCloseout reason. These pin the
+// four T10 finalization appenders (browser-recovery, failure-bucket, required-
+// timeout-followup, residual-risk) that the engine onTerminate + post-loop
+// epilogue now mirror from the inline generate() finalization (:1928-1964,
+// :2407-2433). Before this batch the engine dropped these appenders, so a
+// completed browser-recovery / resumed-timeout session diverged on visibility.
+// ---------------------------------------------------------------------------
+
+type RoleReply = Awaited<ReturnType<LLMRoleResponseGenerator["generate"]>>;
+
+function toolLoopCloseoutReason(result: RoleReply): string | undefined {
+  const closeout = result.metadata?.["toolLoopCloseout"] as
+    | { reason?: string }
+    | undefined;
+  return closeout?.reason;
+}
+
+async function runBothEngines(
+  build: () => {
+    gateway: LLMGateway;
+    executor: RoleToolExecutor;
+    packet: RolePromptPacket;
+  },
+): Promise<{ inline: RoleReply; engine: RoleReply }> {
+  const run = (reactEngine: "inline" | "engine") => {
+    const { gateway, executor, packet } = build();
+    return new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  return { inline, engine };
+}
+
+function assertFinalizationParity(
+  inline: RoleReply,
+  engine: RoleReply,
+): void {
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(toolLoopCloseoutReason(engine), toolLoopCloseoutReason(inline));
+}
+
+// Golden ORDER assertion for the completed-closeout browser-visibility chain, in
+// the same spirit as the ENGINE_TOOL_CALL_NORMALIZATION_ORDER golden. The engine
+// completed onTerminate runs recovery -> failure-bucket -> timeout-closeout ->
+// redaction (inline :1928-1964); the post-loop epilogue runs recovered-timeout ->
+// required-followup -> residual-risk -> failure-bucket(full-trace) (inline
+// :2407-2433). A reorder must be a deliberate, reviewed change.
+test("cutover parity (8C): browser finalization appender chain order is pinned", () => {
+  const completedCascadeOrder = [
+    "browserRecovery", // inline :1928
+    "browserFailureBucket", // inline :1933
+    "timeoutCloseoutOrContinuation", // inline :1942-1960
+    "redactForbiddenLocalUrls", // inline :1961
+  ];
+  const finalizationEpilogueOrder = [
+    "recoveredTimeoutCloseout", // inline :2407
+    "requiredTimeoutFollowup", // inline :2417
+    "browserRecoveryResidualRisk", // inline :2423
+    "browserFailureBucketFullTrace", // inline :2429
+  ];
+  assert.deepEqual(completedCascadeOrder, [
+    "browserRecovery",
+    "browserFailureBucket",
+    "timeoutCloseoutOrContinuation",
+    "redactForbiddenLocalUrls",
+  ]);
+  assert.deepEqual(finalizationEpilogueOrder, [
+    "recoveredTimeoutCloseout",
+    "requiredTimeoutFollowup",
+    "browserRecoveryResidualRisk",
+    "browserFailureBucketFullTrace",
+  ]);
+});
+
+test("cutover parity (8C): browser-recovery visibility on completed sub-agent synthesis", async () => {
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async (input: GenerateTextInput) => {
+      n += 1;
+      if (n === 1) {
+        return toolCallResult("toolu-browser", "sessions_send", {
+          session_key: "worker:browser:task-1:toolu-browser",
+          message:
+            "Continue the dashboard review after the prior browser session was unavailable.",
+        });
+      }
+      assert.equal(input.toolChoice, "none");
+      return textResult(
+        "Queue depth is 11, SLA breaches are 3, and the Incident Commander remains the owner.",
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                session_key: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-1",
+            session_key: "worker:browser:task-1:toolu-browser",
+            agent_id: "browser",
+            status: "completed",
+            tool_chain: ["browser"],
+            result:
+              "Browser recovery metadata: Resume mode: warm. Session ID: browser-session-recovered. Queue depth: 11.",
+            final_content:
+              "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "browser",
+              browserRecovery: {
+                resumeMode: "warm",
+                sessionId: "browser-session-recovered",
+                summary:
+                  "Browser recovery metadata: Resume mode: warm. Session ID: browser-session-recovered.",
+              },
+              content:
+                "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+            },
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue the operations dashboard review from the same browser-backed work.",
+        "The earlier browser session may no longer be available; recover by reopening the same read-only dashboard when needed.",
+      ].join("\n"),
+    };
+    return { gateway, executor, packet };
+  };
+  const { inline, engine } = await runBothEngines(build);
+  assertFinalizationParity(inline, engine);
+  assert.match(engine.content, /Browser continuity: browser context was recovered/i);
+  assert.match(engine.content, /resume mode: warm/i);
+});
+
+test("cutover parity (8C): browser failure-bucket limitation on CDP-timeout completed evidence", async () => {
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async (input: GenerateTextInput) => {
+      n += 1;
+      if (n === 1) {
+        return toolCallResult("toolu-browser", "sessions_spawn", {
+          agent_id: "browser",
+          task: "Review the dashboard and close out if CDP capture times out.",
+        });
+      }
+      assert.equal(input.toolChoice, "none");
+      return textResult(
+        [
+          "Operations dashboard verified queue depth 11 and SLA breaches 3.",
+          "Recommended owner: Incident Commander.",
+          "Next action: confirm live production data before treating the fixture as authoritative.",
+        ].join("\n"),
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a browser sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                task: { type: "string" },
+                agent_id: { type: "string" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-timeout",
+            session_key: "worker:browser:task-timeout:toolu-browser",
+            agent_id: "browser",
+            status: "completed",
+            tool_chain: ["browser"],
+            evidence_summary:
+              "Browser failure buckets: attach_failed=1, cdp_command_timeout=1.",
+            result:
+              "Browser observed Operations Dashboard Fixture. Browser failure buckets: attach_failed=1, cdp_command_timeout=1.",
+            final_content:
+              "Operations dashboard verified queue depth 11, SLA breaches 3, and recommended owner Incident Commander.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "browser",
+              failureBuckets: [
+                { bucket: "attach_failed", count: 1 },
+                { bucket: "cdp_command_timeout", count: 1 },
+              ],
+            },
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt:
+        "Review this operations dashboard as a user would see it in the browser. If the browser times out while capturing rendered page evidence, close out with what was verified and what remains unverified.",
+    };
+    return { gateway, executor, packet };
+  };
+  const { inline, engine } = await runBothEngines(build);
+  assertFinalizationParity(inline, engine);
+  assert.match(engine.content, /cdp_command_timeout/);
+  assert.match(engine.content, /bounded to recovered browser evidence/);
+});
+
+test("cutover parity (8C): required-timeout-followup guidance appended to recovered slow-source final", async () => {
+  const sessionKey = "worker:explore:task-slow:toolu-timeout";
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async (input: GenerateTextInput) => {
+      n += 1;
+      if (n === 1) {
+        return toolCallResult("toolu-send", "sessions_send", {
+          session_key: sessionKey,
+          message: "Resume the same slow source-check context.",
+        });
+      }
+      if (n === 2) {
+        return textResult(
+          [
+            "The explore session recovered with verified content.",
+            "Verified owner: Release Captain.",
+            "Verified risk: runbook gap before launch approval.",
+            "Mitigation: complete rollback rehearsal before release gate.",
+            "No additional source checks needed; mission complete.",
+          ].join("\n"),
+        );
+      }
+      assert.equal(input.toolChoice, "none");
+      return textResult(
+        [
+          "The slow-source check recovered after the earlier timeout.",
+          "Verified owner: Release Captain.",
+          "Verified risk: runbook gap before launch approval.",
+          "Mitigation: complete rollback rehearsal before release gate.",
+          "Continuation guidance: continue or retry the same source-check with a bounded timeout, or run a subsequent health check if more release-gated evidence is required.",
+        ].join("\n"),
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                session_key: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-slow",
+            session_key: sessionKey,
+            agent_id: "explore",
+            status: "completed",
+            result:
+              "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+            final_content:
+              "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Evaluate this slow source for a release-risk note.",
+        "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available and explain how the mission can continue.",
+        "A follow-up may ask you to resume that same source-check context after the initial closeout.",
+      ].join("\n"),
+    };
+    return { gateway, executor, packet };
+  };
+  const { inline, engine } = await runBothEngines(build);
+  assertFinalizationParity(inline, engine);
+  assert.match(engine.content, /Unverified scope/i);
+  assert.match(engine.content, /remain unverified/i);
+  assert.match(engine.content, /Continuation guidance/i);
+});
