@@ -15,23 +15,23 @@ Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-chec
 |---|---|
 | Inline behavior tests (baseline, `npm run parity:inline`) | **272 pass / 0 fail** (grew from 252 as each batch added grouped parity + golden-order tests) |
 | Engine tests run to completion | **272** (0 skipped) |
-| Pass on engine | **185** (A) → **222** (B) → **260** (C/D/E) → **270** (final-parity) |
-| Fail on engine | **65** (A) → **28** (B) → **6** (C/D/E) → **2** (final-parity) |
+| Pass on engine | **185** (A) → **222** (B) → **260** (C/D/E) → **270** (final-parity) → **272** (structural fixes) |
+| Fail on engine | **65** (A) → **28** (B) → **6** (C/D/E) → **2** → **0** ✅ |
 | Incomplete after recovery | **0** |
-| Skipped | **0**. #55 (parent wall-clock boundary) fixed in Batch E; the resumable-partial convergence test no longer churns (passes in 1s in isolation) and was removed from `KNOWN_HANGS`. |
+| Skipped | **0** |
+
+**Full engine parity reached: `npm run parity:engine` = 272 pass / 0 fail / 0 skip, all 14 chunks complete.** Production stays `reactEngine: "inline"` behind the flag; no default flip yet.
 
 **Harness note.** Before the Batch E fix a single-process engine run died after ~54 tests because a leaked browser-session timer crashed whatever test was executing when it fired. The runner still executes the suite in small fresh-process chunks (so any future leak at most kills one chunk), force-exits each chunk, applies a per-test timeout, reaps the process group on an OS backstop, and re-runs any unreported test individually to recover blameless neighbours and isolate a crasher.
 
-### Remaining 2 engine fails — both deep, both documented
+### The last two fails — closed by two small structural fixes (not architecture extraction)
 
-Full per-test list in `docs/STAGE8B_PARITY_STATUS.md`. These are NOT continuation-plane normalizer gaps; each is a deeper engine divergence:
-
-| Fail | Root cause | Why deferred |
+| Fail | Root cause (instrumented) | Fix |
 |---|---|---|
-| `bounds browser-evidence repair for slow loopback timeout follow-up` | The engine's `onTerminate` **simulates** inline's completed-cascade in a repair loop; for a multi-repair completed session (weak-evidence → missing-browser-evidence-dimensions) the re-synthesis **message construction diverges** from inline's main-loop re-entry, so a later re-synthesis returns the wrong gateway branch. The repairMarkers ARE persisted correctly (instrumented) — the "runs once" divergence is architectural. | Needs the **natural-finish loop cutover (Stage 8F)**; making the `onTerminate` simulation byte-exact is architecture extraction, out of scope here. |
-| `runs native tool-use loop and feeds tool results back` | Multi-feature observability parity: the engine's event-consumer architecture doesn't emit tool-lifecycle events (`Tool call started/completed`) to `runtimeProgressRecorder` (progressEvents=0), and lacks `metadata.modelUse`. Profiling proved modelUse itself is JSON-safe (639 bytes, deep-cloned still hung); the "hang" is the empty-`assert.ok` throwing while an engine async op is pending, cancelling the test. | A dedicated observability-port slice (progress emission through the engine's event-consumer + modelUse), not a metadata one-liner. |
+| `runs native tool-use loop and feeds tool results back` | Observability was split across three sinks (toolTrace, native tool messages, runtimeProgressRecorder) and the engine's event-consumer never emitted the tool lifecycle to `runtimeProgressRecorder` (`progressEvents=0`); metadata lacked `modelUse`. The "hang" was the empty `assert.ok` throwing while engine async was pending — NOT a modelUse serialization problem. | **Observability bridge**: `tool_started`/`tool_result` also call `recordToolProgressSafely`; `onAfterExecuteContinue` emits the provider-tool-protocol round (inline `:1704`); metadata gets `modelUse` (inline `:2478`). Unified event → all sinks. |
+| `bounds browser-evidence repair for slow loopback timeout follow-up` | Gateway call-by-call trace: inline makes 6 model calls, engine made 5. A completed-cascade repair re-synthesis returned a TOOL CALL on the tc=none synthesis round; inline **re-enters its main loop** for one more clean synthesis, the engine's `onTerminate` simulation stopped and used the tool-call artifact text. | **Minimal completed-cascade re-entry**: after the repair loop, if the last synthesis carries tool calls, run one clean `generateFinalAfterToolRoundLimit` pass (inline's trailing synthesis). No policy registry, no loop restructure — just stop the terminal simulation from emitting a tool-call artifact. |
 
-**Now DONE on the engine path.** Merged #515–#526 plus Batches A–E, the codex-boundary P2 fixes, the T2 continuation-plane batch (lookup injection + supplemental timeout probe), the no-tool-use routing fix, and the resumable-partial convergence (skip removed). Engine parity: **65 → 2 fails, 0 skips, all chunks complete.**
+**DONE on the engine path — full parity.** Merged #515–#526 plus Batches A–E, the codex-boundary P2 fixes, the T2 continuation-plane batch, the no-tool-use routing fix, the resumable-partial convergence, and the two structural fixes above (observability bridge + completed-cascade re-entry). Engine parity: **65 → 0 fails, 0 skips, all chunks complete. Inline 272/272.**
 
 ---
 
