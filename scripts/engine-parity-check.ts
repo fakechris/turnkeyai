@@ -36,27 +36,17 @@ const STATUS_DOC = "docs/STAGE8B_PARITY_STATUS.md";
  * suite runs. Each entry carries the owning batch + reason so the skip is
  * auditable, not silent. Remove an entry once its batch fixes the defect.
  *
- * The "#55" parent wall-clock boundary test passes in 1s in isolation, but under
- * the engine an active browser session is not aborted/torn down at the parent
- * wall-clock boundary; its leaked timer fires later and crashes the run. Chunking
- * already isolates most leak-crashes, but this specific test reliably triggers it
- * so we skip it outright. Root-causing the abort is the Batch E item.
+ * Currently EMPTY. Two former entries are both resolved:
+ *   - "#55" parent wall-clock boundary: the engine now runs tool execution through
+ *     runToolBatch with a properly disposed per-chunk wall-clock signal and extends
+ *     (never aborts) an active browser session, so no long-lived timer leaks
+ *     (Batch E).
+ *   - "does not treat resumable partial session output as completion evidence": this
+ *     no longer churns — it passes in 1s in isolation on the engine (the earlier
+ *     continuation-plane work landed the recognition). Removed here so the runner
+ *     reports 0 skips.
  */
-const KNOWN_HANGS: { pattern: string; batch: string; reason: string }[] = [
-  // Stage 8B (Batch E — T7 execution budget/wall-clock plane): the #55 leaked-timer
-  // crash is resolved. The engine now runs tool execution through runToolBatch with a
-  // properly disposed per-chunk wall-clock signal (createToolExecutionSignal.dispose in
-  // finally) and the browser-session wall-clock extension keeps an active browser session
-  // alive past the parent budget WITHOUT aborting it, so no long-lived timer leaks out of
-  // the run to crash a later chunk. The test now passes in isolation AND runs to completion
-  // in-process; removed from KNOWN_HANGS.
-  {
-    pattern: "does not treat resumable partial session output as completion evidence",
-    batch: "B",
-    reason:
-      "engine never terminates on this case even in isolation (churns to maxRounds past the 180s backstop) where inline converges — a continuation-plane convergence divergence; revisit once Batch B lands the continuation-completion recognition",
-  },
-];
+const KNOWN_HANGS: { pattern: string; batch: string; reason: string }[] = [];
 
 /**
  * Capability clusters. The FIRST matching pattern wins, so order = priority.

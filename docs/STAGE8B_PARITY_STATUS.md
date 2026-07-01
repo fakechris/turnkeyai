@@ -1,9 +1,6 @@
 # Stage 8B engine-parity status (engine mode)
 
-Ran 271 test points: **269 pass / 2 fail**. All chunks completed.
-
-Skipped 1 known engine crash/non-termination test(s):
-- (Batch B) `does not treat resumable partial session output as completion evidence` — engine never terminates on this case even in isolation (churns to maxRounds past the 180s backstop) where inline converges — a continuation-plane convergence divergence; revisit once Batch B lands the continuation-completion recognition
+Ran 272 test points: **270 pass / 2 fail**. All chunks completed.
 
 ## Fail clusters
 
