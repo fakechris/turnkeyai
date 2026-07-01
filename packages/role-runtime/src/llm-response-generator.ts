@@ -2729,6 +2729,33 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           },
         };
       }
+      // Continuation LOOKUP directive (inline :740-757): the model answered an
+      // explicit continuation without a session key, so inject a sessions_list to
+      // discover the resumable session before sending. Gated on !directive so the
+      // direct sessions_send branch above wins; computed exactly like the
+      // onToolCalls pipeline (:2779-2787).
+      const lookupDirective =
+        !probePending &&
+        !directive &&
+        !isAppliedApprovalBrowserContinuation(packet.taskPrompt)
+          ? findSessionContinuationLookupDirective(
+              continuationContext,
+              continuationContext,
+            )
+          : null;
+      if (
+        lookupDirective &&
+        hasToolDefinition(initialGatewayInput.tools, "sessions_list")
+      ) {
+        return {
+          id: `runtime-continuation-lookup-${state.round + 1}`,
+          name: "sessions_list",
+          input: {
+            limit: 5,
+            reason: `continuation lookup: ${lookupDirective.messageHint}`,
+          },
+        };
+      }
       return null;
     };
     const agent = createReActAgent<RoleToolContext>({
@@ -3436,6 +3463,38 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // completed_sub_agent_final closeout (inline :1603-1712, inside completedSession).
           const completedSession = findCompletedSessionEvidence(results);
           if (!completedSession) {
+            // General supplemental timeout probe (inline :2336-2360): a NON-browser
+            // sub-agent timeout whose resumed evidence is still content-poor
+            // escalates to a supplemental browser sessions_spawn before the
+            // sub_agent_timeout closeout. evidenceText is the round's tool-result
+            // content (the timeout result), not a completed session. Runs only when
+            // there is no completed session this round, so a completed session (the
+            // block below) wins — matching inline, which runs the completedSession
+            // block (:1755) before this timeout probe.
+            const timeoutProbe =
+              timeoutSignal && timeoutSignal.agentId !== "browser"
+                ? shouldRunSupplementalLocalTimeoutProbe({
+                    taskPrompt: packet.taskPrompt,
+                    messages: state.messages,
+                    toolTrace,
+                    evidenceText: collectToolResultContentText(results),
+                    tools: initialGatewayInput.tools,
+                    browserAvailable: allowsSupplementalBrowserProbe(packet),
+                  })
+                : null;
+            if (timeoutProbe) {
+              return {
+                messages: [
+                  ...state.messages,
+                  {
+                    role: "user",
+                    content:
+                      buildSupplementalLocalTimeoutProbePrompt(timeoutProbe),
+                  },
+                ],
+                forceToolChoice: { name: "sessions_spawn" },
+              };
+            }
             return null;
           }
           // S7 branch 3: supplemental local timeout probe via sessions_spawn (:1604).

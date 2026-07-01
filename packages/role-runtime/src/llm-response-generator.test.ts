@@ -26697,3 +26697,235 @@ test("cutover parity (P2 over-cap): calls above maxToolCallsPerRound never emit 
   assert.equal(engineStarted.has("toolu-b"), true);
   assert.equal(engineStarted.has("toolu-c"), false);
 });
+
+// --- Stage 8 final-parity: T2 continuation-plane grouped parity ---------------
+// Grouped inline-vs-engine parity for the continuation-plane fixes: empty-round
+// continuation-lookup injection (sessions_list) and the general supplemental
+// timeout probe (browser sessions_spawn). Each runs the SAME scenario through
+// both paths and asserts identical content + executed-call sequence.
+
+test("cutover parity (final T2): empty-round continuation lookup injects sessions_list identically", async () => {
+  const sessionKey = "worker:explore:task-source:toolu-timeout";
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    const executedCalls: string[] = [];
+    gateway.generate = async (input: GenerateTextInput) => {
+      if (executedCalls.length < 2 && input.toolChoice !== "none") {
+        return textResult("I can summarize the prior attempt.");
+      }
+      return textResult("Final timeout follow-up from resumed session.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_list",
+            description: "List sessions",
+            inputSchema: { type: "object", properties: { limit: { type: "number" } } },
+          },
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { session_key: { type: "string" }, message: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executedCalls.push(input.call.name);
+        if (input.call.name === "sessions_list") {
+          return {
+            toolCallId: input.call.id,
+            toolName: input.call.name,
+            content: JSON.stringify({
+              sessions: [
+                {
+                  session_key: sessionKey,
+                  status: "timeout",
+                  agent_id: "explore",
+                  label: "slow-source source-check",
+                  last_active_at: 10,
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-source",
+            session_key: sessionKey,
+            agent_id: "explore",
+            status: "completed",
+            tool_chain: ["explore"],
+            result: "Slow source completed after resume.",
+            final_content:
+              "Verified slow-source evidence after resume. Risk remains source-bounded.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "explore",
+              content:
+                "Verified slow-source evidence after resume. Risk remains source-bounded.",
+            },
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission.",
+        "Resume the existing source-check context if possible and explain whether the earlier timeout still limits the conclusion.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the slow-source attempt in this mission.",
+      ].join("\n"),
+    };
+    return { gateway, executor, packet, executedCalls };
+  };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const { gateway, executor, packet, executedCalls } = build();
+    const reply = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+    return { reply, executedCalls };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.deepEqual(engine.executedCalls, inline.executedCalls);
+  assert.deepEqual(engine.executedCalls, ["sessions_list", "sessions_send"]);
+  assert.equal(engine.reply.content, inline.reply.content);
+});
+
+test("cutover parity (final T2): a resumed non-browser timeout escalates to a browser probe identically", async () => {
+  const sessionKey = "worker:explore:task:TASK-slow-again:call_function_timeout_1";
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    const executed: Array<{ name: string; agentId: unknown }> = [];
+    gateway.generate = async (input: GenerateTextInput) => {
+      // Round 0: resume the timed-out explore session.
+      if (executed.length === 0 && input.toolChoice !== "none") {
+        return toolCallResult("toolu-send", "sessions_send", {
+          session_key: sessionKey,
+          message: "Resume the slow source-check context.",
+        });
+      }
+      // Round 1 (forced sessions_spawn after the probe marker): the browser probe.
+      if (
+        readToolContent(input.messages.at(-1)?.content ?? "").includes(
+          "resumed timeout evidence is still content-poor",
+        )
+      ) {
+        return toolCallResult("toolu-probe", "sessions_spawn", {
+          agent_id: "browser",
+          label: "Browser probe of slow-fixture",
+          task: "Inspect the rendered page.",
+        });
+      }
+      return textResult("Bounded browser probe negative evidence; rendered marker unverified.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { session_key: { type: "string" }, message: { type: "string" } },
+            },
+          },
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                task: { type: "string" },
+                agent_id: { type: "string", enum: ["browser", "explore"] },
+                label: { type: "string" },
+                timeout_seconds: { type: "number" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push({ name: input.call.name, agentId: input.call.input.agent_id });
+        if (input.call.name === "sessions_send") {
+          return {
+            toolCallId: input.call.id,
+            toolName: input.call.name,
+            content: JSON.stringify({
+              protocol: "turnkeyai.session_tool_result.v1",
+              task_id: "TASK-slow-again",
+              session_key: sessionKey,
+              agent_id: "explore",
+              status: "timeout",
+              timeout_seconds: 45,
+              evidence_available: true,
+              evidence_summary: "Resumed source-check timed out again with content-poor evidence.",
+            }),
+          };
+        }
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-browser-probe",
+            session_key: "worker:browser:task-browser-probe:toolu-probe",
+            agent_id: "browser",
+            status: "completed",
+            final_content: "Browser bounded negative evidence: rendered marker unverified.",
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Evaluate this slow browser-visible source for a release-risk note.",
+        "Slow source: http://127.0.0.1:49152/slow-fixture",
+        "If a follow-up resumes the same source-check context and evidence remains content-poor, inspect the rendered page as an operator would see it.",
+      ].join("\n"),
+      capabilityInspection: {
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    };
+    return { gateway, executor, packet, executed };
+  };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const { gateway, executor, packet, executed } = build();
+    const reply = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+    return { reply, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.deepEqual(engine.executed, inline.executed);
+  // The resumed explore timeout escalates to a browser sessions_spawn probe.
+  assert.ok(
+    engine.executed.some(
+      (call) => call.name === "sessions_spawn" && call.agentId === "browser",
+    ),
+    "engine should escalate a resumed non-browser timeout to a browser probe",
+  );
+  assert.equal(engine.reply.content, inline.reply.content);
+});
