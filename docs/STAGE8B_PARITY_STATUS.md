@@ -1,6 +1,8 @@
 # Stage 8B engine-parity status (engine mode)
 
-Ran 250 test points: **222 pass / 28 fail**. 1 chunk(s) crashed; 0 test(s) incomplete.
+Ran 250 test points: **227 pass / 23 fail**. 1 chunk(s) crashed; 0 test(s) incomplete.
+
+> Batch D (Stage 8B — C5 memory/compaction/envelope plane) closed the 5 C5 fails: the engine model-call wrapper now injects the final-tool-round warning, records the tool-result pruning/compaction boundary, carries the request-envelope reduction + pre-compaction memory-flush metadata forward from every tool round (not just synthesis), and stores tool-result trace content via the evidence-first compaction helper (`toNativeToolResultTrace`). Remaining fails are Batch B/E (tool-normalization/continuation, execution-budget/wall-clock, native-loop wiring).
 
 Skipped 2 known engine crash/non-termination test(s):
 - (Batch E) `does not abort active browser sessions at the parent wall-clock boundary` — engine does not abort/tear down the active browser session at the parent wall-clock boundary; its leaked timer crashes the run (#55)
@@ -8,12 +10,7 @@ Skipped 2 known engine crash/non-termination test(s):
 
 ## Fail clusters
 
-### C5 memory / compaction / envelope — 5
-- llm role response generator retries with a smaller request envelope after overflow
-- llm role response generator flushes memory once before request-envelope reduction
-- llm role response generator prunes older oversized tool results before later rounds
-- llm role response generator compacts older tool history before message-count overflow
-- llm role response generator stores evidence-first trace content for oversized session results
+### C5 memory / compaction / envelope — 0 (closed by Batch D)
 
 ### T7 execution budget / wall-clock — 4
 - llm role response generator synthesizes instead of falling back when tool round limit is reached

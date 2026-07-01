@@ -2518,6 +2518,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     let traceRound = 0;
     const model: ModelClient = {
       generate: async ({ messages: roundMessages, tools, toolChoice }) => {
+        // The current model-call round (0-based). generateWithEnvelopeRetry below
+        // post-increments traceRound, so this is the round this call belongs to —
+        // used to inject the final-allowed-round warning (see below).
+        const modelCallRound = traceRound;
         // The engine omits `tools` for its tool-free synthesis round (round-limit
         // closeout); honor that so the closeout can't emit a discarded tool call.
         const noToolRound = toolChoice === "none" || tools === undefined;
@@ -2530,7 +2534,36 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         const baseGatewayInput = noToolRound
           ? withoutToolUse(initialGatewayInput)
           : initialGatewayInput;
-        const gatewayMessages = prepareToolHistoryForGateway(roundMessages);
+        // Stage 8B (Batch D — C5 memory/compaction/envelope plane): inject the
+        // final-allowed-tool-round warning, mirroring the inline tool loop (:492-496).
+        // On the last permitted round (round === maxRounds - 1), inline appends a
+        // user message telling the model this is the final tool round so it answers
+        // from gathered evidence instead of asking for more tools. It is an
+        // append-only, side-effect-free message transform gated on the round, so
+        // porting it here keeps the engine's per-round gateway messages identical to
+        // inline (the compaction parity fixture asserts this warning lands on the
+        // final round). No-op unless this is an active tool round on the final round.
+        const warningMessages = withFinalToolRoundWarning(roundMessages, {
+          active: Boolean(activeToolLoop) && !noToolRound,
+          round: modelCallRound,
+          maxRounds,
+        });
+        const gatewayMessages = prepareToolHistoryForGateway(warningMessages);
+        // Stage 8B (Batch D — C5 memory/compaction/envelope plane): record the
+        // tool-result pruning + compaction boundary, mirroring the inline tool
+        // loop (:497-502). prepareToolHistoryForGateway prunes older oversized
+        // tool results (pruneToolResultsToTotalBudget) and compacts older tool
+        // history (compactOlderToolHistoryForGateway) in place; summarizeToolResultPruning
+        // diffs the pre/post message lists to detect what was pruned/compacted, and
+        // recordToolResultPruningBoundarySafely persists that observability snapshot
+        // to the runtime progress recorder. Measured against warningMessages (the
+        // post-final-round-warning list), exactly as inline (:497-502), so the
+        // observability snapshot and the outgoing gateway messages are the same list.
+        await this.recordToolResultPruningBoundarySafely(
+          activation,
+          selection,
+          summarizeToolResultPruning(warningMessages, gatewayMessages),
+        );
         const gatewayInput = {
           ...baseGatewayInput,
           messages: gatewayMessages,
@@ -2551,6 +2584,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           traceRound: traceRound++,
         });
         lastResult = generated.result;
+        // Stage 8B (Batch D — C5 memory/compaction/envelope plane): carry the
+        // per-round request-envelope reduction + pre-compaction memory flush
+        // forward, mirroring the inline tool loop (:587-593). Each tool-round
+        // model call runs through generateWithEnvelopeRetry, so a round that
+        // overflowed and reduced must persist that fact into the run state (the
+        // final metadata assembly reads run.reduction / run.memoryFlushes). Inline
+        // OVERWRITES reduction per round (last-wins, :587-590) and APPENDS every
+        // memory flush (:591-592); the no-tool-loop generate() path (envelope-retry
+        // + memory-flush parity tests) also flows through here, since the engine
+        // dispatch is unconditional — its single model call must surface reduction
+        // and flush metadata too.
+        if (generated.reduction) {
+          run.reduction = generated.reduction;
+          run.reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          run.memoryFlushes.push(generated.memoryFlush);
+        }
         return {
           text: generated.result.text,
           ...(generated.result.toolCalls?.length
@@ -4705,22 +4756,25 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           forceBlocking: true,
         });
       } else if (event.type === "tool_result" && currentRound) {
-        currentRound.results.push({
-          toolCallId: event.result.toolCallId,
-          toolName: event.result.toolName,
-          isError: event.result.isError === true,
-          contentBytes: new TextEncoder().encode(event.result.content ?? "").length,
-          ...(event.result.content ? { content: event.result.content } : {}),
-          ...(event.result.cancelled ? { cancelled: true } : {}),
-          ...(event.result.skipped ? { skipped: true } : {}),
-        });
+        const roleToolResult = event.result as RoleToolExecutionResult;
+        // Stage 8B (Batch D — C5 memory/compaction/envelope plane): build the trace
+        // result via toNativeToolResultTrace, exactly like inline's executeToolCalls
+        // onResult (:1682). That helper compacts oversized session tool results into an
+        // evidence-first excerpt (compactToolResultTraceContent keeps final_content /
+        // verified facts / artifactIds and drops raw HTML/snapshots) and caps the
+        // persisted content at ROLE_TOOL_RESULT_TRACE_CAP_BYTES (8KB), setting
+        // contentTruncated while preserving the raw byte count in contentBytes. The
+        // previous engine push stored the RAW result content, so the toolUse trace
+        // diverged from inline on oversized results (the evidence-first-trace fixture
+        // asserts the compacted excerpt + the truncation flag). contentBytes keeps the
+        // uncompacted byte length so downstream size checks match inline.
+        currentRound.results.push(toNativeToolResultTrace(roleToolResult));
         // Stage 8B (progress observability): capture the executor's progress events into
         // the round trace, so progress-dependent predicates (hasPermissionAppliedEvidence,
         // latestPendingPermissionQueryApprovalId, latestPermissionResultStatus, …) see the
         // same evidence inline does — inline emits result.progress into roundTrace.progress
         // via executeToolCalls' onProgress. The agent-core ToolResult does not declare a
         // progress field, but the role-runtime executor result carries it at runtime.
-        const roleToolResult = event.result as RoleToolExecutionResult;
         const progressCall = {
           id: event.result.toolCallId,
           name: event.result.toolName,

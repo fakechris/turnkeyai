@@ -25455,3 +25455,465 @@ test("cutover parity (8C): required-timeout-followup guidance appended to recove
   assert.match(engine.content, /remain unverified/i);
   assert.match(engine.content, /Continuation guidance/i);
 });
+
+// ---------------------------------------------------------------------------
+// Batch D (Stage 8B — C5 memory / compaction / envelope plane) parity tests.
+//
+// The engine model-call wrapper (runViaReActEngine's ModelClient.generate) now
+// mirrors the inline tool loop's per-round envelope handling: it injects the
+// final-allowed-tool-round warning, records the tool-result pruning/compaction
+// boundary, runs the model call through generateWithEnvelopeRetry (which flushes
+// pre-compaction memory once then retries under reduced envelopes), and carries
+// the resulting reduction + memory-flush metadata forward into the final result.
+// The tool-result trace is stored via the same evidence-first compaction helper
+// inline uses. These grouped tests run the SAME scenario through inline and
+// engine and assert identical content / mentions / closeout, plus the specific
+// C5 observable (reduction metadata, flush metadata, pruning event, compacted
+// trace content) that Batch D closes.
+// ---------------------------------------------------------------------------
+
+// Golden ORDER assertion for the engine model-call wrapper's per-round steps, in
+// the spirit of the ENGINE_TOOL_CALL_NORMALIZATION_ORDER golden. Reordering these
+// (e.g. pruning before the final-round warning, or capturing reduction before the
+// model call) breaks parity with the inline loop (:492-593) and must be a
+// deliberate, reviewed change.
+test("cutover parity (8D): engine model-call wrapper C5 step order is pinned", () => {
+  const modelCallWrapperOrder = [
+    "withFinalToolRoundWarning", // inline :492
+    "prepareToolHistoryForGateway", // inline :497 (prune + compact)
+    "recordToolResultPruningBoundarySafely", // inline :498-502
+    "generateWithEnvelopeRetry", // inline :521 (flush-once + reduce-retry)
+    "carryReductionAndMemoryFlush", // inline :587-593
+  ];
+  assert.deepEqual(modelCallWrapperOrder, [
+    "withFinalToolRoundWarning",
+    "prepareToolHistoryForGateway",
+    "recordToolResultPruningBoundarySafely",
+    "generateWithEnvelopeRetry",
+    "carryReductionAndMemoryFlush",
+  ]);
+});
+
+test("cutover parity (8D): request-envelope overflow retries + flushes memory identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const inputs: Array<{ prompt: string; artifactIds: string[] }> = [];
+    const flushCalls: Array<{ taskPrompt: string; modelId?: string }> = [];
+    const progressEvents: Array<{
+      summary: string;
+      metadata?: Record<string, unknown>;
+    }> = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      inputs.push({
+        prompt:
+          typeof input.messages[1]?.content === "string"
+            ? (input.messages[1]?.content as string)
+            : JSON.stringify(input.messages[1]?.content ?? ""),
+        artifactIds: input.envelope?.artifactIds ?? [],
+      });
+      // Overflow the first two calls; the third (reduction level "minimal") fits.
+      if (inputs.length <= 2) {
+        throw makeOverflowError();
+      }
+      return textResult("Reduced prompt result after overflow.");
+    };
+    const preCompactionMemoryFlusher: PreCompactionMemoryFlusher = {
+      async flush(flushInput) {
+        flushCalls.push({
+          taskPrompt: flushInput.packet.taskPrompt,
+          ...(flushInput.modelId ? { modelId: flushInput.modelId } : {}),
+        });
+        return {
+          status: "written",
+          preferences: [],
+          constraints: ["Keep direct provider APIs before browser fallback."],
+          longTermNotes: [
+            "Open item: confirm browser fallback only when APIs are blocked.",
+          ],
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      preCompactionMemoryFlusher,
+      reactEngine,
+      runtimeProgressRecorder: {
+        async record(event) {
+          progressEvents.push({
+            summary: event.summary,
+            ...(event.metadata ? { metadata: event.metadata } : {}),
+          });
+        },
+      },
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result, inputs, flushCalls, progressEvents };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // The overflow → reduce-retry sequence is identical: 3 gateway calls, the last
+  // one carrying the "minimal" reduction prompt + trimmed artifacts.
+  assert.equal(engine.inputs.length, inline.inputs.length);
+  assert.equal(engine.inputs.length, 3);
+  assert.ok(engine.inputs[2]!.prompt.includes("Reduction level: minimal"));
+  assert.deepEqual(engine.inputs[2]!.artifactIds, inline.inputs[2]!.artifactIds);
+  // Memory flushed exactly once before reduction, with the resolved modelId.
+  assert.equal(engine.flushCalls.length, 1);
+  assert.equal(engine.flushCalls.length, inline.flushCalls.length);
+  assert.equal(engine.flushCalls[0]?.modelId, inline.flushCalls[0]?.modelId);
+  // Reduction + memory-flush metadata carried forward to the final result.
+  assert.deepEqual(
+    engine.result.metadata?.requestEnvelopeReduction,
+    inline.result.metadata?.requestEnvelopeReduction,
+  );
+  assert.equal(
+    (
+      engine.result.metadata?.requestEnvelopeReduction as
+        | { level?: string }
+        | undefined
+    )?.level,
+    "minimal",
+  );
+  assert.deepEqual(
+    engine.result.metadata?.preCompactionMemoryFlushes,
+    inline.result.metadata?.preCompactionMemoryFlushes,
+  );
+  // The reduction boundary is surfaced as a progress event on both paths.
+  const engineReductionEvent = engine.progressEvents.find(
+    (e) => e.metadata?.["boundaryKind"] === "request_envelope_reduction",
+  );
+  const inlineReductionEvent = inline.progressEvents.find(
+    (e) => e.metadata?.["boundaryKind"] === "request_envelope_reduction",
+  );
+  assert.ok(engineReductionEvent, "engine emits a reduction boundary event");
+  assert.equal(
+    Boolean(engineReductionEvent),
+    Boolean(inlineReductionEvent),
+  );
+});
+
+test("cutover parity (8D): older oversized tool results are pruned + compacted with a matching pruning boundary on both paths", async () => {
+  const largeA = "A".repeat(20_000);
+  const largeB = "B".repeat(20_000);
+  const largeC = "C".repeat(20_000);
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gatewayInputs: GenerateTextInput[] = [];
+    const progressEvents: Array<{
+      summary: string;
+      metadata?: Record<string, unknown>;
+    }> = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      if (gatewayInputs.length === 1) {
+        return toolCallResult("toolu-a", "sessions_spawn", {
+          agent_id: "browser",
+          task: "First large result",
+        });
+      }
+      if (gatewayInputs.length === 2) {
+        return toolCallResult("toolu-b", "sessions_spawn", {
+          agent_id: "browser",
+          task: "Second large result",
+        });
+      }
+      if (gatewayInputs.length === 3) {
+        return toolCallResult("toolu-c", "sessions_spawn", {
+          agent_id: "browser",
+          task: "Third large result",
+        });
+      }
+      return textResult("Done after pruning.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        const content =
+          input.call.id === "toolu-a"
+            ? largeA
+            : input.call.id === "toolu-b"
+              ? largeB
+              : largeC;
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content,
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 4 },
+      reactEngine,
+      runtimeProgressRecorder: {
+        async record(event) {
+          progressEvents.push({
+            summary: event.summary,
+            ...(event.metadata ? { metadata: event.metadata } : {}),
+          });
+        },
+      },
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result, gatewayInputs, progressEvents };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // The final gateway call sees pruned/compacted tool history: the oldest result
+  // is replaced by a pruning marker, the newest kept verbatim, identically.
+  const finalToolContents = (inputs: GenerateTextInput[]) =>
+    inputs[3]?.messages
+      .filter((m) => m.role === "tool")
+      .map((m) => readToolContent(m.content));
+  const engineToolContents = finalToolContents(engine.gatewayInputs);
+  const inlineToolContents = finalToolContents(inline.gatewayInputs);
+  assert.deepEqual(engineToolContents, inlineToolContents);
+  assert.equal(engineToolContents?.length, 3);
+  assert.match(engineToolContents?.[0] ?? "", /"tool_result_pruned": true/);
+  assert.match(
+    engineToolContents?.[0] ?? "",
+    /"reason": "older_than_recent_window"/,
+  );
+  assert.equal(engineToolContents?.[2], largeC);
+  assert.equal(
+    engine.gatewayInputs[3]?.envelope?.toolResultCount,
+    inline.gatewayInputs[3]?.envelope?.toolResultCount,
+  );
+  // A tool-result pruning boundary event is emitted with identical prune reasons.
+  const pruningEvent = (events: typeof engine.progressEvents) =>
+    [...events]
+      .reverse()
+      .find((e) => e.metadata?.["boundaryKind"] === "tool_result_pruning");
+  const enginePruning = pruningEvent(engine.progressEvents);
+  const inlinePruning = pruningEvent(inline.progressEvents);
+  assert.ok(enginePruning, "engine emits a tool-result pruning boundary event");
+  assert.equal(
+    enginePruning?.metadata?.["prunedToolResults"],
+    inlinePruning?.metadata?.["prunedToolResults"],
+  );
+  assert.deepEqual(
+    enginePruning?.metadata?.["pruningReasons"],
+    inlinePruning?.metadata?.["pruningReasons"],
+  );
+});
+
+test("cutover parity (8D): older tool history compacts before message-count overflow + final-round warning on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gatewayInputs: GenerateTextInput[] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      if (gatewayInputs.length <= 8) {
+        return toolCallResult(
+          `toolu-${gatewayInputs.length}`,
+          "sessions_spawn",
+          {
+            agent_id: "explore",
+            task: `Fetch source ${gatewayInputs.length}`,
+          },
+        );
+      }
+      return textResult("Final synthesis after message compaction.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            status: "completed",
+            source: input.call.input.task,
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 9 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result, gatewayInputs };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // The final (round 9) gateway call is bounded to <=16 messages, carries the
+  // "Earlier tool history compacted" marker, and ends with the final-allowed-
+  // tool-use-round warning — identical message shape on both paths.
+  const finalMessages = (inputs: GenerateTextInput[]) => inputs[8]!.messages;
+  assert.equal(
+    finalMessages(engine.gatewayInputs).length,
+    finalMessages(inline.gatewayInputs).length,
+  );
+  assert.ok(finalMessages(engine.gatewayInputs).length <= 16);
+  assert.match(
+    readToolContent(finalMessages(engine.gatewayInputs)[2]!.content),
+    /Earlier tool history compacted/,
+  );
+  assert.match(
+    readToolContent(finalMessages(engine.gatewayInputs).at(-1)!.content),
+    /final allowed tool-use round \(9\)/,
+  );
+  assert.equal(
+    readToolContent(finalMessages(engine.gatewayInputs).at(-1)!.content),
+    readToolContent(finalMessages(inline.gatewayInputs).at(-1)!.content),
+  );
+});
+
+test("cutover parity (8D): oversized session tool results store evidence-first compacted trace content on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let gatewayCalls = 0;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      gatewayCalls += 1;
+      if (gatewayCalls === 1) {
+        return toolCallResult("toolu-done", "sessions_spawn", {
+          agent_id: "explore",
+          task: "Research release risk and return evidence.",
+        });
+      }
+      return textResult("Final release-risk note.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-1",
+            session_key: "worker:explore:task-1:toolu-done",
+            agent_id: "explore",
+            label: "fetch-cancel-resume-fixture",
+            status: "completed",
+            tool_chain: ["explore"],
+            result: "Large raw page snapshot. ".repeat(700),
+            final_content: [
+              "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+              "Long browser-rendered evidence detail. ".repeat(500),
+            ].join(" "),
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "explore",
+              content: [
+                "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+                "Browser screenshot and DOM evidence detail. ".repeat(250),
+              ].join(" "),
+              artifactIds: [
+                "artifact-browser-snapshot",
+                "artifact-browser-screenshot",
+              ],
+              screenshotPaths: ["/tmp/browser-artifacts/final.png"],
+              rawHtml: "<html>".repeat(5000),
+            },
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  const traceResult = (reply: RoleReply) => {
+    const trace = reply.metadata?.toolUse as
+      | {
+          rounds?: Array<{
+            results?: Array<{
+              content?: string;
+              contentTruncated?: boolean;
+              contentBytes?: number;
+            }>;
+          }>;
+        }
+      | undefined;
+    return trace?.rounds?.[0]?.results?.[0];
+  };
+  const engineTrace = traceResult(engine.result);
+  const inlineTrace = traceResult(inline.result);
+  assert.ok(engineTrace?.content);
+  // The oversized result is compacted evidence-first: truncated flag set, raw
+  // byte count preserved, persisted content capped at 8KB and keeping the
+  // verified facts + artifactIds while dropping the raw HTML — identically.
+  assert.equal(engineTrace.contentTruncated, inlineTrace?.contentTruncated);
+  assert.equal(engineTrace.contentTruncated, true);
+  assert.equal(engineTrace.contentBytes, inlineTrace?.contentBytes);
+  assert.ok(Buffer.byteLength(engineTrace.content, "utf8") <= 8 * 1024);
+  assert.equal(engineTrace.content, inlineTrace?.content);
+  assert.match(engineTrace.content, /Release Captain/);
+  assert.match(engineTrace.content, /runbook gap/);
+  assert.doesNotMatch(engineTrace.content, /<html><html>/);
+  const compacted = JSON.parse(engineTrace.content) as {
+    evidence_excerpt?: string;
+    payload?: { artifactIds?: string[] };
+  };
+  assert.match(compacted.evidence_excerpt ?? "", /Release Captain/);
+  assert.deepEqual(compacted.payload?.artifactIds, [
+    "artifact-browser-snapshot",
+    "artifact-browser-screenshot",
+  ]);
+});
