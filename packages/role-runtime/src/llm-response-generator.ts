@@ -2494,6 +2494,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
    * role-runtime policy surface into agent-core hooks. The next cleanup is to
    * extract those hook bodies into named controller/observer modules, not to add
    * more policy branches directly here.
+   *
+   * Stage 8 cleanup contract (see
+   * docs/superpowers/plans/2026-07-01-stage8-engine-architecture-cleanup.md):
+   * new role-engine policy logic — normalization, permission, continuation,
+   * execution-budget, closeout, repair, completed-closeout, finalization, and
+   * evidence/fact rules — MUST be added in `react-engine/*` modules, never as new
+   * product-policy branches directly inside `runViaReActEngine`. This adapter
+   * only wires those modules and assembles the final `GeneratedRoleReply`.
+   * `react-engine/*` modules must not import this file.
    */
   private async runViaReActEngine(args: {
     input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal };
