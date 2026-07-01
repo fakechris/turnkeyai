@@ -4740,6 +4740,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 run.memoryFlushes.push(repaired.memoryFlush);
               }
             }
+            // Inline main-loop re-entry parity: a completed-cascade repair
+            // re-synthesis can return a TOOL CALL on the tc=none synthesis round (the
+            // model tries a tool when told not to). Inline re-enters its main loop,
+            // which produces one more clean tool-free synthesis
+            // (generateFinalAfterToolRoundLimit) instead of using the tool-call text —
+            // otherwise the final answer becomes the tool-call artifact
+            // ("Calling a tool.") rather than the evidence-based synthesis. The
+            // onTerminate simulation must do the same: one clean pass (inline's single
+            // trailing synthesis), bounded by the round cap + the recorded markers.
+            if (synthesisResult.toolCalls?.length) {
+              const cleanup = await this.generateFinalAfterToolRoundLimit({
+                activation,
+                packet,
+                selection,
+                baseGatewayInput: initialGatewayInput,
+                messages: [
+                  ...repairMessages,
+                  { role: "assistant" as const, content: synthesisResult.text },
+                ],
+                maxRounds,
+                modelCallTrace,
+              });
+              synthesisResult = cleanup.result;
+              if (cleanup.reduction) {
+                synthesisReduction = cleanup.reduction;
+                synthesisReductionSnapshot = cleanup.reductionSnapshot;
+              }
+              if (cleanup.memoryFlush) {
+                run.memoryFlushes.push(cleanup.memoryFlush);
+              }
+            }
           }
           // Stage 7 (with S7): mirror the inline completed-closeout visibility
           // appenders (inline :1796-1814) — a completed session that recovered a
