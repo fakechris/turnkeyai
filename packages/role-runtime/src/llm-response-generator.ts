@@ -335,10 +335,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly clock: Clock;
   private readonly deferToolObservability: boolean;
   /**
-   * Cutover flag. "inline" (default) runs the original 1900-line loop. "engine"
-   * routes the simplest no-policy path through agent-core's createReActAgent.
-   * Production stays "inline"; nothing flips until the engine path reaches full
-   * parity. Overridable by TURNKEYAI_REACT_ENGINE=engine.
+   * Cutover flag. "inline" remains the production default; "engine" routes the
+   * role-runtime loop through agent-core's createReActAgent adapter. Full parity is
+   * in place, but the default flip still needs a flagged soak.
    */
   private readonly reactEngine: "inline" | "engine";
 
@@ -2485,21 +2484,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   }
 
   /**
-   * Cutover beachhead: run the simplest no-policy path through agent-core's
-   * createReActAgent instead of the inline loop. Reuses the same model stack
-   * (generateWithEnvelopeRetry) and tool executor, and assembles content +
-   * mentions identically to the inline path. Full metadata + policy parity
-   * (repair, approval, continuation, closeouts) lands in later cutover stages;
-   * until then this is gated behind reactEngine: "engine" and exercised only on
-   * simple scenarios. Production stays "inline".
+   * ReAct-engine implementation of the role-runtime tool loop. The engine path now
+   * mirrors the inline loop's normalization, execution-budget handling,
+   * continuation/repair closeouts, finalization appenders, and observability
+   * metadata, while production still defaults to the inline path until the engine
+   * has soaked behind the feature flag.
    *
-   * Known scope gap (execution/budget convergence stage): tool calls run
-   * per-call through the executor, NOT through the inline executeToolCalls
-   * wrapper, so a round with multiple calls does not yet honor
-   * maxParallelToolCalls / maxToolCallsPerRound / order-dependent serialization /
-   * wall-clock aborts / progress persistence. The engine path is therefore
-   * scoped to single-tool-per-round simple scenarios until those limits are
-   * wired into the engine.
+   * This method is intentionally still an adapter-heavy bridge: it translates the
+   * role-runtime policy surface into agent-core hooks. The next cleanup is to
+   * extract those hook bodies into named controller/observer modules, not to add
+   * more policy branches directly here.
    */
   private async runViaReActEngine(args: {
     input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal };
@@ -3036,24 +3030,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // 0..maxRounds-1, so the inline precedence (wall_clock before round_limit
         // before repeated_*) is preserved without double-handling round_limit.
         //
-        // Scope: like onAfterExecute, this fires ONLY terminal closeouts. The
-        // inline pre-execute block also has continuation/repair branches that
-        // mutate the pending calls or `continue` (runtime continuation injection,
-        // recovery-budget truncation, approval-gate repair, …) — those are the
-        // approval/recovery cutover stages; parity tests use scenarios that trip
-        // none of them. Likewise the inline recovery/cancelled/pseudo/wall-clock
-        // closeouts can re-loop AFTER synthesis to repair missing requested table
-        // columns or browser-evidence dimensions (shouldRepairMissingRequested
-        // TableColumns / shouldRepairMissingBrowserEvidenceDimensions); those
-        // post-synthesis repair passes are deferred with the same Stage-6/7 work
-        // and are no-ops for the in-scope scenarios.
-        //
-        // Deferred edge (timing race): inline checks wall_clock before round_limit
-        // on the extra round === maxRounds iteration its `for(;;)` loop runs; the
-        // engine exits to round_limit one round earlier. So a wall-clock budget
-        // first crossed exactly on that final boundary closes as round_limit here
-        // vs wall_clock inline. The common case (budget crossed on an earlier
-        // round) is handled; parity tests pin the clock to avoid the boundary.
+        // Scope: this hook owns terminal pending-call closeouts. The inline
+        // branches that rewrite calls, inject continuations, suppress execution, or
+        // repair a tool-free candidate are expressed in the surrounding engine hooks
+        // (`onToolCalls`, `onSuppressToolCalls`, `onAfterExecuteContinue`, and
+        // `onRepairRound`) so this hook can keep the closeout precedence explicit.
+        // wall_clock_budget is checked before round_limit here, matching inline.
         onToolCallsClose: (calls, state) => {
           if (!activeToolLoop) {
             return null;
@@ -3656,13 +3638,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // exactly like a terminationPredicate. Order matches inline: a completed
         // delegated session wins over a timeout signal in the same round.
         //
-        // Scope: this fires ONLY the two TERMINAL closeouts. The inline
-        // post-execute block also has continuation/repair branches (supplemental
-        // probe, approval-gate repair, independent-evidence streams, weak-evidence)
-        // that `continue` the loop instead of closing out — those are the remaining
-        // approval/recovery cutover stages (the forced permission_result continuation
-        // landed via onAfterExecuteContinue above). Until they land, the engine path
-        // is exercised only by parity scenarios that trip none of them.
+        // Scope: this fires only the two terminal closeouts. The inline
+        // post-execute branches that continue or repair the loop run in
+        // onAfterExecuteContinue above; this callback only decides whether the
+        // just-executed round terminates.
         onAfterExecute: (results) => {
           const completedSession = findCompletedSessionEvidence(results);
           if (completedSession) {
@@ -3685,14 +3664,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // returns no tool calls but a pending continuation directive names an unsent
         // session, the inline loop injects a synthetic sessions_send to continue it
         // (inline :567-587). Mirror that via onRoundEmpty's injectedCalls. The
-        // directive is recomputed here (the engine doesn't run the inline tool-call
-        // normalization pipeline): the per-round contextual directive ?? the base
+        // directive is recomputed here using the same live message context as the
+        // engine normalization pipeline: the per-round contextual directive ?? the base
         // directive — matching inline :449-462. The base is findSessionContinuation
         // Directive(taskPrompt) (inline :261, a pure function of the task), recomputed
         // rather than threaded since it is deterministic. Returning "terminate" (no
         // injection) falls through to onRepairRound, so the inject pre-empts the
-        // S2/S3 forced-spawn exactly as inline :567 pre-empts :748. (The sessions_list
-        // lookup branch at inline :588-605 is a later sub-slice.)
+        // S2/S3 forced-spawn exactly as inline :567 pre-empts :748; lookup
+        // continuations inject sessions_list from the same helper.
         onRoundEmpty: (state) => {
           const continuationCall = computeEmptyRoundContinuationCall(state);
           if (continuationCall) {
@@ -3708,8 +3687,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // table-columns (:1139), extraneous (:1167), source-evidence (:1202),
         // weak-evidence (:1231) — the COMPLETE inline natural-finish cascade. (The
         // completed_sub_agent_final closeout has its own onTerminate repair loop;
-        // browser-evidence-dimensions, which only appears in the pseudo-tool-call and
-        // wall-clock branches, is a later move.)
+        // browser-evidence-dimensions is intentionally closeout-only, not part of
+        // the natural-finish cascade.)
         onRepairRound: (state, ctx) => {
           // Inline only runs the post-synthesis repair cascade when a tool loop is
           // active (the cascade lives inside `if (activeToolLoop)`); match that so
@@ -3850,9 +3829,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // round (permission_result / sessions_spawn → consumesRound) or a tool-free
           // re-synthesis ("none"). Marker idempotency (each build*RepairPrompt is recorded)
           // bounds them. The hard fallback closeout (shouldForceApprovalWaitTimeoutLocal
-          // CloseoutAfterFailedRepair, inline :955-983) is NOT here — it forces a
-          // tool_evidence_fallback closeout, which onRepairRound cannot express; it lands
-          // in a follow-up slice with the closeout mechanism.
+          // CloseoutAfterFailedRepair, inline :955-983) is expressed below via an
+          // onRepairRound `{ closeout: "tool_evidence_fallback" }` directive.
           if (
             shouldRepairPendingApprovalWaitTimeoutCheck({
               taskPrompt: packet.taskPrompt,
@@ -4289,29 +4267,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // timeout: append the resumable-continuation sentence (inline :2197).
           // Other reasons pass through.
           //
-          // Scope gap (deferred to the browser/recovery cutover stages): the
-          // inline completed branch also runs maybeAppendBrowserRecoveryVisibility
-          // / maybeAppendBrowserFailureBucketVisibility / the recovered-timeout +
-          // continuation appenders (:1782-1814) before redaction, and inline's
-          // tool-free natural-finish round runs the same timeout-continuation
-          // appenders (:1253-1270). Those only fire for browser-recovery or timed-
-          // out-then-completed delegated sessions — scenarios that ALSO trip the
-          // inline pre-synthesis continuation branches this slice doesn't yet
-          // handle, so they cannot be parity-tested here (a browser/sessions_send
-          // session would diverge on the continuation, not the appender). For the
-          // clean delegated sessions in scope they are no-ops, so redaction alone
-          // preserves parity.
-          //
-          // Interaction with the round-0 gating below: gating the timeout-followup
-          // REPAIR to repairRound 0 is parity-faithful — inline's natural-finish
-          // has no timeout-followup repair, only the deferred appenders. So a
-          // sessions_send resumed-timeout completion whose round-0 repair was
-          // source-evidence gets its round-1 timeout VISIBILITY from those appenders
-          // on inline, which this engine path does not run yet → it can omit that
-          // guidance until the appender/continuation cutover lands. (Before the
-          // gating, the every-round timeout-followup repair re-synthesized timeout
-          // guidance instead — itself non-faithful, different text than the appender;
-          // the gating just makes the deferred-appender gap the single residual.)
+          // The per-reason completed-closeout appenders run after the repair loop
+          // below; the unconditional inline finalization epilogue runs after the
+          // agent finishes. Keep those transforms outside the repair predicate loop:
+          // repairs may re-synthesize, appenders only decorate the accepted final.
           let synthesisResult = generated.result;
           let synthesisReduction = generated.reduction;
           let synthesisReductionSnapshot = generated.reductionSnapshot;
@@ -4336,9 +4295,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // timeout-followup-final-guidance (:1968), missing-requested-next-action
           // (:1995), required-deliverables (:2016), missing-browser-evidence-dimensions
           // (:2100), false-evidence-blocked (:2129), weak-evidence-synthesis (:2153).
-          // That is the COMPLETE tool-free completed cascade (the remaining inline
-          // predicates :1880/:1907 re-arm a sessions_spawn TOOL round — Stage 7). Their
-          // relative order matches the inline, so single-fire scenarios are parity-exact.
+          // That is the complete completed cascade: the tool-free repairs re-synthesize
+          // in place, while :1880/:1907 re-arm a real sessions_spawn tool round. Their
+          // relative order matches the inline first-match-wins cascade.
           // The every-round members now cover
           // the FULL inline tool-free natural-finish cascade (:1110-1272 = table-columns,
           // extraneous, source-evidence, weak-evidence). Compound completed inputs are
@@ -4361,9 +4320,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // residual is closed: a label from an earlier tool round (visible to the full-
           // toolTrace sourceBoundedEvidenceText but NOT to the completing-round-only
           // completedProductBriefEvidenceText) is now seen on re-synthesis, exactly as
-          // inline's natural-finish does. Remaining deferred: the sessions_spawn browser
-          // repairs (:1880/:1907 — they re-arm a real TOOL round, Stage 7). Production
-          // stays "inline" until those close.
+          // inline's natural-finish does.
           if (reason === "completed_sub_agent_final" && run.completedSession) {
             const completedSession = run.completedSession;
             const repairMarkers = (ctx.repairMarkers ??= []);
@@ -4373,12 +4330,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             // completedProductBriefEvidenceText — finalContents PLUS the completing
             // round's raw tool-result text (so labels/keywords that live only in the
             // tool result, not finalContents, are visible). Built byte-for-byte like
-            // inline :1933-1938. One known gap: under a configured maxToolCallsPerRound
-            // an over-cap completed round diverges — the engine runToolBatch does not
-            // yet honor that cap (deferred to the tool-cap cutover), so it feeds real
-            // tool content where inline feeds the synthetic "tool_call_limit_exceeded"
-            // skipped results. Out of scope here; no in-scope role caps a completed
-            // round, and production stays "inline".
+            // inline :1933-1938. Execution caps are enforced before runToolBatch, so
+            // over-cap calls feed the same synthetic "tool_call_limit_exceeded" skipped
+            // results the inline executor would produce.
             const evidenceText = completedSession.finalContents.join("\n\n");
             const completedProductBriefEvidenceText = [
               completedSession.finalContents.join("\n\n"),
@@ -4590,10 +4544,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               // extraneous, source-evidence and weak-evidence but NONE of these four.
               // So gate them to the first repair round; otherwise a round-1 repair's
               // output could re-trip a completed-only predicate the inline natural-finish
-              // path would never check (the compound over-repair). The other natural-
-              // finish members (table-columns/extraneous/weak-evidence) join the every-
-              // round path as later one-at-a-time moves; until then their absence is the
-              // documented under-repair gap, not introduced here.
+              // path would never check (the compound over-repair). The natural-finish
+              // members that do run every round live outside this block.
               if (repairRound === 0) {
                 // Timeout-followup — inline does NOT truthy-gate this (:1967).
                 if (
@@ -4772,13 +4724,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               }
             }
           }
-          // Stage 7 (with S7): mirror the inline completed-closeout visibility
-          // appenders (inline :1796-1814) — a completed session that recovered a
-          // prior timeout (or a task that requested a timeout-continuation closeout)
-          // gets a user-visible recovered-timeout / continuation line BEFORE redaction.
-          // This closes the PR2c-deferred recovered-timeout visibility gap that the S7
-          // timeout-continuation branches (which resume a timed-out session into a
-          // completed one) would otherwise diverge on.
+          // Mirror the inline completed-closeout visibility appenders (inline
+          // :1796-1814): a completed session that recovered a prior timeout, or a
+          // task that requested a timeout-continuation closeout, gets a user-visible
+          // recovered-timeout / continuation line before redaction.
           const appendCompletedTimeoutVisibility = (
             synth: GenerateTextResult,
           ): GenerateTextResult => {
@@ -4820,9 +4769,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           //   3. recovered-timeout OR continuation appender (inline :1942-1960,
           //      handled by appendCompletedTimeoutVisibility above)
           //   4. maybeRedactForbiddenLocalUrls           (inline :1961)
-          // The recovery + failure-bucket appenders were previously deferred (see the
-          // scope-gap comment at :3976). They are pure post-synthesis transforms that
-          // append at most once when their own guards fire (no repair marker, no
+          // The recovery + failure-bucket appenders are pure post-synthesis transforms
+          // that append at most once when their own guards fire (no repair marker, no
           // re-synthesis loop), so ordering — not idempotency — is load-bearing.
           //
           // browserRecoverySummaries mirror inline :1924-1927: the completed session's
@@ -4830,12 +4778,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // failure-bucket evidence text mirrors inline :1936-1940 (the completing
           // round's tool-result text + the recovery summaries + the final contents).
           //
-          // Scope: the natural-finish-only appenders (maybeAppendRequiredTimeout-
-          // FollowupVisibility / maybeAppendBrowserRecoveryResidualRiskVisibility,
-          // inline :2417-2432) are intentionally NOT run here — they fire only in the
-          // inline natural-finish loop (which the engine does not yet port), so running
-          // them for completed/non-completed engine closeouts would diverge. Deferred to
-          // the natural-finish loop cutover (Stage 8F).
+          // Scope: the unconditional finalization epilogue appenders
+          // (maybeAppendRequiredTimeoutFollowupVisibility /
+          // maybeAppendBrowserRecoveryResidualRiskVisibility, inline :2417-2432) run
+          // after the agent finishes, not inside this completed-closeout transform.
           const appendCompletedBrowserVisibility = (
             synth: GenerateTextResult,
           ): GenerateTextResult => {
@@ -5138,8 +5084,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // fired. #2 (required-timeout-followup) and #3 (residual-risk) run ONLY here in
     // inline (they never appear in the completed cascade), so this is where a resumed-
     // timeout completion whose model final omitted the continuation-guidance / unverified-
-    // scope / residual-risk lines gets them deterministically appended — the parity
-    // residual the onTerminate scope comment (:3976) flagged as deferred. `finalMessages`
+    // scope / residual-risk lines gets them deterministically appended. `finalMessages`
     // was stashed by onTerminate/onModelCallError; fall back to the initial gateway
     // messages if no closeout ran (the plain natural-finish result path).
     const epilogueMessages =
