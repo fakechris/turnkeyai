@@ -43,13 +43,13 @@ const STATUS_DOC = "docs/STAGE8B_PARITY_STATUS.md";
  * so we skip it outright. Root-causing the abort is the Batch E item.
  */
 const KNOWN_HANGS: { pattern: string; batch: string; reason: string }[] = [
-  {
-    pattern:
-      "does not abort active browser sessions at the parent wall-clock boundary",
-    batch: "E",
-    reason:
-      "engine does not abort/tear down the active browser session at the parent wall-clock boundary; its leaked timer crashes the run (#55)",
-  },
+  // Stage 8B (Batch E — T7 execution budget/wall-clock plane): the #55 leaked-timer
+  // crash is resolved. The engine now runs tool execution through runToolBatch with a
+  // properly disposed per-chunk wall-clock signal (createToolExecutionSignal.dispose in
+  // finally) and the browser-session wall-clock extension keeps an active browser session
+  // alive past the parent budget WITHOUT aborting it, so no long-lived timer leaks out of
+  // the run to crash a later chunk. The test now passes in isolation AND runs to completion
+  // in-process; removed from KNOWN_HANGS.
   {
     pattern: "does not treat resumable partial session output as completion evidence",
     batch: "B",

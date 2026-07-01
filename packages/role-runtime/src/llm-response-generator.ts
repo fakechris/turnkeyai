@@ -2728,7 +2728,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const agent = createReActAgent<RoleToolContext>({
       model,
       toolkit,
-      maxRounds,
+      // Stage 8B (Batch E — T7 execution budget plane): give the agent ONE extra
+      // round beyond the real budget so the model is still called on the round that
+      // hits the limit — inline's `for(;;)` loop makes that extra call, captures its
+      // pending calls, and closes out `round_limit` with them (see the round_limit
+      // branch in onToolCallsClose). Without the +1, agent-core's bounded loop exits
+      // one model call early and its line-368 fallback fires with no pending calls,
+      // diverging from inline (fewer gateway calls + a missing pendingToolCallCount).
+      // Every closeout, the final-round warning, and all metadata still key on the
+      // REAL `maxRounds`, so the +1 only reaches the boundary — onToolCallsClose fires
+      // round_limit at toolTrace.length >= maxRounds before the extra round executes.
+      maxRounds: maxRounds + 1,
       hooks: {
         // Tool-call normalization — the engine's full port of the inline pipeline
         // (Stage 8B Batch B). Runs every active-loop round before execution and
@@ -2769,7 +2779,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   sessionContinuationContext,
                 )
               : null;
-          return runEngineToolCallNormalizationPipeline(calls, {
+          const normalized = runEngineToolCallNormalizationPipeline(calls, {
             taskPrompt: packet.taskPrompt,
             messages,
             toolTrace,
@@ -2784,12 +2794,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               packet.capabilityInspection?.availableWorkers?.includes("explore") ??
               false,
           });
+          // Stage 8B (Batch E — T7 execution budget plane): the final-recovery
+          // tool-budget truncation (inline :817-819). When a final recovery
+          // attempt still has budget remaining but this round's pending calls
+          // exceed it, keep only the first `remaining` calls so the round cannot
+          // spend past the budget. This runs AFTER the normalizers, exactly like
+          // inline's slice (:818), and is the mirror of onToolCallsClose step 1:
+          // that closeout fires (with the FULL pending-call count) only when the
+          // budget is already exhausted (remaining <= 0); when remaining > 0 the
+          // budget is not yet spent, so we truncate here and let the NEXT round's
+          // onToolCallsClose close out once the trace crosses the budget. The two
+          // conditions are mutually exclusive, so the engine order (onToolCalls
+          // before onToolCallsClose) preserves the inline order (closeout at :752
+          // before truncation at :817).
+          if (recoveryToolBudget) {
+            const remainingToolCalls =
+              recoveryToolBudget.maxToolCalls -
+              (recoveryToolCallsBeforeActivation + countToolCalls(toolTrace));
+            if (remainingToolCalls > 0 && normalized.length > remainingToolCalls) {
+              return normalized.slice(0, remainingToolCalls);
+            }
+          }
+          return normalized;
         },
-        // Honor the execution limits the per-call default bypasses: order-dependent
-        // serialization, bounded concurrency, and per-chunk wall-clock aborts —
-        // reusing the same helpers the inline executeToolCalls uses, rather than
-        // refactoring that heavily-tested method. (maxToolCallsPerRound cap +
-        // progress persistence are wired in a later Stage 5 PR.)
+        // Honor the execution limits the per-call default bypasses: the per-turn
+        // execution cap (maxToolCallsPerRound), order-dependent serialization,
+        // bounded concurrency, and per-chunk wall-clock aborts — reusing the same
+        // helpers the inline executeToolCalls uses, rather than refactoring that
+        // heavily-tested method. (progress persistence is wired in a later PR.)
         runToolBatch: async (calls, _runOne, hookCtx) => {
           if (!activeToolLoop) {
             return calls.map((call) => ({
@@ -2799,16 +2831,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               content: `Unknown tool: ${call.name}`,
             }));
           }
+          // Stage 8B (Batch E — T7 execution budget plane): the per-turn tool-call
+          // execution cap (inline executeToolCalls :5343-5350). A round that emits
+          // more calls than maxToolCallsPerRound executes only the first N; the
+          // rest become synthetic `tool_call_limit_exceeded` skipped results (via
+          // the shared buildToolCallLimitExceededResult helper) so the model sees a
+          // deterministic error for the over-cap calls instead of silently dropping
+          // them. `calls` here already carries any final-recovery-budget truncation
+          // applied in onToolCalls, so `calls.length` is the same requested count
+          // the inline executor sees (its `input.toolCalls.length`).
+          const maxToolCallsPerRound =
+            typeof activeToolLoop.maxToolCallsPerRound === "number" &&
+            Number.isFinite(activeToolLoop.maxToolCallsPerRound) &&
+            activeToolLoop.maxToolCallsPerRound > 0
+              ? Math.floor(activeToolLoop.maxToolCallsPerRound)
+              : calls.length;
+          const requestedToolCalls = calls.length;
+          const rejectedCalls = calls.slice(maxToolCallsPerRound);
+          const executableCalls = calls.slice(0, maxToolCallsPerRound);
           const maxParallel =
             typeof activeToolLoop.maxParallelToolCalls === "number" &&
             Number.isFinite(activeToolLoop.maxParallelToolCalls) &&
             activeToolLoop.maxParallelToolCalls > 0
               ? Math.floor(activeToolLoop.maxParallelToolCalls)
-              : calls.length;
-          const step = Math.max(1, shouldSerializeToolBatch(calls) ? 1 : maxParallel);
+              : executableCalls.length;
+          const step = Math.max(
+            1,
+            shouldSerializeToolBatch(executableCalls) ? 1 : maxParallel,
+          );
           const results: RoleToolExecutionResult[] = [];
-          for (let i = 0; i < calls.length; i += step) {
-            const chunk = calls.slice(i, i + step);
+          for (let i = 0; i < executableCalls.length; i += step) {
+            const chunk = executableCalls.slice(i, i + step);
             const wallClockMs = resolveEffectiveToolLoopWallClockMs({
               ...(activeToolLoop.maxWallClockMs !== undefined
                 ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
@@ -2855,6 +2908,20 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             } finally {
               execSignal.dispose();
             }
+          }
+          // Emit the over-cap skipped results after the executed ones, matching the
+          // inline executor order (executed calls, then rejected calls :5482). The
+          // agent-core loop appends these as tool-result messages and emits them as
+          // tool_result events, so the engine trace records skipped:true and the
+          // model sees the synthetic tool_call_limit_exceeded error next round.
+          for (const call of rejectedCalls) {
+            results.push(
+              buildToolCallLimitExceededResult(
+                call,
+                maxToolCallsPerRound,
+                requestedToolCalls,
+              ),
+            );
           }
           return results;
         },
@@ -2984,6 +3051,28 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             const usedToolCalls =
               recoveryToolCallsBeforeActivation + countToolCalls(toolTrace);
             if (usedToolCalls >= recoveryToolBudget.maxToolCalls) {
+              // Stage 8B (Batch E — T7 execution budget plane): the empty-round
+              // final-recovery-budget delegation-block repair runs BEFORE this
+              // closeout inline (:685-712 precedes the closeout at :752). It is an
+              // empty-round tool-free repair, so — like the read-only suppression
+              // above — the engine expresses it in onRepairRound (which runs AFTER
+              // this hook). When it would fire (budget exhausted, no pending calls,
+              // and the candidate is a delegation directive rather than a blocked
+              // closeout), defer: return null here so onRepairRound injects the
+              // "Runtime correction: final recovery tool budget is exhausted"
+              // tool-free re-prompt. Once the repaired blocked closeout lands its
+              // marker makes shouldRepair false, and this closeout fires on the next
+              // round (deterministic + bounded), matching the inline ordering.
+              if (
+                calls.length === 0 &&
+                shouldRepairFinalRecoveryBudgetCloseout({
+                  messages: state.messages,
+                  repairMarkers: ctx.repairMarkers ?? [],
+                  resultText: state.lastText,
+                })
+              ) {
+                return null;
+              }
               run.pendingCloseout = {
                 reasonLines: buildFinalRecoveryBudgetCloseoutReasonLines(
                   recoveryToolBudget.maxToolCalls,
@@ -3152,7 +3241,38 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               }
             }
           }
-          // round_limit: handled by the engine's maxRounds loop (see header).
+          // round_limit (inline :1501-1524, precedence AFTER wall_clock, BEFORE
+          // repeated_tool_failure). Inline's `for(;;)` loop calls the model on the
+          // round that hits the limit, captures its (unexecuted) pending calls, and
+          // synthesizes — 4 gateway calls for a maxRounds=2 run (rounds 0,1,2 model
+          // calls + a tool-free synthesis), with pendingToolCallCount = the limit
+          // round's pending call count. The engine's bounded loop would otherwise
+          // exit one model call early (agent-core's line-368 `round_limit` fallback
+          // fires with NO pending calls), losing that call and the pendingToolCallCount.
+          // To converge, `runViaReActEngine` gives the agent maxRounds+1 rounds so the
+          // model IS called on the limit round; here we detect that boundary — this
+          // round would be the (maxRounds+1)-th tool round (toolTrace already holds
+          // maxRounds executed rounds) — and fire the round_limit closeout with its
+          // pending calls, exactly mirroring inline. The agent's own line-368
+          // fallback stays as a defensive backstop only.
+          if (toolTrace.length >= maxRounds) {
+            run.pendingCloseout = {
+              reasonLines: [
+                `Tool-use round limit reached (${maxRounds}).`,
+                "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+                "State uncertainties and missing verification explicitly instead of trying another lookup.",
+              ],
+              closeout: {
+                reason: "round_limit",
+                maxRounds,
+                pendingToolCallCount: calls.length,
+                toolCallCount: countToolCalls(toolTrace),
+                roundCount,
+                evidenceAvailable: hasUsableEvidence(toolTrace),
+              },
+            };
+            return "round_limit";
+          }
           // 5. repeated_tool_failure — a pending call's signature already failed
           //    twice in the trace.
           const repeatedFailure = findRepeatedFailedToolCall(calls, toolTrace);
@@ -3505,6 +3625,42 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // local array would let the same repair re-fire. The engine already seeds
           // ctx.repairMarkers = []; this hardens against an unseeded ctx.
           const repairMarkers = (ctx.repairMarkers ??= []);
+          // Stage 8B (Batch E — T7 execution budget plane): the empty-round
+          // final-recovery-budget delegation-block repair (inline :685-712). It
+          // runs BEFORE the natural-finish cascade inline (the recovery check at
+          // :685 precedes the S2/S3 browser-evidence repairs at :751), so it is the
+          // FIRST check here. When a final recovery attempt's budget is exhausted
+          // and the model still emitted a delegation directive (not a bounded
+          // blocked closeout), inject a tool-free "Runtime correction" re-prompt and
+          // force the next round tool-free (forceToolChoice "none", NOT consumesRound
+          // — the re-synthesis is not a new tool round, matching the inline
+          // `nextToolChoice = "none"; continue;` with round--). The recovery_tool_budget
+          // closeout in onToolCallsClose defers to this via the same predicate, so the
+          // repaired blocked closeout still routes through that closeout next round.
+          if (
+            recoveryToolBudget &&
+            recoveryToolCallsBeforeActivation + countToolCalls(toolTrace) >=
+              recoveryToolBudget.maxToolCalls &&
+            shouldRepairFinalRecoveryBudgetCloseout({
+              messages: state.messages,
+              repairMarkers,
+              resultText: state.lastText,
+            })
+          ) {
+            return {
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: state.lastText },
+                recordRepairPrompt(
+                  repairMarkers,
+                  buildFinalRecoveryBudgetCloseoutRepairPrompt(
+                    recoveryToolBudget.maxToolCalls,
+                  ),
+                ),
+              ],
+              forceToolChoice: "none",
+            };
+          }
           // Stage 7 S2/S3: forced-spawn browser-evidence repairs — FIRST in the
           // natural-finish cascade (inline :748 browser-evidence, :776 product-
           // signal, both before table-columns). Unlike the tool-free repairs below,
@@ -5459,26 +5615,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     }
     for (const call of rejectedCalls) {
       throwIfAborted(input.signal);
-      const result: RoleToolExecutionResult = {
-        toolCallId: call.id,
-        toolName: call.name,
-        content: `tool_call_limit_exceeded: skipped ${call.name}; at most ${maxToolCallsPerRound} tool calls may be executed in one assistant turn.`,
-        isError: true,
-        skipped: true,
-        progress: [
-          {
-            phase: "failed",
-            toolName: call.name,
-            summary: `Skipped ${call.name}: per-turn tool call limit exceeded.`,
-            detail: {
-              admission: "skipped",
-              reason: "max_tool_calls_per_round",
-              max_tool_calls_per_round: maxToolCallsPerRound,
-              requested_tool_calls: input.toolCalls.length,
-            },
-          },
-        ],
-      };
+      const result: RoleToolExecutionResult = buildToolCallLimitExceededResult(
+        call,
+        maxToolCallsPerRound,
+        input.toolCalls.length,
+      );
       for (const progress of result.progress ?? []) {
         await this.emitToolProgressSafely(
           input.activation,
@@ -13374,6 +13515,40 @@ function replaceToolResultContent(
           }
         : block,
     ),
+  };
+}
+
+/**
+ * The per-turn tool-call-cap "skipped" result (inline executeToolCalls :5482-5503).
+ * Shared by the inline executor and the engine's `runToolBatch` so both paths
+ * emit a byte-identical `tool_call_limit_exceeded` result + progress detail for a
+ * rejected (over-cap) call. Parity contract: the content string, the `skipped`
+ * flag, and the progress `detail` fields are asserted by the execution-cap test.
+ */
+function buildToolCallLimitExceededResult(
+  call: LLMToolCall,
+  maxToolCallsPerRound: number,
+  requestedToolCalls: number,
+): RoleToolExecutionResult {
+  return {
+    toolCallId: call.id,
+    toolName: call.name,
+    content: `tool_call_limit_exceeded: skipped ${call.name}; at most ${maxToolCallsPerRound} tool calls may be executed in one assistant turn.`,
+    isError: true,
+    skipped: true,
+    progress: [
+      {
+        phase: "failed",
+        toolName: call.name,
+        summary: `Skipped ${call.name}: per-turn tool call limit exceeded.`,
+        detail: {
+          admission: "skipped",
+          reason: "max_tool_calls_per_round",
+          max_tool_calls_per_round: maxToolCallsPerRound,
+          requested_tool_calls: requestedToolCalls,
+        },
+      },
+    ],
   };
 }
 

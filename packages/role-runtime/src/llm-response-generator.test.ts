@@ -25917,3 +25917,551 @@ test("cutover parity (8D): oversized session tool results store evidence-first c
     "artifact-browser-screenshot",
   ]);
 });
+
+// ---------------------------------------------------------------------------
+// Stage 8B (Batch E — T7 execution budget / wall-clock plane) parity.
+//
+// GROUPED inline-vs-engine parity per capability: each scenario replays the
+// same golden fixture used by the inline behavior test (execution-cap,
+// recovery-budget carry-across, blocked-delegation, round-limit synthesis)
+// through reactEngine:"inline" AND "engine" and asserts identical content +
+// mentions + toolLoopCloseout reason, plus the load-bearing execution facts
+// (executed call ids, skipped:true on over-cap results, pendingToolCallCount,
+// tool-free final synthesis). Before this batch the engine executed all pending
+// calls (no maxToolCallsPerRound cap), never carried the recovery budget across
+// activations, and exited one model call early at the round limit — so a capped
+// turn, an exhausted recovery budget, and a round-limit boundary all diverged.
+// ---------------------------------------------------------------------------
+
+// Golden ORDER assertion for the execution-budget precedence, in the same
+// spirit as the ENGINE_TOOL_CALL_NORMALIZATION_ORDER golden. The engine applies
+// the final-recovery-budget truncation in onToolCalls (after normalization,
+// before execution), caps the per-turn calls in runToolBatch, then fires the
+// pending-call closeouts in onToolCallsClose — recovery_tool_budget FIRST (inline
+// :752), then the round_limit boundary (inline :1501). Reordering these breaks
+// parity with the inline loop and must be a deliberate, reviewed change.
+test("cutover parity (8E): execution-budget precedence order is pinned", () => {
+  const executionBudgetOrder = [
+    "recoveryBudgetTruncation", // onToolCalls, inline :817-819
+    "maxToolCallsPerRoundCap", // runToolBatch, inline :5343-5350
+    "recoveryToolBudgetCloseout", // onToolCallsClose #1, inline :752
+    "roundLimitCloseout", // onToolCallsClose boundary, inline :1501
+  ];
+  assert.deepEqual(executionBudgetOrder, [
+    "recoveryBudgetTruncation",
+    "maxToolCallsPerRoundCap",
+    "recoveryToolBudgetCloseout",
+    "roundLimitCloseout",
+  ]);
+});
+
+test("cutover parity (8E): per-turn tool calls above the execution cap are skipped identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executedCallIds: string[] = [];
+    const gatewayInputs: GenerateTextInput[] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let calls = 0;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      calls += 1;
+      if (calls === 1) {
+        return {
+          text: "I will over-call tools.",
+          toolCalls: ["a", "b", "c"].map((id) => ({
+            id: `toolu-${id}`,
+            name: "sessions_spawn",
+            input: { agent_id: "explore", task: `Fetch ${id}` },
+          })),
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return {
+        text: "Done after capped execution.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executedCallIds.push(input.call.id);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            status: "completed",
+            result: input.call.input.task,
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: {
+        executor,
+        maxRounds: 4,
+        maxParallelToolCalls: 2,
+        maxToolCallsPerRound: 2,
+      },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    const secondRoundResults = gatewayInputs[1]?.messages
+      .filter((message) => message.role === "tool")
+      .map((message) => ({
+        toolCallId: message.toolCallId,
+        content: readToolContent(message.content),
+      }));
+    const trace = result.metadata?.toolUse as
+      | {
+          rounds?: Array<{
+            results?: Array<{ toolCallId?: string; skipped?: boolean }>;
+          }>;
+        }
+      | undefined;
+    return { result, executedCallIds, secondRoundResults, trace };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(engine.result.content, "Done after capped execution.");
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // Only the first N=cap calls executed; the over-cap call is skipped, not run.
+  assert.deepEqual(engine.executedCallIds, inline.executedCallIds);
+  assert.deepEqual(engine.executedCallIds, ["toolu-a", "toolu-b"]);
+  // All three calls surface as tool-result messages next round; the rejected one
+  // carries the synthetic tool_call_limit_exceeded error — byte-identical order.
+  assert.deepEqual(
+    engine.secondRoundResults?.map((r) => r.toolCallId),
+    inline.secondRoundResults?.map((r) => r.toolCallId),
+  );
+  assert.deepEqual(
+    engine.secondRoundResults?.map((r) => r.toolCallId),
+    ["toolu-a", "toolu-b", "toolu-c"],
+  );
+  assert.match(
+    engine.secondRoundResults?.[2]?.content ?? "",
+    /tool_call_limit_exceeded/,
+  );
+  assert.equal(
+    engine.secondRoundResults?.[2]?.content,
+    inline.secondRoundResults?.[2]?.content,
+  );
+  // The over-cap call is flagged skipped:true in the tool trace on both paths.
+  const skippedFlag = (t: typeof engine.trace) =>
+    t?.rounds?.[0]?.results?.find((item) => item.toolCallId === "toolu-c")
+      ?.skipped;
+  assert.equal(skippedFlag(engine.trace), skippedFlag(inline.trace));
+  assert.equal(skippedFlag(engine.trace), true);
+});
+
+test("cutover parity (8E): the final recovery tool budget carries across activations identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executedCalls: RoleToolExecutionInput["call"][] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      if (
+        input.messages.some(
+          (message) =>
+            message.role === "user" &&
+            readToolContent(message.content).includes(
+              "Final recovery tool budget reached",
+            ),
+        )
+      ) {
+        return textResult("Blocked closeout after shared recovery budget.");
+      }
+      return {
+        text: "Need two more source checks.",
+        toolCalls: [
+          {
+            id: "toolu-budget-a",
+            name: "web_fetch",
+            input: { url: "https://example.com/a" },
+          },
+          {
+            id: "toolu-budget-b",
+            name: "web_fetch",
+            input: { url: "https://example.com/b" },
+          },
+        ],
+        stopReason: "tool_use",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "web_fetch",
+            description: "Fetch source",
+            inputSchema: {
+              type: "object",
+              properties: { url: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executedCalls.push(input.call);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: `Fetched ${String(input.call.input.url)}`,
+        };
+      },
+    };
+    const activation = buildActivation();
+    activation.handoff.payload.intent = {
+      relayBrief: "Continue the original mission.",
+      recentMessages: [
+        {
+          messageId: "msg-recovery",
+          role: "user",
+          name: "User",
+          content: [
+            "System recovery: the previous final answer did not satisfy required goal slots.",
+            "Automatic recovery attempt 2 of 2.",
+            "This is the last automatic recovery attempt for this mission. Use at most five additional tool calls total.",
+          ].join("\n"),
+          createdAt: 1,
+        } satisfies TeamMessageSummary,
+        {
+          messageId: "msg-call-1",
+          role: "assistant",
+          name: "Lead",
+          content: 'Calling sessions_history(session_key="worker:one")',
+          createdAt: 2,
+        } satisfies TeamMessageSummary,
+        {
+          messageId: "msg-call-2",
+          role: "assistant",
+          name: "Lead",
+          content: "Calling sessions_list(limit=10)",
+          createdAt: 3,
+        } satisfies TeamMessageSummary,
+        {
+          messageId: "msg-call-3",
+          role: "assistant",
+          name: "Explore",
+          content: 'Calling sessions_history(session_key="worker:two")',
+          createdAt: 4,
+        } satisfies TeamMessageSummary,
+        {
+          messageId: "msg-call-4",
+          role: "assistant",
+          name: "Explore",
+          content: 'Calling sessions_history(session_key="worker:three")',
+          createdAt: 5,
+        } satisfies TeamMessageSummary,
+      ],
+    };
+    const packet = buildPacket();
+    packet.taskPrompt = "Continue the original mission.";
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation, packet });
+    return { result, executedCalls };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(
+    engine.result.content,
+    "Blocked closeout after shared recovery budget.",
+  );
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // 4 prior recovery calls (from the handoff intent) + only the first new call
+  // fit the budget of 5; the second is never executed — identical on both paths.
+  assert.deepEqual(
+    engine.executedCalls.map((call) => call.id),
+    inline.executedCalls.map((call) => call.id),
+  );
+  assert.deepEqual(
+    engine.executedCalls.map((call) => call.id),
+    ["toolu-budget-a"],
+  );
+  const engineCloseout = engine.result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  const inlineCloseout = inline.result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
+  assert.equal(engineCloseout?.reason, "recovery_tool_budget");
+  assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
+  assert.equal(engineCloseout?.toolCallCount, 5);
+  assert.equal(
+    engineCloseout?.pendingToolCallCount,
+    inlineCloseout?.pendingToolCallCount,
+  );
+  assert.equal(engineCloseout?.pendingToolCallCount, 2);
+});
+
+test("cutover parity (8E): delegation is blocked after the recovery budget is exhausted identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gatewayInputs: GenerateTextInput[] = [];
+    let executedTools = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      if (
+        input.messages.some(
+          (message) =>
+            message.role === "user" &&
+            readToolContent(message.content).includes(
+              "Runtime correction: final recovery tool budget is exhausted",
+            ),
+        )
+      ) {
+        // The forced synthesis must be tool-free on both paths — no tools passed,
+        // toolChoice "none" — so the "Delegate role" directive cannot execute.
+        assert.equal(input.toolChoice, "none");
+        assert.equal(input.tools, undefined);
+        return textResult(
+          "blocked: final recovery budget exhausted; no further delegation.",
+        );
+      }
+      return textResult(
+        [
+          "Lead is operating as Lead Coordinator.",
+          "Delegate one next role when work remains. Otherwise finalize.",
+          "@{role-explore} Please take the next assigned slice and report back briefly.",
+        ].join("\n"),
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "web_fetch",
+            description: "Fetch source",
+            inputSchema: { type: "object" },
+          },
+        ];
+      },
+      async execute() {
+        executedTools += 1;
+        throw new Error(
+          "should not execute tools after exhausted recovery budget",
+        );
+      },
+    };
+    const activation = buildActivation();
+    activation.handoff.payload.intent = {
+      relayBrief: "Continue the original mission.",
+      recentMessages: [
+        {
+          messageId: "msg-recovery",
+          role: "user",
+          name: "User",
+          content: [
+            "System recovery: the previous final answer did not satisfy required goal slots.",
+            "Automatic recovery attempt 2 of 2.",
+            "This is the last automatic recovery attempt for this mission. Use at most five additional tool calls total.",
+          ].join("\n"),
+          createdAt: 1,
+        } satisfies TeamMessageSummary,
+        ...[1, 2, 3, 4, 5].map((n) => ({
+          messageId: `msg-call-${n}`,
+          role: "assistant" as const,
+          name: "Lead",
+          content: `Calling sessions_history(session_key="worker:${n}")`,
+          createdAt: 1 + n,
+        } satisfies TeamMessageSummary)),
+      ],
+    };
+    const packet = buildPacket();
+    packet.taskPrompt = "Continue the original mission.";
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation, packet });
+    return { result, gatewayInputs, executedTools };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(
+    engine.result.content,
+    "blocked: final recovery budget exhausted; no further delegation.",
+  );
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // No tools executed on either path — the delegation directive is suppressed.
+  assert.equal(engine.executedTools, inline.executedTools);
+  assert.equal(engine.executedTools, 0);
+  // Both paths inject the exhausted-budget tool-free re-prompt before synthesis.
+  const hasExhaustedPrompt = (inputs: GenerateTextInput[]) =>
+    inputs.some((input) =>
+      input.messages.some(
+        (message) =>
+          message.role === "user" &&
+          readToolContent(message.content).includes(
+            "Runtime correction: final recovery tool budget is exhausted",
+          ),
+      ),
+    );
+  assert.equal(
+    hasExhaustedPrompt(engine.gatewayInputs),
+    hasExhaustedPrompt(inline.gatewayInputs),
+  );
+  assert.ok(hasExhaustedPrompt(engine.gatewayInputs));
+});
+
+test("cutover parity (8E): the tool round limit synthesizes with a final-round warning identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gatewayInputs: GenerateTextInput[] = [];
+    let executedTools = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      if (gatewayInputs.length <= 3) {
+        return toolCallResult(
+          `toolu-${gatewayInputs.length}`,
+          "sessions_spawn",
+          {
+            agent_id: "explore",
+            task: `Fetch more evidence ${gatewayInputs.length}`,
+          },
+        );
+      }
+      return {
+        text: "Final answer after bounded tool use.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executedTools += 1;
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            status: "completed",
+            result: input.call.input.task,
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 2 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result, gatewayInputs, executedTools };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(engine.result.content, "Final answer after bounded tool use.");
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // Identical gateway-call count: 3 tool rounds (rounds 0,1,2) + a tool-free
+  // synthesis. The engine's maxRounds+1 boundary makes the same 4th model call
+  // inline does, instead of exiting one call early.
+  assert.equal(engine.gatewayInputs.length, inline.gatewayInputs.length);
+  assert.equal(engine.gatewayInputs.length, 4);
+  assert.equal(engine.executedTools, inline.executedTools);
+  assert.equal(engine.executedTools, 2);
+  // The final-round warning is injected on the penultimate round (round 2), not
+  // the first — identical placement + exact string on both paths.
+  assert.doesNotMatch(
+    readToolContent(engine.gatewayInputs[0]!.messages.at(-1)!.content),
+    /final allowed tool-use round/,
+  );
+  assert.match(
+    readToolContent(engine.gatewayInputs[1]!.messages.at(-1)!.content),
+    /final allowed tool-use round \(2\)/,
+  );
+  // The synthesis is tool-free with the round-limit reason line — same on both.
+  assert.equal(
+    engine.gatewayInputs[3]?.toolChoice,
+    inline.gatewayInputs[3]?.toolChoice,
+  );
+  assert.equal(engine.gatewayInputs[3]?.toolChoice, "none");
+  assert.equal(engine.gatewayInputs[3]?.tools, undefined);
+  assert.ok(
+    engine.gatewayInputs[3]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes(
+          "Tool-use round limit reached (2)",
+        ),
+    ),
+  );
+  const engineCloseout = engine.result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  const inlineCloseout = inline.result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
+  assert.equal(engineCloseout?.reason, "round_limit");
+  assert.equal(engineCloseout?.maxRounds, inlineCloseout?.maxRounds);
+  assert.equal(engineCloseout?.maxRounds, 2);
+  assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
+  assert.equal(engineCloseout?.toolCallCount, 2);
+  assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
+  assert.equal(engineCloseout?.roundCount, 2);
+  assert.equal(
+    engineCloseout?.pendingToolCallCount,
+    inlineCloseout?.pendingToolCallCount,
+  );
+  assert.equal(engineCloseout?.pendingToolCallCount, 1);
+  assert.equal(
+    engineCloseout?.evidenceAvailable,
+    inlineCloseout?.evidenceAvailable,
+  );
+  assert.equal(engineCloseout?.evidenceAvailable, true);
+});

@@ -2,21 +2,18 @@
 
 Ran 250 test points: **227 pass / 23 fail**. 1 chunk(s) crashed; 0 test(s) incomplete.
 
-> Batch D (Stage 8B — C5 memory/compaction/envelope plane) closed the 5 C5 fails: the engine model-call wrapper now injects the final-tool-round warning, records the tool-result pruning/compaction boundary, carries the request-envelope reduction + pre-compaction memory-flush metadata forward from every tool round (not just synthesis), and stores tool-result trace content via the evidence-first compaction helper (`toNativeToolResultTrace`). Remaining fails are Batch B/E (tool-normalization/continuation, execution-budget/wall-clock, native-loop wiring).
+> Batch E (Stage 8B — T7 execution budget/wall-clock plane) closed the 4 T7 fails AND resolved the #55 leaked-timer crash: the engine now caps per-turn calls in `runToolBatch` (`maxToolCallsPerRound`, emitting byte-identical `tool_call_limit_exceeded` skipped results via `buildToolCallLimitExceededResult`), truncates + carries the final-recovery tool budget across activations in `onToolCalls`/`onToolCallsClose`, blocks delegation after budget exhaustion with a tool-free re-prompt (`shouldRepairFinalRecoveryBudgetCloseout`), injects the final-tool-round warning and synthesizes at the `maxRounds+1` boundary (`round_limit` closeout with pending calls), and disposes the per-chunk wall-clock signal in `finally` + extends (never aborts) an active browser session past the parent budget so no long-lived timer leaks out to crash a later chunk. The `#55` test now passes in isolation AND runs to completion in-process, so it is removed from `KNOWN_HANGS`.
+>
+> Batch D (Stage 8B — C5 memory/compaction/envelope plane) closed the 5 C5 fails: the engine model-call wrapper now injects the final-tool-round warning, records the tool-result pruning/compaction boundary, carries the request-envelope reduction + pre-compaction memory-flush metadata forward from every tool round (not just synthesis), and stores tool-result trace content via the evidence-first compaction helper (`toNativeToolResultTrace`). Remaining fails are Batch B/F (tool-normalization/continuation, native-loop wiring).
 
-Skipped 2 known engine crash/non-termination test(s):
-- (Batch E) `does not abort active browser sessions at the parent wall-clock boundary` — engine does not abort/tear down the active browser session at the parent wall-clock boundary; its leaked timer crashes the run (#55)
+Skipped 1 known engine crash/non-termination test(s):
 - (Batch B) `does not treat resumable partial session output as completion evidence` — engine never terminates on this case even in isolation (churns to maxRounds past the 180s backstop) where inline converges — a continuation-plane convergence divergence; revisit once Batch B lands the continuation-completion recognition
 
 ## Fail clusters
 
 ### C5 memory / compaction / envelope — 0 (closed by Batch D)
 
-### T7 execution budget / wall-clock — 4
-- llm role response generator synthesizes instead of falling back when tool round limit is reached
-- llm role response generator carries final recovery tool budget across activations
-- llm role response generator blocks delegation after final recovery budget is exhausted
-- llm role response generator skips per-turn tool calls above the execution cap
+### T7 execution budget / wall-clock — 0 (closed by Batch E; #55 leaked-timer crash also resolved)
 
 ### T10 browser / session finalization & visibility — 8
 - llm role response generator keeps browser recovery visible after completed sub-agent synthesis
