@@ -26465,3 +26465,235 @@ test("cutover parity (8E): the tool round limit synthesizes with a final-round w
   );
   assert.equal(engineCloseout?.evidenceAvailable, true);
 });
+
+// --- Stage 8B: codex-boundary P2 regression tests (C/D/E review) -------------
+// Each targets one [P2] engine-path divergence codex flagged that the batch
+// parity tests missed. All are inline-vs-engine parity assertions.
+
+test("cutover parity (P2 round-limit): a tool-free final on the limit round is accepted, not forced into round_limit", async () => {
+  // maxRounds:2 -> rounds 0,1 execute tools; on the limit round the model returns a
+  // TOOL-FREE final. Inline handles toolCalls.length===0 before the round-limit
+  // check, so it accepts the answer; the engine must too (the round_limit predicate
+  // is guarded on calls.length > 0). Pre-fix the engine forced a round_limit
+  // closeout and replaced the answer.
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n <= 2) return toolCallResult(`toolu-${n}`, "lookup", { q: `r${n}` });
+      return textResult("Final answer from two bounded rounds.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "lookup",
+            description: "look up a value",
+            inputSchema: { type: "object", properties: { q: { type: "string" } } },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "completed", result: input.call.input.q }),
+        };
+      },
+    };
+    return { gateway, executor };
+  };
+  const run = (reactEngine: "inline" | "engine") => {
+    const { gateway, executor } = build();
+    return new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 2 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.equal(engine.content, "Final answer from two bounded rounds.");
+  assert.equal(toolLoopCloseoutReason(engine), toolLoopCloseoutReason(inline));
+  assert.notEqual(toolLoopCloseoutReason(engine), "round_limit");
+});
+
+test("cutover parity: a natural finish after a tool round is identical between inline and engine", async () => {
+  // Guards the natural-finish-after-tools path — the surface of the [P2] epilogue
+  // fix (onFinalize captures run.finalMessages ??= state.messages so the post-loop
+  // appenders read the LIVE messages, not the initial prompt). NOTE: this is a
+  // broad path guard, not an isolated mutation for that fix: the epilogue appenders
+  // that read finalMessages (required-timeout-followup, residual-risk) share their
+  // omission trigger with the repair layer, which fires first and stashes
+  // finalMessages via the closeout path — so a public-API scenario that finishes
+  // naturally AND needs the live-message append is dominated by the repairs. The
+  // fix is a one-line correctness change (initial-prompt fallback was wrong for a
+  // natural finish after tools); this test pins the path parity around it.
+  const sessionKey = "worker:explore:task-slow:toolu-timeout";
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) {
+        return toolCallResult("toolu-send", "sessions_send", {
+          session_key: sessionKey,
+          message: "Resume the same slow source-check context.",
+        });
+      }
+      return textResult(
+        [
+          "The slow-source check recovered after the earlier timeout.",
+          "Verified owner: Release Captain.",
+          "Verified risk: runbook gap before launch approval.",
+          "Mitigation: complete rollback rehearsal before release gate.",
+        ].join("\n"),
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                session_key: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-slow",
+            session_key: sessionKey,
+            agent_id: "explore",
+            status: "completed",
+            result:
+              "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+            final_content:
+              "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Evaluate this slow source for a release-risk note.",
+        "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available and explain how the mission can continue.",
+        "A follow-up may ask you to resume that same source-check context after the initial closeout.",
+      ].join("\n"),
+    };
+    return { gateway, executor, packet };
+  };
+  const run = (reactEngine: "inline" | "engine") => {
+    const { gateway, executor, packet } = build();
+    return new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+});
+
+test("cutover parity (P2 over-cap): calls above maxToolCallsPerRound never emit a started progress phase", async () => {
+  // A round with 3 spawn calls under maxToolCallsPerRound:2. The over-cap call
+  // executes nothing and gets a skipped tool_call_limit_exceeded result; it must NOT
+  // emit a tool_started / pending native tool message (inline is skipped-only).
+  // Pre-fix the cap ran inside runToolBatch, AFTER agent-core emitted tool_started
+  // for every call, so the over-cap call persisted a "started" phase. The cap now
+  // runs in onBeforeExecute (before started emission).
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) {
+        return {
+          text: "spawn three",
+          toolCalls: [
+            { id: "toolu-a", name: "sessions_spawn", input: { task: "a" } },
+            { id: "toolu-b", name: "sessions_spawn", input: { task: "b" } },
+            { id: "toolu-c", name: "sessions_spawn", input: { task: "c" } },
+          ],
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return textResult("Done after capped execution.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+        };
+      },
+    };
+    return { gateway, executor };
+  };
+  const startedCallIds = async (reactEngine: "inline" | "engine") => {
+    const { gateway, executor } = build();
+    const stored = new Map<
+      string,
+      { toolProgress?: Array<{ phase?: string; toolCallId?: string }> }
+    >();
+    await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: {
+        executor,
+        maxRounds: 4,
+        maxParallelToolCalls: 3,
+        maxToolCallsPerRound: 2,
+      },
+      reactEngine,
+      nativeToolMessageStore: {
+        async append(message) {
+          stored.set(message.id, message);
+        },
+      },
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    const started = new Set<string>();
+    for (const message of stored.values()) {
+      for (const progress of message.toolProgress ?? []) {
+        if (progress.phase === "started" && progress.toolCallId) {
+          started.add(progress.toolCallId);
+        }
+      }
+    }
+    return started;
+  };
+  const inlineStarted = await startedCallIds("inline");
+  const engineStarted = await startedCallIds("engine");
+  assert.deepEqual([...engineStarted].sort(), [...inlineStarted].sort());
+  assert.equal(engineStarted.has("toolu-a"), true);
+  assert.equal(engineStarted.has("toolu-b"), true);
+  assert.equal(engineStarted.has("toolu-c"), false);
+});
