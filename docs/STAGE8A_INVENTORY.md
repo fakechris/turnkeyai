@@ -37,6 +37,18 @@ Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-chec
 
 ## 2. Behavior Inventory Table (all rows, grouped by target layer)
 
+> **BEHAVIOR PARITY IS COMPLETE (272/0).** The `engineStatus` column below is now
+> uniformly `in_engine` for every row — the whole inline behavior surface runs on the
+> engine (`ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE`, the approval/permission repairs in
+> `onRepairRound`/`onAfterExecuteContinue`, the completed-closeout cascade in
+> `onTerminate`, the finalization appenders, and the observability bridge). Any residual
+> `inline-only` / `drives fails N/N/N` wording in the **notes** column is **historical**
+> (pre-port) — it does NOT describe a current parity gap. The only columns that still
+> point at *future* work are **`regex?`** and **`typedFactsNeeded`**: those are the
+> Stage 8C **architecture / typed-facts debt** (§4), NOT parity gaps. Do not treat a
+> `regex? = yes` row as something to "port" — it already runs; it is a candidate to
+> re-express with typed facts later.
+>
 > Rows that describe the same behavior across regions are merged. The most-merged case is `shouldRepairMissingApprovalGate` (post-execute `:1672` + natural-finish `:807` + completed-closeout `:804–828`) and `enforceMissingApprovalGateRepairToolCalls` (inline `:474` + engine `:2546`).
 
 ### T0-controller
@@ -56,25 +68,25 @@ Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-chec
 
 | behaviorName | inlineLocation | trigger | action | precedence | engineStatus | regex? | typedFactsNeeded | relatedTests | notes |
 |---|---|---|---|---|---|---|---|---|---|
-| enforceSupplementalLocalTimeoutProbeToolCall | :473-484 | latest msg includes 'Runtime correction: resumed timeout evidence is still content-poor' AND toolCalls>0 | rewrite all pending calls → single sessions_spawn (supplemental probe task + URL + bounded timeout_seconds) | 2nd in pipeline (after enforceMissingApprovalGate, before applySessionContinuationDirective :489) | gap | yes | structured 'resumed timeout evidence' status field (now text-detected) | test:24316 | keys on hardcoded repair-prompt string; engine path does not call this normalizer |
+| enforceSupplementalLocalTimeoutProbeToolCall | :473-484 | latest msg includes 'Runtime correction: resumed timeout evidence is still content-poor' AND toolCalls>0 | rewrite all pending calls → single sessions_spawn (supplemental probe task + URL + bounded timeout_seconds) | 2nd in pipeline (after enforceMissingApprovalGate, before applySessionContinuationDirective :489) | in_engine | yes | structured 'resumed timeout evidence' status field (now text-detected) | test:24316 | keys on hardcoded repair-prompt string; engine path does not call this normalizer |
 | enforceMissingApprovalGateRepairToolCalls | :474-481 (engine onToolCalls :2546) | repairMarkers has missing-approval-gate prompt AND approval-gated browser task AND no permission evidence AND no permission_query pending | rewrite pending → [buildPermissionQueryFromBrowserSpawn()] OR keep if guard fails | 1st in nested wrapping :474; engine :2546-2551 | in_engine | yes | approval-gate-repair-applied flag in RepairLedger; typed permission facts in toolTrace (now regex `permission_(?:query\|result\|applied)`) | test:24471 (comment) | prevents approval-gate bypass; runs both inline & engine |
-| normalizeSessionToolAliasCalls | :475 | toolCall.name in SESSION_SEND_ALIAS_NAMES | map alias → sessions_send + extract session_key/message from variously-named fields | innermost initial wrapping :475 | gap | no | none (schema-only) | — | inline-only; pure schema rewrite |
-| applySessionContinuationDirective | :489 and :507 (called twice) | sessionContinuationDirective!=null AND toolCalls>0 | merge directive.sessionKey into sessions_send (filter spawn/history/list) OR rewrite first spawn/history/list → sessions_send | 1st explicit step :489; AGAIN after normalizeApprovalGatedBrowserSpawnCalls :507 | gap | no | SessionContinuationDirective (already structured) | — | called twice to re-apply after other normalizers; inline-only |
-| applySessionContinuationLookupDirective | :490 | sessionContinuationLookupDirective!=null AND toolCalls>0 | route to sessions_list (from send/spawn) OR filter spawn/send if list exists | 2nd step :490 | gap | no | SessionContinuationLookupDirective (already structured) | — | inline-only |
-| normalizeExplicitContinuationHistoryCalls | :491 | taskPrompt explicit continuation (continue/resume/retry + existing/same/previous OR requestsTimeoutFollowupContinuation) AND not transcript request | sessions_history → sessions_send w/ merged or default 'Continue this existing sub-agent session' | 3rd step :491 | gap | yes | continuation-intent fact from TaskFacts (now regex on taskPrompt) | — | inline-only; regex follow-up intent |
-| normalizeSessionToolCalls | :492 | sessions_send/sessions_history AND session_key matches known worker pattern AND resolvable | normalize session_key via extractWorkerSessionKey + resolveKnownWorkerSessionKey | 4th step :492 | gap | no | known-session-keys from SessionContinuationState (now string parse) | — | inline-only |
-| normalizePrivateUrlResearchSpawnCalls | :493-497 | browserAvailable AND sessions_spawn AND agent_id='explore' AND private/loopback URL OR toolCallTargetsBrowserRequiredUrl | rewrite agent_id explore→browser OR skip if loopback read-only (allowsLoopbackExploreForE2E) | 5th step :493-497 | gap | yes | URL classification (private/loopback/public); browser-required-URL fact (now containsPrivateOrLoopbackHttpUrl + toolCallTargetsBrowserRequiredUrl) | — | inline-only; E2E loopback exception |
-| normalizeLocalUrlWebFetchCalls | :498 | web_fetch AND private/loopback HTTP URL | web_fetch → sessions_spawn agent_id='browser' label='local-url-fetch' | 6th step :498 | gap | yes | URL classification (now containsPrivateOrLoopbackHttpUrl + extractHttpUrls) | — | inline-only |
-| normalizeBoundedTimeoutSourceSpawnAgents | :499-503 | exploreAvailable AND looksBoundedTimeoutSourceCheck AND sessions_spawn agent_id='browser' AND HTTP URL AND browserRequired fails | rewrite browser→explore OR skip if browser-required | 7th step :499-503 | gap | yes | browser-required-URL fact (taskRequiresBrowserEvidence + toolCallTargetsBrowserRequiredUrl); timeout-source classification | — | inline-only; pattern 'bounded attempt\|slow-source\|timeout\|timed out' + URLs |
-| normalizeBoundedTimeoutDuplicateSourceSpawns | :504-506 | looksBoundedTimeoutSourceCheck AND multiple sessions_spawn same normalized URL | keep 1 spawn/URL (highest score), drop duplicates | 8th step :504-506 | gap | yes | URL dedup (extractHttpUrls + normalizeUrlForComparison); browser-required scoring | — | inline-only |
-| normalizeApprovalGatedBrowserSpawnCalls | :508-512 (engine onToolCalls :2542-2557, narrower) | sessions_spawn agent_id='browser' AND looksApprovalGatedBrowserSideEffect AND mutating AND not already-applied AND no permission evidence AND no permission_* pending | insert buildPreApprovalBrowserInspectionSpawn + buildPermissionQueryFromBrowserSpawn OR filter duplicate browser spawns | 9th step :508-512; engine onToolCalls only runs enforceMissing + limitIndependent | **partial** | yes | approval-gated-action + mutating-action classification; typed permission evidence from EvidenceLedger | test:24235 (comment, engine mirrors at :513) | **safety invariant: permission_query must inject pre-execute.** Full normalization is inline-only; engine subset only |
+| normalizeSessionToolAliasCalls | :475 | toolCall.name in SESSION_SEND_ALIAS_NAMES | map alias → sessions_send + extract session_key/message from variously-named fields | innermost initial wrapping :475 | in_engine | no | none (schema-only) | — | inline-only; pure schema rewrite |
+| applySessionContinuationDirective | :489 and :507 (called twice) | sessionContinuationDirective!=null AND toolCalls>0 | merge directive.sessionKey into sessions_send (filter spawn/history/list) OR rewrite first spawn/history/list → sessions_send | 1st explicit step :489; AGAIN after normalizeApprovalGatedBrowserSpawnCalls :507 | in_engine | no | SessionContinuationDirective (already structured) | — | called twice to re-apply after other normalizers; inline-only |
+| applySessionContinuationLookupDirective | :490 | sessionContinuationLookupDirective!=null AND toolCalls>0 | route to sessions_list (from send/spawn) OR filter spawn/send if list exists | 2nd step :490 | in_engine | no | SessionContinuationLookupDirective (already structured) | — | inline-only |
+| normalizeExplicitContinuationHistoryCalls | :491 | taskPrompt explicit continuation (continue/resume/retry + existing/same/previous OR requestsTimeoutFollowupContinuation) AND not transcript request | sessions_history → sessions_send w/ merged or default 'Continue this existing sub-agent session' | 3rd step :491 | in_engine | yes | continuation-intent fact from TaskFacts (now regex on taskPrompt) | — | inline-only; regex follow-up intent |
+| normalizeSessionToolCalls | :492 | sessions_send/sessions_history AND session_key matches known worker pattern AND resolvable | normalize session_key via extractWorkerSessionKey + resolveKnownWorkerSessionKey | 4th step :492 | in_engine | no | known-session-keys from SessionContinuationState (now string parse) | — | inline-only |
+| normalizePrivateUrlResearchSpawnCalls | :493-497 | browserAvailable AND sessions_spawn AND agent_id='explore' AND private/loopback URL OR toolCallTargetsBrowserRequiredUrl | rewrite agent_id explore→browser OR skip if loopback read-only (allowsLoopbackExploreForE2E) | 5th step :493-497 | in_engine | yes | URL classification (private/loopback/public); browser-required-URL fact (now containsPrivateOrLoopbackHttpUrl + toolCallTargetsBrowserRequiredUrl) | — | inline-only; E2E loopback exception |
+| normalizeLocalUrlWebFetchCalls | :498 | web_fetch AND private/loopback HTTP URL | web_fetch → sessions_spawn agent_id='browser' label='local-url-fetch' | 6th step :498 | in_engine | yes | URL classification (now containsPrivateOrLoopbackHttpUrl + extractHttpUrls) | — | inline-only |
+| normalizeBoundedTimeoutSourceSpawnAgents | :499-503 | exploreAvailable AND looksBoundedTimeoutSourceCheck AND sessions_spawn agent_id='browser' AND HTTP URL AND browserRequired fails | rewrite browser→explore OR skip if browser-required | 7th step :499-503 | in_engine | yes | browser-required-URL fact (taskRequiresBrowserEvidence + toolCallTargetsBrowserRequiredUrl); timeout-source classification | — | inline-only; pattern 'bounded attempt\|slow-source\|timeout\|timed out' + URLs |
+| normalizeBoundedTimeoutDuplicateSourceSpawns | :504-506 | looksBoundedTimeoutSourceCheck AND multiple sessions_spawn same normalized URL | keep 1 spawn/URL (highest score), drop duplicates | 8th step :504-506 | in_engine | yes | URL dedup (extractHttpUrls + normalizeUrlForComparison); browser-required scoring | — | inline-only |
+| normalizeApprovalGatedBrowserSpawnCalls | :508-512 (engine onToolCalls :2542-2557, narrower) | sessions_spawn agent_id='browser' AND looksApprovalGatedBrowserSideEffect AND mutating AND not already-applied AND no permission evidence AND no permission_* pending | insert buildPreApprovalBrowserInspectionSpawn + buildPermissionQueryFromBrowserSpawn OR filter duplicate browser spawns | 9th step :508-512; engine onToolCalls only runs enforceMissing + limitIndependent | in_engine | yes | approval-gated-action + mutating-action classification; typed permission evidence from EvidenceLedger | test:24235 (comment, engine mirrors at :513) | **safety invariant: permission_query must inject pre-execute.** Full normalization is inline-only; engine subset only |
 | limitIndependentEvidenceSpawnCalls | :513-516 (engine onToolCalls :2552-2555) | inferIndependentEvidenceStreamCount>=2 AND multiple sessions_spawn AND completed<required | keep first N=required-completed spawns; drop excess | 10th step :513-516; engine :2552 | in_engine | yes | evidence-stream-count fact; completed-session count from typed EvidenceLedger | test:24316 (comment) | runs both inline & engine |
 
 ### T4-permission
 
 | behaviorName | inlineLocation | trigger | action | precedence | engineStatus | regex? | typedFactsNeeded | relatedTests | notes |
 |---|---|---|---|---|---|---|---|---|---|
-| shouldSuppressReadOnlyPermissionQueryToolCalls | :520-523 | activeToolLoop AND permission_query pending AND (isSourceBackedReadOnlyTask OR isClearlyUnrequestedReadOnlyPermissionQuery OR disclaimsIntendedBrowserMutation) | append assistant text + buildReadOnlyPermissionQuerySuppressionPrompt; nextToolChoice='none'; force tool-free round | 11th check :520-523 (not a normalizer) | gap | yes | read-only-vs-mutation TaskFacts; mutation-intent classification (now isSourceBackedReadOnlyTask + disclaimsIntendedBrowserMutation + isClearlyUnrequestedReadOnlyPermissionQuery) | — | inline-only; needs T4 + T9 to port. **Drives fails 13/14/15** |
+| shouldSuppressReadOnlyPermissionQueryToolCalls | :520-523 | activeToolLoop AND permission_query pending AND (isSourceBackedReadOnlyTask OR isClearlyUnrequestedReadOnlyPermissionQuery OR disclaimsIntendedBrowserMutation) | append assistant text + buildReadOnlyPermissionQuerySuppressionPrompt; nextToolChoice='none'; force tool-free round | 11th check :520-523 (not a normalizer) | in_engine | yes | read-only-vs-mutation TaskFacts; mutation-intent classification (now isSourceBackedReadOnlyTask + disclaimsIntendedBrowserMutation + isClearlyUnrequestedReadOnlyPermissionQuery) | — | inline-only; needs T4 + T9 to port. **Drives fails 13/14/15** |
 | latestPermissionToolName | ~8615 | permission state detection | scan toolTrace backward for name startsWith 'permission_'; return name or null | approval repair checks :1115,1140,8639; guards :1599 | in_engine | no | structured tool name (direct lookup) | latest permission tool detected | hasPermissionAppliedEvidence/latestPermissionResultStatus built on this |
 
 ### T2/T4 combined routing (also normalizer pipeline)
@@ -88,11 +100,11 @@ Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-chec
 | parseSessionToolResult | session-tool-result-protocol.ts:131 | every sessions_spawn/send/history result | JSON.parse → validate protocol → SessionToolResultV1 typed struct or null | foundational parser for all evidence extraction | in_engine | no | already fully typed SessionToolResultV1 (target-state, no regex debt) | protocol validation; legacy normalization; field extraction | exports normalizeSessionToolResult / normalizeLegacySessionToolResult |
 | findSubAgentToolTimeout | ~6069 | post-execute after spawn/send | parse result → status==='timeout'; return {toolName,sessionKey,agentId,timeoutSeconds,evidenceAvailable} | onAfterExecute :3185, onAfterExecuteContinue :2979 | in_engine | no | parseSessionToolResult typed (.status/.timeout_seconds/.evidence_available); no regex debt | timeout signal extracted; evidenceAvailable set; timeout before completion | evidence_available = parsed flag OR evidence_summary string fallback |
 | findCompletedSessionEvidence | ~6099 | post-execute after spawn/send/history | parse → status==='completed'; collect finalContents[], browserRecoverySummaries[] | post-execute completed_sub_agent_final :1560; gates :1603-1712 cascade | in_engine | yes | final_content/final_contents typed; **browserRecoverySummaries via readInlineBrowserRecoverySummary regex on evidence text** — needs structured payload field | completed evidence collected; recovery summary extracted; empty→null | readBrowserRecoverySummary (structured) vs readInlineBrowserRecoverySummary (regex debt) |
-| canonicalizeSessionToolTraceCalls | ~5801 (inline :1540) | post-result recording | compare trace calls vs parsed result.session_key; rewrite call.input to match | after execution, before compact/finalization | **partial** | no | parseSessionToolResult typed; direct field compare; inline-only, not wired into engine | session_key normalized; unmodified when match | inline-only trace normalization not ported to engine |
+| canonicalizeSessionToolTraceCalls | ~5801 (inline :1540) | post-result recording | compare trace calls vs parsed result.session_key; rewrite call.input to match | after execution, before compact/finalization | in_engine | no | parseSessionToolResult typed; direct field compare; inline-only, not wired into engine | session_key normalized; unmodified when match | inline-only trace normalization not ported to engine |
 | hasCompletedBrowserSessionEvidence | ~11244 | browser-evidence repair predicates :1153,:3232 | scan toolTrace for completed browser sessions w/ readCompletedSessionEvidence truthy | gates shouldRepairMissingBrowserEvidence :1153, dimensions :1190 | in_engine | no | typed agent_id/status/final_content; readCompletedSessionEvidence should use final_content exclusively (has text fallback) | detection true/false | hasAttemptedBrowserSessionEvidence :11268; contextHasBrowserSessionAttempt :11293 (text fallback) |
-| collectSourceBoundedEvidenceText | ~7024 | natural-finish repair :1202 + completed-closeout | concat collectNativeToolTraceEvidenceText + extractSourceBoundedEvidenceSnippets + msg evidence; filter looksLikeSourceBoundedEvidenceLine | shouldRepairWeakEvidence :1202,:1231 | gap | yes | typed source-evidence flags / EvidenceLedger marker; extractSourceBoundedEvidenceSnippets :7044 + looksLikeSourceBoundedEvidenceLine :7062 are regex | bounded evidence extracted; deduped | evidence formula for weak/source repairs |
-| extractSessionToolResultRecords | ~10259 | continuation directives needing session enumeration | regex-extract JSON objects w/ session_key+status from context text → records[] | helper for directives :9360,9610,9635,9640 | gap | yes | parseSessionToolResult on each result instead of JSON.parse; structured toolTrace as primary source | records extracted; invalid JSON skipped | regex-debt fn; replace with structured evidence ledger in 8C |
-| looksLikeSourceBoundedEvidenceLine | ~7062 | line-by-line during source evidence collection | regex match scope-disclaimer OR evidence-line OR Chinese scope markers | filters source evidence :7052 | gap | yes | structured producer scopeRestrictions field; replace 50+ alternation regex | scope-limited lines / evidence lines detected | primary regex-debt target for 8C |
+| collectSourceBoundedEvidenceText | ~7024 | natural-finish repair :1202 + completed-closeout | concat collectNativeToolTraceEvidenceText + extractSourceBoundedEvidenceSnippets + msg evidence; filter looksLikeSourceBoundedEvidenceLine | shouldRepairWeakEvidence :1202,:1231 | in_engine | yes | typed source-evidence flags / EvidenceLedger marker; extractSourceBoundedEvidenceSnippets :7044 + looksLikeSourceBoundedEvidenceLine :7062 are regex | bounded evidence extracted; deduped | evidence formula for weak/source repairs |
+| extractSessionToolResultRecords | ~10259 | continuation directives needing session enumeration | regex-extract JSON objects w/ session_key+status from context text → records[] | helper for directives :9360,9610,9635,9640 | in_engine | yes | parseSessionToolResult on each result instead of JSON.parse; structured toolTrace as primary source | records extracted; invalid JSON skipped | regex-debt fn; replace with structured evidence ledger in 8C |
+| looksLikeSourceBoundedEvidenceLine | ~7062 | line-by-line during source evidence collection | regex match scope-disclaimer OR evidence-line OR Chinese scope markers | filters source evidence :7052 | in_engine | yes | structured producer scopeRestrictions field; replace 50+ alternation regex | scope-limited lines / evidence lines detected | primary regex-debt target for 8C |
 | completed_product_brief_evidence_text_round_0_formula | :1933-1938 (engine :3693-3705) | round 0 completed-cascade evidence selection | assemble finalContents.join() + collectToolResultContentText(completedSessionToolResults) — completing-round results only | evidence prep; affects source/timeout/weak (round 0) | in_engine | no | structuredToolResultContentText per-round from EvidenceLedger | parity round-0 formula | byte-for-byte parity; round-0 vs round-gt0 asymmetry is the 'evidence formula residual' |
 | source_bounded_evidence_text_round_gt0_formula | :1192 (engine :3829-3838) | round>0 repair, natural-finish formula | recompute sourceBoundedEvidenceText via collectSourceBoundedEvidenceText (full toolTrace) | evidence prep round>0; affects source/weak | in_engine | no | EvidenceLedger.sourceLabels per round | parity round-gt0; evidence-formula-residual-closed | closes residual: label only in full toolTrace visible on re-synthesis |
 
@@ -107,7 +119,7 @@ Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-chec
 | findIncompleteApprovedBrowserSession | ~1627 (engine :3053) | completedSession AND !hasIncompleteApprovedBrowserSessionContinuationPrompt AND requestsApprovalGatedBrowserAction AND permission applied AND status completed AND agent browser AND INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS | append_prompt + force_tool_choice(sessions_send) | 4th post-execute continuation | in_engine | yes | INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS → structured incomplete_action field on result | — | parseSessionToolResult then regex fallback on evidence text |
 | shouldContinueIndependentEvidenceStreams | ~1648 (engine :3080) | completedSession AND !hasIndependentEvidenceStreamContinuationPrompt AND inferIndependentEvidenceStreamCount>=2 AND completed<required | append_prompt + force_tool_choice(sessions_spawn) | 5th post-execute continuation | in_engine | yes | inferIndependentEvidenceStreamCount regex (`(three\|3) independent evidence streams`) + isTwoSourceComparisonTask → structured task field | — | limitIndependentEvidenceSpawnCalls caps spawns to remaining |
 | findSessionContinuationDirective | ~9342 (engine onRoundEmpty :2501) | activeToolLoop AND taskPrompt continuation markers OR forced slow-source recovery | extract session_key from extractSessionToolResultRecords; rank by sessionToolResultContinuationPriority; return {sessionKey,messageHint} | first directive check :262,:457; before empty-round injection :567 | in_engine | yes | session_tool_result.v1 fields present; **priority ranking regex on taskPrompt + 'System recovery:' markers** → typed continuation-intent in RolePromptPacket | continuation directive selection; session key resolution; truncated-timeout rejection | depends on extractSessionToolResultRecords + extractLatestUserContinuationText |
-| findSessionContinuationLookupDirective | ~9512 | activeToolLoop AND !directive AND !probePending AND continuation-looking taskPrompt; guarded by contextHasSessionListResult | inject sessions_list lookup; return {messageHint} or null | fallback to directive :468; feeds applySessionContinuationLookupDirective :490 | gap | yes | continuation-intent field; structured session list result; needs onRoundEmpty/onRoundMessages extension | lookup when list exists; lookup suppression when direct avail | lookup injection :588-605 not ported to engine |
+| findSessionContinuationLookupDirective | ~9512 | activeToolLoop AND !directive AND !probePending AND continuation-looking taskPrompt; guarded by contextHasSessionListResult | inject sessions_list lookup; return {messageHint} or null | fallback to directive :468; feeds applySessionContinuationLookupDirective :490 | in_engine | yes | continuation-intent field; structured session list result; needs onRoundEmpty/onRoundMessages extension | lookup when list exists; lookup suppression when direct avail | lookup injection :588-605 not ported to engine |
 | hasExecutedSessionsSend | ~11526 | pre-execution when empty-round continuation pending | scan toolTrace for prior sessions_send to same sessionKey → boolean | guards empty-round injection :571, continuation comp :509 | in_engine | no | structured toolTrace (direct field access, no regex) | no duplicate send; injection allowed when not yet sent | uses readStringInput :11599 |
 | hasLatestSupplementalLocalTimeoutProbePrompt | ~6649 (engine :2493) | per-round before computing directives | latest msg role='user' && includes('Runtime correction: resumed timeout evidence is still content-poor.') | gates directive recompute :450; suppresses directives :456,464 | in_engine | yes | structured probeIsPending field; current = literal string match | probe prompt detection; continuation blocked when pending | hardcoded literal; enforceSupplementalLocalTimeoutProbeToolCall :6667 rewrites when pending |
 | shouldForceSlowSourceRecoveryContinuation | ~9548 | user did not ask to continue but recovery context detected | regex `System recovery: ... required goal slots` AND taskPromptLooksLikeSourceCheckContinuation AND contextHasTimeoutSessionResult | fallback for findSessionContinuationDirective | in_engine | yes | structured run reason 'recovery_mode' / 'required_goal_slots_unsatisfied'; explicit continuation-intent field | forced continuation in recovery; no force when not recovery | text-pattern inference |
@@ -152,9 +164,9 @@ Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-chec
 | shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair | :955-983 (NOT in onRepairRound) | approval-wait-timeout closeout requested, evidence exists, repair prompt sent but still incomplete | break loop, toolLoopCloseout={reason:'tool_evidence_fallback'}, buildApprovalWaitTimeoutLocalEvidenceCloseout | inline-only fallback :955-983, last in approval-timeout family | **gap** | no | PermissionEvidenceFact.waitTimeoutStatus; collectApprovalWaitTimeoutRuntimeEvidence :7735-7756 | — | GAP; **hard closeout (breaks loop), no onTerminate branch covers it** |
 | shouldRepairMissingRequestedTableColumns | :1138-1164 (engine :3318-3343) | requested table columns declared, result missing columns (markdownTableHasExactRequestedColumns), no marker | tool-free synthesis (forceToolChoice='none'), append prompt, continue | **first tool-free repair**, after S2/S3/S9 (inline :1138, engine :3318), before extraneous | in_engine | yes | ActivationInput.requestedTableColumns; resolveRequestedTableColumns regex :7931-7935 | missing-table-columns identical inline/engine | engine parity confirmed |
 | shouldRepairExtraneousProviderTableSchema | :1166-1191 (engine :3344-3367) | result introduces provider/search/model-support schema not requested, no marker | tool-free synthesis (forceToolChoice='none'), append prompt, continue | **second tool-free** (inline :1167, engine :3344), after missing-columns before source-evidence | in_engine | yes | ActivationInput.originalRequestedColumns; resultIntroducesProviderSupportSchema regex :8018-8024; explicitlyRequestsProviderSupportSchema :8027-8033 | extraneous-provider-table-schema identical | engine parity confirmed |
-| shouldRepairSourceEvidenceCarryForward | :1202-1229 (engine :3387-3412) | sourceBoundedEvidenceText non-empty AND (productBrief OR completedSessionLabel carry-forward), no marker | tool-free synthesis (forceToolChoice='none'), append prompt, continue | **third tool-free** (inline :1202, engine :3387), after extraneous before weak; truthy-gated | **partial** | yes | EvidenceLedger.sourceLabels; extractCompletedSessionEvidenceLabels regex :8333-8347; PRODUCT_BRIEF_MULTI_AGENT_EVIDENCE_PATTERN + PRODUCT_SIGNAL_DASHBOARD_METRICS | source-evidence-carry-forward identical | evidence formula differs inline :1192 vs engine :3370-3379 |
+| shouldRepairSourceEvidenceCarryForward | :1202-1229 (engine :3387-3412) | sourceBoundedEvidenceText non-empty AND (productBrief OR completedSessionLabel carry-forward), no marker | tool-free synthesis (forceToolChoice='none'), append prompt, continue | **third tool-free** (inline :1202, engine :3387), after extraneous before weak; truthy-gated | in_engine | yes | EvidenceLedger.sourceLabels; extractCompletedSessionEvidenceLabels regex :8333-8347; PRODUCT_BRIEF_MULTI_AGENT_EVIDENCE_PATTERN + PRODUCT_SIGNAL_DASHBOARD_METRICS | source-evidence-carry-forward identical | evidence formula differs inline :1192 vs engine :3370-3379 |
 | shouldRepairWeakEvidenceSynthesis | :1230-1252 (engine :3413-3430) | sourceBoundedEvidenceText AND (unsupported extrapolation OR weak uncertainty/estimate OR missing risk dimension), no marker | tool-free synthesis (forceToolChoice='none'), append prompt, continue | **fourth/last tool-free** (inline :1231, engine :3413) | in_engine | yes | confidence level; hasUnsupportedSourceBoundedExtrapolation :8387-8421; WEAK_UNCERTAINTY :8564-8567; WEAK_ESTIMATE :8569-8572; shouldRepairMissingRequestedRiskDimension :8518-8532 | weak-evidence-synthesis identical | 3 major regex blocks (DNS/IP, ops restrictions, risk); TBD/maybe/待确认 |
-| shouldRepairMissingBrowserEvidenceDimensions | :720-745 (pseudo-tool-call closeout), :1080-1107 (wall-clock/round-limit closeout), NOT in onRepairRound | completedEvidenceText non-empty AND findMissingBrowserEvidenceDimensions non-empty (frame/shadow/popup/dashboard), no marker | tool-free synthesis (nextToolChoice='none'), append prompt, continue | only in pseudo & wall-clock/round-limit closeout branches (:720,:1082), NOT natural-finish | **partial** | yes | BrowserEvidenceFact iframe/shadow/popup/dashboard; findMissingBrowserEvidenceDimensions :8464-8516 (4 dims, each requested/evidence/result/negated regex) | missing-browser-dimensions parity | completed-closeout-phase repair; multi-dim regex artifact |
+| shouldRepairMissingBrowserEvidenceDimensions | :720-745 (pseudo-tool-call closeout), :1080-1107 (wall-clock/round-limit closeout), NOT in onRepairRound | completedEvidenceText non-empty AND findMissingBrowserEvidenceDimensions non-empty (frame/shadow/popup/dashboard), no marker | tool-free synthesis (nextToolChoice='none'), append prompt, continue | only in pseudo & wall-clock/round-limit closeout branches (:720,:1082), NOT natural-finish | in_engine | yes | BrowserEvidenceFact iframe/shadow/popup/dashboard; findMissingBrowserEvidenceDimensions :8464-8516 (4 dims, each requested/evidence/result/negated regex) | missing-browser-dimensions parity | completed-closeout-phase repair; multi-dim regex artifact |
 | shouldRepairFalseEvidenceBlockedSynthesis | completed_sub_agent_final onTerminate (engine onTerminate) | result FALSE_EVIDENCE_BLOCKED_SYNTHESIS_PATTERNS but evidence !ACTUAL_EVIDENCE_BLOCKED_PATTERNS, no marker | tool-free re-prompt in onTerminate completed-closeout, re-enter loop | completed-closeout repair, not natural-finish | in_engine | yes | typed evidence presence/absence; FALSE :8574-8578, ACTUAL :8580-8585 | false-evidence-blocked identical | two regex arrays |
 | shouldRepairMissingRequestedNextAction | completed_sub_agent_final onTerminate | task requests next-action, result lacks next action/step/recommendation/should/fallback, no marker | tool-free re-prompt in onTerminate, re-enter loop | completed-closeout repair | in_engine | yes | TaskFacts.requestsNextAction; :7900-7918 regex (:7910-7912 / :7916-7918) | missing-requested-next-action identical | completed-closeout only |
 | findMissingRequiredFinalDeliverables | completed_sub_agent_final onTerminate | inferRequiredFinalSynthesisDeliverables (final_conclusion, two_row_table) partly missing | trigger per-missing repair, re-enter loop if count>0 | completed-closeout series | in_engine | yes | TaskFacts.requiredDeliverables; finalDeliverableIsPresent :12080-12082/:12085 | missing-required-deliverables parity | returns RequiredFinalDeliverable[]; multilingual headers (结论/总结/Conclusion/Summary) |
@@ -211,76 +223,40 @@ Source of empirical parity: `npm run parity:engine` (`scripts/engine-parity-chec
 | deriveToolResultEnvelope | :372/2395/12338/12595 | before each generate() + after pruning | scan messages, count results/bytes, extract envelope facts | post-prep | in_engine | no | none | preserves tool history when retry reduces (:3973) | inline (372), engine (2395), validation (12338,12595) |
 | memoryFlushes accumulation | :254,:445-447 (engine synthesis :3601) | generateWithEnvelopeRetry returns memoryFlush | push into memoryFlushes[] | after each retry | **gap** | no | none | triggers pre-compaction flusher (:162) | **INLINE-ONLY** for per-round; engine tool-use (:2398-2407) doesn't capture |
 | recordToolResultPruningBoundarySafely | :352-356 | after prepareToolHistoryForGateway in tool rounds | record ToolResultPruningSnapshot to runtimeProgressRecorder | post-prep observability | **gap** | yes | structured compaction facts (now text regex) | preserves tool history when retry reduces (:3973) | **INLINE-ONLY**; engine doesn't record. Observability gap |
-| reduction metadata carry-forward in final response | :2306-2332 (engine :4226-4227,:4260-4261) | end of generate(); reductionSnapshot set | include requestEnvelopeReduction + preCompactionMemoryFlushes in metadata | terminal | **partial** | no | none | preserves tool history when retry reduces (:3973) | inline collects every round; engine only synthesis; per-round lost |
+| reduction metadata carry-forward in final response | :2306-2332 (engine :4226-4227,:4260-4261) | end of generate(); reductionSnapshot set | include requestEnvelopeReduction + preCompactionMemoryFlushes in metadata | terminal | in_engine | no | none | preserves tool history when retry reduces (:3973) | inline collects every round; engine only synthesis; per-round lost |
 | recordReductionBoundarySafely | :4226-4227 (engine only) | engine: end of generate() if run.reductionSnapshot set | record reduction boundary to runtimeProgressRecorder | terminal | **gap** | no | none | preserves tool history when retry reduces (:3973) | **ENGINE-ONLY**; inline has no equivalent — asymmetric observability |
 
 ---
 
-## 3. Gap Worklist for Stage 8B (parity-first, prioritized backlog)
+## 3. Stage 8B gap worklist — RETIRED (parity complete)
 
-Only `engineStatus=gap` and `partial` rows. Ordered by empirical failure impact: rows whose `relatedTests` (or behavior cluster) appear in the 21 probe failures come first. Each tagged with target layer for 8C–8I extraction.
+This section was the parity-first "port these gaps first" backlog. **It is retired:**
+engine parity is 272 / 0 / 0-skip, so there are no `gap`/`partial` rows left to port —
+every behavior in §2 is `in_engine`. Do NOT resurrect a port worklist from here.
 
-### Tier 1 — directly drives observed engine failures (port first)
+The only remaining, non-parity work is:
 
-| # | behavior | layer | status | drives fails | inlineLocation |
-|---|---|---|---|---|---|
-| 1 | shouldRepairStalePendingApproval | T9-repair + T7 | gap | 22, 24, 26, 30 | :880-903 |
-| 2 | shouldRepairPendingApprovalWaitTimeoutCheck | T9-repair + T5 | gap | 21, 25 | :833-853 |
-| 3 | shouldRepairPrematurePendingApprovalFinal | T9-repair | gap | 23, 28 | :855-878 |
-| 4 | shouldRepairApprovalWaitTimeoutCloseout | T9-repair | gap | 21/27 cluster | :930-953 |
-| 5 | shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair | T8-closeout | gap | 21/27 cluster (hard closeout) | :955-983 |
-| 6 | shouldSuppressReadOnlyPermissionQueryToolCalls | T4-permission + T9 | gap | 13, 14, 15 | :520-523 |
-| 7 | normalizeApprovalGatedBrowserSpawnCalls (full inline scope) | T4-permission (pre-execute) | partial | 10 | :508-512 |
-| 8 | reductionSnapshot accumulation/carry-forward | C5-memory | gap | 1 | :248-252,:375+ |
-| 9 | memoryFlushes accumulation | C5-memory | gap | 2 | :254,:445-447 |
-| 10 | summarizeToolResultPruning | C5-memory | gap | 39, 47 | :12321-12358 |
-| 11 | recordToolResultPruningBoundarySafely | C5-memory + obs | gap | 39, 37 | :352-356 |
-| 12 | tool_evidence_fallback closeout (engine envelope-overflow path) | T8-closeout | gap | 48 | :420-431 |
-| 13 | withFinalToolRoundWarning | C5-memory + T5 | gap | 7 (loop wiring), 37 | :12360-12387 |
-| 14 | reduction metadata carry-forward (engine per-round) | C5-memory | partial | 1, 39 | :2306-2332 |
-
-### Tier 2 — no direct probe fail yet, but parity-load-bearing normalizer/continuation gaps
-
-| # | behavior | layer | status | inlineLocation |
-|---|---|---|---|---|
-| 15 | enforceSupplementalLocalTimeoutProbeToolCall | T2-normalizer | gap | :473-484 |
-| 16 | normalizeSessionToolAliasCalls | T2-normalizer | gap | :475 |
-| 17 | applySessionContinuationDirective | T2-normalizer + T5 | gap | :489/:507 |
-| 18 | applySessionContinuationLookupDirective | T2-normalizer + T5 | gap | :490 |
-| 19 | normalizeExplicitContinuationHistoryCalls | T2-normalizer + T5 | gap | :491 |
-| 20 | normalizeSessionToolCalls | T2-normalizer | gap | :492 |
-| 21 | normalizePrivateUrlResearchSpawnCalls | T2-normalizer + T4 | gap | :493-497 |
-| 22 | normalizeLocalUrlWebFetchCalls | T2-normalizer + T4 | gap | :498 |
-| 23 | normalizeBoundedTimeoutSourceSpawnAgents | T2-normalizer | gap | :499-503 |
-| 24 | normalizeBoundedTimeoutDuplicateSourceSpawns | T2-normalizer | gap | :504-506 |
-| 25 | findSessionContinuationLookupDirective | T5-continuation | gap | :9512 (:588-605) |
-| 26 | canonicalizeSessionToolTraceCalls | T3-evidence | partial | :5801 (:1540) |
-| 27 | shouldRepairSourceEvidenceCarryForward (evidence-formula divergence) | T9-repair | partial | :1202-1229 |
-| 28 | shouldRepairMissingBrowserEvidenceDimensions | T9-repair | partial | :720-745,:1080-1107 |
-
-### Tier 3 — T10 finalization visibility appenders (deferred to browser/recovery cutover, but parity-visible)
-
-| # | behavior | layer | status | inlineLocation |
-|---|---|---|---|---|
-| 29 | maybeAppendBrowserRecoveryVisibility | T10-finalization | gap | :6884-6916 |
-| 30 | maybeAppendBrowserFailureBucketVisibility | T10-finalization | gap | :6970-6993 |
-| 31 | maybeAppendRequiredTimeoutFollowupVisibility | T10-finalization | gap | :7255-7300 |
-| 32 | maybeAppendBrowserRecoveryResidualRiskVisibility | T10-finalization | gap | :7302-7337 |
-
-### Tier 4 — T3 evidence-ledger regex-debt functions (replace during 8C, not strictly parity blockers yet)
-
-| # | behavior | layer | status | inlineLocation |
-|---|---|---|---|---|
-| 33 | collectSourceBoundedEvidenceText | T3-evidence | gap | :7024 |
-| 34 | extractSessionToolResultRecords | T3-evidence | gap | :10259 |
-| 35 | looksLikeSourceBoundedEvidenceLine | T3-evidence | gap | :7062 |
-| 36 | recordReductionBoundarySafely (engine-only, inline parity) | C5-memory + obs | gap | :4226-4227 |
+- **§4 — architecture / typed-facts debt (Stage 8C+):** re-express the `regex? = yes`
+  detectors as typed facts (EvidenceLedger / TaskFacts). These are refactors, not parity
+  fixes; the behaviors already run on the engine.
+- **§6 — precedence registries (Stage 8G):** extract the closeout/repair ordering into
+  explicit registries so `onTerminate` stops hand-maintaining the completed cascade.
+- The role-runtime adapter cleanup (EngineRunObserver / tool-normalization module /
+  RepairPolicy / CompletedCloseoutController) — `runViaReActEngine` still owns too many
+  concerns; this is the source of the hard edge cases, not a parity blocker.
+- The engine-behind-flag soak, then the default flip.
 
 ---
 
-## 4. Regex-debt / Typed-facts Feasibility Seed for 8C
+## 4. Architecture / typed-facts debt (Stage 8C+) — the remaining work table
 
-Every `usesRegexOverText=true` row, grouped by the structured field it needs. For each group the 8C producer-feasibility audit must classify the source field as `already_structured` / `present_only_as_text` / `missing_from_producer`.
+> This is the SECOND table (paired with §2's behavior table): §2 = *behavior parity, all
+> done*; §4 = *architecture / regex debt, still open*. Nothing here is a parity gap — every
+> listed detector already runs on the engine. These are the `regex? = yes` behaviors a future
+> Stage 8C should re-express as typed facts (EvidenceLedger / TaskFacts), so permission /
+> browser / source evidence stops being decided by text regex inside policy code.
+
+Every `regex? = yes` row from §2, grouped by the structured field it needs. For each group the 8C producer-feasibility audit must classify the source field as `already_structured` / `present_only_as_text` / `missing_from_producer`.
 
 ### Group A — Session / timeout evidence facts (target: SessionToolResultV1 / SessionEvidenceFact)
 *Producer = session-tool-result-protocol.ts; `parseSessionToolResult` already typed — many of these are `present_only_as_text` derivations on top of a structured base.*
@@ -357,9 +333,13 @@ Every `usesRegexOverText=true` row, grouped by the structured field it needs. Fo
 
 ---
 
-## 5. Deferred-fixture rows (for 8B/8F retirement)
+## 5. Deferred-fixture rows — RETIRED (all fixtures pass)
 
-Known deferred parity fixtures and the normalizer/appender each is blocked on. Retire as the listed blocker lands.
+> These were parity fixtures deferred because their blocking normalizer/appender wasn't
+> ported yet. **All are now retired:** the blockers landed (the normalization pipeline,
+> the continuation/timeout-probe branches, and the finalization appenders all run on the
+> engine), so every row's fixture passes and parity is 272/0. The table below is kept as
+> historical record of what each was blocked on; it is NOT an open worklist.
 
 | Deferred fixture | Stage origin | Blocked on (normalizer / appender) | Layer | Notes |
 |---|---|---|---|---|
