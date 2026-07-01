@@ -53,6 +53,14 @@ import {
 } from "./react/predicates";
 import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
 import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/react-loop";
+// Stage 8 cleanup (Batch 0.5): engine policy-trace plumbing. The trace is a
+// behavior-neutral observability sink that records the per-hook decision sequence
+// so later batches can prove byte-identical behavior and so production-behind-flag
+// failures can answer "which policy fired or skipped." See react-engine/*.
+import {
+  createEnginePolicyTrace,
+  traceEngineHooks,
+} from "./react-engine";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type {
   PreCompactionMemoryFlusher,
@@ -319,6 +327,19 @@ function runEngineToolCallNormalizationPipeline(
   return ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE.reduce(
     (acc, step) => step.apply(acc, ctx),
     calls,
+  );
+}
+
+/**
+ * Stage 8 cleanup (Batch 0.5): is the engine policy-trace debug surface enabled?
+ * Off by default so ordinary engine runs (including the parity suite) carry no
+ * extra metadata; the characterization runner sets TURNKEYAI_ENGINE_POLICY_TRACE=1
+ * to capture the golden per-hook decision sequence.
+ */
+function enginePolicyTraceDebugEnabled(): boolean {
+  return (
+    typeof process !== "undefined" &&
+    process.env?.TURNKEYAI_ENGINE_POLICY_TRACE === "1"
   );
 }
 
@@ -2523,6 +2544,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       recoveryToolCallsBeforeActivation,
     } = args;
 
+    // Stage 8 cleanup (Batch 0.5): the per-run engine policy trace. It records the
+    // per-hook decision sequence (which policy fired or skipped, in which phase)
+    // via the behavior-neutral hook-boundary wrapper applied to `hooks` below. The
+    // snapshot is surfaced into debug metadata behind the engine flag (this whole
+    // method is engine-only) so a production-behind-flag failure is diagnosable.
+    const policyTrace = createEnginePolicyTrace();
+
     let lastResult: GenerateTextResult | undefined;
     let traceRound = 0;
     const model: ModelClient = {
@@ -2775,7 +2803,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       // REAL `maxRounds`, so the +1 only reaches the boundary — onToolCallsClose fires
       // round_limit at toolTrace.length >= maxRounds before the extra round executes.
       maxRounds: maxRounds + 1,
-      hooks: {
+      // Stage 8 cleanup (Batch 0.5): wrap the hook bodies with the behavior-neutral
+      // policy-trace boundary. traceEngineHooks records one EnginePolicyTraceEntry
+      // per installed hook invocation (phase + coarse outcome derived from the
+      // return value) and returns each hook's real result unchanged — pure
+      // observation, so parity is unaffected. Later batches extract the real
+      // controllers/registries, which record their own fine-grained policy ids into
+      // the same trace at their own call sites.
+      hooks: traceEngineHooks({
         // Tool-call normalization — the engine's full port of the inline pipeline
         // (Stage 8B Batch B). Runs every active-loop round before execution and
         // before the current round is recorded in toolTrace, so each step's trace
@@ -4933,7 +4968,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           run.finalMessages ??= state.messages;
           return text;
         },
-      },
+      }, policyTrace),
     });
 
     let finalText = "";
@@ -5171,6 +5206,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         ...(run.toolLoopCloseout ? { toolLoopCloseout: run.toolLoopCloseout } : {}),
         ...(missionReport ? { missionReport } : {}),
         reactEngine: true,
+        // Stage 8 cleanup (Batch 0.5): surface the per-hook policy-decision
+        // sequence into debug metadata ONLY when the engine-policy-trace debug flag
+        // is set, so ordinary engine runs (including the parity suite, which asserts
+        // metadata shape) are byte-identical. The characterization runner sets this
+        // flag to capture the golden decision sequence.
+        ...(enginePolicyTraceDebugEnabled()
+          ? { enginePolicyTrace: policyTrace.snapshot() }
+          : {}),
       },
     };
   }

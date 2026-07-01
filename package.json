@@ -36,6 +36,8 @@
     "ledger:check": "tsx scripts/agent-workbench-ledger-check.ts",
     "parity:engine": "tsx scripts/engine-parity-check.ts",
     "parity:inline": "tsx scripts/engine-parity-check.ts --inline",
+    "parity:policy-trace": "tsx scripts/engine-policy-trace-characterization.ts",
+    "parity:policy-trace:write": "tsx scripts/engine-policy-trace-characterization.ts --write",
     "control-center:smoke": "tsx scripts/control-center-ui-smoke.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
     "install:local-cli": "npm link --workspace @turnkeyai/cli",

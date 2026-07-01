@@ -9,6 +9,9 @@
 // ../llm-response-generator or anything that imports it.
 export * from "./types";
 export * from "./policy-trace";
+export * from "./hook-orchestration-contract";
+export * from "./hook-policy-trace";
+export * from "./policy-trace-characterization";
 export * from "./engine-run-state";
 export * from "./engine-run-observer";
 export * from "./permission-policy";

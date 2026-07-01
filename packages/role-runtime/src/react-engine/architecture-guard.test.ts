@@ -1,0 +1,55 @@
+// Stage 8 engine cleanup (Batch 0.5) — architecture guard.
+//
+// HARD INVARIANT (plan "Dependency Rules" / "Non-Negotiable Cleanup Invariants"):
+// no packages/role-runtime/src/react-engine/* module may import
+// ../llm-response-generator (or re-export its helpers). If a helper is needed it
+// must MOVE into the owning react-engine module. This test fails the build if any
+// react-engine source file reaches back into the composition root.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ENGINE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/** Forbidden import specifiers: the composition root and any known re-exporter. */
+const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
+  /from\s+["'][^"']*llm-response-generator["']/,
+  /import\s*\(\s*["'][^"']*llm-response-generator["']\s*\)/,
+  /require\(\s*["'][^"']*llm-response-generator["']\s*\)/,
+];
+
+function engineSourceFiles(): string[] {
+  return readdirSync(ENGINE_DIR)
+    .filter((name) => name.endsWith(".ts"))
+    .filter((name) => !name.endsWith(".test.ts"))
+    .map((name) => path.join(ENGINE_DIR, name));
+}
+
+test("no react-engine module imports llm-response-generator", () => {
+  const offenders: string[] = [];
+  for (const file of engineSourceFiles()) {
+    const source = readFileSync(file, "utf8");
+    for (const pattern of FORBIDDEN_IMPORT_PATTERNS) {
+      if (pattern.test(source)) {
+        offenders.push(`${path.basename(file)} matches ${pattern}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `react-engine modules must not import the composition root:\n${offenders.join("\n")}`,
+  );
+});
+
+test("architecture guard actually scans real react-engine files", () => {
+  // Guard against a false-green from an empty scan: there must be several source
+  // files, and known modules must be present.
+  const files = engineSourceFiles().map((f) => path.basename(f));
+  assert.ok(files.length >= 5, `expected react-engine modules, saw ${files.length}`);
+  assert.ok(files.includes("types.ts"));
+  assert.ok(files.includes("hook-policy-trace.ts"));
+  assert.ok(files.includes("hook-orchestration-contract.ts"));
+});
