@@ -468,7 +468,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     let nextToolChoice: GenerateTextInput["toolChoice"] | undefined;
     const toolLoopStartedAtMs = this.clock.now();
     let toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
-    if (this.reactEngine === "engine") {
+    // The engine path drives a tool loop; when there is no active tool loop
+    // (toolUseMode "disabled", :378) there is nothing to loop, so route to the
+    // inline single tool-free model call — exactly what inline does when
+    // activeToolLoop is undefined (no tools attached, no execution). Entering the
+    // ReAct agent here would attach the toolkit and execute the model's tool calls
+    // as "Unknown tool" results, diverging from inline.
+    if (this.reactEngine === "engine" && activeToolLoop) {
       return this.runViaReActEngine({
         input,
         selection,
