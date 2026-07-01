@@ -2817,11 +2817,47 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           return normalized;
         },
-        // Honor the execution limits the per-call default bypasses: the per-turn
-        // execution cap (maxToolCallsPerRound), order-dependent serialization,
-        // bounded concurrency, and per-chunk wall-clock aborts — reusing the same
-        // helpers the inline executeToolCalls uses, rather than refactoring that
-        // heavily-tested method. (progress persistence is wired in a later PR.)
+        // Stage 8B (Batch E — T7 execution budget plane): the per-turn tool-call
+        // execution cap (inline executeToolCalls :5343-5350) is applied HERE, in
+        // onBeforeExecute, NOT inside runToolBatch — so agent-core emits tool_started
+        // only for the executable calls. The over-cap calls become skipped-only
+        // `tool_call_limit_exceeded` results (via the shared
+        // buildToolCallLimitExceededResult helper) with NO "started" progress,
+        // matching inline (whose over-cap calls are skipped-only). agent-core orders
+        // them AFTER the executed results (executed-then-rejected), the inline order.
+        // Runs after onToolCalls (whose final-recovery-budget truncation already
+        // shaped `calls`), so `calls.length` is the requested count the inline
+        // executor sees (its `input.toolCalls.length`).
+        onBeforeExecute: (calls) => {
+          const maxToolCallsPerRound =
+            activeToolLoop &&
+            typeof activeToolLoop.maxToolCallsPerRound === "number" &&
+            Number.isFinite(activeToolLoop.maxToolCallsPerRound) &&
+            activeToolLoop.maxToolCallsPerRound > 0
+              ? Math.floor(activeToolLoop.maxToolCallsPerRound)
+              : calls.length;
+          if (maxToolCallsPerRound >= calls.length) {
+            return { executable: calls, rejected: [] };
+          }
+          const requestedToolCalls = calls.length;
+          return {
+            executable: calls.slice(0, maxToolCallsPerRound),
+            rejected: calls
+              .slice(maxToolCallsPerRound)
+              .map((call) =>
+                buildToolCallLimitExceededResult(
+                  call,
+                  maxToolCallsPerRound,
+                  requestedToolCalls,
+                ),
+              ),
+          };
+        },
+        // Honor the remaining execution limits the per-call default bypasses:
+        // order-dependent serialization, bounded concurrency, and per-chunk
+        // wall-clock aborts — reusing the same helpers the inline executeToolCalls
+        // uses, rather than refactoring that heavily-tested method. `calls` here is
+        // already the executable subset (onBeforeExecute applied the per-turn cap).
         runToolBatch: async (calls, _runOne, hookCtx) => {
           if (!activeToolLoop) {
             return calls.map((call) => ({
@@ -2831,37 +2867,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               content: `Unknown tool: ${call.name}`,
             }));
           }
-          // Stage 8B (Batch E — T7 execution budget plane): the per-turn tool-call
-          // execution cap (inline executeToolCalls :5343-5350). A round that emits
-          // more calls than maxToolCallsPerRound executes only the first N; the
-          // rest become synthetic `tool_call_limit_exceeded` skipped results (via
-          // the shared buildToolCallLimitExceededResult helper) so the model sees a
-          // deterministic error for the over-cap calls instead of silently dropping
-          // them. `calls` here already carries any final-recovery-budget truncation
-          // applied in onToolCalls, so `calls.length` is the same requested count
-          // the inline executor sees (its `input.toolCalls.length`).
-          const maxToolCallsPerRound =
-            typeof activeToolLoop.maxToolCallsPerRound === "number" &&
-            Number.isFinite(activeToolLoop.maxToolCallsPerRound) &&
-            activeToolLoop.maxToolCallsPerRound > 0
-              ? Math.floor(activeToolLoop.maxToolCallsPerRound)
-              : calls.length;
-          const requestedToolCalls = calls.length;
-          const rejectedCalls = calls.slice(maxToolCallsPerRound);
-          const executableCalls = calls.slice(0, maxToolCallsPerRound);
           const maxParallel =
             typeof activeToolLoop.maxParallelToolCalls === "number" &&
             Number.isFinite(activeToolLoop.maxParallelToolCalls) &&
             activeToolLoop.maxParallelToolCalls > 0
               ? Math.floor(activeToolLoop.maxParallelToolCalls)
-              : executableCalls.length;
+              : calls.length;
           const step = Math.max(
             1,
-            shouldSerializeToolBatch(executableCalls) ? 1 : maxParallel,
+            shouldSerializeToolBatch(calls) ? 1 : maxParallel,
           );
           const results: RoleToolExecutionResult[] = [];
-          for (let i = 0; i < executableCalls.length; i += step) {
-            const chunk = executableCalls.slice(i, i + step);
+          for (let i = 0; i < calls.length; i += step) {
+            const chunk = calls.slice(i, i + step);
             const wallClockMs = resolveEffectiveToolLoopWallClockMs({
               ...(activeToolLoop.maxWallClockMs !== undefined
                 ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
@@ -2909,20 +2927,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               execSignal.dispose();
             }
           }
-          // Emit the over-cap skipped results after the executed ones, matching the
-          // inline executor order (executed calls, then rejected calls :5482). The
-          // agent-core loop appends these as tool-result messages and emits them as
-          // tool_result events, so the engine trace records skipped:true and the
-          // model sees the synthetic tool_call_limit_exceeded error next round.
-          for (const call of rejectedCalls) {
-            results.push(
-              buildToolCallLimitExceededResult(
-                call,
-                maxToolCallsPerRound,
-                requestedToolCalls,
-              ),
-            );
-          }
+          // The over-cap skipped results are produced by onBeforeExecute (above) and
+          // ordered by agent-core AFTER these executed results, matching inline.
           return results;
         },
         // Stage 7 S1: pre-execute tool suppression. When the model returns tool
@@ -3254,8 +3260,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // round would be the (maxRounds+1)-th tool round (toolTrace already holds
           // maxRounds executed rounds) — and fire the round_limit closeout with its
           // pending calls, exactly mirroring inline. The agent's own line-368
-          // fallback stays as a defensive backstop only.
-          if (toolTrace.length >= maxRounds) {
+          // fallback stays as a defensive backstop only. Guarded on
+          // `calls.length > 0`: if the limit-round model call returns a tool-free
+          // final answer, inline accepts it (it handles toolCalls.length===0
+          // BEFORE the round-limit check at :1501), so the engine must too — fall
+          // through to a natural finish instead of forcing a round_limit synthesis
+          // that would discard the answer and mislabel the closeout.
+          if (toolTrace.length >= maxRounds && calls.length > 0) {
             run.pendingCloseout = {
               reasonLines: [
                 `Tool-use round limit reached (${maxRounds}).`,
@@ -4837,6 +4848,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             text: run.closeoutResult.text,
             ...(run.closeoutResult.stopReason ? { stopReason: run.closeoutResult.stopReason } : {}),
           };
+        },
+        // Capture the live message history for the post-loop finalization epilogue.
+        // onTerminate / onModelCallError stash run.finalMessages on the closeout and
+        // error paths; on a NATURAL finish (no closeout, no error) neither fires, so
+        // the epilogue would otherwise fall back to the initial gateway prompt and the
+        // timeout-followup / residual-risk appenders would miss the tool-result and
+        // repair context inline sees. onFinalize runs at finalization time with the
+        // live state, so `??=` fills in the natural-finish case while preserving any
+        // closeout-set snapshot. Returns the text unchanged.
+        onFinalize: (text, state) => {
+          run.finalMessages ??= state.messages;
+          return text;
         },
       },
     });
