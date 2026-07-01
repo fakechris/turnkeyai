@@ -3413,6 +3413,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!activeToolLoop) {
             return null;
           }
+          // Observability bridge (inline :1704): emit the provider-tool-protocol round
+          // boundary. agent-core has already appended the assistant tool-call message +
+          // the tool-result messages to state.messages before this hook, exactly like
+          // inline's appendToolResultMessages precedes its recordProviderToolProtocolRound
+          // Safely. This is the one place with BOTH the round's results and the live
+          // messages, so the protocol round (assistant/tool-result block accounting)
+          // lands here per round, awaited. round = toolTrace.length (the round just
+          // executed, 1-indexed = inline's round+1). toolCalls are reconstructed from the
+          // results (id/name), matching inline's toolCallIds/toolNames/count.
+          const roundToolResults = results as RoleToolExecutionResult[];
+          await this.recordProviderToolProtocolRoundSafely({
+            activation,
+            round: toolTrace.length,
+            toolCalls: roundToolResults.map((result) => ({
+              id: result.toolCallId,
+              name: result.toolName,
+              input: {},
+            })),
+            toolResults: roundToolResults,
+            messages: state.messages,
+          });
           // S7 branches 1-2: a sub-agent TIMEOUT signal that should be continued via
           // sessions_send, before the sub_agent_timeout closeout (inline :1562, :1583).
           const timeoutSignal = findSubAgentToolTimeout(results);
@@ -4979,17 +5000,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // stops synthesizing started/completed from calls/results — so the engine must
         // record the FULL lifecycle (started here + result.progress + completed below),
         // not just the custom progress, or native tool messages lose the completed phase.
+        const startedProgress = {
+          phase: "started" as const,
+          toolName: event.call.name,
+          summary: `Tool call started: ${event.call.name}`,
+        };
         currentRound.progress?.push(
           toNativeToolProgressTrace(
             { id: event.call.id, name: event.call.name, input: event.call.input },
-            {
-              phase: "started",
-              toolName: event.call.name,
-              summary: `Tool call started: ${event.call.name}`,
-            },
+            startedProgress,
             this.clock.now(),
           ),
         );
+        // Observability bridge: emit the "started" lifecycle to runtimeProgressRecorder
+        // too, mirroring inline's executeToolCalls (emitToolProgressSafely = recorder emit
+        // + native persistence). The engine's three observability sinks — toolTrace
+        // progress (above), the runtime progress recorder (here), and the native tool
+        // message store (below) — now all see the tool lifecycle, so nothing is dropped.
+        await this.recordToolProgressSafely(activation, event.call, startedProgress);
         // Stage 8B (native-tool-message persistence): persist the pending/"started"
         // native tool message BEFORE the tool runs, mirroring inline's executeToolCalls
         // (which persists on the "started" progress with forceBlocking). The agent yields
@@ -5028,29 +5056,28 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           currentRound.progress?.push(
             toNativeToolProgressTrace(progressCall, progress, this.clock.now()),
           );
+          await this.recordToolProgressSafely(activation, progressCall, progress);
         }
         // The terminal lifecycle phase (codex #525 P2), after the custom progress —
         // matching inline's executeToolCalls ordering (started → result.progress →
         // completed/failed/cancelled).
+        const terminalProgress = {
+          phase: roleToolResult.cancelled
+            ? ("cancelled" as const)
+            : roleToolResult.isError
+              ? ("failed" as const)
+              : ("completed" as const),
+          toolName: event.result.toolName,
+          summary: roleToolResult.cancelled
+            ? `Tool call cancelled: ${event.result.toolName}`
+            : roleToolResult.isError
+              ? `Tool call failed: ${event.result.toolName}`
+              : `Tool call completed: ${event.result.toolName}`,
+        };
         currentRound.progress?.push(
-          toNativeToolProgressTrace(
-            progressCall,
-            {
-              phase: roleToolResult.cancelled
-                ? "cancelled"
-                : roleToolResult.isError
-                  ? "failed"
-                  : "completed",
-              toolName: event.result.toolName,
-              summary: roleToolResult.cancelled
-                ? `Tool call cancelled: ${event.result.toolName}`
-                : roleToolResult.isError
-                  ? `Tool call failed: ${event.result.toolName}`
-                  : `Tool call completed: ${event.result.toolName}`,
-            },
-            this.clock.now(),
-          ),
+          toNativeToolProgressTrace(progressCall, terminalProgress, this.clock.now()),
         );
+        await this.recordToolProgressSafely(activation, progressCall, terminalProgress);
         // Stage 8B (native-tool-message persistence): persist the completed native tool
         // message (assistant toolStatus + the tool-result message) after the round's
         // result lands, mirroring inline's executeToolCalls onResult persistence.
@@ -5148,6 +5175,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 toolCallCount: toolTrace.reduce((sum, round) => sum + round.calls.length, 0),
               },
             }
+          : {}),
+        // Observability bridge (inline :2478): summarize the per-round model-call
+        // boundary trace generateWithEnvelopeRetry recorded into metadata.modelUse.
+        ...(modelCallTrace.length
+          ? { modelUse: summarizeModelUseTrace(modelCallTrace) }
           : {}),
         ...(run.reduction ? { requestEnvelopeReduction: run.reduction } : {}),
         ...(run.memoryFlushes.length ? { preCompactionMemoryFlushes: run.memoryFlushes } : {}),
