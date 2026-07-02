@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `fa0b83e9b6532618b36f402e0220950ef7b1c5a7`
+**Code HEAD before this docs-only report:** `6c79d6f9d80a33c2ec1bbfa9265a4ee2793253b8`
 **Date:** 2026-07-02
 
 ## Summary
@@ -129,9 +129,12 @@ could not move the normalizer without making the inline parity reference import 
   compatibility wrapper for engine imports.
   Missing requested-column repair, extraneous provider-schema repair,
   awaiting-context setup-only suppression, and repair marker insertion now also
-  live in that neutral TaskFacts owner. The adapter, `RepairPolicyRegistry`, and
+  live in that neutral TaskFacts owner, including awaiting-context suppression
+  hook-result application. The adapter, `RepairPolicyRegistry`, and
   `CompletedCloseoutController` all call the same implementation instead of
-  carrying duplicate helper copies.
+  carrying duplicate helper copies. Read-only permission-query suppression
+  hook-result application now lives in `PermissionPolicy`; the adapter supplies
+  only hook state.
   The final allowed tool-round warning now routes through that controller while
   the warning text itself lives in neutral shared code used by inline and engine.
   Final-recovery budget parsing, prior-call counting, closeout reason lines, and
@@ -273,6 +276,7 @@ application outside the terminal completion path.
 | `c6e555b` | Move generic continuation action hook-result application into `ContinuationController`; adapter consumes typed hook results and supplies only marker recording callbacks. |
 | `e610f14` | Move model-call-error forced-round result trimming into `TerminalCloseoutController`; adapter returns the raw forced-round execution result. |
 | `fa0b83e` | Move natural-finish repair hook-result application into `RepairPolicyRegistry`; adapter keeps precedence selection but no longer assembles repair messages/markers. |
+| `6c79d6f` | Move read-only permission-query and awaiting-context no-tool suppression hook-result application into `PermissionPolicy` / neutral TaskFacts owners. |
 
 ## Current Extracted Implementation
 
@@ -286,7 +290,9 @@ Real implementation now exists in:
 - `react-engine/hook-orchestration-contract.ts`
 - `react-engine/policy-trace-characterization.ts`
 - `react-engine/tool-call-normalizer.ts`
-- `react-engine/permission-policy.ts`
+- `react-engine/permission-policy.ts` for approval-gate normalization,
+  read-only permission-query suppression selection, and read-only suppression
+  hook-result application.
 - `react-engine/finalization-pipeline.ts`
 - `react-engine/engine-run-observer.ts`
 - `react-engine/execution-budget-controller.ts` for final tool-round warning,
@@ -389,8 +395,9 @@ Real implementation now exists in:
   header matching, provider search/pricing evidence-column inference,
   provider-support-schema request/result detection, missing requested-column
   repair helpers, extraneous provider-schema repair helpers, awaiting-context
-  setup-only no-tool suppression, and repair marker insertion used by the
-  adapter, repair registry, and completed-closeout controller.
+  setup-only no-tool suppression and hook-result application, and repair marker
+  insertion used by the adapter, repair registry, and completed-closeout
+  controller.
 - `react-engine/task-facts.ts` as a compatibility wrapper around the neutral
   TaskFacts implementation for engine import sites.
 - `tool-history-pruning.ts` for request-envelope tool-result pruning, older
@@ -480,8 +487,8 @@ Stage 8 boundaries/slices are now real:
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
 - engine policy-trace debug gating routes through `policy-trace.ts`; the adapter
   imports the owner-owned helper instead of carrying the env check locally.
-- approval-gate normalizer steps and read-only suppression route through
-  `PermissionPolicy` in the engine path.
+- approval-gate normalizer steps and read-only suppression selection/application
+  route through `PermissionPolicy` in the engine path.
 - the unconditional engine finalization epilogue routes through
   `finalizeEngineAnswer`.
 - model/tool lifecycle observability routes through `EngineRunObserver`, including
@@ -618,10 +625,10 @@ Stage 8 boundaries/slices are now real:
   neutral `TaskFacts`, including prompt/message/activation context extraction
   and markdown table header matching.
 - missing requested-column repair helpers, extraneous provider-schema repair
-  helpers, awaiting-context setup-only no-tool suppression, and repair marker
-  insertion route through neutral `TaskFacts`; the adapter, repair registry, and
-  completed-closeout controller no longer carry duplicate helper
-  implementations.
+  helpers, awaiting-context setup-only no-tool suppression selection/application,
+  and repair marker insertion route through neutral `TaskFacts`; the adapter,
+  repair registry, and completed-closeout controller no longer carry duplicate
+  helper implementations.
 - missing requested table-column repair selection and hook-result application
   route through `RepairPolicyRegistry`.
 - extraneous provider-support-schema repair selection routes through
