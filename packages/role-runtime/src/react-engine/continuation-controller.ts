@@ -103,11 +103,24 @@ export interface ForcedPermissionResultInput {
   tools?: readonly ContinuationToolDefinition[];
 }
 
+export interface AfterExecuteContinuationInput {
+  messages: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  timeoutSignal: SubAgentToolTimeoutSignal | null;
+  completedSessionFinalContents: readonly string[] | null;
+  currentRoundEvidenceText: string;
+  results: readonly { toolName: string; content: string }[];
+  repairMarkers: LLMMessage[];
+  tools?: readonly ContinuationToolDefinition[];
+  browserAvailable: boolean;
+}
+
 type ContinueAction = Extract<EngineContinueAction, { kind: "continue" }>;
 
 export interface ContinuationHookResult {
   messages: LLMMessage[];
-  forceToolChoice?: ContinueAction["forceToolChoice"];
+  forceToolChoice?: NonNullable<ContinueAction["forceToolChoice"]>;
 }
 
 export interface ContinueActionApplicationOptions {
@@ -449,6 +462,114 @@ export class ContinuationController {
       return null;
     }
     return executeForcedRound(action);
+  }
+
+  async applyAfterExecuteContinuation(
+    input: AfterExecuteContinuationInput,
+    executeForcedRound: ForcedToolRoundExecutor,
+  ): Promise<ContinuationHookResult | null> {
+    const timeoutContinuation = this.onAfterExecuteTimeoutContinuation({
+      messages: input.messages,
+      taskPrompt: input.taskPrompt,
+      toolTrace: input.toolTrace,
+      timeoutSignal: input.timeoutSignal,
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
+    });
+    const timeoutContinuationResult =
+      this.applyContinueAction(timeoutContinuation);
+    if (timeoutContinuationResult) {
+      return timeoutContinuationResult;
+    }
+
+    if (!input.completedSessionFinalContents) {
+      const timeoutProbe = this.continueSupplementalLocalTimeoutProbe({
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        evidenceText: input.currentRoundEvidenceText,
+        completedSessionEvidence: false,
+        timeoutSignal: input.timeoutSignal,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+        browserAvailable: input.browserAvailable,
+      });
+      return this.applyContinueAction(timeoutProbe);
+    }
+
+    const completedEvidenceText =
+      input.completedSessionFinalContents.join("\n\n");
+    const supplementalLocalTimeoutProbe =
+      this.continueSupplementalLocalTimeoutProbe({
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        evidenceText: completedEvidenceText,
+        completedSessionEvidence: true,
+        timeoutSignal: input.timeoutSignal,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+        browserAvailable: input.browserAvailable,
+      });
+    const supplementalLocalTimeoutProbeResult =
+      this.applyContinueAction(supplementalLocalTimeoutProbe);
+    if (supplementalLocalTimeoutProbeResult) {
+      return supplementalLocalTimeoutProbeResult;
+    }
+
+    const incompleteApprovedBrowserSession =
+      this.continueIncompleteApprovedBrowserSession({
+        results: input.results,
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      });
+    const incompleteApprovedBrowserSessionResult =
+      this.applyContinueAction(incompleteApprovedBrowserSession);
+    if (incompleteApprovedBrowserSessionResult) {
+      return incompleteApprovedBrowserSessionResult;
+    }
+
+    const independentEvidenceStreams =
+      this.continueIndependentEvidenceStreams({
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      });
+    const independentEvidenceStreamsResult =
+      this.applyContinueAction(independentEvidenceStreams);
+    if (independentEvidenceStreamsResult) {
+      return independentEvidenceStreamsResult;
+    }
+
+    const missingApprovalGateRepair =
+      this.continueMissingApprovalGateRepair({
+        taskPrompt: input.taskPrompt,
+        resultText: completedEvidenceText,
+        messages: input.messages,
+        repairMarkers: input.repairMarkers,
+        toolTrace: input.toolTrace,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      });
+    const missingApprovalGateRepairResult = this.applyContinueAction(
+      missingApprovalGateRepair,
+      {
+        recordRepairMarker: (marker) => {
+          input.repairMarkers.push(marker);
+        },
+      },
+    );
+    if (missingApprovalGateRepairResult) {
+      return missingApprovalGateRepairResult;
+    }
+
+    return this.applyForcedToolRoundContinuation(
+      this.forcePendingApprovalWaitTimeoutPermissionResult({
+        taskPrompt: input.taskPrompt,
+        toolTrace: input.toolTrace,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      }),
+      executeForcedRound,
+    );
   }
 }
 

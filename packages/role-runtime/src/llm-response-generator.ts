@@ -3096,152 +3096,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolResults: roundToolResults,
             messages: state.messages,
           });
-          // S7 branches 1-2: a sub-agent TIMEOUT signal that should be continued via
-          // sessions_send, before the sub_agent_timeout closeout (inline :1562, :1583).
           const timeoutSignal = evidenceLedger.subAgentToolTimeout(results);
-          const timeoutContinuation =
-            continuation.onAfterExecuteTimeoutContinuation({
-              messages: state.messages,
-              taskPrompt: packet.taskPrompt,
-              toolTrace,
-              timeoutSignal,
-              ...(initialGatewayInput.tools === undefined
-                ? {}
-                : { tools: initialGatewayInput.tools }),
-            });
-          const timeoutContinuationResult =
-            continuation.applyContinueAction(timeoutContinuation);
-          if (timeoutContinuationResult) {
-            return timeoutContinuationResult;
-          }
-          // S7 branches 3-4 + S5: a COMPLETED delegated session, continued before the
-          // completed_sub_agent_final closeout (inline :1603-1712, inside completedSession).
           const completedSession =
             evidenceLedger.completedSessionEvidence(results);
-          if (!completedSession) {
-            // General supplemental timeout probe (inline :2336-2360): a NON-browser
-            // sub-agent timeout whose resumed evidence is still content-poor
-            // escalates to a supplemental browser sessions_spawn before the
-            // sub_agent_timeout closeout. evidenceText is the round's tool-result
-            // content (the timeout result), not a completed session. Runs only when
-            // there is no completed session this round, so a completed session (the
-            // block below) wins — matching inline, which runs the completedSession
-            // block (:1755) before this timeout probe.
-            const timeoutProbe =
-              continuation.continueSupplementalLocalTimeoutProbe({
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-                toolTrace,
-                evidenceText: evidenceLedger.toolResultContentText(results),
-                completedSessionEvidence: false,
-                timeoutSignal,
-                ...(initialGatewayInput.tools === undefined
-                  ? {}
-                  : { tools: initialGatewayInput.tools }),
-                browserAvailable: allowsSupplementalBrowserProbe(packet),
-              });
-            const timeoutProbeResult =
-              continuation.applyContinueAction(timeoutProbe);
-            if (timeoutProbeResult) {
-              return timeoutProbeResult;
-            }
-            return null;
-          }
-          // S7 branch 3: supplemental local timeout probe via sessions_spawn (:1604).
-          const supplementalLocalTimeoutProbe =
-            continuation.continueSupplementalLocalTimeoutProbe({
-              taskPrompt: packet.taskPrompt,
+          return continuation.applyAfterExecuteContinuation(
+            {
               messages: state.messages,
+              taskPrompt: packet.taskPrompt,
               toolTrace,
-              evidenceText: completedSession.finalContents.join("\n\n"),
-              completedSessionEvidence: true,
               timeoutSignal,
+              completedSessionFinalContents:
+                completedSession?.finalContents ?? null,
+              currentRoundEvidenceText:
+                evidenceLedger.toolResultContentText(results),
+              results: roundToolResults,
+              repairMarkers: (hookCtx.repairMarkers ??= []),
               ...(initialGatewayInput.tools === undefined
                 ? {}
                 : { tools: initialGatewayInput.tools }),
               browserAvailable: allowsSupplementalBrowserProbe(packet),
-            });
-          const supplementalLocalTimeoutProbeResult =
-            continuation.applyContinueAction(supplementalLocalTimeoutProbe);
-          if (supplementalLocalTimeoutProbeResult) {
-            return supplementalLocalTimeoutProbeResult;
-          }
-          // S7 branch 4: incomplete approved browser session via sessions_send (:1626).
-          const incompleteApprovedBrowserSession =
-            continuation.continueIncompleteApprovedBrowserSession({
-              results,
-              taskPrompt: packet.taskPrompt,
-              messages: state.messages,
-              toolTrace,
-              ...(initialGatewayInput.tools === undefined
-                ? {}
-                : { tools: initialGatewayInput.tools }),
-            });
-          const incompleteApprovedBrowserSessionResult =
-            continuation.applyContinueAction(incompleteApprovedBrowserSession);
-          if (incompleteApprovedBrowserSessionResult) {
-            return incompleteApprovedBrowserSessionResult;
-          }
-          // S8: independent evidence streams — a multi-stream delegation task that has
-          // not yet completed all required streams continues via a forced sessions_spawn
-          // round (inline :1648), between branch 4 and S5. Idempotency: the predicate
-          // returns false once its continuation prompt is in `messages`, so it fires at
-          // most once; the model is then expected to spawn the remaining streams.
-          const independentEvidenceStreams =
-            continuation.continueIndependentEvidenceStreams({
-              taskPrompt: packet.taskPrompt,
-              messages: state.messages,
-              toolTrace,
-              ...(initialGatewayInput.tools === undefined
-                ? {}
-                : { tools: initialGatewayInput.tools }),
-            });
-          const independentEvidenceStreamsResult =
-            continuation.applyContinueAction(independentEvidenceStreams);
-          if (independentEvidenceStreamsResult) {
-            return independentEvidenceStreamsResult;
-          }
-          // S9 (post-execute): an approval-gated browser task whose completed session
-          // never went through the approval gate re-arms a forced permission_query round
-          // (inline :1672) — after S8, before the S5 forced permission_result. Unlike the
-          // natural-finish variant it does NOT append assistant text (the round's
-          // assistant tool-call message is already in the trace). The recorded marker is
-          // the idempotency AND the key the onToolCalls enforce-gate normalizer reads.
-          const s9RepairMarkers = (hookCtx.repairMarkers ??= []);
-          const missingApprovalGateRepair =
-            continuation.continueMissingApprovalGateRepair({
-              taskPrompt: packet.taskPrompt,
-              resultText: completedSession.finalContents.join("\n\n"),
-              messages: state.messages,
-              repairMarkers: s9RepairMarkers,
-              toolTrace,
-              ...(initialGatewayInput.tools === undefined
-                ? {}
-                : { tools: initialGatewayInput.tools }),
-            });
-          const missingApprovalGateRepairResult =
-            continuation.applyContinueAction(missingApprovalGateRepair, {
-              recordRepairMarker: (marker) => {
-                s9RepairMarkers.push(marker);
-              },
-            });
-          if (missingApprovalGateRepairResult) {
-            return missingApprovalGateRepairResult;
-          }
-          // S5: forced permission_result round (host-authored, no model call). The
-          // builder's guards (approval-wait-timeout task + pending permission_query +
-          // a pending approval_id) are the idempotency: once permission_result lands,
-          // latestPermissionToolName !== "permission_query" so it does not re-fire.
-          const forcedPermissionResult =
-            continuation.forcePendingApprovalWaitTimeoutPermissionResult({
-              taskPrompt: packet.taskPrompt,
-              toolTrace,
-              ...(initialGatewayInput.tools === undefined
-                ? {}
-                : { tools: initialGatewayInput.tools }),
-            });
-          return continuation.applyForcedToolRoundContinuation(
-            forcedPermissionResult,
+            },
             async (forcedRoundAction) => {
               const forcedRound = await this.executeRuntimeForcedToolRound({
                 activation,

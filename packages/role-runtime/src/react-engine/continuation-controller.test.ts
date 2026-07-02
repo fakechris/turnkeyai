@@ -490,6 +490,45 @@ test("ContinuationController continues a coverage-critical sibling timeout", () 
   );
 });
 
+test("ContinuationController applies the post-execute continuation cascade", async () => {
+  const controller = createContinuationController();
+  const timeoutSignal = {
+    toolName: "sessions_spawn",
+    sessionKey: "worker:explore:source-b:toolu-timeout",
+    agentId: "explore",
+    timeoutSeconds: 45,
+    evidenceAvailable: true,
+  };
+
+  const result = await controller.applyAfterExecuteContinuation(
+    {
+      messages: [{ role: "user", content: "tool result history" }],
+      taskPrompt: [
+        "Compare providers with web search pricing evidence.",
+        "Check all three sources before final: https://a.example, https://b.example, https://c.example.",
+        "Do not finalize until all three sources are verified.",
+      ].join("\n"),
+      toolTrace: [],
+      timeoutSignal,
+      completedSessionFinalContents: null,
+      currentRoundEvidenceText: contentPoorTimeoutEvidence(),
+      results: [],
+      repairMarkers: [],
+      tools: [{ name: "sessions_send" }, { name: "sessions_spawn" }],
+      browserAvailable: true,
+    },
+    async () => {
+      throw new Error("forced round should not execute");
+    },
+  );
+
+  assert.deepEqual(result?.forceToolChoice, { name: "sessions_send" });
+  assert.match(
+    String(result?.messages.at(-1)?.content),
+    /required delegated evidence stream timed out/,
+  );
+});
+
 test("ContinuationController skips timeout continuation after marker or prior send", () => {
   const controller = createContinuationController();
   const timeoutSignal = {
