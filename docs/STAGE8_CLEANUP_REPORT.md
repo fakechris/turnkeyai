@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `1660d44a0fa4f27ee113981220327b08c84e6678`
+**Code HEAD before this docs-only report:** `2c15c614fab6dffff5857abaf4992fba144d6ef4`
 **Date:** 2026-07-02
 
 ## Summary
@@ -132,7 +132,10 @@ could not move the normalizer without making the inline parity reference import 
   closeout fallback decisions. Terminal synthesis context construction,
   non-completed synthesis invocation, and terminal state-effect application now
   route through `TerminalCloseoutController`; the adapter supplies the gateway
-  callback.
+  callback. The hard approval wait-timeout deterministic terminal fallback now
+  enters through `TerminalCloseoutController.handleTerminalCloseoutHook()`,
+  short-circuiting before synthesis while the adapter only passes the optional
+  fallback evidence input.
   Requested table-column and provider-support-schema task facts now live in
   neutral `task-facts-shared.ts`; `react-engine/task-facts.ts` is now a
   compatibility wrapper for engine imports.
@@ -301,6 +304,7 @@ application outside the terminal completion path.
 | `f8a2997` | Move post-execute continuation cascade evaluation/application into `ContinuationController`; adapter supplies evidence facts and forced-round execution. |
 | `a552f63` | Move pending-call closeout evaluate/apply windows into `CloseoutPolicyRegistry` application helpers; adapter keeps only the recovery-before-preview ordering. |
 | `1660d44` | Move post-execute closeout evaluate/apply into `CloseoutPolicyRegistry.applyPostExecuteCloseout`; adapter passes hook input and run-state target. |
+| `2c15c61` | Route the hard approval wait-timeout terminal fallback through `TerminalCloseoutController.handleTerminalCloseoutHook`; adapter supplies fallback evidence instead of owning the early deterministic branch. |
 
 ## Current Extracted Implementation
 
@@ -398,8 +402,10 @@ Real implementation now exists in:
   completed terminal initial-synthesis handoff into the completed-closeout
   controller callback, plus terminal synthesis path selection and final/re-arm
   application through an injected recorder target, plus the full terminal
-  closeout entrypoint from terminate decision to completion, plus the
-  model-call-error local-evidence fallback/rethrow boundary and model-call-error
+  closeout entrypoint from terminate decision to completion, plus the terminal
+  hook entrypoint that short-circuits deterministic approval wait-timeout
+  fallback before synthesis, plus the model-call-error local-evidence
+  fallback/rethrow boundary and model-call-error
   abort / forced pending-approval continuation / fallback flow selection and
   hook-result application through an injected forced-round executor, including
   raw forced-round execution result trimming.
@@ -496,8 +502,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` plus hook/golden focused tests | 41 / 41 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 179 / 179 |
+| terminal-closeout focused test plus hook/golden focused tests | 29 / 29 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 180 / 180 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -585,6 +591,10 @@ Stage 8 boundaries/slices are now real:
   controller-owned entrypoint that consumes the terminate decision and applies
   sticky pre-recording plus final/re-arm effects. Model-call-error local
   evidence fallback now returns a controller-owned typed final/rethrow result.
+  The hard approval wait-timeout deterministic fallback now also enters through
+  `TerminalCloseoutController.handleTerminalCloseoutHook`, so `onTerminate`
+  no longer carries a separate adapter-local early return before terminal
+  synthesis.
 - final-recovery budget natural-finish repair selection and ReAct hook-result
   application route through `RepairPolicyRegistry`; the adapter keeps only the
   precedence checkpoint.
@@ -798,8 +808,8 @@ Continue with the remaining high-risk pieces:
   synthesis-effect application, final response shaping, closeout write-mode
   selection, explicit state-effect application, sticky completed closeout
   pre-recording, completed initial-synthesis handoff, terminal path selection,
-  final/re-arm application, terminal entrypoint, and model-error fallback /
-  flow-selection / hook-application / forced-round-result boundary slices; keep
-  thinning the adapter.
+  final/re-arm application, terminal entrypoint, terminal hook fallback entry,
+  and model-error fallback / flow-selection / hook-application /
+  forced-round-result boundary slices; keep thinning the adapter.
 
 The branch is **not pushed**.
