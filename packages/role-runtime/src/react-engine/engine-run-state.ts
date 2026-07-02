@@ -1,16 +1,10 @@
-// Stage 8 engine cleanup — mutable cross-hook run-state owner (module shell).
+// Stage 8 engine cleanup — mutable cross-hook run-state owner.
 //
-// EngineRunState is the ONLY mutable cross-hook run-state owner for one engine
+// EngineRunState is the only mutable cross-hook run-state owner for one engine
 // run. Controllers and registries return typed decisions; the adapter applies
 // them here. This module must not import predicates or policy modules, must not
 // parse text, execute tools, or synthesize answers.
-//
-// Batch 0 provides the public shape and a minimal, behavior-neutral
-// implementation. The real cross-hook state migration lands in Batch 1
-// ("Extract Observability, Normalization, And Finalization"). The signal input
-// shapes below are intentionally minimal placeholders and are widened in later
-// batches as the owning controllers/registries are extracted.
-import type { CloseoutDecision, LLMMessage } from "./types";
+import type { LLMMessage } from "./types";
 
 export interface CompletedSessionSignal {
   /** Raw tool results from the round that completed the sub-agent session. */
@@ -31,46 +25,105 @@ export interface MemoryFlushSignal {
   metadata?: Record<string, unknown>;
 }
 
-export interface EngineRunStateSnapshot {
-  repairMarkers: readonly string[];
-  pendingCloseout: CloseoutDecision | null;
-  completedSession: CompletedSessionSignal | null;
-  timeoutSignal: TimeoutSignal | null;
-  reduction: ReductionSignal | null;
-  memoryFlushes: readonly MemoryFlushSignal[];
-  finalMessages: readonly LLMMessage[] | null;
+export interface DefaultEngineRunStateValues {
+  ToolLoopCloseout: unknown;
+  CloseoutResult: unknown;
+  Reduction: ReductionSignal;
+  ReductionSnapshot: unknown;
+  MemoryFlush: MemoryFlushSignal;
+  CompletedSession: CompletedSessionSignal;
+  CompletedSessionToolResults: unknown;
+  TimeoutSignal: TimeoutSignal;
+  PendingCloseout: unknown;
 }
 
-export interface EngineRunState {
+export interface EngineRunStateSnapshot<
+  TValues extends DefaultEngineRunStateValues = DefaultEngineRunStateValues,
+> {
+  repairMarkers: readonly string[];
+  toolLoopCloseout: TValues["ToolLoopCloseout"] | undefined;
+  closeoutResult: TValues["CloseoutResult"] | undefined;
+  pendingCloseout: TValues["PendingCloseout"] | undefined;
+  completedSession: TValues["CompletedSession"] | undefined;
+  completedSessionToolResults:
+    | TValues["CompletedSessionToolResults"]
+    | undefined;
+  timeoutSignal: TValues["TimeoutSignal"] | undefined;
+  reduction: TValues["Reduction"] | undefined;
+  reductionSnapshot: TValues["ReductionSnapshot"] | undefined;
+  memoryFlushes: readonly TValues["MemoryFlush"][];
+  finalMessages: readonly LLMMessage[] | undefined;
+}
+
+export interface EngineRunState<
+  TValues extends DefaultEngineRunStateValues = DefaultEngineRunStateValues,
+> {
   repairMarkers(): readonly string[];
   recordRepairMarker(marker: string): void;
-  applyPendingCloseout(decision: CloseoutDecision): void;
-  recordCompletedSession(input: CompletedSessionSignal): void;
-  recordTimeoutSignal(input: TimeoutSignal): void;
-  recordReduction(input: ReductionSignal): void;
-  recordMemoryFlush(input: MemoryFlushSignal): void;
+
+  toolLoopCloseout(): TValues["ToolLoopCloseout"] | undefined;
+  recordToolLoopCloseout(input: TValues["ToolLoopCloseout"]): void;
+  recordToolLoopCloseoutIfAbsent(input: TValues["ToolLoopCloseout"]): void;
+
+  closeoutResult(): TValues["CloseoutResult"] | undefined;
+  recordCloseoutResult(input: TValues["CloseoutResult"]): void;
+
+  pendingCloseout(): TValues["PendingCloseout"] | undefined;
+  recordPendingCloseout(input: TValues["PendingCloseout"]): void;
+
+  completedSession(): TValues["CompletedSession"] | undefined;
+  completedSessionToolResults():
+    | TValues["CompletedSessionToolResults"]
+    | undefined;
+  recordCompletedSession(input: {
+    session: TValues["CompletedSession"];
+    toolResults: TValues["CompletedSessionToolResults"];
+  }): void;
+
+  timeoutSignal(): TValues["TimeoutSignal"] | undefined;
+  recordTimeoutSignal(input: TValues["TimeoutSignal"]): void;
+
+  reduction(): TValues["Reduction"] | undefined;
+  reductionSnapshot(): TValues["ReductionSnapshot"] | undefined;
+  recordReduction(input: {
+    reduction: TValues["Reduction"];
+    reductionSnapshot: TValues["ReductionSnapshot"] | undefined;
+  }): void;
+
+  memoryFlushes(): readonly TValues["MemoryFlush"][];
+  recordMemoryFlush(input: TValues["MemoryFlush"]): void;
+
+  finalMessages(): readonly LLMMessage[] | undefined;
   captureFinalMessages(messages: readonly LLMMessage[]): void;
   captureFinalMessagesIfAbsent(messages: readonly LLMMessage[]): void;
-  snapshot(): EngineRunStateSnapshot;
+
+  snapshot(): EngineRunStateSnapshot<TValues>;
 }
 
 /**
- * Minimal EngineRunState implementation.
- *
- * Mutation rules (per plan "Mutable Run-State Ownership"):
- * - reduction is last-wins.
+ * Mutation rules:
+ * - toolLoopCloseout can be sticky via recordToolLoopCloseoutIfAbsent.
+ * - reduction is last-wins and carries its matching snapshot.
  * - memoryFlushes is append-only.
  * - finalMessages is a first-closeout/error snapshot; captureFinalMessagesIfAbsent
  *   fills it only when absent (natural finish).
  */
-class DefaultEngineRunState implements EngineRunState {
+class DefaultEngineRunState<
+  TValues extends DefaultEngineRunStateValues,
+> implements EngineRunState<TValues> {
   private readonly markerLedger: string[] = [];
-  private pendingCloseout: CloseoutDecision | null = null;
-  private completedSession: CompletedSessionSignal | null = null;
-  private timeoutSignal: TimeoutSignal | null = null;
-  private reduction: ReductionSignal | null = null;
-  private readonly memoryFlushes: MemoryFlushSignal[] = [];
-  private finalMessages: LLMMessage[] | null = null;
+  private toolLoopCloseoutValue: TValues["ToolLoopCloseout"] | undefined;
+  private closeoutResultValue: TValues["CloseoutResult"] | undefined;
+  private pendingCloseoutValue: TValues["PendingCloseout"] | undefined;
+  private completedSessionValue: TValues["CompletedSession"] | undefined;
+  private completedSessionToolResultsValue:
+    | TValues["CompletedSessionToolResults"]
+    | undefined;
+  private timeoutSignalValue: TValues["TimeoutSignal"] | undefined;
+  private reductionValue: TValues["Reduction"] | undefined;
+  private reductionSnapshotValue: TValues["ReductionSnapshot"] | undefined;
+  private readonly memoryFlushValues: TValues["MemoryFlush"][] = [];
+  private finalMessageValues: LLMMessage[] | undefined;
 
   repairMarkers(): readonly string[] {
     return this.markerLedger.slice();
@@ -80,51 +133,115 @@ class DefaultEngineRunState implements EngineRunState {
     this.markerLedger.push(marker);
   }
 
-  applyPendingCloseout(decision: CloseoutDecision): void {
-    this.pendingCloseout = decision;
+  toolLoopCloseout(): TValues["ToolLoopCloseout"] | undefined {
+    return this.toolLoopCloseoutValue;
   }
 
-  recordCompletedSession(input: CompletedSessionSignal): void {
-    this.completedSession = input;
+  recordToolLoopCloseout(input: TValues["ToolLoopCloseout"]): void {
+    this.toolLoopCloseoutValue = input;
   }
 
-  recordTimeoutSignal(input: TimeoutSignal): void {
-    this.timeoutSignal = input;
+  recordToolLoopCloseoutIfAbsent(input: TValues["ToolLoopCloseout"]): void {
+    this.toolLoopCloseoutValue ??= input;
   }
 
-  recordReduction(input: ReductionSignal): void {
-    // last-wins
-    this.reduction = input;
+  closeoutResult(): TValues["CloseoutResult"] | undefined {
+    return this.closeoutResultValue;
   }
 
-  recordMemoryFlush(input: MemoryFlushSignal): void {
-    // append-only
-    this.memoryFlushes.push(input);
+  recordCloseoutResult(input: TValues["CloseoutResult"]): void {
+    this.closeoutResultValue = input;
+  }
+
+  pendingCloseout(): TValues["PendingCloseout"] | undefined {
+    return this.pendingCloseoutValue;
+  }
+
+  recordPendingCloseout(input: TValues["PendingCloseout"]): void {
+    this.pendingCloseoutValue = input;
+  }
+
+  completedSession(): TValues["CompletedSession"] | undefined {
+    return this.completedSessionValue;
+  }
+
+  completedSessionToolResults():
+    | TValues["CompletedSessionToolResults"]
+    | undefined {
+    return this.completedSessionToolResultsValue;
+  }
+
+  recordCompletedSession(input: {
+    session: TValues["CompletedSession"];
+    toolResults: TValues["CompletedSessionToolResults"];
+  }): void {
+    this.completedSessionValue = input.session;
+    this.completedSessionToolResultsValue = input.toolResults;
+  }
+
+  timeoutSignal(): TValues["TimeoutSignal"] | undefined {
+    return this.timeoutSignalValue;
+  }
+
+  recordTimeoutSignal(input: TValues["TimeoutSignal"]): void {
+    this.timeoutSignalValue = input;
+  }
+
+  reduction(): TValues["Reduction"] | undefined {
+    return this.reductionValue;
+  }
+
+  reductionSnapshot(): TValues["ReductionSnapshot"] | undefined {
+    return this.reductionSnapshotValue;
+  }
+
+  recordReduction(input: {
+    reduction: TValues["Reduction"];
+    reductionSnapshot: TValues["ReductionSnapshot"] | undefined;
+  }): void {
+    this.reductionValue = input.reduction;
+    this.reductionSnapshotValue = input.reductionSnapshot;
+  }
+
+  memoryFlushes(): readonly TValues["MemoryFlush"][] {
+    return this.memoryFlushValues.slice();
+  }
+
+  recordMemoryFlush(input: TValues["MemoryFlush"]): void {
+    this.memoryFlushValues.push(input);
+  }
+
+  finalMessages(): readonly LLMMessage[] | undefined {
+    return this.finalMessageValues?.slice();
   }
 
   captureFinalMessages(messages: readonly LLMMessage[]): void {
-    this.finalMessages = messages.slice();
+    this.finalMessageValues = messages.slice();
   }
 
   captureFinalMessagesIfAbsent(messages: readonly LLMMessage[]): void {
-    if (this.finalMessages === null) {
-      this.finalMessages = messages.slice();
-    }
+    this.finalMessageValues ??= messages.slice();
   }
 
-  snapshot(): EngineRunStateSnapshot {
+  snapshot(): EngineRunStateSnapshot<TValues> {
     return {
       repairMarkers: this.markerLedger.slice(),
-      pendingCloseout: this.pendingCloseout,
-      completedSession: this.completedSession,
-      timeoutSignal: this.timeoutSignal,
-      reduction: this.reduction,
-      memoryFlushes: this.memoryFlushes.slice(),
-      finalMessages: this.finalMessages === null ? null : this.finalMessages.slice(),
+      toolLoopCloseout: this.toolLoopCloseoutValue,
+      closeoutResult: this.closeoutResultValue,
+      pendingCloseout: this.pendingCloseoutValue,
+      completedSession: this.completedSessionValue,
+      completedSessionToolResults: this.completedSessionToolResultsValue,
+      timeoutSignal: this.timeoutSignalValue,
+      reduction: this.reductionValue,
+      reductionSnapshot: this.reductionSnapshotValue,
+      memoryFlushes: this.memoryFlushValues.slice(),
+      finalMessages: this.finalMessageValues?.slice(),
     };
   }
 }
 
-export function createEngineRunState(): EngineRunState {
-  return new DefaultEngineRunState();
+export function createEngineRunState<
+  TValues extends DefaultEngineRunStateValues = DefaultEngineRunStateValues,
+>(): EngineRunState<TValues> {
+  return new DefaultEngineRunState<TValues>();
 }

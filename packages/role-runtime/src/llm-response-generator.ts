@@ -129,8 +129,10 @@ import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
   createEnginePolicyTrace,
+  createEngineRunState,
   createEngineRunObserver,
   createPermissionPolicy,
+  type DefaultEngineRunStateValues,
   finalizeEngineAnswer,
   normalizeEngineToolCalls,
   traceEngineHooks,
@@ -2541,18 +2543,20 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // forward, mirroring the inline tool loop (:587-593). Each tool-round
         // model call runs through generateWithEnvelopeRetry, so a round that
         // overflowed and reduced must persist that fact into the run state (the
-        // final metadata assembly reads run.reduction / run.memoryFlushes). Inline
+        // final metadata assembly reads runState's reduction/memoryFlushes). Inline
         // OVERWRITES reduction per round (last-wins, :587-590) and APPENDS every
         // memory flush (:591-592); the no-tool-loop generate() path (envelope-retry
         // + memory-flush parity tests) also flows through here, since the engine
         // dispatch is unconditional — its single model call must surface reduction
         // and flush metadata too.
         if (generated.reduction) {
-          run.reduction = generated.reduction;
-          run.reductionSnapshot = generated.reductionSnapshot;
+          runState.recordReduction({
+            reduction: generated.reduction,
+            reductionSnapshot: generated.reductionSnapshot,
+          });
         }
         if (generated.memoryFlush) {
-          run.memoryFlushes.push(generated.memoryFlush);
+          runState.recordMemoryFlush(generated.memoryFlush);
         }
         return {
           text: generated.result.text,
@@ -2588,54 +2592,36 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const permissionPolicy = createPermissionPolicy();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
-    // Per-run closeout state: hooks fire across different engine callbacks, so a
-    // single mutable object threaded through them collects what the inline loop
-    // keeps as locals (toolLoopCloseout/result/reduction/memoryFlushes).
-    const run: {
-      toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
-      closeoutResult: GenerateTextResult | undefined;
-      reduction: { level: RequestEnvelopeReductionLevel; omittedSections: string[] } | undefined;
-      reductionSnapshot:
-        | ({ level: RequestEnvelopeReductionLevel; omittedSections: string[] } & ReductionEnvelopeSnapshot)
+    type RoleEngineRunStateValues = DefaultEngineRunStateValues & {
+      ToolLoopCloseout: ToolLoopCloseoutMetadata;
+      CloseoutResult: GenerateTextResult;
+      Reduction: {
+        level: RequestEnvelopeReductionLevel;
+        omittedSections: string[];
+      };
+      ReductionSnapshot:
+        | ({
+            level: RequestEnvelopeReductionLevel;
+            omittedSections: string[];
+          } & ReductionEnvelopeSnapshot)
         | undefined;
-      memoryFlushes: PreCompactionMemoryFlushResult[];
-      // PR2c: onAfterExecute detects the two terminal sub-agent closeouts and
-      // stashes the matching signal here so onTerminate can rebuild the inline
-      // reasonLines + closeout metadata for the reason it returned.
-      completedSession: NonNullable<ReturnType<typeof findCompletedSessionEvidence>> | undefined;
-      // Stage 6: the completing round's raw tool results, captured alongside
-      // completedSession so onTerminate can rebuild the inline
-      // completedProductBriefEvidenceText (finalContents + the raw tool-result
-      // text) for the source-evidence / timeout-followup completed repairs. The
-      // inline path uses the current round's toolResults (:1933-1938), which is
-      // exactly what onAfterExecute receives.
-      completedSessionToolResults:
-        | Parameters<typeof collectToolResultContentText>[0]
-        | undefined;
-      timeoutSignal: NonNullable<ReturnType<typeof findSubAgentToolTimeout>> | undefined;
-      // PR2d: onToolCallsClose detects a pending-call closeout and stashes the
-      // inline reasonLines + closeout metadata it built here; onTerminate runs
-      // the synthesis for the reason it returned.
-      pendingCloseout: { reasonLines: string[]; closeout: ToolLoopCloseoutMetadata } | undefined;
-      // Stage 8C (Batch C — T10 finalization plane): the final message list at the
-      // time the closeout synthesized. The inline generate() epilogue (:2407-2433)
-      // runs the required-timeout-followup / residual-risk / full-trace failure-bucket
-      // appenders against the running `messages` array; the engine hooks only see
-      // `state.messages`, so onTerminate / onModelCallError stash it here for the
-      // post-loop epilogue below to consume.
-      finalMessages: LLMMessage[] | undefined;
-    } = {
-      toolLoopCloseout: undefined,
-      closeoutResult: undefined,
-      reduction: undefined,
-      reductionSnapshot: undefined,
-      memoryFlushes: [],
-      completedSession: undefined,
-      completedSessionToolResults: undefined,
-      timeoutSignal: undefined,
-      pendingCloseout: undefined,
-      finalMessages: undefined,
+      MemoryFlush: PreCompactionMemoryFlushResult;
+      CompletedSession: NonNullable<
+        ReturnType<typeof findCompletedSessionEvidence>
+      >;
+      CompletedSessionToolResults: Parameters<
+        typeof collectToolResultContentText
+      >[0];
+      TimeoutSignal: NonNullable<ReturnType<typeof findSubAgentToolTimeout>>;
+      PendingCloseout: {
+        reasonLines: string[];
+        closeout: ToolLoopCloseoutMetadata;
+      };
     };
+    // Per-run closeout state: hooks fire across different engine callbacks, so a
+    // single EngineRunState instance owns what the inline loop keeps as locals
+    // (toolLoopCloseout/result/reduction/memoryFlushes/completed signals).
+    const runState = createEngineRunState<RoleEngineRunStateValues>();
     const toolTrace: NativeToolRoundTrace[] = [];
     const observer = createEngineRunObserver(toolTrace, {
       now: () => this.clock.now(),
@@ -2991,7 +2977,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // Stage 5 PR2d pending-call closeouts: mirror the inline pre-execute
         // closeouts that fire on the round's pending (normalized) tool calls, in
         // inline precedence order. Each builds the inline reasonLines + closeout
-        // metadata and stashes them on `run.pendingCloseout`; onTerminate runs the
+        // metadata and stashes them on `runState.pendingCloseout`; onTerminate runs the
         // synthesis. round_limit is intentionally omitted: the engine's maxRounds
         // loop fires it post-loop at exactly round === maxRounds, where the inline
         // `for(;;)` loop hits roundLimitReached, and this hook only runs on rounds
@@ -3063,7 +3049,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ) {
                 return null;
               }
-              run.pendingCloseout = {
+              runState.recordPendingCloseout({
                 reasonLines: buildFinalRecoveryBudgetCloseoutReasonLines(
                   recoveryToolBudget.maxToolCalls,
                 ),
@@ -3075,7 +3061,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   roundCount,
                   evidenceAvailable: hasUsableEvidence(toolTrace),
                 },
-              };
+              });
               return "recovery_tool_budget";
             }
           }
@@ -3097,7 +3083,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               messages: state.messages,
             })
           ) {
-            run.pendingCloseout = {
+            runState.recordPendingCloseout({
               reasonLines: [
                 "A previous sub-agent session was cancelled by the operator.",
                 "The latest user message did not ask to continue, resume, or retry that cancelled session.",
@@ -3111,7 +3097,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 roundCount,
                 evidenceAvailable: hasUsableEvidence(toolTrace),
               },
-            };
+            });
             return "operator_cancelled";
           }
           // 3. pseudo_tool_call — no native calls, but the text emitted tool-call
@@ -3123,7 +3109,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             !pendingContinuation &&
             containsAnyToolCallForm({ text: state.lastText, toolCalls: calls })
           ) {
-            run.pendingCloseout = {
+            runState.recordPendingCloseout({
               reasonLines: [
                 "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
                 "Tools are not available through text markup. Do not call more tools.",
@@ -3136,7 +3122,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 roundCount,
                 evidenceAvailable: hasUsableEvidence(toolTrace),
               },
-            };
+            });
             return "pseudo_tool_call";
           }
           // 4. wall_clock_budget — the graceful round-top closeout (closes the
@@ -3162,7 +3148,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               isPositiveFiniteBudget(maxWallClockMs) &&
               this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
             ) {
-              run.pendingCloseout = {
+              runState.recordPendingCloseout({
                 reasonLines: [
                   `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
                   "Do not call more tools. Produce the best final answer from the evidence already gathered.",
@@ -3177,7 +3163,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   roundCount,
                   evidenceAvailable: hasUsableEvidence(toolTrace),
                 },
-              };
+              });
               return "wall_clock_budget";
             }
           }
@@ -3211,7 +3197,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 isPositiveFiniteBudget(maxWallClockMs) &&
                 this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
               ) {
-                run.pendingCloseout = {
+                runState.recordPendingCloseout({
                   reasonLines: [
                     `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
                     "Do not call more tools. Produce the best final answer from the evidence already gathered.",
@@ -3226,7 +3212,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     roundCount,
                     evidenceAvailable: hasUsableEvidence(toolTrace),
                   },
-                };
+                });
                 return "wall_clock_budget";
               }
             }
@@ -3251,7 +3237,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // through to a natural finish instead of forcing a round_limit synthesis
           // that would discard the answer and mislabel the closeout.
           if (toolTrace.length >= maxRounds && calls.length > 0) {
-            run.pendingCloseout = {
+            runState.recordPendingCloseout({
               reasonLines: [
                 `Tool-use round limit reached (${maxRounds}).`,
                 "Do not call more tools. Produce the best final answer from the evidence already gathered.",
@@ -3265,14 +3251,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 roundCount,
                 evidenceAvailable: hasUsableEvidence(toolTrace),
               },
-            };
+            });
             return "round_limit";
           }
           // 5. repeated_tool_failure — a pending call's signature already failed
           //    twice in the trace.
           const repeatedFailure = findRepeatedFailedToolCall(calls, toolTrace);
           if (repeatedFailure) {
-            run.pendingCloseout = {
+            runState.recordPendingCloseout({
               reasonLines: [
                 `Repeated failing tool call detected: ${repeatedFailure.toolName} failed ${repeatedFailure.failureCount} times with the same arguments.`,
                 "Do not call the same tool again with those arguments, and do not spawn a fallback session for the same target.",
@@ -3287,7 +3273,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 roundCount,
                 evidenceAvailable: hasUsableEvidence(toolTrace),
               },
-            };
+            });
             return "repeated_tool_failure";
           }
           // 6. repeated_session_inspection — a pending sessions_history re-inspects
@@ -3299,7 +3285,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             `${packet.taskPrompt}\n${buildContinuationDirectiveContext(packet.taskPrompt, state.messages)}`,
           );
           if (repeatedSessionInspection) {
-            run.pendingCloseout = {
+            runState.recordPendingCloseout({
               reasonLines: [
                 `Repeated session inspection detected: ${repeatedSessionInspection.toolName} already inspected ${repeatedSessionInspection.sessionKey}.`,
                 "Do not call sessions_history or sessions_list again for the same session.",
@@ -3314,7 +3300,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 roundCount,
                 evidenceAvailable: hasUsableEvidence(toolTrace),
               },
-            };
+            });
             return "repeated_session_inspection";
           }
           // 7. excessive_session_continuation — a pending sessions_send continues a
@@ -3324,7 +3310,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolTrace,
           );
           if (excessiveSessionContinuation) {
-            run.pendingCloseout = {
+            runState.recordPendingCloseout({
               reasonLines: [
                 `Repeated session continuation detected: ${excessiveSessionContinuation.sessionKey} was already continued ${excessiveSessionContinuation.continuationCount} times.`,
                 "Do not call sessions_send again for the same session.",
@@ -3339,7 +3325,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 roundCount,
                 evidenceAvailable: hasUsableEvidence(toolTrace),
               },
-            };
+            });
             return "excessive_session_continuation";
           }
           return null;
@@ -3614,17 +3600,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         onAfterExecute: (results) => {
           const completedSession = findCompletedSessionEvidence(results);
           if (completedSession) {
-            run.completedSession = completedSession;
             // Capture the completing round's results — the same array the inline
             // path passes to collectToolResultContentText when it builds
             // completedProductBriefEvidenceText (:1933-1938). onTerminate uses this
             // for the source-evidence / timeout-followup completed repairs.
-            run.completedSessionToolResults = results;
+            runState.recordCompletedSession({
+              session: completedSession,
+              toolResults: results,
+            });
             return "completed_sub_agent_final";
           }
           const timeoutSignal = findSubAgentToolTimeout(results);
           if (timeoutSignal) {
-            run.timeoutSignal = timeoutSignal;
+            runState.recordTimeoutSignal(timeoutSignal);
             return "sub_agent_timeout";
           }
           return null;
@@ -4070,7 +4058,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // Stage 8C (Batch C — T10 finalization plane): stash the terminal message
           // list so the post-loop epilogue can run the inline generate() finalization
           // appenders (:2407-2433) against the same context the inline path sees.
-          run.finalMessages = state.messages;
+          runState.captureFinalMessages(state.messages);
           // Stage 8B slice 1c: the hard approval-wait-timeout local closeout (inline
           // :966-982), reached via the onRepairRound { closeout } directive. The answer
           // is built DETERMINISTICALLY (no model synthesis), so this short-circuits the
@@ -4093,8 +4081,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               }),
               packet,
             });
-            run.toolLoopCloseout = fallbackCloseout;
-            run.closeoutResult = fallbackResult;
+            runState.recordToolLoopCloseout(fallbackCloseout);
+            runState.recordCloseoutResult(fallbackResult);
             return {
               text: fallbackResult.text,
               ...(fallbackResult.stopReason
@@ -4108,14 +4096,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // read the signal onAfterExecute stashed on `run`.
           let reasonLines: string[] | undefined;
           let closeout: ToolLoopCloseoutMetadata;
-          if (run.pendingCloseout && run.pendingCloseout.closeout.reason === reason) {
+          const pendingCloseout = runState.pendingCloseout();
+          const completedSessionSignal = runState.completedSession();
+          const timeoutSignal = runState.timeoutSignal();
+          if (pendingCloseout && pendingCloseout.closeout.reason === reason) {
             // PR2d pending-call closeouts: onToolCallsClose already built the
             // inline reasonLines + metadata for this reason (no trailing
             // transform — the inline pre-execute closeouts use the synthesis as-is).
-            reasonLines = run.pendingCloseout.reasonLines;
-            closeout = run.pendingCloseout.closeout;
-          } else if (reason === "completed_sub_agent_final" && run.completedSession) {
-            const completedSession = run.completedSession;
+            reasonLines = pendingCloseout.reasonLines;
+            closeout = pendingCloseout.closeout;
+          } else if (reason === "completed_sub_agent_final" && completedSessionSignal) {
+            const completedSession = completedSessionSignal;
             const preserveRecoveredTimeoutCloseout = shouldPreserveRecoveredTimeoutCloseout({
               taskPrompt: packet.taskPrompt,
               messages: state.messages,
@@ -4172,10 +4163,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             // toolCallCount) reflects the round the session first completed, not the
             // later browser round — exactly like inline, whose `??=` no-ops on the
             // re-entered completed block. The final TEXT still comes from the last
-            // synthesis (run.closeoutResult below).
-            run.toolLoopCloseout ??= closeout;
-          } else if (reason === "sub_agent_timeout" && run.timeoutSignal) {
-            const timeoutSignal = run.timeoutSignal;
+            // synthesis (runState.closeoutResult below).
+            runState.recordToolLoopCloseoutIfAbsent(closeout);
+          } else if (reason === "sub_agent_timeout" && timeoutSignal) {
             reasonLines = [
               `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
               "Do not call more tools or spawn fallback sessions for this timeout.",
@@ -4247,7 +4237,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // not a single latest) so completed-repair re-syntheses that also overflow
           // don't drop earlier flush records — matching the inline append.
           if (generated.memoryFlush) {
-            run.memoryFlushes.push(generated.memoryFlush);
+            runState.recordMemoryFlush(generated.memoryFlush);
           }
           // Completed-closeout repair pass: the inline completed block re-synthesizes
           // when a completed-repair predicate fires on the synthesis against the
@@ -4290,8 +4280,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // toolTrace sourceBoundedEvidenceText but NOT to the completing-round-only
           // completedProductBriefEvidenceText) is now seen on re-synthesis, exactly as
           // inline's natural-finish does.
-          if (reason === "completed_sub_agent_final" && run.completedSession) {
-            const completedSession = run.completedSession;
+          const completedSessionForRepair = runState.completedSession();
+          if (reason === "completed_sub_agent_final" && completedSessionForRepair) {
+            const completedSession = completedSessionForRepair;
             const repairMarkers = (ctx.repairMarkers ??= []);
             // Two evidence texts, matching the inline asymmetry: deliverables (:2038)
             // and false-evidence (:2134) use the bare finalContents join, while
@@ -4306,7 +4297,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             const completedProductBriefEvidenceText = [
               completedSession.finalContents.join("\n\n"),
               collectToolResultContentText(
-                run.completedSessionToolResults ?? [],
+                runState.completedSessionToolResults() ?? [],
               ),
             ]
               .filter((text) => text.trim().length > 0)
@@ -4322,14 +4313,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             // undefined on round >0 (inline natural-finish :776). Persisting the pending
             // reduction before the reArm mirrors inline recording `generated.reduction`
             // before it `continue`s (codex #520 P2) — the early return otherwise skips
-            // the run.reduction assignment after the loop.
+            // the runState reduction record after the loop.
             const maybeReArmForMissingBrowserEvidence = (
               productSignalEvidenceText: string | undefined,
             ): ReActReArm | null => {
               const persistAndReArm = (repairPrompt: string): ReActReArm => {
                 if (synthesisReduction) {
-                  run.reduction = synthesisReduction;
-                  run.reductionSnapshot = synthesisReductionSnapshot;
+                  runState.recordReduction({
+                    reduction: synthesisReduction,
+                    reductionSnapshot: synthesisReductionSnapshot,
+                  });
                 }
                 return {
                   reArm: {
@@ -4658,7 +4651,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 synthesisReductionSnapshot = repaired.reductionSnapshot;
               }
               if (repaired.memoryFlush) {
-                run.memoryFlushes.push(repaired.memoryFlush);
+                runState.recordMemoryFlush(repaired.memoryFlush);
               }
             }
             // Inline main-loop re-entry parity: a completed-cascade repair
@@ -4689,7 +4682,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 synthesisReductionSnapshot = cleanup.reductionSnapshot;
               }
               if (cleanup.memoryFlush) {
-                run.memoryFlushes.push(cleanup.memoryFlush);
+                runState.recordMemoryFlush(cleanup.memoryFlush);
               }
             }
           }
@@ -4700,12 +4693,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           const appendCompletedTimeoutVisibility = (
             synth: GenerateTextResult,
           ): GenerateTextResult => {
-            const preserveRecoveredTimeoutCloseout = run.completedSession
+            const completedSessionForVisibility = runState.completedSession();
+            const preserveRecoveredTimeoutCloseout = completedSessionForVisibility
               ? shouldPreserveRecoveredTimeoutCloseout({
                   taskPrompt: packet.taskPrompt,
                   messages: state.messages,
                   toolTrace,
-                  evidenceText: run.completedSession.finalContents.join("\n\n"),
+                  evidenceText: completedSessionForVisibility.finalContents.join("\n\n"),
                 })
               : false;
             if (
@@ -4754,10 +4748,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           const appendCompletedBrowserVisibility = (
             synth: GenerateTextResult,
           ): GenerateTextResult => {
-            if (!run.completedSession) {
+            const completedSessionForBrowser = runState.completedSession();
+            if (!completedSessionForBrowser) {
               return synth;
             }
-            const completedSession = run.completedSession;
+            const completedSession = completedSessionForBrowser;
             const browserRecoverySummaries = dedupeStrings([
               ...completedSession.browserRecoverySummaries,
               ...collectBrowserRecoverySummariesFromToolTrace(toolTrace),
@@ -4772,7 +4767,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               taskPrompt: packet.taskPrompt,
               evidenceText: [
                 collectToolResultContentText(
-                  run.completedSessionToolResults ?? [],
+                  runState.completedSessionToolResults() ?? [],
                 ),
                 ...browserRecoverySummaries,
                 ...completedSession.finalContents,
@@ -4799,14 +4794,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // metadata must replace the stale completed one, exactly as inline reassigns
           // `toolLoopCloseout =` for non-completed reasons (codex #520 P2).
           if (reason === "completed_sub_agent_final") {
-            run.toolLoopCloseout ??= closeout;
+            runState.recordToolLoopCloseoutIfAbsent(closeout);
           } else {
-            run.toolLoopCloseout = closeout;
+            runState.recordToolLoopCloseout(closeout);
           }
-          run.closeoutResult = closeoutResult;
+          runState.recordCloseoutResult(closeoutResult);
           if (synthesisReduction) {
-            run.reduction = synthesisReduction;
-            run.reductionSnapshot = synthesisReductionSnapshot;
+            runState.recordReduction({
+              reduction: synthesisReduction,
+              reductionSnapshot: synthesisReductionSnapshot,
+            });
           }
           return {
             text: closeoutResult.text,
@@ -4831,7 +4828,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (isAbortError(error)) {
             return "rethrow";
           }
-          run.finalMessages = state.messages;
+          runState.captureFinalMessages(state.messages);
           const forcedPermissionResultCall =
             activeToolLoop && hasUsableEvidence(toolTrace)
               ? buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
@@ -4868,21 +4865,28 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!localResult) {
             return "rethrow";
           }
-          run.toolLoopCloseout = {
+          const fallbackCloseout: ToolLoopCloseoutMetadata = {
             reason: "tool_evidence_fallback",
             maxRounds,
             toolCallCount: countToolCalls(toolTrace),
             roundCount: toolTrace.length,
             evidenceAvailable: true,
           };
-          run.closeoutResult = maybeRedactForbiddenLocalUrls({ result: localResult, packet });
+          const fallbackResult = maybeRedactForbiddenLocalUrls({
+            result: localResult,
+            packet,
+          });
+          runState.recordToolLoopCloseout(fallbackCloseout);
+          runState.recordCloseoutResult(fallbackResult);
           return {
-            text: run.closeoutResult.text,
-            ...(run.closeoutResult.stopReason ? { stopReason: run.closeoutResult.stopReason } : {}),
+            text: fallbackResult.text,
+            ...(fallbackResult.stopReason
+              ? { stopReason: fallbackResult.stopReason }
+              : {}),
           };
         },
         // Capture the live message history for the post-loop finalization epilogue.
-        // onTerminate / onModelCallError stash run.finalMessages on the closeout and
+        // onTerminate / onModelCallError stash runState finalMessages on the closeout and
         // error paths; on a NATURAL finish (no closeout, no error) neither fires, so
         // the epilogue would otherwise fall back to the initial gateway prompt and the
         // timeout-followup / residual-risk appenders would miss the tool-result and
@@ -4890,7 +4894,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // live state, so `??=` fills in the natural-finish case while preserving any
         // closeout-set snapshot. Returns the text unchanged.
         onFinalize: (text, state) => {
-          run.finalMessages ??= state.messages;
+          runState.captureFinalMessagesIfAbsent(state.messages);
           return text;
         },
       }, policyTrace),
@@ -4922,8 +4926,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // Record the request-envelope reduction boundary before building metadata,
     // matching the inline path's observability (a closeout's final synthesis may
     // have overflowed and reduced).
-    if (run.reductionSnapshot) {
-      await this.recordReductionBoundarySafely(activation, packet, selection, run.reductionSnapshot);
+    const reductionSnapshot = runState.reductionSnapshot();
+    if (reductionSnapshot) {
+      await this.recordReductionBoundarySafely(
+        activation,
+        packet,
+        selection,
+        reductionSnapshot,
+      );
     }
 
     // Stage 8C (Batch C — T10 finalization plane): mirror the inline generate()
@@ -4942,10 +4952,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // scope / residual-risk lines gets them deterministically appended. `finalMessages`
     // was stashed by onTerminate/onModelCallError; fall back to the initial gateway
     // messages if no closeout ran (the plain natural-finish result path).
-    const epilogueMessages =
-      run.finalMessages ?? initialGatewayInput.messages;
+    const epilogueMessages = [
+      ...(runState.finalMessages() ?? initialGatewayInput.messages),
+    ];
+    const closeoutResult = runState.closeoutResult();
     let finalResult: GenerateTextResult = {
-      ...(run.closeoutResult ?? lastResult ?? {}),
+      ...(closeoutResult ?? lastResult ?? {}),
       text: finalText,
     } as GenerateTextResult;
     finalResult = finalizeEngineAnswer({
@@ -4963,8 +4975,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     });
     // On a closeout, metadata reflects the closeout-synthesis result (matching
     // inline), falling back to the last tool-round result otherwise.
-    const metaResult = run.closeoutResult ?? lastResult;
-    const missionReport = buildRuntimeDerivedMissionReport(run.toolLoopCloseout);
+    const metaResult = closeoutResult ?? lastResult;
+    const toolLoopCloseout = runState.toolLoopCloseout();
+    const missionReport = buildRuntimeDerivedMissionReport(toolLoopCloseout);
+    const reduction = runState.reduction();
+    const memoryFlushes = runState.memoryFlushes();
     return {
       content,
       mentions: extractMentions(content),
@@ -4992,9 +5007,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         ...(modelCallTrace.length
           ? { modelUse: summarizeModelUseTrace(modelCallTrace) }
           : {}),
-        ...(run.reduction ? { requestEnvelopeReduction: run.reduction } : {}),
-        ...(run.memoryFlushes.length ? { preCompactionMemoryFlushes: run.memoryFlushes } : {}),
-        ...(run.toolLoopCloseout ? { toolLoopCloseout: run.toolLoopCloseout } : {}),
+        ...(reduction ? { requestEnvelopeReduction: reduction } : {}),
+        ...(memoryFlushes.length
+          ? { preCompactionMemoryFlushes: memoryFlushes }
+          : {}),
+        ...(toolLoopCloseout ? { toolLoopCloseout } : {}),
         ...(missionReport ? { missionReport } : {}),
         reactEngine: true,
         // Stage 8 cleanup (Batch 0.5): surface the per-hook policy-decision
