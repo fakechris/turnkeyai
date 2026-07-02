@@ -80,16 +80,25 @@ export interface PseudoToolCallCloseoutMetadata {
   evidenceAvailable: boolean;
 }
 
+export interface WallClockBudgetCloseoutSignal {
+  maxWallClockMs: number | undefined;
+  requiredTimeoutContinuationPastWallClock: boolean;
+  readElapsedMs(): number;
+  buildCloseoutSnapshot(maxWallClockMs: number): ExecutionBudgetCloseoutSnapshot;
+}
+
 export interface RemainingPendingCallsCloseoutInput {
   pendingToolCallCount: number;
   pendingContinuation: boolean;
   lastText: string;
+  wallClockBudget: WallClockBudgetCloseoutSignal | null;
   taskPrompt: string;
   messages: LLMMessage[];
   maxRounds: number;
   usedToolCalls: number;
   roundCount: number;
   evidenceAvailable: boolean;
+  buildRoundLimitCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
 }
 
 export type RecoveryToolBudgetCloseoutDecision =
@@ -104,6 +113,9 @@ export type RemainingPendingCallsCloseoutDecision =
     })
   | (CloseoutDecision<PseudoToolCallCloseoutMetadata> & {
       closeout: PseudoToolCallCloseoutMetadata;
+    })
+  | (CloseoutDecision<ExecutionBudgetCloseoutSnapshot["closeout"]> & {
+      closeout: ExecutionBudgetCloseoutSnapshot["closeout"];
     });
 
 export interface CloseoutPolicyRegistry {
@@ -201,8 +213,41 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         },
       };
     }
+    const wallClockBudget = input.wallClockBudget;
+    if (
+      wallClockBudget &&
+      !wallClockBudget.requiredTimeoutContinuationPastWallClock &&
+      input.roundCount > 0 &&
+      isPositiveFiniteBudgetValue(wallClockBudget.maxWallClockMs) &&
+      wallClockBudget.readElapsedMs() >= wallClockBudget.maxWallClockMs
+    ) {
+      const snapshot = wallClockBudget.buildCloseoutSnapshot(
+        wallClockBudget.maxWallClockMs,
+      );
+      return {
+        kind: "closeout",
+        policyId: "wall_clock_budget",
+        reason: "wall_clock_budget",
+        reasonLines: snapshot.reasonLines,
+        closeout: snapshot.closeout,
+      };
+    }
+    if (input.roundCount >= input.maxRounds && input.pendingToolCallCount > 0) {
+      const snapshot = input.buildRoundLimitCloseoutSnapshot();
+      return {
+        kind: "closeout",
+        policyId: "round_limit",
+        reason: "round_limit",
+        reasonLines: snapshot.reasonLines,
+        closeout: snapshot.closeout,
+      };
+    }
     return null;
   }
+}
+
+function isPositiveFiniteBudgetValue(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 export function createCloseoutPolicyRegistry(): CloseoutPolicyRegistry {

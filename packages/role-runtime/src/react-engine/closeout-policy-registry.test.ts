@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ExecutionBudgetCloseoutSnapshot } from "./execution-budget-controller";
+import type { RemainingPendingCallsCloseoutInput } from "./closeout-policy-registry";
 import {
   createCloseoutPolicyRegistry,
   ENGINE_CLOSEOUT_POLICY_ORDER,
@@ -38,6 +39,54 @@ function cancelledSessionTaskPrompt(latestUserText = "Summarize the status."): s
     "Recent turns:",
     `[user] ${latestUserText}`,
   ].join("\n");
+}
+
+function roundLimitSnapshot(): ExecutionBudgetCloseoutSnapshot {
+  return {
+    reasonLines: ["Tool-use round limit reached (3)."],
+    closeout: {
+      reason: "round_limit",
+      maxRounds: 3,
+      pendingToolCallCount: 1,
+      toolCallCount: 2,
+      roundCount: 3,
+      evidenceAvailable: true,
+    },
+  };
+}
+
+function wallClockSnapshot(): ExecutionBudgetCloseoutSnapshot {
+  return {
+    reasonLines: ["Tool-use wall-clock budget reached (1m 30s)."],
+    closeout: {
+      reason: "wall_clock_budget",
+      maxRounds: 3,
+      maxWallClockMs: 90_000,
+      pendingToolCallCount: 1,
+      toolCallCount: 2,
+      roundCount: 3,
+      evidenceAvailable: true,
+    },
+  };
+}
+
+function remainingPendingInput(
+  overrides: Partial<RemainingPendingCallsCloseoutInput> = {},
+): RemainingPendingCallsCloseoutInput {
+  return {
+    pendingToolCallCount: 1,
+    pendingContinuation: false,
+    lastText: "running sessions",
+    wallClockBudget: null,
+    taskPrompt: "Summarize the gathered evidence.",
+    messages: [],
+    maxRounds: 3,
+    usedToolCalls: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+    buildRoundLimitCloseoutSnapshot: roundLimitSnapshot,
+    ...overrides,
+  };
 }
 
 test("ENGINE_CLOSEOUT_POLICY_ORDER pins terminal closeout precedence", () => {
@@ -138,17 +187,10 @@ test("CloseoutPolicyRegistry returns exhausted recovery budget closeout decision
 test("CloseoutPolicyRegistry returns operator-cancelled closeout decision", () => {
   const registry = createCloseoutPolicyRegistry();
 
-  const decision = registry.evaluateRemainingPendingCalls({
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
     pendingToolCallCount: 1,
-    pendingContinuation: false,
-    lastText: "running sessions",
     taskPrompt: cancelledSessionTaskPrompt(),
-    messages: [],
-    maxRounds: 3,
-    usedToolCalls: 2,
-    roundCount: 2,
-    evidenceAvailable: true,
-  });
+  }));
 
   assert.equal(decision?.kind, "closeout");
   assert.equal(decision?.reason, "operator_cancelled");
@@ -166,17 +208,10 @@ test("CloseoutPolicyRegistry skips operator-cancelled without pending calls", ()
   const registry = createCloseoutPolicyRegistry();
 
   assert.equal(
-    registry.evaluateRemainingPendingCalls({
+    registry.evaluateRemainingPendingCalls(remainingPendingInput({
       pendingToolCallCount: 0,
-      pendingContinuation: false,
-      lastText: "running sessions",
       taskPrompt: cancelledSessionTaskPrompt(),
-      messages: [],
-      maxRounds: 3,
-      usedToolCalls: 2,
-      roundCount: 2,
-      evidenceAvailable: true,
-    }),
+    })),
     null,
   );
 });
@@ -185,19 +220,12 @@ test("CloseoutPolicyRegistry skips operator-cancelled when the user asks to cont
   const registry = createCloseoutPolicyRegistry();
 
   assert.equal(
-    registry.evaluateRemainingPendingCalls({
+    registry.evaluateRemainingPendingCalls(remainingPendingInput({
       pendingToolCallCount: 1,
-      pendingContinuation: false,
-      lastText: "running sessions",
       taskPrompt: cancelledSessionTaskPrompt(
         "Continue the cancelled source-check session.",
       ),
-      messages: [],
-      maxRounds: 3,
-      usedToolCalls: 2,
-      roundCount: 2,
-      evidenceAvailable: true,
-    }),
+    })),
     null,
   );
 });
@@ -205,17 +233,11 @@ test("CloseoutPolicyRegistry skips operator-cancelled when the user asks to cont
 test("CloseoutPolicyRegistry returns pseudo tool-call closeout decision", () => {
   const registry = createCloseoutPolicyRegistry();
 
-  const decision = registry.evaluateRemainingPendingCalls({
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
     pendingToolCallCount: 0,
     pendingContinuation: false,
     lastText: "<tool_call>{}</tool_call>",
-    taskPrompt: "Summarize the gathered evidence.",
-    messages: [],
-    maxRounds: 3,
-    usedToolCalls: 2,
-    roundCount: 2,
-    evidenceAvailable: true,
-  });
+  }));
 
   assert.equal(decision?.kind, "closeout");
   assert.equal(decision?.reason, "pseudo_tool_call");
@@ -233,17 +255,12 @@ test("CloseoutPolicyRegistry skips pseudo tool-call when continuation is pending
   const registry = createCloseoutPolicyRegistry();
 
   assert.equal(
-    registry.evaluateRemainingPendingCalls({
+    registry.evaluateRemainingPendingCalls(remainingPendingInput({
       pendingToolCallCount: 0,
       pendingContinuation: true,
       lastText: "<tool_call>{}</tool_call>",
       taskPrompt: "Continue the source check.",
-      messages: [],
-      maxRounds: 3,
-      usedToolCalls: 2,
-      roundCount: 2,
-      evidenceAvailable: true,
-    }),
+    })),
     null,
   );
 });
@@ -252,17 +269,92 @@ test("CloseoutPolicyRegistry skips pseudo tool-call when native calls are pendin
   const registry = createCloseoutPolicyRegistry();
 
   assert.equal(
-    registry.evaluateRemainingPendingCalls({
+    registry.evaluateRemainingPendingCalls(remainingPendingInput({
       pendingToolCallCount: 1,
-      pendingContinuation: false,
       lastText: "<tool_call>{}</tool_call>",
-      taskPrompt: "Summarize the gathered evidence.",
-      messages: [],
-      maxRounds: 3,
-      usedToolCalls: 2,
-      roundCount: 2,
-      evidenceAvailable: true,
-    }),
+    })),
+    null,
+  );
+});
+
+test("CloseoutPolicyRegistry returns wall-clock budget closeout decision", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
+    roundCount: 3,
+    wallClockBudget: {
+      maxWallClockMs: 90_000,
+      requiredTimeoutContinuationPastWallClock: false,
+      readElapsedMs: () => 90_000,
+      buildCloseoutSnapshot: wallClockSnapshot,
+    },
+  }));
+
+  assert.equal(decision?.kind, "closeout");
+  assert.equal(decision?.reason, "wall_clock_budget");
+  assert.deepEqual(decision?.closeout, wallClockSnapshot().closeout);
+});
+
+test("CloseoutPolicyRegistry lets required timeout continuation pass wall-clock budget", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateRemainingPendingCalls(remainingPendingInput({
+      roundCount: 1,
+      wallClockBudget: {
+        maxWallClockMs: 90_000,
+        requiredTimeoutContinuationPastWallClock: true,
+        readElapsedMs: () => 90_000,
+        buildCloseoutSnapshot: wallClockSnapshot,
+      },
+    })),
+    null,
+  );
+});
+
+test("CloseoutPolicyRegistry skips wall-clock budget before any executed round", () => {
+  const registry = createCloseoutPolicyRegistry();
+  let elapsedReads = 0;
+
+  assert.equal(
+    registry.evaluateRemainingPendingCalls(remainingPendingInput({
+      roundCount: 0,
+      wallClockBudget: {
+        maxWallClockMs: 90_000,
+        requiredTimeoutContinuationPastWallClock: false,
+        readElapsedMs: () => {
+          elapsedReads += 1;
+          return 90_000;
+        },
+        buildCloseoutSnapshot: wallClockSnapshot,
+      },
+    })),
+    null,
+  );
+  assert.equal(elapsedReads, 0);
+});
+
+test("CloseoutPolicyRegistry returns round-limit closeout decision", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
+    pendingToolCallCount: 1,
+    roundCount: 3,
+  }));
+
+  assert.equal(decision?.kind, "closeout");
+  assert.equal(decision?.reason, "round_limit");
+  assert.deepEqual(decision?.closeout, roundLimitSnapshot().closeout);
+});
+
+test("CloseoutPolicyRegistry skips round-limit for a tool-free final candidate", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateRemainingPendingCalls(remainingPendingInput({
+      pendingToolCallCount: 0,
+      roundCount: 3,
+    })),
     null,
   );
 });

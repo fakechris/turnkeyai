@@ -3008,19 +3008,66 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // shouldCloseoutCancelledSessionWithoutContinuation guard is false.
           pendingContinuation =
             calls.length === 0 ? computeEmptyRoundContinuationCall(state) : null;
-          // 2. operator_cancelled — a prior session was cancelled and the latest
-          //    user message did not ask to continue (pending calls present).
+          const buildWallClockBudgetCloseoutSignal = (
+            toolCalls: LLMToolCall[],
+            pendingToolCallCount: number,
+          ) => {
+            const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+              ...(activeToolLoop.maxWallClockMs !== undefined
+                ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
+                : {}),
+              toolCalls,
+            });
+            const requiredTimeoutContinuationPastWallClock =
+              shouldAllowRequiredTimeoutContinuationPastWallClock({
+                taskPrompt: packet.taskPrompt,
+                messages: state.messages,
+                toolCalls,
+                toolTrace,
+              });
+            return {
+              maxWallClockMs,
+              requiredTimeoutContinuationPastWallClock,
+              readElapsedMs: () => this.clock.now() - toolLoopStartedAtMs,
+              buildCloseoutSnapshot: (activeMaxWallClockMs: number) =>
+                executionBudget.buildWallClockBudgetCloseoutSnapshot({
+                  maxRounds,
+                  maxWallClockMs: activeMaxWallClockMs,
+                  pendingToolCallCount,
+                  usedToolCalls: countToolCalls(toolTrace),
+                  roundCount,
+                  evidenceAvailable: hasUsableEvidence(toolTrace),
+                }),
+            };
+          };
+          const wallClockBudgetCloseoutSignal =
+            calls.length > 0
+              ? buildWallClockBudgetCloseoutSignal(calls, calls.length)
+              : pendingContinuation
+                ? buildWallClockBudgetCloseoutSignal([pendingContinuation], 1)
+                : null;
+          // 2-5. pending-call closeouts — operator_cancelled,
+          // pseudo_tool_call, wall_clock_budget, then round_limit.
           const remainingPendingCloseout =
             closeoutPolicy.evaluateRemainingPendingCalls({
               pendingToolCallCount: calls.length,
               pendingContinuation: pendingContinuation !== null,
               lastText: state.lastText,
+              wallClockBudget: wallClockBudgetCloseoutSignal,
               taskPrompt: packet.taskPrompt,
               messages: state.messages,
               maxRounds,
               usedToolCalls: countToolCalls(toolTrace),
               roundCount,
               evidenceAvailable: hasUsableEvidence(toolTrace),
+              buildRoundLimitCloseoutSnapshot: () =>
+                executionBudget.buildRoundLimitCloseoutSnapshot({
+                  maxRounds,
+                  pendingToolCallCount: calls.length,
+                  usedToolCalls: countToolCalls(toolTrace),
+                  roundCount,
+                  evidenceAvailable: hasUsableEvidence(toolTrace),
+                }),
             });
           if (remainingPendingCloseout?.kind === "closeout") {
             runState.recordPendingCloseout({
@@ -3029,119 +3076,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             });
             return remainingPendingCloseout.reason;
           }
-          // 3. pseudo_tool_call — handled by CloseoutPolicyRegistry. The registry
-          //    preserves the same empty-call and pending-continuation gates.
-          // 4. wall_clock_budget — the graceful round-top closeout (closes the
-          //    #490 gap: produce a final answer from gathered evidence instead of
-          //    failing loud). Pending calls present + at least one prior round.
-          if (calls.length > 0) {
-            const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
-              ...(activeToolLoop.maxWallClockMs !== undefined
-                ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
-                : {}),
-              toolCalls: calls,
-            });
-            const requiredTimeoutContinuationPastWallClock =
-              shouldAllowRequiredTimeoutContinuationPastWallClock({
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-                toolCalls: calls,
-                toolTrace,
-              });
-            if (
-              !requiredTimeoutContinuationPastWallClock &&
-              toolTrace.length > 0 &&
-              isPositiveFiniteBudget(maxWallClockMs) &&
-              this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
-            ) {
-              runState.recordPendingCloseout(
-                executionBudget.buildWallClockBudgetCloseoutSnapshot({
-                  maxRounds,
-                  maxWallClockMs,
-                  pendingToolCallCount: calls.length,
-                  usedToolCalls: countToolCalls(toolTrace),
-                  roundCount,
-                  evidenceAvailable: hasUsableEvidence(toolTrace),
-                }),
-              );
-              return "wall_clock_budget";
-            }
-          }
-          // 4b. wall_clock_budget on an EMPTY round that WOULD inject a continuation.
-          //     Inline injects the synthetic sessions_send (:577) BEFORE the wall-clock
-          //     check (:1285), so the budget closeout fires with the injected call as
-          //     the pending call — the continuation never executes past budget. The
-          //     engine's onRoundEmpty injects AFTER this hook, so without this branch
-          //     an expired-budget empty round would inject + execute another tool round
-          //     past the budget. Pre-check the same condition here with the would-be
-          //     call so the closeout wins, exactly as inline.
-          if (calls.length === 0) {
-            const continuationCall = pendingContinuation;
-            if (continuationCall) {
-              const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
-                ...(activeToolLoop.maxWallClockMs !== undefined
-                  ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
-                  : {}),
-                toolCalls: [continuationCall],
-              });
-              const requiredTimeoutContinuationPastWallClock =
-                shouldAllowRequiredTimeoutContinuationPastWallClock({
-                  taskPrompt: packet.taskPrompt,
-                  messages: state.messages,
-                  toolCalls: [continuationCall],
-                  toolTrace,
-                });
-              if (
-                !requiredTimeoutContinuationPastWallClock &&
-                toolTrace.length > 0 &&
-                isPositiveFiniteBudget(maxWallClockMs) &&
-                this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
-              ) {
-                runState.recordPendingCloseout(
-                  executionBudget.buildWallClockBudgetCloseoutSnapshot({
-                    maxRounds,
-                    maxWallClockMs,
-                    pendingToolCallCount: 1,
-                    usedToolCalls: countToolCalls(toolTrace),
-                    roundCount,
-                    evidenceAvailable: hasUsableEvidence(toolTrace),
-                  }),
-                );
-                return "wall_clock_budget";
-              }
-            }
-          }
-          // round_limit (inline :1501-1524, precedence AFTER wall_clock, BEFORE
-          // repeated_tool_failure). Inline's `for(;;)` loop calls the model on the
-          // round that hits the limit, captures its (unexecuted) pending calls, and
-          // synthesizes — 4 gateway calls for a maxRounds=2 run (rounds 0,1,2 model
-          // calls + a tool-free synthesis), with pendingToolCallCount = the limit
-          // round's pending call count. The engine's bounded loop would otherwise
-          // exit one model call early (agent-core's line-368 `round_limit` fallback
-          // fires with NO pending calls), losing that call and the pendingToolCallCount.
-          // To converge, `runViaReActEngine` gives the agent maxRounds+1 rounds so the
-          // model IS called on the limit round; here we detect that boundary — this
-          // round would be the (maxRounds+1)-th tool round (toolTrace already holds
-          // maxRounds executed rounds) — and fire the round_limit closeout with its
-          // pending calls, exactly mirroring inline. The agent's own line-368
-          // fallback stays as a defensive backstop only. Guarded on
-          // `calls.length > 0`: if the limit-round model call returns a tool-free
-          // final answer, inline accepts it (it handles toolCalls.length===0
-          // BEFORE the round-limit check at :1501), so the engine must too — fall
-          // through to a natural finish instead of forcing a round_limit synthesis
-          // that would discard the answer and mislabel the closeout.
-          if (toolTrace.length >= maxRounds && calls.length > 0) {
-            runState.recordPendingCloseout(
-              executionBudget.buildRoundLimitCloseoutSnapshot({
-                maxRounds,
-                pendingToolCallCount: calls.length,
-                usedToolCalls: countToolCalls(toolTrace),
-                roundCount,
-                evidenceAvailable: hasUsableEvidence(toolTrace),
-              }),
-            );
-            return "round_limit";
-          }
+          // wall_clock_budget and round_limit are handled by
+          // CloseoutPolicyRegistry. The wall-clock signal preserves both native
+          // pending-call and empty-round continuation gates.
           // 5. repeated_tool_failure — a pending call's signature already failed
           //    twice in the trace.
           const repeatedFailure = findRepeatedFailedToolCall(calls, toolTrace);
