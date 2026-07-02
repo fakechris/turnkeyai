@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `200f9e67e3653030f455469a18907ee3ec10c081`
+**Code HEAD before this docs-only report:** `acb9db9f78fc9c3991acff79e8d4883fc0bbcb12`
 **Date:** 2026-07-02
 
 ## Summary
@@ -52,8 +52,9 @@ could not move the normalizer without making the inline parity reference import 
   `missing_requested_next_action`, `missing_required_final_deliverables`,
   `missing_browser_evidence_dimensions`, and
   `false_evidence_blocked_synthesis`. The completed-session repair loop now
-  routes through `react-engine/completed-closeout-controller.ts`, with model
-  calls and browser/product-signal re-arm predicates injected by the adapter.
+  routes through `react-engine/completed-closeout-controller.ts`; model calls
+  are still injected by the adapter, but browser/product-signal re-arm
+  decisions now run inside the controller through `RepairPolicyRegistry`.
   The completed-closeout post-synthesis visibility chain now routes through that
   controller too, while shared browser recovery/failure-bucket and timeout
   continuation helpers remain neutral for inline + engine parity.
@@ -139,6 +140,7 @@ of controller actions.
 | `9451190` | Move product-signal dashboard URL extraction into neutral shared code and remove the adapter-local duplicate dashboard regex tail. |
 | `c0011d3` | Move missing browser/product-signal evidence repair detectors and prompt builders into neutral shared code. |
 | `200f9e6` | Route missing browser/product-signal evidence natural-finish repair decisions through `RepairPolicyRegistry`; add focused policy tests. |
+| `acb9db9` | Move completed-closeout browser/product-signal re-arm ownership into `CompletedCloseoutController`; remove the adapter-injected predicate closure. |
 
 ## Current Extracted Implementation
 
@@ -200,10 +202,11 @@ Real implementation now exists in:
   collection, and typed tool-free/tool-round resynthesis or closeout decisions.
 - `react-engine/completed-closeout-controller.ts` for the bounded
   completed-session repair loop, completed-only round-0 gating, round>0
-  browser/product-signal re-arm precedence, repair marker insertion, memory
-  flush/reduction carry-forward, and one clean tool-free cleanup synthesis when
-  a completed repair produces tool-call artifact text, plus the completed
-  closeout post-synthesis visibility chain for browser recovery visibility,
+  browser/product-signal re-arm precedence through `RepairPolicyRegistry`,
+  repair marker insertion, memory flush/reduction carry-forward, and one clean
+  tool-free cleanup synthesis when a completed repair produces tool-call
+  artifact text, plus the completed closeout post-synthesis visibility chain
+  for browser recovery visibility,
   browser failure-bucket visibility, recovered-timeout/continuation visibility,
   and final forbidden local URL redaction.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
@@ -258,7 +261,7 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 43 / 43 |
+| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 47 / 47 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 139 / 139 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
@@ -273,7 +276,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifty-one
+root plus several policy-heavy hook bodies. The main improvement is that fifty-two
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -416,6 +419,9 @@ Stage 8 boundaries/slices are now real:
 - missing browser/product-signal evidence natural-finish repair decisions now
   route through `RepairPolicyRegistry`; the engine adapter applies the returned
   prompt, `sessions_spawn` force choice, and consumed-round flag.
+- completed-closeout browser/product-signal re-arm decisions now run inside
+  `CompletedCloseoutController` through `RepairPolicyRegistry`; the adapter
+  passes tools/evidence and no longer injects a predicate closure.
 
 ## Remaining Work
 
