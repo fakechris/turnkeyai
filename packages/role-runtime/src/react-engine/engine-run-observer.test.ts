@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
-import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
+import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import { createEngineRunObserver } from "./engine-run-observer";
@@ -28,6 +28,12 @@ function result(overrides: Partial<ToolResult> = {}): ToolResult {
 function createHarness() {
   const toolTrace: NativeToolRoundTrace[] = [];
   const recorded: Array<{ call: LLMToolCall; progress: ToolProgressEvent }> = [];
+  const providerRounds: Array<{
+    round: number;
+    toolCalls: LLMToolCall[];
+    toolResults: ToolResult[];
+    messages: LLMMessage[];
+  }> = [];
   const persists: Array<{ forceBlocking?: boolean } | undefined> = [];
   let now = 100;
   const observer = createEngineRunObserver(toolTrace, {
@@ -38,8 +44,11 @@ function createHarness() {
     persistNativeToolTrace: async (options) => {
       persists.push(options);
     },
+    recordProviderToolProtocolRound: async (round) => {
+      providerRounds.push(round);
+    },
   });
-  return { observer, toolTrace, recorded, persists };
+  return { observer, toolTrace, recorded, providerRounds, persists };
 }
 
 test("EngineRunObserver opens a model-response round and does not duplicate started calls", async () => {
@@ -135,4 +144,33 @@ test("EngineRunObserver ignores tool_result when no round is open", async () => 
   assert.deepEqual(toolTrace, []);
   assert.deepEqual(recorded, []);
   assert.deepEqual(persists, []);
+});
+
+test("EngineRunObserver records provider tool protocol rounds through the injected recorder", async () => {
+  const { observer, providerRounds } = createHarness();
+  const toolCall = call({ id: "call-provider" });
+  const toolResult = result({
+    toolCallId: "call-provider",
+    content: "provider boundary result",
+  });
+  const messages: LLMMessage[] = [
+    { role: "assistant", content: "I will call a tool." },
+    { role: "tool", content: "provider boundary result" },
+  ];
+
+  await observer.onProviderToolProtocolRound({
+    round: 4,
+    toolCalls: [toolCall],
+    toolResults: [toolResult],
+    messages,
+  });
+
+  assert.deepEqual(providerRounds, [
+    {
+      round: 4,
+      toolCalls: [toolCall],
+      toolResults: [toolResult],
+      messages,
+    },
+  ]);
 });

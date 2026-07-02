@@ -1,5 +1,5 @@
 import type { ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
-import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
+import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
@@ -21,6 +21,9 @@ export interface EngineRunObserverDependencies {
     call: LLMToolCall,
     progress: ToolProgressEvent,
   ): Promise<void>;
+  recordProviderToolProtocolRound(
+    input: EngineObservedProviderToolProtocolRound,
+  ): Promise<void>;
   persistNativeToolTrace(options?: { forceBlocking?: boolean }): Promise<void>;
 }
 
@@ -36,6 +39,13 @@ export interface EngineObservedToolStart {
 
 export interface EngineObservedToolResult {
   result: ToolResult;
+}
+
+export interface EngineObservedProviderToolProtocolRound {
+  round: number;
+  toolCalls: LLMToolCall[];
+  toolResults: ToolResult[];
+  messages: LLMMessage[];
 }
 
 export class EngineRunObserver {
@@ -126,6 +136,12 @@ export class EngineRunObserver {
     );
     await this.deps.recordToolProgress(progressCall, terminalProgress);
     await this.deps.persistNativeToolTrace();
+  }
+
+  async onProviderToolProtocolRound(
+    input: EngineObservedProviderToolProtocolRound,
+  ): Promise<void> {
+    await this.deps.recordProviderToolProtocolRound(input);
   }
 
   snapshot(): {

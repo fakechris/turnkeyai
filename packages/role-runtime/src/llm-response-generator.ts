@@ -2676,6 +2676,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       now: () => this.clock.now(),
       recordToolProgress: (call, progress) =>
         this.recordToolProgressSafely(activation, call, progress),
+      recordProviderToolProtocolRound: (round) =>
+        this.recordProviderToolProtocolRoundSafely({
+          activation,
+          round: round.round,
+          toolCalls: round.toolCalls,
+          toolResults: round.toolResults,
+          messages: round.messages,
+        }),
       persistNativeToolTrace: (options) =>
         this.persistNativeToolTraceSafely(activation, toolTrace, options),
     });
@@ -3072,8 +3080,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // executed, 1-indexed = inline's round+1). toolCalls are reconstructed from the
           // results (id/name), matching inline's toolCallIds/toolNames/count.
           const roundToolResults = results as RoleToolExecutionResult[];
-          await this.recordProviderToolProtocolRoundSafely({
-            activation,
+          await observer.onProviderToolProtocolRound({
             round: toolTrace.length,
             toolCalls: roundToolResults.map((result) => ({
               id: result.toolCallId,
