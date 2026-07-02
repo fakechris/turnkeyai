@@ -4051,7 +4051,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
             runState,
             async (modelErrorResult) => {
-              const forcedRound = await this.executeRuntimeForcedToolRound({
+              return this.executeRuntimeForcedToolRound({
                 activation,
                 packet,
                 messages: state.messages,
@@ -4062,7 +4062,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 ...(signal ? { signal } : {}),
                 assistantText: modelErrorResult.assistantText,
               });
-              return { messages: forcedRound.messages };
             },
           );
         },

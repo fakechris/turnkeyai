@@ -270,6 +270,7 @@ export type ModelCallErrorForcedRoundExecutor = (
   input: ForcedModelCallErrorContinuation,
 ) => Promise<{
   messages: LLMMessage[];
+  [key: string]: unknown;
 }>;
 
 export type TerminalCloseoutRecordMode = "if_absent" | "overwrite";
@@ -482,7 +483,8 @@ export class TerminalCloseoutController {
   ): Promise<TerminalModelCallErrorHookResult> {
     const result = this.handleModelCallError(input, target);
     if (result.kind === "forced_tool_round") {
-      return executeForcedRound(result);
+      const forcedRound = await executeForcedRound(result);
+      return { messages: forcedRound.messages };
     }
     if (result.kind === "rethrow") {
       return "rethrow";

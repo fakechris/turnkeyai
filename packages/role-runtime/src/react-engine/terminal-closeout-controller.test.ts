@@ -464,7 +464,7 @@ test("TerminalCloseoutController applies model-call-error hook recovery results"
       forced.target,
       async (round) => {
         executed.push(round);
-        return { messages: forcedMessages };
+        return { messages: forcedMessages, toolResults: [] };
       },
     ),
     { messages: forcedMessages },
