@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `ac0a765fc0e0a3ce375e15e0d5d4de0970224069`
+**Code HEAD before this docs-only report:** `87f5244146334c60b80de5fb069be85991e6cae3`
 **Date:** 2026-07-02
 
 ## Summary
@@ -106,7 +106,10 @@ could not move the normalizer without making the inline parity reference import 
   controller owns sticky pre-recording, reason-line handoff, completion path
   selection, and final/re-arm state-effect application. The model-call-error
   local-evidence fallback/rethrow boundary now also returns a typed controller
-  result instead of adapter-local null handling.
+  result instead of adapter-local null handling. Model-call-error abort,
+  forced pending-approval `permission_result`, and fallback selection now also
+  route through `TerminalCloseoutController`; the adapter only executes the
+  returned forced tool round or consumes the returned final/rethrow result.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -254,6 +257,7 @@ application outside the terminal completion path.
 | `3dae00b` | Move terminal synthesis path selection and final/re-arm application into `TerminalCloseoutController`; adapter supplies gateway/completed-closeout callbacks. |
 | `920e16d` | Move the terminal closeout entrypoint into `TerminalCloseoutController`; adapter passes the terminate decision and gateway callbacks instead of stitching sticky/application steps locally. |
 | `ac0a765` | Move the model-call-error fallback/rethrow boundary into `TerminalCloseoutController`; adapter consumes a typed final-or-rethrow result. |
+| `87f5244` | Move model-call-error abort / forced pending-approval continuation / fallback selection into `TerminalCloseoutController`; adapter executes only the returned forced tool round. |
 
 ## Current Extracted Implementation
 
@@ -342,7 +346,8 @@ Real implementation now exists in:
   controller callback, plus terminal synthesis path selection and final/re-arm
   application through an injected recorder target, plus the full terminal
   closeout entrypoint from terminate decision to completion, plus the
-  model-call-error local-evidence fallback/rethrow boundary.
+  model-call-error local-evidence fallback/rethrow boundary and model-call-error
+  abort / forced pending-approval continuation / fallback flow selection.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -430,8 +435,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 16 / 16 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 166 / 166 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 17 / 17 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 167 / 167 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -651,6 +656,10 @@ Stage 8 boundaries/slices are now real:
 - engine continuation and post-execute closeout hooks now read current
   completed-session and sub-agent timeout result signals through
   `EvidenceLedger`.
+- model-call-error abort handling, forced pending-approval `permission_result`
+  continuation selection, and local evidence fallback selection route through
+  `TerminalCloseoutController`; the adapter executes only the returned forced
+  tool round before continuing the engine loop.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -707,7 +716,7 @@ Continue with the remaining high-risk pieces:
   synthesis-effect application, final response shaping, closeout write-mode
   selection, explicit state-effect application, sticky completed closeout
   pre-recording, completed initial-synthesis handoff, terminal path selection,
-  final/re-arm application, terminal entrypoint, and model-error fallback
-  boundary slices; keep thinning the adapter.
+  final/re-arm application, terminal entrypoint, and model-error fallback /
+  flow-selection boundary slices; keep thinning the adapter.
 
 The branch is **not pushed**.
