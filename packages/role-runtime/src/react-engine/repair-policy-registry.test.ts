@@ -49,6 +49,7 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
     "stale_denied_approval",
     "approval_wait_timeout_closeout",
     "approval_wait_timeout_local_closeout",
+    "incomplete_approved_browser_action",
   ]);
 });
 
@@ -667,6 +668,83 @@ test("RepairPolicyRegistry skips approval wait-timeout closeout repair when cand
         "Approval is still pending. No browser form submission was performed. The unexecuted result is unverified. Next action: ask the operator to approve a new request.",
       taskPrompt: APPROVAL_WAIT_TIMEOUT_TASK_PROMPT,
       toolTrace: makePermissionResultTrace("pending"),
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns incomplete approved-browser-action repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["incomplete_approved_browser_action"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "The approved browser action was not completed because browser tools were unavailable.",
+    taskPrompt:
+      "Runtime permission cache already applied. Continue from the approved scoped action browser.form.submit dry-run by calling sessions_spawn with agent_id=browser.",
+    toolTrace: [],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "incomplete_approved_browser_action");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.deepEqual(decision?.forceToolChoice, { name: "sessions_spawn" });
+  assert.equal(decision?.consumesRound, true);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /approved browser action has not executed/i,
+  );
+});
+
+test("RepairPolicyRegistry does not repeat incomplete approved-browser-action repair after marker", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["incomplete_approved_browser_action"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "The approved browser action was not completed because browser tools were unavailable.",
+    taskPrompt:
+      "Runtime permission cache already applied. Continue from the approved scoped action browser.form.submit dry-run by calling sessions_spawn with agent_id=browser.",
+    toolTrace: [],
+  });
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["incomplete_approved_browser_action"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
+      resultText:
+        "The approved browser action was not completed because browser tools were unavailable.",
+      taskPrompt:
+        "Runtime permission cache already applied. Continue from the approved scoped action browser.form.submit dry-run by calling sessions_spawn with agent_id=browser.",
+      toolTrace: [],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry skips incomplete approved-browser-action repair before approval is applied", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["incomplete_approved_browser_action"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText:
+        "The approved browser action was not completed because browser tools were unavailable.",
+      taskPrompt:
+        "Approval required for browser.form.submit dry-run. Use the browser after native approval.",
+      toolTrace: [],
     }),
     null,
   );

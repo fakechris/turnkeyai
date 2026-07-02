@@ -51,11 +51,11 @@ import {
 import {
   FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
   SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS,
-  INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS,
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
   buildApprovedBrowserTimeoutContinuationPrompt,
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
+  buildIncompleteApprovedBrowserActionRepairPrompt,
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildIndependentEvidenceStreamContinuationPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
@@ -148,6 +148,7 @@ import {
   shouldAppendTimeoutContinuationVisibility,
   shouldRepairApprovalWaitTimeoutCloseout,
   shouldRepairFinalRecoveryBudgetCloseout,
+  shouldRepairIncompleteApprovedBrowserAction,
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
@@ -3713,14 +3714,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               closeout: approvalWaitTimeoutLocalCloseout.closeoutReason,
             };
           }
-          if (
-            shouldRepairIncompleteApprovedBrowserAction({
+          const incompleteApprovedBrowserActionRepair =
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["incomplete_approved_browser_action"],
+              finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            })
+            });
+          if (
+            incompleteApprovedBrowserActionRepair?.policyId ===
+            "incomplete_approved_browser_action"
           ) {
             return {
               messages: [
@@ -3728,11 +3734,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildIncompleteApprovedBrowserActionRepairPrompt(),
+                  incompleteApprovedBrowserActionRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: { name: "sessions_spawn" },
-              consumesRound: true,
+              forceToolChoice:
+                incompleteApprovedBrowserActionRepair.forceToolChoice,
+              consumesRound: incompleteApprovedBrowserActionRepair.consumesRound,
             };
           }
           if (
@@ -6659,34 +6666,6 @@ function collectApprovalWaitTimeoutRuntimeEvidence(
     : "permission_query/permission_result evidence shows the approval request remains pending.";
 }
 
-function shouldRepairIncompleteApprovedBrowserAction(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  if (hasIncompleteApprovedBrowserActionRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (
-    !requestsApprovalGatedBrowserAction(input.taskPrompt) &&
-    !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
-  ) {
-    return false;
-  }
-  if (
-    !hasPermissionAppliedEvidence(input.toolTrace) &&
-    !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
-  ) {
-    return false;
-  }
-  return matchesAny(
-    input.resultText,
-    INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS,
-  );
-}
-
 function shouldRepairMissingBrowserEvidence(input: {
   taskPrompt: string;
   resultText: string;
@@ -7468,18 +7447,6 @@ const ESTIMATE_REQUEST_PATTERNS = [
   /(?:^|[^A-Za-z0-9_])(?:估算|预估|大概|大致|范围)(?![A-Za-z0-9_])/,
 ];
 
-function hasIncompleteApprovedBrowserActionRepairPrompt(
-  messages: LLMMessage[],
-): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: approved browser action has not executed",
-      ),
-  );
-}
-
 function hasMissingBrowserEvidenceRepairPrompt(
   messages: LLMMessage[],
 ): boolean {
@@ -7572,16 +7539,6 @@ function hasMissingBrowserEvidenceDimensionsRepairPrompt(
         "Runtime correction: final answer omitted requested browser evidence dimensions",
       ),
   );
-}
-
-function buildIncompleteApprovedBrowserActionRepairPrompt(): string {
-  return [
-    "Runtime correction: approved browser action has not executed.",
-    "The approval is already applied and native tools are still available in this loop.",
-    "Do not finalize with a tool-unavailable or final-synthesis explanation.",
-    "Call sessions_spawn with agent_id=browser for the approved scoped browser action.",
-    "The delegated browser task must include the approved submit/action, the local form URL when available, and a requirement to verify the resulting page state before final synthesis.",
-  ].join("\n");
 }
 
 function buildMissingBrowserEvidenceRepairPrompt(taskPrompt: string): string {

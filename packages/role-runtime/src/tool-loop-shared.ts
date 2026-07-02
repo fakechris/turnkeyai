@@ -1473,6 +1473,56 @@ export function buildApprovalWaitTimeoutCloseoutRepairPrompt(): string {
   ].join("\n");
 }
 
+export function shouldRepairIncompleteApprovedBrowserAction(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: readonly LLMMessage[];
+  repairMarkers: readonly LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasIncompleteApprovedBrowserActionRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (
+    !requestsApprovalGatedBrowserAction(input.taskPrompt) &&
+    !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
+  ) {
+    return false;
+  }
+  if (
+    !hasPermissionAppliedEvidence(input.toolTrace) &&
+    !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
+  ) {
+    return false;
+  }
+  return matchesAny(
+    input.resultText,
+    INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS,
+  );
+}
+
+function hasIncompleteApprovedBrowserActionRepairPrompt(
+  messages: readonly LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approved browser action has not executed",
+      ),
+  );
+}
+
+export function buildIncompleteApprovedBrowserActionRepairPrompt(): string {
+  return [
+    "Runtime correction: approved browser action has not executed.",
+    "The approval is already applied and native tools are still available in this loop.",
+    "Do not finalize with a tool-unavailable or final-synthesis explanation.",
+    "Call sessions_spawn with agent_id=browser for the approved scoped browser action.",
+    "The delegated browser task must include the approved submit/action, the local form URL when available, and a requirement to verify the resulting page state before final synthesis.",
+  ].join("\n");
+}
+
 export function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input: {
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];

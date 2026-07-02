@@ -8,19 +8,21 @@
 import {
   buildApprovalWaitTimeoutCloseoutRepairPrompt,
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
+  buildIncompleteApprovedBrowserActionRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   buildPrematurePendingApprovalRepairPrompt,
   buildStaleDeniedApprovalRepairPrompt,
   buildStalePendingApprovalRepairPrompt,
+  shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
+  shouldRepairApprovalWaitTimeoutCloseout,
   shouldRepairFinalRecoveryBudgetCloseout,
+  shouldRepairIncompleteApprovedBrowserAction,
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
   shouldRepairStaleDeniedApproval,
   shouldRepairStalePendingApproval,
-  shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
-  shouldRepairApprovalWaitTimeoutCloseout,
 } from "../tool-loop-shared";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { LLMMessage, ReActToolChoice } from "./types";
@@ -36,6 +38,7 @@ export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "stale_denied_approval",
   "approval_wait_timeout_closeout",
   "approval_wait_timeout_local_closeout",
+  "incomplete_approved_browser_action",
 ] as const;
 
 export type EngineNaturalFinishRepairPolicyId =
@@ -119,6 +122,14 @@ export type NaturalFinishRepairDecision =
       policyId: "approval_wait_timeout_local_closeout";
       evidenceFormula: "candidate_final";
       closeoutReason: "tool_evidence_fallback";
+    }
+  | {
+      kind: "force_tool_round";
+      policyId: "incomplete_approved_browser_action";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: { name: "sessions_spawn" };
+      consumesRound: true;
     };
 
 export interface RepairPolicyRegistry {
@@ -189,6 +200,14 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
         case "approval_wait_timeout_local_closeout": {
           const decision =
             evaluateApprovalWaitTimeoutLocalCloseout(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "incomplete_approved_browser_action": {
+          const decision =
+            evaluateIncompleteApprovedBrowserActionRepair(input);
           if (decision) {
             return decision;
           }
@@ -417,6 +436,33 @@ function evaluateApprovalWaitTimeoutLocalCloseout(
     policyId: "approval_wait_timeout_local_closeout",
     evidenceFormula: "candidate_final",
     closeoutReason: "tool_evidence_fallback",
+  };
+}
+
+function evaluateIncompleteApprovedBrowserActionRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    !shouldRepairIncompleteApprovedBrowserAction({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      toolTrace: input.toolTrace,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "force_tool_round",
+    policyId: "incomplete_approved_browser_action",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildIncompleteApprovedBrowserActionRepairPrompt(),
+    forceToolChoice: { name: "sessions_spawn" },
+    consumesRound: true,
   };
 }
 
