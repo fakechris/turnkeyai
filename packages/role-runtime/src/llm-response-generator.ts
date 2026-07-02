@@ -3313,10 +3313,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ? {}
               : { tools: initialGatewayInput.tools }),
           });
-          if (action.kind === "inject_calls") {
-            return { injectedCalls: action.calls };
-          }
-          return "terminate";
+          return continuation.applyRoundEmptyAction(action);
         },
         // Stage 6: post-synthesis repairs on the engine's tool-free candidate
         // answer (the natural-finish path), mirroring the inline tool-free cascade

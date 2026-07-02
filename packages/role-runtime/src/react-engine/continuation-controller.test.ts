@@ -364,6 +364,26 @@ test("ContinuationController does not repeat an already-sent continuation or inj
   );
 });
 
+test("ContinuationController applies empty-round actions as hook decisions", () => {
+  const controller = createContinuationController();
+  const action = controller.onRoundEmpty({
+    active: true,
+    messages: [],
+    round: 0,
+    taskPrompt: taskPromptWithSession(),
+    toolTrace: [],
+    tools: [{ name: "sessions_send" }],
+  });
+
+  assert.deepEqual(controller.applyRoundEmptyAction(action), {
+    injectedCalls: action.kind === "inject_calls" ? action.calls : [],
+  });
+  assert.equal(
+    controller.applyRoundEmptyAction({ kind: "none" }),
+    "terminate",
+  );
+});
+
 test("ContinuationController continues an approved browser timeout before coverage timeout", () => {
   const controller = createContinuationController();
   const timeoutSignal = {

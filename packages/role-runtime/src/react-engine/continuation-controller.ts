@@ -1,3 +1,4 @@
+import type { ReActEmptyDecision } from "@turnkeyai/agent-core/react-loop";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
@@ -198,6 +199,13 @@ export class ContinuationController {
           ? "empty_round_session_continuation"
           : "empty_round_session_lookup",
     };
+  }
+
+  applyRoundEmptyAction(action: EngineContinueAction): ReActEmptyDecision {
+    if (action.kind === "inject_calls") {
+      return { injectedCalls: action.calls };
+    }
+    return "terminate";
   }
 
   onAfterExecuteTimeoutContinuation(
