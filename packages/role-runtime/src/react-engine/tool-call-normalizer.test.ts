@@ -4,6 +4,7 @@ import test from "node:test";
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import {
+  buildToolCallNormalizationContext,
   ENGINE_TOOL_CALL_NORMALIZATION_ORDER,
   normalizeEngineToolCalls,
   type ToolCallNormalizationContext,
@@ -85,4 +86,47 @@ test("normalizeEngineToolCalls does not mutate the input call array", () => {
   normalizeEngineToolCalls(calls, baseContext());
 
   assert.equal(JSON.stringify(calls), before);
+});
+
+test("buildToolCallNormalizationContext resolves live continuation context and workers", () => {
+  const sessionKey = "worker:browser:task-abc123";
+  const ctx = buildToolCallNormalizationContext({
+    taskPrompt: [
+      "Original user goal (verbatim):",
+      "Inspect the page.",
+      "Latest user direction (verbatim):",
+      "Continue the same browser session.",
+    ].join("\n"),
+    messages: [
+      {
+        role: "tool",
+        toolCallId: "call-1",
+        name: "sessions_spawn",
+        content: [
+          {
+            type: "tool_result",
+            toolUseId: "call-1",
+            content: JSON.stringify({
+              protocol: "turnkeyai.session_tool_result.v1",
+              status: "completed",
+              agent_id: "browser",
+              session_key: sessionKey,
+              final: "loaded page evidence",
+            }),
+          },
+        ],
+      },
+    ],
+    toolTrace: [],
+    repairMarkers: [],
+    capabilityInspection: {
+      availableWorkers: ["browser"],
+    },
+  });
+
+  assert.match(ctx.sessionContinuationContext, new RegExp(sessionKey));
+  assert.equal(ctx.sessionContinuationDirective?.sessionKey, sessionKey);
+  assert.equal(ctx.sessionContinuationLookupDirective, null);
+  assert.equal(ctx.browserAvailable, true);
+  assert.equal(ctx.exploreAvailable, false);
 });

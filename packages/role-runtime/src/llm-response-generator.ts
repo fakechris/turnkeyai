@@ -254,6 +254,7 @@ import {
   createTerminalCloseoutController,
   type DefaultEngineRunStateValues,
   type EngineRunObserver,
+  buildToolCallNormalizationContext,
   finalizeEngineAnswer,
   normalizeEngineToolCalls,
   traceEngineHooks,
@@ -2742,45 +2743,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!activeToolLoop) {
             return calls;
           }
-          const messages = state.messages;
-          const probePending =
-            hasLatestSupplementalLocalTimeoutProbePrompt(messages);
-          const sessionContinuationContext = buildContinuationDirectiveContext(
-            packet.taskPrompt,
-            messages,
+          const normalized = normalizeEngineToolCalls(
+            calls,
+            buildToolCallNormalizationContext({
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              toolTrace,
+              repairMarkers: hookCtx.repairMarkers ?? [],
+              permissionPolicy,
+              ...(packet.capabilityInspection === undefined
+                ? {}
+                : { capabilityInspection: packet.capabilityInspection }),
+            }),
           );
-          const contextualDirective = !probePending
-            ? findSessionContinuationDirective(sessionContinuationContext)
-            : null;
-          const sessionContinuationDirective = probePending
-            ? null
-            : (contextualDirective ??
-              findSessionContinuationDirective(packet.taskPrompt));
-          const sessionContinuationLookupDirective =
-            !probePending &&
-            !sessionContinuationDirective &&
-            !isAppliedApprovalBrowserContinuation(packet.taskPrompt)
-              ? findSessionContinuationLookupDirective(
-                  sessionContinuationContext,
-                  sessionContinuationContext,
-                )
-              : null;
-          const normalized = normalizeEngineToolCalls(calls, {
-            taskPrompt: packet.taskPrompt,
-            messages,
-            toolTrace,
-            repairMarkers: hookCtx.repairMarkers ?? [],
-            sessionContinuationContext,
-            sessionContinuationDirective,
-            sessionContinuationLookupDirective,
-            browserAvailable:
-              packet.capabilityInspection?.availableWorkers?.includes("browser") ??
-              false,
-            exploreAvailable:
-              packet.capabilityInspection?.availableWorkers?.includes("explore") ??
-              false,
-            permissionPolicy,
-          });
           // Stage 8B (Batch E — T7 execution budget plane): the final-recovery
           // tool-budget truncation (inline :817-819). When a final recovery
           // attempt still has budget remaining but this round's pending calls

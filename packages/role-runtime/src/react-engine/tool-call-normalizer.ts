@@ -4,7 +4,11 @@ import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
+  buildContinuationDirectiveContext,
   enforceSupplementalLocalTimeoutProbeToolCall,
+  findSessionContinuationDirective,
+  findSessionContinuationLookupDirective,
+  hasLatestSupplementalLocalTimeoutProbePrompt,
   limitIndependentEvidenceSpawnCalls,
   normalizeBoundedTimeoutDuplicateSourceSpawns,
   normalizeBoundedTimeoutSourceSpawnAgents,
@@ -13,6 +17,7 @@ import {
   normalizePrivateUrlResearchSpawnCalls,
   normalizeSessionToolAliasCalls,
   normalizeSessionToolCalls,
+  isAppliedApprovalBrowserContinuation,
   type SessionContinuationDirective,
   type SessionContinuationLookupDirective,
 } from "../tool-loop-shared";
@@ -44,6 +49,15 @@ export interface ToolCallNormalizationContext {
   sessionContinuationLookupDirective: SessionContinuationLookupDirective | null;
   browserAvailable: boolean;
   exploreAvailable: boolean;
+  permissionPolicy?: PermissionPolicy;
+}
+
+export interface ToolCallNormalizationContextInput {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  repairMarkers: LLMMessage[];
+  capabilityInspection?: { availableWorkers?: readonly string[] };
   permissionPolicy?: PermissionPolicy;
 }
 
@@ -168,6 +182,49 @@ function resolvePermissionPolicy(
 
 export const ENGINE_TOOL_CALL_NORMALIZATION_ORDER: readonly string[] =
   ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE.map((step) => step.name);
+
+export function buildToolCallNormalizationContext(
+  input: ToolCallNormalizationContextInput,
+): ToolCallNormalizationContext {
+  const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
+    input.messages,
+  );
+  const sessionContinuationContext = buildContinuationDirectiveContext(
+    input.taskPrompt,
+    input.messages,
+  );
+  const contextualDirective = !probePending
+    ? findSessionContinuationDirective(sessionContinuationContext)
+    : null;
+  const sessionContinuationDirective = probePending
+    ? null
+    : (contextualDirective ??
+      findSessionContinuationDirective(input.taskPrompt));
+  const sessionContinuationLookupDirective =
+    !probePending &&
+    !sessionContinuationDirective &&
+    !isAppliedApprovalBrowserContinuation(input.taskPrompt)
+      ? findSessionContinuationLookupDirective(
+          sessionContinuationContext,
+          sessionContinuationContext,
+        )
+      : null;
+  const availableWorkers = input.capabilityInspection?.availableWorkers ?? [];
+  return {
+    taskPrompt: input.taskPrompt,
+    messages: input.messages,
+    toolTrace: input.toolTrace,
+    repairMarkers: input.repairMarkers,
+    sessionContinuationContext,
+    sessionContinuationDirective,
+    sessionContinuationLookupDirective,
+    browserAvailable: availableWorkers.includes("browser"),
+    exploreAvailable: availableWorkers.includes("explore"),
+    ...(input.permissionPolicy === undefined
+      ? {}
+      : { permissionPolicy: input.permissionPolicy }),
+  };
+}
 
 export function normalizeEngineToolCalls(
   calls: LLMToolCall[],
