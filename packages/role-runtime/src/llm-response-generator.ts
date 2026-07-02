@@ -3414,6 +3414,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // closeout in onToolCallsClose defers to this via the same predicate, so the
           // repaired blocked closeout still routes through that closeout next round.
           const finalRecoveryBudgetRepair = repairPolicy.evaluateNaturalFinish({
+            enabledPolicies: ["final_recovery_budget_closeout_repair"],
             finalRecoveryBudget: recoveryToolBudget
               ? {
                   maxToolCalls: recoveryToolBudget.maxToolCalls,
@@ -3507,17 +3508,20 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // (consumesRound), so the budget is charged. The recorded repair marker is the
           // idempotency AND the key the onToolCalls enforce-gate normalizer reads to
           // rewrite a resistant browser spawn into permission_query.
+          const missingApprovalGateRepair = repairPolicy.evaluateNaturalFinish({
+            enabledPolicies: ["missing_approval_gate"],
+            finalRecoveryBudget: null,
+            taskPrompt: packet.taskPrompt,
+            resultText: state.lastText,
+            messages: state.messages,
+            repairMarkers,
+            toolTrace,
+            ...(initialGatewayInput.tools === undefined
+              ? {}
+              : { tools: initialGatewayInput.tools }),
+          });
           if (
-            shouldRepairMissingApprovalGate({
-              taskPrompt: packet.taskPrompt,
-              resultText: state.lastText,
-              messages: state.messages,
-              repairMarkers,
-              toolTrace,
-              ...(initialGatewayInput.tools === undefined
-                ? {}
-                : { tools: initialGatewayInput.tools }),
-            })
+            missingApprovalGateRepair?.policyId === "missing_approval_gate"
           ) {
             return {
               messages: [
@@ -3525,11 +3529,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildMissingApprovalGateRepairPrompt(),
+                  missingApprovalGateRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: { name: "permission_query" },
-              consumesRound: true,
+              forceToolChoice: missingApprovalGateRepair.forceToolChoice,
+              consumesRound: missingApprovalGateRepair.consumesRound,
             };
           }
           // Stage 8B slice 1: the approval-wait-timeout repair family (inline :833-1009),

@@ -9,6 +9,7 @@ import {
 test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence", () => {
   assert.deepEqual([...ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER], [
     "final_recovery_budget_closeout_repair",
+    "missing_approval_gate",
   ]);
 });
 
@@ -79,6 +80,83 @@ test("RepairPolicyRegistry skips final-recovery repair for already bounded close
       messages: [],
       repairMarkers: [],
       resultText: "Blocked: remaining provider pricing is 未验证.",
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry keeps disabled natural-finish policies from firing", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["final_recovery_budget_closeout_repair"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText: "The approved browser form submission is complete.",
+      taskPrompt:
+        "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+      toolTrace: [],
+      tools: [{ name: "permission_query" }],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns missing-approval-gate repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["missing_approval_gate"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "The approved browser form submission is complete.",
+    taskPrompt:
+      "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+    toolTrace: [],
+    tools: [{ name: "permission_query" }],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "missing_approval_gate");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.deepEqual(decision?.forceToolChoice, { name: "permission_query" });
+  assert.equal(decision?.consumesRound, true);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /approval-gated browser action/i,
+  );
+});
+
+test("RepairPolicyRegistry does not repeat missing-approval-gate repair after marker", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["missing_approval_gate"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "The approved browser form submission is complete.",
+    taskPrompt:
+      "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+    toolTrace: [],
+    tools: [{ name: "permission_query" }],
+  });
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["missing_approval_gate"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      resultText: "The approved browser form submission is complete.",
+      taskPrompt:
+        "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+      toolTrace: [],
+      tools: [{ name: "permission_query" }],
     }),
     null,
   );
