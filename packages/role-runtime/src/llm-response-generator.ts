@@ -244,6 +244,7 @@ import {
   createCompletedCloseoutController,
   createContinuationController,
   createEnginePolicyTrace,
+  enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
   createEngineRunState,
   createEngineRunObserver,
@@ -269,19 +270,6 @@ import type {
   PreCompactionMemoryFlusher,
   PreCompactionMemoryFlushResult,
 } from "./pre-compaction-memory-flusher";
-
-/**
- * Stage 8 cleanup (Batch 0.5): is the engine policy-trace debug surface enabled?
- * Off by default so ordinary engine runs (including the parity suite) carry no
- * extra metadata; the characterization runner sets TURNKEYAI_ENGINE_POLICY_TRACE=1
- * to capture the golden per-hook decision sequence.
- */
-function enginePolicyTraceDebugEnabled(): boolean {
-  return (
-    typeof process !== "undefined" &&
-    process.env?.TURNKEYAI_ENGINE_POLICY_TRACE === "1"
-  );
-}
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;

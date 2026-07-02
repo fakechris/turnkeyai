@@ -31,6 +31,18 @@ export function createEnginePolicyTrace(): EnginePolicyTrace {
 }
 
 /**
+ * Is the engine policy-trace debug surface enabled?
+ * Off by default so ordinary engine runs and parity carry no extra metadata; the
+ * characterization runner sets TURNKEYAI_ENGINE_POLICY_TRACE=1 for the golden.
+ */
+export function enginePolicyTraceDebugEnabled(): boolean {
+  return (
+    typeof process !== "undefined" &&
+    process.env?.TURNKEYAI_ENGINE_POLICY_TRACE === "1"
+  );
+}
+
+/**
  * No-op trace used where an EnginePolicyTrace is optional. Recording is a
  * no-op and the snapshot is always empty. Keeping this here avoids each module
  * inventing its own null-object.
