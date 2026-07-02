@@ -3897,56 +3897,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 evidenceAvailable,
               }),
           });
-          const reasonLines = terminateCloseout.reasonLines;
-          const closeout =
-            terminateCloseout.closeout as ToolLoopCloseoutMetadata;
           // Sticky completed-closeout metadata (inline `toolLoopCloseout ??=`, :1729):
           // captured on the FIRST completed session, BEFORE the S10 browser-evidence
           // repair re-arms a sessions_spawn round. So the metadata (roundCount/
           // toolCallCount) reflects the round the session first completed, not the
           // later browser round — exactly like inline, whose `??=` no-ops on the
           // re-entered completed block. The final TEXT still comes from the last
-          // synthesis (runState.closeoutResult below).
-          terminalCloseout.recordStickyCloseoutIfNeeded(
-            {
-              sticky: terminateCloseout.sticky ?? false,
-              closeout,
-            },
-            runState,
-          );
-          // TerminalCloseoutController owns terminal synthesis context selection:
-          // pseudo_tool_call synthesizes from the malformed assistant text it must
-          // recover from, so the controller appends it to the synthesis context
-          // (mirrors inline :1032-1038). agent-core has not yet appended the
-          // current assistant message to state.messages when this pre-execute
-          // closeout fires.
-          const terminalSynthesisInput = {
-            reason: reason as EngineCloseoutReason,
-            messages: state.messages,
-            lastText: state.lastText,
-            ...(reasonLines ? { reasonLines } : {}),
-            synthesize: async ({
-              messages,
-              reasonLines: terminalReasonLines,
-            }: {
-              messages: LLMMessage[];
-              reasonLines?: string[];
-            }) =>
-              this.generateFinalAfterToolRoundLimit({
-                activation,
-                packet,
-                selection,
-                baseGatewayInput: initialGatewayInput,
-                messages,
-                maxRounds,
-                modelCallTrace,
-                ...(terminalReasonLines
-                  ? { reasonLines: terminalReasonLines }
-                  : {}),
-              }),
-          };
-          // TerminalCloseoutController owns terminal synthesis path selection
-          // and application. The adapter still injects the gateway callbacks.
+          // synthesis (runState.closeoutResult below). TerminalCloseoutController
+          // owns that pre-recording plus synthesis path selection and application;
+          // the adapter only injects gateway callbacks.
           const completedSessionForRepair = runState.completedSession();
           // Reason-gated, matching inline: ONLY completed_sub_agent_final is sticky
           // (`??=`, inline :1729) — the completed branch set it early so an S10 re-armed
@@ -3956,10 +3915,40 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // metadata must replace the stale completed one, exactly as inline reassigns
           // `toolLoopCloseout =` for non-completed reasons (codex #520 P2).
           const terminalCompletion =
-            await terminalCloseout.completeTerminalCloseout({
-              ...terminalSynthesisInput,
-              closeout,
+            await terminalCloseout.handleTerminalCloseout({
+              reason: reason as EngineCloseoutReason,
+              decision: {
+                closeout:
+                  terminateCloseout.closeout as ToolLoopCloseoutMetadata,
+                ...(terminateCloseout.reasonLines === undefined
+                  ? {}
+                  : { reasonLines: terminateCloseout.reasonLines }),
+                ...(terminateCloseout.sticky === undefined
+                  ? {}
+                  : { sticky: terminateCloseout.sticky }),
+              },
+              messages: state.messages,
+              lastText: state.lastText,
               target: runState,
+              synthesize: async ({
+                messages,
+                reasonLines: terminalReasonLines,
+              }: {
+                messages: LLMMessage[];
+                reasonLines?: string[];
+              }) =>
+                this.generateFinalAfterToolRoundLimit({
+                  activation,
+                  packet,
+                  selection,
+                  baseGatewayInput: initialGatewayInput,
+                  messages,
+                  maxRounds,
+                  modelCallTrace,
+                  ...(terminalReasonLines
+                    ? { reasonLines: terminalReasonLines }
+                    : {}),
+                }),
               ...(reason === "completed_sub_agent_final" &&
               completedSessionForRepair
                 ? {

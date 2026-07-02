@@ -195,6 +195,27 @@ export interface TerminalCloseoutCompletionInput<
   };
 }
 
+export interface TerminalCloseoutDecisionInput {
+  closeout: ToolLoopCloseoutMetadata;
+  reasonLines?: string[];
+  sticky?: boolean;
+}
+
+export interface TerminalCloseoutHandlingInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends Omit<
+    TerminalCloseoutCompletionInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+    "closeout" | "reasonLines"
+  > {
+  decision: TerminalCloseoutDecisionInput;
+}
+
 export type TerminalCloseoutCompletionResult =
   | {
       kind: "final";
@@ -508,6 +529,39 @@ export class TerminalCloseoutController {
         input.target,
       ),
     };
+  }
+
+  async handleTerminalCloseout<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalCloseoutHandlingInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<TerminalCloseoutCompletionResult> {
+    this.recordStickyCloseoutIfNeeded(
+      {
+        sticky: input.decision.sticky ?? false,
+        closeout: input.decision.closeout,
+      },
+      input.target,
+    );
+
+    return this.completeTerminalCloseout({
+      reason: input.reason,
+      messages: input.messages,
+      lastText: input.lastText,
+      closeout: input.decision.closeout,
+      target: input.target,
+      synthesize: input.synthesize,
+      ...(input.decision.reasonLines === undefined
+        ? {}
+        : { reasonLines: input.decision.reasonLines }),
+      ...(input.completed === undefined ? {} : { completed: input.completed }),
+    });
   }
 
   finalizeGeneratedResult(input: TerminalGeneratedResultInput): GenerateTextResult {

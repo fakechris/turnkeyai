@@ -534,6 +534,80 @@ test("TerminalCloseoutController owns terminal synthesis path selection and appl
   ]);
 });
 
+test("TerminalCloseoutController owns terminal closeout entrypoint from decision to completion", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [{ role: "user", content: "Investigate." }];
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 4,
+    toolCallCount: 2,
+    roundCount: 3,
+    evidenceAvailable: true,
+  };
+  const reArm = {
+    reArm: {
+      messages: [...messages, { role: "user" as const, content: "Gather more." }],
+      forceToolChoice: { name: "sessions_spawn" },
+    },
+  };
+  const { events, target } = recordingTarget();
+  const initialRequests: unknown[] = [];
+
+  const completed = await controller.handleTerminalCloseout<
+    string,
+    string,
+    string
+  >({
+    reason: "completed_sub_agent_final",
+    decision: {
+      closeout,
+      reasonLines: ["completed evidence"],
+      sticky: true,
+    },
+    messages,
+    lastText: "unused",
+    target,
+    synthesize: async (request) => {
+      initialRequests.push(request);
+      return {
+        result: result("initial completed synthesis"),
+        memoryFlush: "initial-flush",
+      };
+    },
+    completed: {
+      synthesize: async ({ initialSynthesis }) => {
+        assert.equal(initialSynthesis.memoryFlush, "initial-flush");
+        return {
+          kind: "rearm",
+          reArm,
+          memoryFlushes: ["initial-flush"],
+          reduction: "completed-reduction",
+          reductionSnapshot: "completed-snapshot",
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(completed, { kind: "rearm", reArm });
+  assert.deepEqual(initialRequests, [
+    {
+      messages,
+      reasonLines: ["completed evidence"],
+    },
+  ]);
+  assert.deepEqual(events, [
+    ["if_absent", closeout],
+    ["memory_flush", "initial-flush"],
+    [
+      "reduction",
+      {
+        reduction: "completed-reduction",
+        reductionSnapshot: "completed-snapshot",
+      },
+    ],
+  ]);
+});
+
 test("TerminalCloseoutController owns terminal closeout write mode and final response shape", () => {
   const controller = createTerminalCloseoutController();
 
