@@ -4014,14 +4014,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             synthesisReduction = completedTerminal.reduction;
             synthesisReductionSnapshot = completedTerminal.reductionSnapshot;
           } else {
-            // Push each synthesis's pre-compaction memory flush as it happens.
-            if (generated.memoryFlush) {
-              runState.recordMemoryFlush(generated.memoryFlush);
+            const nonCompletedTerminal =
+              terminalCloseout.applyNonCompletedGeneratedSynthesis({
+                reason: reason as EngineCloseoutReason,
+                generated,
+              });
+            for (const memoryFlush of nonCompletedTerminal.memoryFlushes) {
+              runState.recordMemoryFlush(memoryFlush);
             }
-            closeoutResult = terminalCloseout.finalizeGeneratedResult({
-              reason: reason as EngineCloseoutReason,
-              result: generated.result,
-            });
+            closeoutResult = nonCompletedTerminal.result;
+            synthesisReduction = nonCompletedTerminal.reduction;
+            synthesisReductionSnapshot =
+              nonCompletedTerminal.reductionSnapshot;
           }
           // Reason-gated, matching inline: ONLY completed_sub_agent_final is sticky
           // (`??=`, inline :1729) — the completed branch set it early so an S10 re-armed

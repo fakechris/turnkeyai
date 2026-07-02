@@ -77,6 +77,41 @@ export interface TerminalGeneratedResultInput {
   result: GenerateTextResult;
 }
 
+export interface NonCompletedTerminalSynthesis<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  result: GenerateTextResult;
+  reduction?: TReduction;
+  reductionSnapshot?: TReductionSnapshot;
+  memoryFlush?: TMemoryFlush;
+}
+
+export interface NonCompletedTerminalSynthesisInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  reason: EngineCloseoutReason;
+  generated: NonCompletedTerminalSynthesis<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+}
+
+export interface NonCompletedTerminalSynthesisResult<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  result: GenerateTextResult;
+  memoryFlushes: TMemoryFlush[];
+  reduction?: TReduction;
+  reductionSnapshot?: TReductionSnapshot;
+}
+
 export class TerminalCloseoutController {
   buildApprovalWaitTimeoutFallback(
     input: ApprovalWaitTimeoutFallbackInput,
@@ -152,6 +187,39 @@ export class TerminalCloseoutController {
       return maybeAppendTimeoutContinuationVisibility(input.result);
     }
     return input.result;
+  }
+
+  applyNonCompletedGeneratedSynthesis<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: NonCompletedTerminalSynthesisInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): NonCompletedTerminalSynthesisResult<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+    return {
+      result: this.finalizeGeneratedResult({
+        reason: input.reason,
+        result: input.generated.result,
+      }),
+      memoryFlushes:
+        input.generated.memoryFlush === undefined
+          ? []
+          : [input.generated.memoryFlush],
+      ...(input.generated.reduction !== undefined
+        ? { reduction: input.generated.reduction }
+        : {}),
+      ...(input.generated.reductionSnapshot !== undefined
+        ? { reductionSnapshot: input.generated.reductionSnapshot }
+        : {}),
+    };
   }
 }
 

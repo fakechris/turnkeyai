@@ -182,3 +182,34 @@ test("TerminalCloseoutController applies timeout visibility to non-completed tim
   });
   assert.equal(roundLimit.text, "The round limit was reached.");
 });
+
+test("TerminalCloseoutController applies non-completed synthesis effects", () => {
+  const controller = createTerminalCloseoutController();
+
+  const applied = controller.applyNonCompletedGeneratedSynthesis({
+    reason: "sub_agent_timeout",
+    generated: {
+      result: result("The delegated source timed out before enough evidence arrived."),
+      reduction: { level: "compact" },
+      reductionSnapshot: { level: "compact", omittedSections: ["history"] },
+      memoryFlush: "flush-1",
+    },
+  });
+
+  assert.match(applied.result.text, /Continuation: this source check is resumable/);
+  assert.deepEqual(applied.memoryFlushes, ["flush-1"]);
+  assert.deepEqual(applied.reduction, { level: "compact" });
+  assert.deepEqual(applied.reductionSnapshot, {
+    level: "compact",
+    omittedSections: ["history"],
+  });
+
+  const plain = controller.applyNonCompletedGeneratedSynthesis({
+    reason: "round_limit",
+    generated: { result: result("The round limit was reached.") },
+  });
+  assert.equal(plain.result.text, "The round limit was reached.");
+  assert.deepEqual(plain.memoryFlushes, []);
+  assert.equal(plain.reduction, undefined);
+  assert.equal(plain.reductionSnapshot, undefined);
+});
