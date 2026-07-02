@@ -4049,7 +4049,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     : { tools: initialGatewayInput.tools }),
                 })
               : { kind: "none" as const };
-          const modelErrorResult = terminalCloseout.handleModelCallError(
+          return terminalCloseout.completeModelCallError(
             {
               aborted,
               active: Boolean(activeToolLoop),
@@ -4068,25 +4068,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   : { kind: "none" },
             },
             runState,
+            async (modelErrorResult) => {
+              const forcedRound = await this.executeRuntimeForcedToolRound({
+                activation,
+                packet,
+                messages: state.messages,
+                toolTrace,
+                toolCalls: modelErrorResult.calls,
+                round: toolTrace.length + 1,
+                toolLoopStartedAtMs,
+                ...(signal ? { signal } : {}),
+                assistantText: modelErrorResult.assistantText,
+              });
+              return { messages: forcedRound.messages };
+            },
           );
-          if (modelErrorResult.kind === "forced_tool_round") {
-            const forcedRound = await this.executeRuntimeForcedToolRound({
-              activation,
-              packet,
-              messages: state.messages,
-              toolTrace,
-              toolCalls: modelErrorResult.calls,
-              round: toolTrace.length + 1,
-              toolLoopStartedAtMs,
-              ...(signal ? { signal } : {}),
-              assistantText: modelErrorResult.assistantText,
-            });
-            return { messages: forcedRound.messages };
-          }
-          if (modelErrorResult.kind === "rethrow") {
-            return "rethrow";
-          }
-          return modelErrorResult.response;
         },
         // Capture the live message history for the post-loop finalization epilogue.
         // onTerminate / onModelCallError stash runState finalMessages on the closeout and

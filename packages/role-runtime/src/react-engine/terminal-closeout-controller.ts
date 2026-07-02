@@ -259,6 +259,19 @@ export type TerminalModelCallErrorResult =
   | TerminalModelCallErrorFallbackResult
   | ForcedModelCallErrorContinuation;
 
+export type TerminalModelCallErrorHookResult =
+  | TerminalFinalResponse
+  | "rethrow"
+  | {
+      messages: LLMMessage[];
+    };
+
+export type ModelCallErrorForcedRoundExecutor = (
+  input: ForcedModelCallErrorContinuation,
+) => Promise<{
+  messages: LLMMessage[];
+}>;
+
 export type TerminalCloseoutRecordMode = "if_absent" | "overwrite";
 
 export interface TerminalCloseoutApplicationTarget<
@@ -452,6 +465,29 @@ export class TerminalCloseoutController {
       return input.forcedPermissionResult;
     }
     return this.handleModelCallErrorFallback(input, target);
+  }
+
+  async completeModelCallError<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: ModelCallErrorHandlingInput,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+    executeForcedRound: ModelCallErrorForcedRoundExecutor,
+  ): Promise<TerminalModelCallErrorHookResult> {
+    const result = this.handleModelCallError(input, target);
+    if (result.kind === "forced_tool_round") {
+      return executeForcedRound(result);
+    }
+    if (result.kind === "rethrow") {
+      return "rethrow";
+    }
+    return result.response;
   }
 
   buildSynthesisMessages(input: TerminalSynthesisMessagesInput): LLMMessage[] {
