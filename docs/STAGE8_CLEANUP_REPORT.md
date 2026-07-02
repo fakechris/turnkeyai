@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `c0011d3a2c3a0db8afe79340a2cbd7c9fc7b4a4c`
+**Code HEAD before this docs-only report:** `200f9e67e3653030f455469a18907ee3ec10c081`
 **Date:** 2026-07-02
 
 ## Summary
@@ -43,6 +43,10 @@ could not move the normalizer without making the inline parity reference import 
   typed decisions from
   `react-engine/repair-policy-registry.ts`; the adapter still applies the
   repair marker and appended messages at the original precedence points.
+  The forced `sessions_spawn` natural-finish repairs for missing
+  browser-visible evidence and product-signal dashboard evidence now return
+  typed decisions from the same registry, preserving their precedence before
+  the missing approval-gate repair.
   The first completed-closeout-only repair policies also now return typed
   decisions from that registry: `timeout_followup_final_guidance`,
   `missing_requested_next_action`, `missing_required_final_deliverables`,
@@ -134,6 +138,7 @@ of controller actions.
 | `85a3c44` | Extract terminal closeout reasonLines/metadata decisions into `CloseoutPolicyRegistry.evaluateTerminate`; move completed product-signal carry-forward helpers into neutral shared code. |
 | `9451190` | Move product-signal dashboard URL extraction into neutral shared code and remove the adapter-local duplicate dashboard regex tail. |
 | `c0011d3` | Move missing browser/product-signal evidence repair detectors and prompt builders into neutral shared code. |
+| `200f9e6` | Route missing browser/product-signal evidence natural-finish repair decisions through `RepairPolicyRegistry`; add focused policy tests. |
 
 ## Current Extracted Implementation
 
@@ -169,6 +174,8 @@ Real implementation now exists in:
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
   repair policies: `final_recovery_budget_closeout_repair`,
+  `missing_browser_evidence`,
+  `missing_product_signal_browser_evidence`,
   `missing_approval_gate`, `pending_approval_wait_timeout_check`,
   `premature_pending_approval`, `stale_pending_approval`, and
   `stale_denied_approval`, plus `approval_wait_timeout_closeout` and
@@ -176,7 +183,8 @@ Real implementation now exists in:
   `incomplete_approved_browser_action`, `missing_requested_table_columns`, and
   `extraneous_provider_table_schema`, plus `source_evidence_carry_forward` and
   `weak_evidence_synthesis`, including exhausted final-recovery
-  budget gating, bounded-closeout skip behavior, approval-gate repair gating,
+  budget gating, bounded-closeout skip behavior, missing browser/product-signal
+  evidence forced-spawn gating, approval-gate repair gating,
   approval wait-timeout permission-result repair gating, stale pending/denied
   approval repair gating, approval wait-timeout closeout repair gating,
   failed-repair deterministic local closeout gating, incomplete approved-browser
@@ -250,8 +258,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 26 / 26 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 137 / 137 |
+| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 43 / 43 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 139 / 139 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -265,7 +273,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifty
+root plus several policy-heavy hook bodies. The main improvement is that fifty-one
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -405,6 +413,9 @@ Stage 8 boundaries/slices are now real:
   builders now live in neutral shared code; the adapter still applies the
   force-tool-choice and repair-marker re-arm behavior at the original
   precedence points.
+- missing browser/product-signal evidence natural-finish repair decisions now
+  route through `RepairPolicyRegistry`; the engine adapter applies the returned
+  prompt, `sessions_spawn` force choice, and consumed-round flag.
 
 ## Remaining Work
 
