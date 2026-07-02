@@ -383,6 +383,57 @@ test("TerminalCloseoutController owns terminal synthesis invocation boundaries",
   });
 });
 
+test("TerminalCloseoutController owns completed terminal synthesis handoff", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [{ role: "user", content: "Summarize." }];
+  const calls: string[] = [];
+
+  const completed = await controller.synthesizeCompletedCloseout<
+    string,
+    string,
+    string
+  >({
+    reason: "completed_sub_agent_final",
+    messages,
+    lastText: "unused",
+    reasonLines: ["completed evidence"],
+    synthesize: async ({ messages: synthesisMessages, reasonLines }) => {
+      calls.push("initial");
+      assert.equal(synthesisMessages, messages);
+      assert.deepEqual(reasonLines, ["completed evidence"]);
+      return {
+        result: result("initial completed synthesis"),
+        reduction: "initial-reduction",
+        reductionSnapshot: "initial-snapshot",
+        memoryFlush: "initial-flush",
+      };
+    },
+    synthesizeCompleted: async ({ initialSynthesis }) => {
+      calls.push("completed");
+      assert.equal(initialSynthesis.result.text, "initial completed synthesis");
+      assert.equal(initialSynthesis.reduction, "initial-reduction");
+      assert.equal(initialSynthesis.reductionSnapshot, "initial-snapshot");
+      assert.equal(initialSynthesis.memoryFlush, "initial-flush");
+      return {
+        kind: "final",
+        result: result("completed final"),
+        memoryFlushes: ["initial-flush", "repair-flush"],
+        reduction: "repair-reduction",
+        reductionSnapshot: "repair-snapshot",
+      };
+    },
+  });
+
+  assert.deepEqual(calls, ["initial", "completed"]);
+  assert.deepEqual(completed, {
+    kind: "final",
+    result: result("completed final"),
+    memoryFlushes: ["initial-flush", "repair-flush"],
+    reduction: "repair-reduction",
+    reductionSnapshot: "repair-snapshot",
+  });
+});
+
 test("TerminalCloseoutController owns terminal closeout write mode and final response shape", () => {
   const controller = createTerminalCloseoutController();
 

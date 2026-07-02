@@ -3964,61 +3964,59 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           let terminalMemoryFlushes: PreCompactionMemoryFlushResult[] = [];
           const completedSessionForRepair = runState.completedSession();
           if (reason === "completed_sub_agent_final" && completedSessionForRepair) {
-            const generated =
-              await terminalCloseout.synthesizeInitialCloseout(
-                terminalSynthesisInput,
-              );
-            synthesisReduction = generated.reduction;
-            synthesisReductionSnapshot = generated.reductionSnapshot;
             const repairMarkers = (ctx.repairMarkers ??= []);
             const completedTerminal =
-              await completedCloseout.synthesizeTerminalCloseout({
-                packet,
-                messages: state.messages,
-                repairMarkers,
-                completedSession: completedSessionForRepair,
-                completedSessionToolResultText:
-                  evidenceLedger.toolResultContentText(
-                    runState.completedSessionToolResults() ?? [],
-                  ),
-                initialSynthesis: generated,
-                ...(activation ? { activation } : {}),
-                ...(initialGatewayInput.tools === undefined
-                  ? {}
-                  : { tools: initialGatewayInput.tools }),
-                repairPolicy,
-                synthesizeRepair: async ({ messages }) => {
-                  const repairGatewayMessages =
-                    prepareToolHistoryForGateway(messages);
-                  return this.generateWithEnvelopeRetry({
-                    activation,
+              await terminalCloseout.synthesizeCompletedCloseout({
+                ...terminalSynthesisInput,
+                synthesizeCompleted: async ({ initialSynthesis }) =>
+                  completedCloseout.synthesizeTerminalCloseout({
                     packet,
-                    selection,
-                    gatewayInput: {
-                      ...withoutToolUse(initialGatewayInput),
-                      messages: repairGatewayMessages,
-                      envelope: {
-                        ...(initialGatewayInput.envelope ?? {}),
-                        toolCount: 0,
-                        toolSchemaBytes: 0,
-                        ...deriveToolResultEnvelope(repairGatewayMessages),
-                      },
+                    messages: state.messages,
+                    repairMarkers,
+                    completedSession: completedSessionForRepair,
+                    completedSessionToolResultText:
+                      evidenceLedger.toolResultContentText(
+                        runState.completedSessionToolResults() ?? [],
+                      ),
+                    initialSynthesis,
+                    ...(activation ? { activation } : {}),
+                    ...(initialGatewayInput.tools === undefined
+                      ? {}
+                      : { tools: initialGatewayInput.tools }),
+                    repairPolicy,
+                    synthesizeRepair: async ({ messages }) => {
+                      const repairGatewayMessages =
+                        prepareToolHistoryForGateway(messages);
+                      return this.generateWithEnvelopeRetry({
+                        activation,
+                        packet,
+                        selection,
+                        gatewayInput: {
+                          ...withoutToolUse(initialGatewayInput),
+                          messages: repairGatewayMessages,
+                          envelope: {
+                            ...(initialGatewayInput.envelope ?? {}),
+                            toolCount: 0,
+                            toolSchemaBytes: 0,
+                            ...deriveToolResultEnvelope(repairGatewayMessages),
+                          },
+                        },
+                        modelCallTrace,
+                        tracePhase: "final_synthesis_repair",
+                      });
                     },
-                    modelCallTrace,
-                    tracePhase: "final_synthesis_repair",
-                  });
-                },
-                synthesizeToolCallArtifactCleanup: async ({ messages }) =>
-                  this.generateFinalAfterToolRoundLimit({
-                    activation,
-                    packet,
-                    selection,
-                    baseGatewayInput: initialGatewayInput,
-                    messages,
-                    maxRounds,
-                    modelCallTrace,
+                    synthesizeToolCallArtifactCleanup: async ({ messages }) =>
+                      this.generateFinalAfterToolRoundLimit({
+                        activation,
+                        packet,
+                        selection,
+                        baseGatewayInput: initialGatewayInput,
+                        messages,
+                        maxRounds,
+                        modelCallTrace,
+                      }),
+                    toolTrace,
                   }),
-                toolTrace,
               });
             if (completedTerminal.kind === "rearm") {
               terminalCloseout.recordSynthesisEffects(

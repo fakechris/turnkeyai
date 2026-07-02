@@ -12,6 +12,7 @@ import {
   maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
 } from "../tool-loop-shared";
+import type { CompletedCloseoutTerminalResult } from "./completed-closeout-controller";
 import type { EngineCloseoutReason } from "./types";
 
 // Stage 8 engine cleanup — TerminalCloseoutController.
@@ -130,6 +131,30 @@ export interface TerminalSynthesisInput<
     input: TerminalSynthesisRequest,
   ): Promise<
     NonCompletedTerminalSynthesis<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  >;
+}
+
+export interface CompletedTerminalSynthesisInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends TerminalSynthesisInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+  synthesizeCompleted(input: {
+    initialSynthesis: NonCompletedTerminalSynthesis<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >;
+  }): Promise<
+    CompletedCloseoutTerminalResult<
       TReduction,
       TReductionSnapshot,
       TMemoryFlush
@@ -358,6 +383,27 @@ export class TerminalCloseoutController {
       reason: input.reason,
       generated,
     });
+  }
+
+  async synthesizeCompletedCloseout<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: CompletedTerminalSynthesisInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<
+    CompletedCloseoutTerminalResult<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  > {
+    const initialSynthesis = await this.synthesizeInitialCloseout(input);
+    return input.synthesizeCompleted({ initialSynthesis });
   }
 
   finalizeGeneratedResult(input: TerminalGeneratedResultInput): GenerateTextResult {
