@@ -109,6 +109,7 @@ export interface NaturalFinishRepairInput {
   taskPrompt?: string;
   toolTrace?: NativeToolRoundTrace[];
   tools?: readonly { name: string }[];
+  evidenceText?: string;
 }
 
 export interface CompletedSynthesisRepairInput {
@@ -572,6 +573,9 @@ function evaluateMissingProductSignalBrowserEvidenceRepair(
       repairMarkers: input.repairMarkers,
       toolTrace: input.toolTrace,
       ...(input.tools === undefined ? {} : { tools: input.tools }),
+      ...(input.evidenceText === undefined
+        ? {}
+        : { evidenceText: input.evidenceText }),
     })
   ) {
     return null;

@@ -4100,53 +4100,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ...(synthesisReductionSnapshot
                 ? { initialReductionSnapshot: synthesisReductionSnapshot }
                 : {}),
+              ...(initialGatewayInput.tools === undefined
+                ? {}
+                : { tools: initialGatewayInput.tools }),
               repairPolicy,
-              findReArmRepair: ({
-                repairMessages,
-                repairMarkers,
-                resultText,
-                productSignalEvidenceText,
-              }) => {
-                if (
-                  shouldRepairMissingBrowserEvidence({
-                    taskPrompt: packet.taskPrompt,
-                    resultText,
-                    messages: repairMessages,
-                    repairMarkers,
-                    toolTrace,
-                    tools: initialGatewayInput.tools,
-                  })
-                ) {
-                  return {
-                    repairPrompt: buildMissingBrowserEvidenceRepairPrompt(
-                      packet.taskPrompt,
-                    ),
-                    forceToolChoice: { name: "sessions_spawn" },
-                  };
-                }
-                if (
-                  shouldRepairMissingProductSignalBrowserEvidence({
-                    taskPrompt: packet.taskPrompt,
-                    resultText,
-                    messages: repairMessages,
-                    repairMarkers,
-                    toolTrace,
-                    tools: initialGatewayInput.tools,
-                    ...(productSignalEvidenceText !== undefined
-                      ? { evidenceText: productSignalEvidenceText }
-                      : {}),
-                  })
-                ) {
-                  return {
-                    repairPrompt:
-                      buildMissingProductSignalBrowserEvidenceRepairPrompt(
-                        packet.taskPrompt,
-                      ),
-                    forceToolChoice: { name: "sessions_spawn" },
-                  };
-                }
-                return null;
-              },
               synthesizeRepair: async ({ messages }) => {
                 const repairGatewayMessages = prepareToolHistoryForGateway(messages);
                 return this.generateWithEnvelopeRetry({

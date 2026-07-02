@@ -100,7 +100,6 @@ test("CompletedCloseoutController repairs completed-only synthesis and cleans up
       "The delegated session verified the plan is $10 per month.",
     initialResult: textResult("The plan is verified at $10 per month."),
     repairPolicy: createRepairPolicyRegistry(),
-    findReArmRepair: () => null,
     synthesizeRepair: async ({ messages }) => {
       repairMessagesSeen.push(messages);
       return {
@@ -135,15 +134,16 @@ test("CompletedCloseoutController repairs completed-only synthesis and cleans up
   assert.equal(messageText(cleanupMessagesSeen[0]?.at(-1)), "Calling a tool.");
 });
 
-test("CompletedCloseoutController re-arms before round>0 table repairs and returns pending reduction", async () => {
+test("CompletedCloseoutController re-arms through registry before round>0 table repairs and returns pending reduction", async () => {
   const controller = createCompletedCloseoutController();
   const repairMarkers: LLMMessage[] = [];
   let repairCalls = 0;
 
   const result = await controller.runRepairLoop({
     taskPrompt:
-      "Return table: provider, evidence URL. Also tell me the next action the operator should take.",
+      "Return table: provider, evidence URL. Inspect the browser-visible rendered page and also tell me the next action the operator should take.",
     toolTrace: [],
+    tools: [{ name: "sessions_spawn" }],
     repairMessages: [],
     repairMarkers,
     completedSessionFinalContents: [
@@ -159,18 +159,18 @@ test("CompletedCloseoutController re-arms before round>0 table repairs and retur
       ),
     ),
     repairPolicy: createRepairPolicyRegistry(),
-    findReArmRepair: ({ repairRound, resultText }) =>
-      repairRound === 1 && /\| provider \|/.test(resultText)
-        ? {
-            repairPrompt:
-              "Runtime correction: final answer omitted required browser evidence.",
-            forceToolChoice: { name: "sessions_spawn" },
-          }
-        : null,
     synthesizeRepair: async () => {
       repairCalls += 1;
       return {
-        result: textResult(["| provider |", "| --- |", "| A |"].join("\n")),
+        result: textResult(
+          [
+            "I could not verify the rendered page because browser session tools are unavailable.",
+            "",
+            "| provider |",
+            "| --- |",
+            "| A |",
+          ].join("\n"),
+        ),
         reduction: { level: "compact" },
         reductionSnapshot: { level: "compact", artifactIds: ["a1"] },
         memoryFlush: "repair-flush",
@@ -188,7 +188,7 @@ test("CompletedCloseoutController re-arms before round>0 table repairs and retur
   assert.deepEqual(result.reArm.reArm.forceToolChoice, { name: "sessions_spawn" });
   assert.match(
     messageText(result.reArm.reArm.messages.at(-1)),
-    /omitted required browser evidence/i,
+    /browser-visible evidence is missing/i,
   );
   assert.equal(repairMarkers.length, 2);
 });

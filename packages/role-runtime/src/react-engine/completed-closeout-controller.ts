@@ -1,4 +1,4 @@
-import type { ReActReArm, ReActToolChoice } from "@turnkeyai/agent-core/react-loop";
+import type { ReActReArm } from "@turnkeyai/agent-core/react-loop";
 import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 import type {
   GenerateTextResult,
@@ -61,19 +61,6 @@ export interface CompletedCloseoutSynthesis<
   memoryFlush?: TMemoryFlush;
 }
 
-export interface CompletedCloseoutReArmRepairInput {
-  repairRound: number;
-  repairMessages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  resultText: string;
-  productSignalEvidenceText?: string;
-}
-
-export interface CompletedCloseoutReArmRepair {
-  repairPrompt: string;
-  forceToolChoice: ReActToolChoice;
-}
-
 export interface CompletedCloseoutRepairLoopInput<
   TReduction = unknown,
   TReductionSnapshot = unknown,
@@ -90,10 +77,8 @@ export interface CompletedCloseoutRepairLoopInput<
   initialResult: GenerateTextResult;
   initialReduction?: TReduction;
   initialReductionSnapshot?: TReductionSnapshot;
+  tools?: readonly { name: string }[];
   repairPolicy?: RepairPolicyRegistry;
-  findReArmRepair(
-    input: CompletedCloseoutReArmRepairInput,
-  ): CompletedCloseoutReArmRepair | null;
   synthesizeRepair(input: {
     messages: LLMMessage[];
   }): Promise<CompletedCloseoutSynthesis<TReduction, TReductionSnapshot, TMemoryFlush>>;
@@ -185,7 +170,7 @@ export class CompletedCloseoutController {
       if (repairRound > 0) {
         const browserReArm = buildReArmIfNeeded({
           input,
-          repairRound,
+          repairPolicy,
           repairMessages,
           synthesisResult,
         });
@@ -223,7 +208,7 @@ export class CompletedCloseoutController {
       if (repairRound === 0 && !repairPrompt) {
         const browserReArm = buildReArmIfNeeded({
           input,
-          repairRound,
+          repairPolicy,
           repairMessages,
           synthesisResult,
           productSignalEvidenceText: input.completedSessionEvidenceText,
@@ -390,21 +375,28 @@ function evaluateWeakEvidenceRepair(input: {
 
 function buildReArmIfNeeded(input: {
   input: CompletedCloseoutRepairLoopInput;
-  repairRound: number;
+  repairPolicy: RepairPolicyRegistry;
   repairMessages: LLMMessage[];
   synthesisResult: GenerateTextResult;
   productSignalEvidenceText?: string;
 }): ReActReArm | null {
-  const repair = input.input.findReArmRepair({
-    repairRound: input.repairRound,
-    repairMessages: input.repairMessages,
-    repairMarkers: input.input.repairMarkers,
+  const repair = input.repairPolicy.evaluateNaturalFinish({
+    enabledPolicies: [
+      "missing_browser_evidence",
+      "missing_product_signal_browser_evidence",
+    ],
+    finalRecoveryBudget: null,
+    taskPrompt: input.input.taskPrompt,
     resultText: input.synthesisResult.text,
+    messages: input.repairMessages,
+    repairMarkers: input.input.repairMarkers,
+    toolTrace: input.input.toolTrace,
+    ...(input.input.tools === undefined ? {} : { tools: input.input.tools }),
     ...(input.productSignalEvidenceText === undefined
       ? {}
-      : { productSignalEvidenceText: input.productSignalEvidenceText }),
+      : { evidenceText: input.productSignalEvidenceText }),
   });
-  if (!repair) {
+  if (repair?.kind !== "force_tool_round") {
     return null;
   }
   return {
