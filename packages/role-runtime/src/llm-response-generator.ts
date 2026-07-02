@@ -79,7 +79,9 @@ import {
   hasTimeoutContinuationGuidance,
   hasMissingApprovalGateRepairPrompt,
   hasPermissionGateEvidence,
+  hasLatestSupplementalLocalTimeoutProbePrompt,
   isAbortError,
+  isAppliedApprovalBrowserContinuation,
   inferIndependentEvidenceStreamCount,
   isBrowserSessionSpawn,
   isExplicitSessionContinuationRequest,
@@ -138,6 +140,7 @@ import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/
 // so later batches can prove byte-identical behavior and so production-behind-flag
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
+  createContinuationController,
   createEnginePolicyTrace,
   createExecutionBudgetController,
   createEngineRunState,
@@ -2603,6 +2606,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const ctx: RoleToolContext = { activation, packet, repairMarkers: [], ...(signal ? { signal } : {}) };
     const permissionPolicy = createPermissionPolicy();
     const executionBudget = createExecutionBudgetController();
+    const continuation = createContinuationController();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     type RoleEngineRunStateValues = DefaultEngineRunStateValues & {
@@ -2648,69 +2652,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // pre-check below) and onRoundEmpty (the actual injection) so both agree on
     // whether a continuation is pending — mirroring inline, where the injection at
     // :577 populates toolCalls BEFORE the wall-clock check at :1285 sees it.
-    const computeEmptyRoundContinuationCall = (
-      state: ReActState,
-    ): LLMToolCall | null => {
-      if (!activeToolLoop) {
-        return null;
-      }
-      const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
-        state.messages,
-      );
-      const continuationContext = buildContinuationDirectiveContext(
-        packet.taskPrompt,
-        state.messages,
-      );
-      const contextualDirective = !probePending
-        ? findSessionContinuationDirective(continuationContext)
-        : null;
-      const directive = probePending
-        ? null
-        : (contextualDirective ??
-          findSessionContinuationDirective(packet.taskPrompt));
-      if (
-        directive &&
-        !hasExecutedSessionsSend(toolTrace, directive.sessionKey) &&
-        hasToolDefinition(initialGatewayInput.tools, "sessions_send")
-      ) {
-        return {
-          id: `runtime-continuation-${state.round + 1}`,
-          name: "sessions_send",
-          input: {
-            session_key: directive.sessionKey,
-            message: directive.messageHint,
-          },
-        };
-      }
-      // Continuation LOOKUP directive (inline :740-757): the model answered an
-      // explicit continuation without a session key, so inject a sessions_list to
-      // discover the resumable session before sending. Gated on !directive so the
-      // direct sessions_send branch above wins; computed exactly like the
-      // onToolCalls pipeline (:2779-2787).
-      const lookupDirective =
-        !probePending &&
-        !directive &&
-        !isAppliedApprovalBrowserContinuation(packet.taskPrompt)
-          ? findSessionContinuationLookupDirective(
-              continuationContext,
-              continuationContext,
-            )
-          : null;
-      if (
-        lookupDirective &&
-        hasToolDefinition(initialGatewayInput.tools, "sessions_list")
-      ) {
-        return {
-          id: `runtime-continuation-lookup-${state.round + 1}`,
-          name: "sessions_list",
-          input: {
-            limit: 5,
-            reason: `continuation lookup: ${lookupDirective.messageHint}`,
-          },
-        };
-      }
-      return null;
-    };
+    const computeEmptyRoundContinuationCall = (state: ReActState) =>
+      continuation.previewEmptyRoundContinuation({
+        active: Boolean(activeToolLoop),
+        messages: state.messages,
+        round: state.round,
+        taskPrompt: packet.taskPrompt,
+        toolTrace,
+        ...(initialGatewayInput.tools === undefined
+          ? {}
+          : { tools: initialGatewayInput.tools }),
+      });
     const agent = createReActAgent<RoleToolContext>({
       model,
       toolkit,
@@ -3577,9 +3529,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // S2/S3 forced-spawn exactly as inline :567 pre-empts :748; lookup
         // continuations inject sessions_list from the same helper.
         onRoundEmpty: (state) => {
-          const continuationCall = computeEmptyRoundContinuationCall(state);
-          if (continuationCall) {
-            return { injectedCalls: [continuationCall] };
+          const action = continuation.onRoundEmpty({
+            active: Boolean(activeToolLoop),
+            messages: state.messages,
+            round: state.round,
+            taskPrompt: packet.taskPrompt,
+            toolTrace,
+            ...(initialGatewayInput.tools === undefined
+              ? {}
+              : { tools: initialGatewayInput.tools }),
+          });
+          if (action.kind === "inject_calls") {
+            return { injectedCalls: action.calls };
           }
           return "terminate";
         },
@@ -6904,18 +6865,6 @@ function hasSupplementalLocalTimeoutProbePrompt(
   );
 }
 
-function hasLatestSupplementalLocalTimeoutProbePrompt(
-  messages: LLMMessage[],
-): boolean {
-  const latest = messages.at(-1);
-  return (
-    latest?.role === "user" &&
-    readMessageContentText(latest.content).includes(
-      "Runtime correction: resumed timeout evidence is still content-poor.",
-    )
-  );
-}
-
 function allowsSupplementalBrowserProbe(packet: RolePromptPacket): boolean {
   const unavailable =
     packet.capabilityInspection?.unavailableCapabilities ?? [];
@@ -8651,13 +8600,6 @@ function taskPromptRequestsApprovalWaitTimeoutCloseout(
 function taskPromptAllowsStoppingAtPendingApproval(taskPrompt: string): boolean {
   return /\bstop\b[\s\S]{0,80}\b(?:approval request|permission request)\b[\s\S]{0,120}\b(?:wait|operator decision|approval|decision)\b|\bwait for (?:the )?operator decision\b[\s\S]{0,160}\bdo not (?:apply|submit|execute|proceed)/i.test(
     taskPrompt,
-  );
-}
-
-function isAppliedApprovalBrowserContinuation(taskPrompt: string): boolean {
-  return (
-    taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
-    requestsApprovalGatedBrowserAction(taskPrompt)
   );
 }
 

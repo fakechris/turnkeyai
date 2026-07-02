@@ -495,6 +495,25 @@ export function readMessageContentText(content: LLMMessage["content"]): string {
     .join("\n");
 }
 
+export function hasLatestSupplementalLocalTimeoutProbePrompt(
+  messages: LLMMessage[],
+): boolean {
+  const latest = messages.at(-1);
+  return (
+    latest?.role === "user" &&
+    readMessageContentText(latest.content).includes(
+      "Runtime correction: resumed timeout evidence is still content-poor.",
+    )
+  );
+}
+
+export function isAppliedApprovalBrowserContinuation(taskPrompt: string): boolean {
+  return (
+    taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
+    requestsApprovalGatedBrowserAction(taskPrompt)
+  );
+}
+
 export function findSessionContinuationDirective(
   taskPrompt: string,
 ): SessionContinuationDirective | null {
