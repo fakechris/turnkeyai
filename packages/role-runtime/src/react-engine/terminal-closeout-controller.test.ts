@@ -434,6 +434,106 @@ test("TerminalCloseoutController owns completed terminal synthesis handoff", asy
   });
 });
 
+test("TerminalCloseoutController owns terminal synthesis path selection and application", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [{ role: "user", content: "Investigate." }];
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "sub_agent_timeout",
+    maxRounds: 4,
+    toolCallCount: 2,
+    roundCount: 3,
+    evidenceAvailable: true,
+  };
+  const { events, target } = recordingTarget();
+
+  const final = await controller.completeTerminalCloseout<string, string, string>({
+    reason: "sub_agent_timeout",
+    closeout,
+    messages,
+    lastText: "unused",
+    target,
+    synthesize: async () => ({
+      result: result("The delegated source timed out before enough evidence arrived."),
+      reduction: "timeout-reduction",
+      reductionSnapshot: "timeout-snapshot",
+      memoryFlush: "timeout-flush",
+    }),
+  });
+
+  assert.equal(final.kind, "final");
+  assert.match(final.response.text, /Continuation: this source check is resumable/);
+  assert.deepEqual(events, [
+    ["memory_flush", "timeout-flush"],
+    ["overwrite", closeout],
+    [
+      "result",
+      {
+        text:
+          "The delegated source timed out before enough evidence arrived.\n\n" +
+          "Continuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.",
+      },
+    ],
+    [
+      "reduction",
+      {
+        reduction: "timeout-reduction",
+        reductionSnapshot: "timeout-snapshot",
+      },
+    ],
+  ]);
+
+  const rearmEvents = recordingTarget();
+  const reArm = {
+    reArm: {
+      messages: [...messages, { role: "user" as const, content: "Gather more." }],
+      forceToolChoice: { name: "sessions_spawn" },
+    },
+  };
+
+  const completed = await controller.completeTerminalCloseout<
+    string,
+    string,
+    string
+  >({
+    reason: "completed_sub_agent_final",
+    closeout: {
+      ...closeout,
+      reason: "completed_sub_agent_final",
+    },
+    messages,
+    lastText: "unused",
+    target: rearmEvents.target,
+    synthesize: async () => ({
+      result: result("initial completed synthesis"),
+      memoryFlush: "initial-flush",
+    }),
+    completed: {
+      synthesize: async ({ initialSynthesis }) => {
+        assert.equal(initialSynthesis.memoryFlush, "initial-flush");
+        return {
+          kind: "rearm",
+          reArm,
+          memoryFlushes: ["initial-flush"],
+          reduction: "completed-reduction",
+          reductionSnapshot: "completed-snapshot",
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(completed, { kind: "rearm", reArm });
+  assert.deepEqual(rearmEvents.events, [
+    ["memory_flush", "initial-flush"],
+    [
+      "reduction",
+      {
+        reduction: "completed-reduction",
+        reductionSnapshot: "completed-snapshot",
+      },
+    ],
+  ]);
+});
+
 test("TerminalCloseoutController owns terminal closeout write mode and final response shape", () => {
   const controller = createTerminalCloseoutController();
 

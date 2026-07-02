@@ -3945,101 +3945,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   : {}),
               }),
           };
-          // Mirror the inline per-reason trailing transforms. completed: redact
-          // forbidden local URLs from the delegated evidence (inline :1784).
-          // timeout: append the resumable-continuation sentence (inline :2197).
-          // Other reasons pass through.
-          //
-          // The per-reason completed-closeout appenders run after the repair loop
-          // below; the unconditional inline finalization epilogue runs after the
-          // agent finishes. Keep those transforms outside the repair predicate loop:
-          // repairs may re-synthesize, appenders only decorate the accepted final.
-          let synthesisReduction:
-            | RoleEngineRunStateValues["Reduction"]
-            | undefined;
-          let synthesisReductionSnapshot:
-            | RoleEngineRunStateValues["ReductionSnapshot"]
-            | undefined;
-          let closeoutResult: GenerateTextResult;
-          let terminalMemoryFlushes: PreCompactionMemoryFlushResult[] = [];
+          // TerminalCloseoutController owns terminal synthesis path selection
+          // and application. The adapter still injects the gateway callbacks.
           const completedSessionForRepair = runState.completedSession();
-          if (reason === "completed_sub_agent_final" && completedSessionForRepair) {
-            const repairMarkers = (ctx.repairMarkers ??= []);
-            const completedTerminal =
-              await terminalCloseout.synthesizeCompletedCloseout({
-                ...terminalSynthesisInput,
-                synthesizeCompleted: async ({ initialSynthesis }) =>
-                  completedCloseout.synthesizeTerminalCloseout({
-                    packet,
-                    messages: state.messages,
-                    repairMarkers,
-                    completedSession: completedSessionForRepair,
-                    completedSessionToolResultText:
-                      evidenceLedger.toolResultContentText(
-                        runState.completedSessionToolResults() ?? [],
-                      ),
-                    initialSynthesis,
-                    ...(activation ? { activation } : {}),
-                    ...(initialGatewayInput.tools === undefined
-                      ? {}
-                      : { tools: initialGatewayInput.tools }),
-                    repairPolicy,
-                    synthesizeRepair: async ({ messages }) => {
-                      const repairGatewayMessages =
-                        prepareToolHistoryForGateway(messages);
-                      return this.generateWithEnvelopeRetry({
-                        activation,
-                        packet,
-                        selection,
-                        gatewayInput: {
-                          ...withoutToolUse(initialGatewayInput),
-                          messages: repairGatewayMessages,
-                          envelope: {
-                            ...(initialGatewayInput.envelope ?? {}),
-                            toolCount: 0,
-                            toolSchemaBytes: 0,
-                            ...deriveToolResultEnvelope(repairGatewayMessages),
-                          },
-                        },
-                        modelCallTrace,
-                        tracePhase: "final_synthesis_repair",
-                      });
-                    },
-                    synthesizeToolCallArtifactCleanup: async ({ messages }) =>
-                      this.generateFinalAfterToolRoundLimit({
-                        activation,
-                        packet,
-                        selection,
-                        baseGatewayInput: initialGatewayInput,
-                        messages,
-                        maxRounds,
-                        modelCallTrace,
-                      }),
-                    toolTrace,
-                  }),
-              });
-            if (completedTerminal.kind === "rearm") {
-              terminalCloseout.recordSynthesisEffects(
-                completedTerminal,
-                runState,
-              );
-              return completedTerminal.reArm;
-            }
-            closeoutResult = completedTerminal.result;
-            synthesisReduction = completedTerminal.reduction;
-            synthesisReductionSnapshot = completedTerminal.reductionSnapshot;
-            terminalMemoryFlushes = completedTerminal.memoryFlushes;
-          } else {
-            const nonCompletedTerminal =
-              await terminalCloseout.synthesizeNonCompletedCloseout(
-                terminalSynthesisInput,
-              );
-            closeoutResult = nonCompletedTerminal.result;
-            synthesisReduction = nonCompletedTerminal.reduction;
-            synthesisReductionSnapshot =
-              nonCompletedTerminal.reductionSnapshot;
-            terminalMemoryFlushes = nonCompletedTerminal.memoryFlushes;
-          }
           // Reason-gated, matching inline: ONLY completed_sub_agent_final is sticky
           // (`??=`, inline :1729) — the completed branch set it early so an S10 re-armed
           // round keeps the first-completion metadata. Every OTHER reason OVERWRITES
@@ -4047,21 +3955,78 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // (sub_agent_timeout / round_limit / a pending-call closeout), that reason's
           // metadata must replace the stale completed one, exactly as inline reassigns
           // `toolLoopCloseout =` for non-completed reasons (codex #520 P2).
-          return terminalCloseout.applyCloseoutApplication(
-            {
-              reason: reason as EngineCloseoutReason,
+          const terminalCompletion =
+            await terminalCloseout.completeTerminalCloseout({
+              ...terminalSynthesisInput,
               closeout,
-              result: closeoutResult,
-              memoryFlushes: terminalMemoryFlushes,
-              ...(synthesisReduction === undefined
-                ? {}
-                : { reduction: synthesisReduction }),
-              ...(synthesisReductionSnapshot === undefined
-                ? {}
-                : { reductionSnapshot: synthesisReductionSnapshot }),
-            },
-            runState,
-          );
+              target: runState,
+              ...(reason === "completed_sub_agent_final" &&
+              completedSessionForRepair
+                ? {
+                    completed: {
+                      synthesize: async ({ initialSynthesis }) => {
+                        const repairMarkers = (ctx.repairMarkers ??= []);
+                        return completedCloseout.synthesizeTerminalCloseout({
+                          packet,
+                          messages: state.messages,
+                          repairMarkers,
+                          completedSession: completedSessionForRepair,
+                          completedSessionToolResultText:
+                            evidenceLedger.toolResultContentText(
+                              runState.completedSessionToolResults() ?? [],
+                            ),
+                          initialSynthesis,
+                          ...(activation ? { activation } : {}),
+                          ...(initialGatewayInput.tools === undefined
+                            ? {}
+                            : { tools: initialGatewayInput.tools }),
+                          repairPolicy,
+                          synthesizeRepair: async ({ messages }) => {
+                            const repairGatewayMessages =
+                              prepareToolHistoryForGateway(messages);
+                            return this.generateWithEnvelopeRetry({
+                              activation,
+                              packet,
+                              selection,
+                              gatewayInput: {
+                                ...withoutToolUse(initialGatewayInput),
+                                messages: repairGatewayMessages,
+                                envelope: {
+                                  ...(initialGatewayInput.envelope ?? {}),
+                                  toolCount: 0,
+                                  toolSchemaBytes: 0,
+                                  ...deriveToolResultEnvelope(
+                                    repairGatewayMessages,
+                                  ),
+                                },
+                              },
+                              modelCallTrace,
+                              tracePhase: "final_synthesis_repair",
+                            });
+                          },
+                          synthesizeToolCallArtifactCleanup: async ({
+                            messages,
+                          }) =>
+                            this.generateFinalAfterToolRoundLimit({
+                              activation,
+                              packet,
+                              selection,
+                              baseGatewayInput: initialGatewayInput,
+                              messages,
+                              maxRounds,
+                              modelCallTrace,
+                            }),
+                          toolTrace,
+                        });
+                      },
+                    },
+                  }
+                : {}),
+            });
+          if (terminalCompletion.kind === "rearm") {
+            return terminalCompletion.reArm;
+          }
+          return terminalCompletion.response;
         },
         // Stage 5 closeout: a thrown tool-round model call converges onto the
         // inline tool_evidence_fallback closeout (when usable evidence exists). The

@@ -1,3 +1,4 @@
+import type { ReActReArm } from "@turnkeyai/agent-core/react-loop";
 import type {
   GenerateTextResult,
   LLMMessage,
@@ -161,6 +162,48 @@ export interface CompletedTerminalSynthesisInput<
     >
   >;
 }
+
+export interface TerminalCloseoutCompletionInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends TerminalSynthesisInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+  closeout: ToolLoopCloseoutMetadata;
+  target: TerminalCloseoutApplicationTarget<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+  completed?: {
+    synthesize(input: {
+      initialSynthesis: NonCompletedTerminalSynthesis<
+        TReduction,
+        TReductionSnapshot,
+        TMemoryFlush
+      >;
+    }): Promise<
+      CompletedCloseoutTerminalResult<
+        TReduction,
+        TReductionSnapshot,
+        TMemoryFlush
+      >
+    >;
+  };
+}
+
+export type TerminalCloseoutCompletionResult =
+  | {
+      kind: "final";
+      response: TerminalFinalResponse;
+    }
+  | {
+      kind: "rearm";
+      reArm: ReActReArm;
+    };
 
 export interface TerminalFinalResponse {
   text: string;
@@ -404,6 +447,67 @@ export class TerminalCloseoutController {
   > {
     const initialSynthesis = await this.synthesizeInitialCloseout(input);
     return input.synthesizeCompleted({ initialSynthesis });
+  }
+
+  async completeTerminalCloseout<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalCloseoutCompletionInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<TerminalCloseoutCompletionResult> {
+    if (input.reason === "completed_sub_agent_final" && input.completed) {
+      const completed = await this.synthesizeCompletedCloseout({
+        ...input,
+        synthesizeCompleted: input.completed.synthesize,
+      });
+      if (completed.kind === "rearm") {
+        this.recordSynthesisEffects(completed, input.target);
+        return { kind: "rearm", reArm: completed.reArm };
+      }
+      return {
+        kind: "final",
+        response: this.applyCloseoutApplication(
+          {
+            reason: input.reason,
+            closeout: input.closeout,
+            result: completed.result,
+            memoryFlushes: completed.memoryFlushes,
+            ...(completed.reduction === undefined
+              ? {}
+              : { reduction: completed.reduction }),
+            ...(completed.reductionSnapshot === undefined
+              ? {}
+              : { reductionSnapshot: completed.reductionSnapshot }),
+          },
+          input.target,
+        ),
+      };
+    }
+
+    const generated = await this.synthesizeNonCompletedCloseout(input);
+    return {
+      kind: "final",
+      response: this.applyCloseoutApplication(
+        {
+          reason: input.reason,
+          closeout: input.closeout,
+          result: generated.result,
+          memoryFlushes: generated.memoryFlushes,
+          ...(generated.reduction === undefined
+            ? {}
+            : { reduction: generated.reduction }),
+          ...(generated.reductionSnapshot === undefined
+            ? {}
+            : { reductionSnapshot: generated.reductionSnapshot }),
+        },
+        input.target,
+      ),
+    };
   }
 
   finalizeGeneratedResult(input: TerminalGeneratedResultInput): GenerateTextResult {
