@@ -3900,16 +3900,20 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           const reasonLines = terminateCloseout.reasonLines;
           const closeout =
             terminateCloseout.closeout as ToolLoopCloseoutMetadata;
-          if (terminateCloseout.sticky) {
-            // Sticky completed-closeout metadata (inline `toolLoopCloseout ??=`, :1729):
-            // captured on the FIRST completed session, BEFORE the S10 browser-evidence
-            // repair re-arms a sessions_spawn round. So the metadata (roundCount/
-            // toolCallCount) reflects the round the session first completed, not the
-            // later browser round — exactly like inline, whose `??=` no-ops on the
-            // re-entered completed block. The final TEXT still comes from the last
-            // synthesis (runState.closeoutResult below).
-            runState.recordToolLoopCloseoutIfAbsent(closeout);
-          }
+          // Sticky completed-closeout metadata (inline `toolLoopCloseout ??=`, :1729):
+          // captured on the FIRST completed session, BEFORE the S10 browser-evidence
+          // repair re-arms a sessions_spawn round. So the metadata (roundCount/
+          // toolCallCount) reflects the round the session first completed, not the
+          // later browser round — exactly like inline, whose `??=` no-ops on the
+          // re-entered completed block. The final TEXT still comes from the last
+          // synthesis (runState.closeoutResult below).
+          terminalCloseout.recordStickyCloseoutIfNeeded(
+            {
+              sticky: terminateCloseout.sticky ?? false,
+              closeout,
+            },
+            runState,
+          );
           // TerminalCloseoutController owns terminal synthesis context selection:
           // pseudo_tool_call synthesizes from the malformed assistant text it must
           // recover from, so the controller appends it to the synthesis context

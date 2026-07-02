@@ -405,6 +405,36 @@ test("TerminalCloseoutController owns terminal closeout write mode and final res
   });
 });
 
+test("TerminalCloseoutController owns sticky terminal closeout pre-recording", () => {
+  const controller = createTerminalCloseoutController();
+  const { events, target } = recordingTarget();
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 4,
+    toolCallCount: 2,
+    roundCount: 3,
+    evidenceAvailable: true,
+  };
+
+  controller.recordStickyCloseoutIfNeeded(
+    {
+      sticky: false,
+      closeout,
+    },
+    target,
+  );
+  assert.deepEqual(events, []);
+
+  controller.recordStickyCloseoutIfNeeded(
+    {
+      sticky: true,
+      closeout,
+    },
+    target,
+  );
+  assert.deepEqual(events, [["if_absent", closeout]]);
+});
+
 test("TerminalCloseoutController applies terminal closeout effects through a target", () => {
   const controller = createTerminalCloseoutController();
   const { events, target } = recordingTarget();

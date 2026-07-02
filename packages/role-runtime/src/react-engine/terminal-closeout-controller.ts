@@ -183,6 +183,11 @@ export interface TerminalCloseoutApplicationInput<
   result: GenerateTextResult;
 }
 
+export interface TerminalStickyCloseoutInput {
+  sticky?: boolean;
+  closeout: ToolLoopCloseoutMetadata;
+}
+
 export class TerminalCloseoutController {
   buildApprovalWaitTimeoutFallback(
     input: ApprovalWaitTimeoutFallbackInput,
@@ -404,6 +409,23 @@ export class TerminalCloseoutController {
       text: result.text,
       ...(result.stopReason ? { stopReason: result.stopReason } : {}),
     };
+  }
+
+  recordStickyCloseoutIfNeeded<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalStickyCloseoutInput,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): void {
+    if (input.sticky) {
+      target.recordToolLoopCloseoutIfAbsent(input.closeout);
+    }
   }
 
   recordSynthesisEffects<
