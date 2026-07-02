@@ -54,6 +54,18 @@ export function matchesAny(value: string, patterns: readonly RegExp[]): boolean 
   return patterns.some((pattern) => pattern.test(value));
 }
 
+export function containsAnyToolCallForm(result: {
+  text: string;
+  toolCalls?: readonly LLMToolCall[];
+}): boolean {
+  if ((result.toolCalls?.length ?? 0) > 0) {
+    return true;
+  }
+  return /<\s*(?:minimax:)?tool_call\b|<\s*invoke\b|<\/\s*(?:minimax:)?tool_call\s*>|\btool_calls?\s*[:=]/i.test(
+    result.text,
+  );
+}
+
 export function taskPromptLooksLikeSourceCheckContinuation(taskPrompt: string): boolean {
   return (
     /\b(?:slow-source|slow source|slow-fixture|slow fixture|source-check|source check)\b/i.test(taskPrompt) &&

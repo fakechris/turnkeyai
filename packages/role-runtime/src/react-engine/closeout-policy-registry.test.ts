@@ -140,6 +140,8 @@ test("CloseoutPolicyRegistry returns operator-cancelled closeout decision", () =
 
   const decision = registry.evaluateRemainingPendingCalls({
     pendingToolCallCount: 1,
+    pendingContinuation: false,
+    lastText: "running sessions",
     taskPrompt: cancelledSessionTaskPrompt(),
     messages: [],
     maxRounds: 3,
@@ -166,6 +168,8 @@ test("CloseoutPolicyRegistry skips operator-cancelled without pending calls", ()
   assert.equal(
     registry.evaluateRemainingPendingCalls({
       pendingToolCallCount: 0,
+      pendingContinuation: false,
+      lastText: "running sessions",
       taskPrompt: cancelledSessionTaskPrompt(),
       messages: [],
       maxRounds: 3,
@@ -183,9 +187,76 @@ test("CloseoutPolicyRegistry skips operator-cancelled when the user asks to cont
   assert.equal(
     registry.evaluateRemainingPendingCalls({
       pendingToolCallCount: 1,
+      pendingContinuation: false,
+      lastText: "running sessions",
       taskPrompt: cancelledSessionTaskPrompt(
         "Continue the cancelled source-check session.",
       ),
+      messages: [],
+      maxRounds: 3,
+      usedToolCalls: 2,
+      roundCount: 2,
+      evidenceAvailable: true,
+    }),
+    null,
+  );
+});
+
+test("CloseoutPolicyRegistry returns pseudo tool-call closeout decision", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluateRemainingPendingCalls({
+    pendingToolCallCount: 0,
+    pendingContinuation: false,
+    lastText: "<tool_call>{}</tool_call>",
+    taskPrompt: "Summarize the gathered evidence.",
+    messages: [],
+    maxRounds: 3,
+    usedToolCalls: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+
+  assert.equal(decision?.kind, "closeout");
+  assert.equal(decision?.reason, "pseudo_tool_call");
+  assert.match(decision?.reasonLines[0] ?? "", /pseudo tool-call markup/);
+  assert.deepEqual(decision?.closeout, {
+    reason: "pseudo_tool_call",
+    maxRounds: 3,
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+});
+
+test("CloseoutPolicyRegistry skips pseudo tool-call when continuation is pending", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateRemainingPendingCalls({
+      pendingToolCallCount: 0,
+      pendingContinuation: true,
+      lastText: "<tool_call>{}</tool_call>",
+      taskPrompt: "Continue the source check.",
+      messages: [],
+      maxRounds: 3,
+      usedToolCalls: 2,
+      roundCount: 2,
+      evidenceAvailable: true,
+    }),
+    null,
+  );
+});
+
+test("CloseoutPolicyRegistry skips pseudo tool-call when native calls are pending", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateRemainingPendingCalls({
+      pendingToolCallCount: 1,
+      pendingContinuation: false,
+      lastText: "<tool_call>{}</tool_call>",
+      taskPrompt: "Summarize the gathered evidence.",
       messages: [],
       maxRounds: 3,
       usedToolCalls: 2,

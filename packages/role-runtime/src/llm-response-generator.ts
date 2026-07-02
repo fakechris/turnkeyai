@@ -106,6 +106,7 @@ import {
   limitIndependentEvidenceSpawnCalls,
   looksBoundedTimeoutSourceCheck,
   matchesAny,
+  containsAnyToolCallForm,
   normalizeApprovalGatedBrowserSpawnCalls,
   normalizeBoundedTimeoutDuplicateSourceSpawns,
   normalizeBoundedTimeoutSourceSpawnAgents,
@@ -3012,6 +3013,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           const remainingPendingCloseout =
             closeoutPolicy.evaluateRemainingPendingCalls({
               pendingToolCallCount: calls.length,
+              pendingContinuation: pendingContinuation !== null,
+              lastText: state.lastText,
               taskPrompt: packet.taskPrompt,
               messages: state.messages,
               maxRounds,
@@ -3019,41 +3022,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               roundCount,
               evidenceAvailable: hasUsableEvidence(toolTrace),
             });
-          if (
-            remainingPendingCloseout?.kind === "closeout" &&
-            remainingPendingCloseout.reason === "operator_cancelled"
-          ) {
+          if (remainingPendingCloseout?.kind === "closeout") {
             runState.recordPendingCloseout({
               reasonLines: remainingPendingCloseout.reasonLines,
               closeout: remainingPendingCloseout.closeout,
             });
             return remainingPendingCloseout.reason;
           }
-          // 3. pseudo_tool_call — no native calls, but the text emitted tool-call
-          //    markup (XML/JSON/pseudo). Skip when a continuation is pending: inline
-          //    injects the synthetic sessions_send (:567) before this empty-gated
-          //    closeout (:1035), so the injection wins and the continuation runs.
-          if (
-            calls.length === 0 &&
-            !pendingContinuation &&
-            containsAnyToolCallForm({ text: state.lastText, toolCalls: calls })
-          ) {
-            runState.recordPendingCloseout({
-              reasonLines: [
-                "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
-                "Tools are not available through text markup. Do not call more tools.",
-                "Produce only the final user-facing answer from the evidence already present in the conversation.",
-              ],
-              closeout: {
-                reason: "pseudo_tool_call",
-                maxRounds,
-                toolCallCount: countToolCalls(toolTrace),
-                roundCount,
-                evidenceAvailable: hasUsableEvidence(toolTrace),
-              },
-            });
-            return "pseudo_tool_call";
-          }
+          // 3. pseudo_tool_call — handled by CloseoutPolicyRegistry. The registry
+          //    preserves the same empty-call and pending-continuation gates.
           // 4. wall_clock_budget — the graceful round-top closeout (closes the
           //    #490 gap: produce a final answer from gathered evidence instead of
           //    failing loud). Pending calls present + at least one prior round.
@@ -6804,18 +6781,6 @@ function maybeAppendTimeoutContinuationVisibility(
     ...result,
     text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.`.trim(),
   };
-}
-
-function containsAnyToolCallForm(result: {
-  text: string;
-  toolCalls?: LLMToolCall[];
-}): boolean {
-  if ((result.toolCalls?.length ?? 0) > 0) {
-    return true;
-  }
-  return /<\s*(?:minimax:)?tool_call\b|<\s*invoke\b|<\/\s*(?:minimax:)?tool_call\s*>|\btool_calls?\s*[:=]/i.test(
-    result.text,
-  );
 }
 
 // Stage 6 prereq: record an injected repair prompt in the idempotency ledger and

@@ -10,6 +10,7 @@
 // precedence; it is defined in Batch 0 so the contract is pinnable, and the
 // evaluating registry methods are added in Batch 3.
 import {
+  containsAnyToolCallForm,
   shouldCloseoutCancelledSessionWithoutContinuation,
   shouldRepairFinalRecoveryBudgetCloseout,
 } from "../tool-loop-shared";
@@ -71,8 +72,18 @@ export interface OperatorCancelledCloseoutMetadata {
   evidenceAvailable: boolean;
 }
 
+export interface PseudoToolCallCloseoutMetadata {
+  reason: "pseudo_tool_call";
+  maxRounds: number;
+  toolCallCount: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+}
+
 export interface RemainingPendingCallsCloseoutInput {
   pendingToolCallCount: number;
+  pendingContinuation: boolean;
+  lastText: string;
   taskPrompt: string;
   messages: LLMMessage[];
   maxRounds: number;
@@ -88,9 +99,12 @@ export type RecoveryToolBudgetCloseoutDecision =
   | CloseoutDeferDecision;
 
 export type RemainingPendingCallsCloseoutDecision =
-  CloseoutDecision<OperatorCancelledCloseoutMetadata> & {
-    closeout: OperatorCancelledCloseoutMetadata;
-  };
+  | (CloseoutDecision<OperatorCancelledCloseoutMetadata> & {
+      closeout: OperatorCancelledCloseoutMetadata;
+    })
+  | (CloseoutDecision<PseudoToolCallCloseoutMetadata> & {
+      closeout: PseudoToolCallCloseoutMetadata;
+    });
 
 export interface CloseoutPolicyRegistry {
   evaluateRecoveryToolBudget(
@@ -139,32 +153,55 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
     input: RemainingPendingCallsCloseoutInput,
   ): RemainingPendingCallsCloseoutDecision | null {
     if (
-      input.pendingToolCallCount <= 0 ||
-      !shouldCloseoutCancelledSessionWithoutContinuation({
+      input.pendingToolCallCount > 0 &&
+      shouldCloseoutCancelledSessionWithoutContinuation({
         taskPrompt: input.taskPrompt,
         messages: input.messages,
       })
     ) {
-      return null;
-    }
-    return {
-      kind: "closeout",
-      policyId: "operator_cancelled",
-      reason: "operator_cancelled",
-      reasonLines: [
-        "A previous sub-agent session was cancelled by the operator.",
-        "The latest user message did not ask to continue, resume, or retry that cancelled session.",
-        "Do not call more tools or spawn a replacement session. Produce the final answer from the cancellation evidence already present.",
-        "State what remains unverified and how the user can continue later if they want the cancelled work resumed.",
-      ],
-      closeout: {
+      return {
+        kind: "closeout",
+        policyId: "operator_cancelled",
         reason: "operator_cancelled",
-        maxRounds: input.maxRounds,
-        toolCallCount: input.usedToolCalls,
-        roundCount: input.roundCount,
-        evidenceAvailable: input.evidenceAvailable,
-      },
-    };
+        reasonLines: [
+          "A previous sub-agent session was cancelled by the operator.",
+          "The latest user message did not ask to continue, resume, or retry that cancelled session.",
+          "Do not call more tools or spawn a replacement session. Produce the final answer from the cancellation evidence already present.",
+          "State what remains unverified and how the user can continue later if they want the cancelled work resumed.",
+        ],
+        closeout: {
+          reason: "operator_cancelled",
+          maxRounds: input.maxRounds,
+          toolCallCount: input.usedToolCalls,
+          roundCount: input.roundCount,
+          evidenceAvailable: input.evidenceAvailable,
+        },
+      };
+    }
+    if (
+      input.pendingToolCallCount === 0 &&
+      !input.pendingContinuation &&
+      containsAnyToolCallForm({ text: input.lastText })
+    ) {
+      return {
+        kind: "closeout",
+        policyId: "pseudo_tool_call",
+        reason: "pseudo_tool_call",
+        reasonLines: [
+          "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
+          "Tools are not available through text markup. Do not call more tools.",
+          "Produce only the final user-facing answer from the evidence already present in the conversation.",
+        ],
+        closeout: {
+          reason: "pseudo_tool_call",
+          maxRounds: input.maxRounds,
+          toolCallCount: input.usedToolCalls,
+          roundCount: input.roundCount,
+          evidenceAvailable: input.evidenceAvailable,
+        },
+      };
+    }
+    return null;
   }
 }
 
