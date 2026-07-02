@@ -107,6 +107,94 @@ test("ExecutionBudgetController treats invalid per-round caps as no cap", () => 
   assert.deepEqual(decision.rejected, []);
 });
 
+test("ExecutionBudgetController builds recovery-budget closeout snapshots", () => {
+  const controller = createExecutionBudgetController();
+
+  const snapshot = controller.buildRecoveryToolBudgetCloseoutSnapshot({
+    maxRounds: 3,
+    maxToolCalls: 5,
+    pendingToolCallCount: 2,
+    usedToolCalls: 5,
+    roundCount: 4,
+    evidenceAvailable: true,
+  });
+
+  assert.match(snapshot.reasonLines[0] ?? "", /5 tool calls/);
+  assert.deepEqual(snapshot.closeout, {
+    reason: "recovery_tool_budget",
+    maxRounds: 3,
+    pendingToolCallCount: 2,
+    toolCallCount: 5,
+    roundCount: 4,
+    evidenceAvailable: true,
+  });
+});
+
+test("ExecutionBudgetController builds wall-clock closeout snapshots", () => {
+  const controller = createExecutionBudgetController();
+
+  const snapshot = controller.buildWallClockBudgetCloseoutSnapshot({
+    maxRounds: 3,
+    maxWallClockMs: 90_000,
+    pendingToolCallCount: 1,
+    usedToolCalls: 4,
+    roundCount: 2,
+    evidenceAvailable: false,
+  });
+
+  assert.equal(
+    snapshot.reasonLines[0],
+    "Tool-use wall-clock budget reached (1.5m).",
+  );
+  assert.deepEqual(snapshot.closeout, {
+    reason: "wall_clock_budget",
+    maxRounds: 3,
+    maxWallClockMs: 90_000,
+    pendingToolCallCount: 1,
+    toolCallCount: 4,
+    roundCount: 2,
+    evidenceAvailable: false,
+  });
+});
+
+test("ExecutionBudgetController builds round-limit closeout snapshots", () => {
+  const controller = createExecutionBudgetController();
+
+  const withPending = controller.buildRoundLimitCloseoutSnapshot({
+    maxRounds: 2,
+    pendingToolCallCount: 3,
+    usedToolCalls: 4,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+  assert.equal(
+    withPending.reasonLines[0],
+    "Tool-use round limit reached (2).",
+  );
+  assert.deepEqual(withPending.closeout, {
+    reason: "round_limit",
+    maxRounds: 2,
+    pendingToolCallCount: 3,
+    toolCallCount: 4,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+
+  const fallback = controller.buildRoundLimitCloseoutSnapshot({
+    maxRounds: 2,
+    usedToolCalls: 4,
+    roundCount: 2,
+    evidenceAvailable: false,
+  });
+  assert.deepEqual(fallback.closeout, {
+    reason: "round_limit",
+    maxRounds: 2,
+    toolCallCount: 4,
+    roundCount: 2,
+    evidenceAvailable: false,
+  });
+});
+
 test("ExecutionBudgetController appends final tool-round warning only on the final active round", () => {
   const controller = createExecutionBudgetController();
   const messages: LLMMessage[] = [{ role: "user", content: "start" }];

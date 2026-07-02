@@ -2987,19 +2987,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ) {
                 return null;
               }
-              runState.recordPendingCloseout({
-                reasonLines: buildFinalRecoveryBudgetCloseoutReasonLines(
-                  recoveryToolBudget.maxToolCalls,
-                ),
-                closeout: {
-                  reason: "recovery_tool_budget",
+              runState.recordPendingCloseout(
+                executionBudget.buildRecoveryToolBudgetCloseoutSnapshot({
                   maxRounds,
+                  maxToolCalls: recoveryToolBudget.maxToolCalls,
                   pendingToolCallCount: calls.length,
-                  toolCallCount: usedToolCalls,
+                  usedToolCalls,
                   roundCount,
                   evidenceAvailable: hasUsableEvidence(toolTrace),
-                },
-              });
+                }),
+              );
               return "recovery_tool_budget";
             }
           }
@@ -3086,22 +3083,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               isPositiveFiniteBudget(maxWallClockMs) &&
               this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
             ) {
-              runState.recordPendingCloseout({
-                reasonLines: [
-                  `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
-                  "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-                  "State uncertainties and missing verification explicitly instead of trying another lookup.",
-                ],
-                closeout: {
-                  reason: "wall_clock_budget",
+              runState.recordPendingCloseout(
+                executionBudget.buildWallClockBudgetCloseoutSnapshot({
                   maxRounds,
                   maxWallClockMs,
                   pendingToolCallCount: calls.length,
-                  toolCallCount: countToolCalls(toolTrace),
+                  usedToolCalls: countToolCalls(toolTrace),
                   roundCount,
                   evidenceAvailable: hasUsableEvidence(toolTrace),
-                },
-              });
+                }),
+              );
               return "wall_clock_budget";
             }
           }
@@ -3135,22 +3126,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 isPositiveFiniteBudget(maxWallClockMs) &&
                 this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
               ) {
-                runState.recordPendingCloseout({
-                  reasonLines: [
-                    `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
-                    "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-                    "State uncertainties and missing verification explicitly instead of trying another lookup.",
-                  ],
-                  closeout: {
-                    reason: "wall_clock_budget",
+                runState.recordPendingCloseout(
+                  executionBudget.buildWallClockBudgetCloseoutSnapshot({
                     maxRounds,
                     maxWallClockMs,
                     pendingToolCallCount: 1,
-                    toolCallCount: countToolCalls(toolTrace),
+                    usedToolCalls: countToolCalls(toolTrace),
                     roundCount,
                     evidenceAvailable: hasUsableEvidence(toolTrace),
-                  },
-                });
+                  }),
+                );
                 return "wall_clock_budget";
               }
             }
@@ -3175,21 +3160,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // through to a natural finish instead of forcing a round_limit synthesis
           // that would discard the answer and mislabel the closeout.
           if (toolTrace.length >= maxRounds && calls.length > 0) {
-            runState.recordPendingCloseout({
-              reasonLines: [
-                `Tool-use round limit reached (${maxRounds}).`,
-                "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-                "State uncertainties and missing verification explicitly instead of trying another lookup.",
-              ],
-              closeout: {
-                reason: "round_limit",
+            runState.recordPendingCloseout(
+              executionBudget.buildRoundLimitCloseoutSnapshot({
                 maxRounds,
                 pendingToolCallCount: calls.length,
-                toolCallCount: countToolCalls(toolTrace),
+                usedToolCalls: countToolCalls(toolTrace),
                 roundCount,
                 evidenceAvailable: hasUsableEvidence(toolTrace),
-              },
-            });
+              }),
+            );
             return "round_limit";
           }
           // 5. repeated_tool_failure — a pending call's signature already failed
@@ -4105,21 +4084,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               roundCount: toolTrace.length,
             };
           } else {
-            reasonLines =
-              reason === "round_limit"
-                ? [
-                    `Tool-use round limit reached (${maxRounds}).`,
-                    "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-                    "State uncertainties and missing verification explicitly instead of trying another lookup.",
-                  ]
-                : undefined;
-            closeout = {
-              reason: reason as ToolLoopCloseoutMetadata["reason"],
-              maxRounds,
-              toolCallCount: countToolCalls(toolTrace),
-              roundCount: toolTrace.length,
-              evidenceAvailable: hasUsableEvidence(toolTrace),
-            };
+            if (reason === "round_limit") {
+              const roundLimitCloseout =
+                executionBudget.buildRoundLimitCloseoutSnapshot({
+                  maxRounds,
+                  usedToolCalls: countToolCalls(toolTrace),
+                  roundCount: toolTrace.length,
+                  evidenceAvailable: hasUsableEvidence(toolTrace),
+                });
+              reasonLines = roundLimitCloseout.reasonLines;
+              closeout = roundLimitCloseout.closeout;
+            } else {
+              reasonLines = undefined;
+              closeout = {
+                reason: reason as ToolLoopCloseoutMetadata["reason"],
+                maxRounds,
+                toolCallCount: countToolCalls(toolTrace),
+                roundCount: toolTrace.length,
+                evidenceAvailable: hasUsableEvidence(toolTrace),
+              };
+            }
           }
           // pseudo_tool_call synthesizes from the malformed assistant text it must
           // recover from, so append it to the synthesis context (mirrors inline

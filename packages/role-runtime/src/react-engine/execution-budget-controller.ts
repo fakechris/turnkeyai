@@ -3,8 +3,10 @@ import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import { shouldSerializeToolBatch } from "../react/predicates";
 import {
+  buildFinalRecoveryBudgetCloseoutReasonLines,
   buildToolCallLimitExceededResult,
   createToolExecutionSignal,
+  formatDurationMs,
   isAbortError,
   resolveEffectiveToolLoopWallClockMs,
   withFinalToolRoundWarning,
@@ -20,7 +22,9 @@ import {
 // - tool-batch execution concurrency, wall-clock signal setup, and per-call
 //   non-abort failure shaping.
 //
-// This module must not choose closeout reasons or synthesize terminal answers.
+// This module must not choose whether closeout reasons apply or synthesize
+// terminal answers. It may build budget closeout snapshots after the caller has
+// selected the policy, so later closeout registries can consume one shape.
 export const EXECUTION_BUDGET_CONTROLLER_MODULE =
   "execution-budget-controller" as const;
 
@@ -49,6 +53,64 @@ export interface LimitToolCallsPerRoundInput {
 export interface ToolCallAdmissionDecision {
   executable: LLMToolCall[];
   rejected: ToolResult[];
+}
+
+export type ExecutionBudgetCloseoutMetadata =
+  | {
+      reason: "recovery_tool_budget";
+      maxRounds: number;
+      pendingToolCallCount: number;
+      toolCallCount: number;
+      roundCount: number;
+      evidenceAvailable: boolean;
+    }
+  | {
+      reason: "wall_clock_budget";
+      maxRounds: number;
+      maxWallClockMs: number;
+      pendingToolCallCount: number;
+      toolCallCount: number;
+      roundCount: number;
+      evidenceAvailable: boolean;
+    }
+  | {
+      reason: "round_limit";
+      maxRounds: number;
+      pendingToolCallCount?: number;
+      toolCallCount: number;
+      roundCount: number;
+      evidenceAvailable: boolean;
+    };
+
+export interface ExecutionBudgetCloseoutSnapshot {
+  reasonLines: string[];
+  closeout: ExecutionBudgetCloseoutMetadata;
+}
+
+export interface RecoveryToolBudgetCloseoutSnapshotInput {
+  maxRounds: number;
+  maxToolCalls: number;
+  pendingToolCallCount: number;
+  usedToolCalls: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+}
+
+export interface WallClockBudgetCloseoutSnapshotInput {
+  maxRounds: number;
+  maxWallClockMs: number;
+  pendingToolCallCount: number;
+  usedToolCalls: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+}
+
+export interface RoundLimitCloseoutSnapshotInput {
+  maxRounds: number;
+  pendingToolCallCount?: number;
+  usedToolCalls: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
 }
 
 export interface RunToolBatchContext {
@@ -116,6 +178,67 @@ export class ExecutionBudgetController {
             requestedToolCalls,
           ),
       ),
+    };
+  }
+
+  buildRecoveryToolBudgetCloseoutSnapshot(
+    input: RecoveryToolBudgetCloseoutSnapshotInput,
+  ): ExecutionBudgetCloseoutSnapshot {
+    return {
+      reasonLines: buildFinalRecoveryBudgetCloseoutReasonLines(
+        input.maxToolCalls,
+      ),
+      closeout: {
+        reason: "recovery_tool_budget",
+        maxRounds: input.maxRounds,
+        pendingToolCallCount: input.pendingToolCallCount,
+        toolCallCount: input.usedToolCalls,
+        roundCount: input.roundCount,
+        evidenceAvailable: input.evidenceAvailable,
+      },
+    };
+  }
+
+  buildWallClockBudgetCloseoutSnapshot(
+    input: WallClockBudgetCloseoutSnapshotInput,
+  ): ExecutionBudgetCloseoutSnapshot {
+    return {
+      reasonLines: [
+        `Tool-use wall-clock budget reached (${formatDurationMs(input.maxWallClockMs)}).`,
+        "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+        "State uncertainties and missing verification explicitly instead of trying another lookup.",
+      ],
+      closeout: {
+        reason: "wall_clock_budget",
+        maxRounds: input.maxRounds,
+        maxWallClockMs: input.maxWallClockMs,
+        pendingToolCallCount: input.pendingToolCallCount,
+        toolCallCount: input.usedToolCalls,
+        roundCount: input.roundCount,
+        evidenceAvailable: input.evidenceAvailable,
+      },
+    };
+  }
+
+  buildRoundLimitCloseoutSnapshot(
+    input: RoundLimitCloseoutSnapshotInput,
+  ): ExecutionBudgetCloseoutSnapshot {
+    return {
+      reasonLines: [
+        `Tool-use round limit reached (${input.maxRounds}).`,
+        "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+        "State uncertainties and missing verification explicitly instead of trying another lookup.",
+      ],
+      closeout: {
+        reason: "round_limit",
+        maxRounds: input.maxRounds,
+        ...(input.pendingToolCallCount === undefined
+          ? {}
+          : { pendingToolCallCount: input.pendingToolCallCount }),
+        toolCallCount: input.usedToolCalls,
+        roundCount: input.roundCount,
+        evidenceAvailable: input.evidenceAvailable,
+      },
     };
   }
 
