@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `da7af31d4fa622f7bbad82fbb0da0148aa204d5a`
+**Code HEAD before this docs-only report:** `b1e756ae76c5e84eba0f4ee34a1cd4829f9c5407`
 **Date:** 2026-07-02
 
 ## Summary
@@ -78,10 +78,11 @@ could not move the normalizer without making the inline parity reference import 
   timeout signals are now read through the ledger in engine continuation and
   post-execute closeout hooks.
   `react-engine/terminal-closeout-controller.ts` now owns the engine's
-  deterministic approval wait-timeout fallback assembly, pseudo tool-call
-  terminal synthesis message selection, and non-completed timeout closeout
-  visibility decoration. The adapter still invokes the terminal model synthesis
-  and records run-state effects.
+  tool-evidence fallback closeout metadata/redaction assembly for both hard
+  approval wait-timeout fallback and model-call-error local evidence fallback,
+  pseudo tool-call terminal synthesis message selection, and non-completed
+  timeout closeout visibility decoration. The adapter still invokes the
+  terminal model synthesis and records run-state effects.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -215,6 +216,7 @@ application of controller actions.
 | `c35fd72` | Add approval wait-timeout runtime evidence to `EvidenceLedger` snapshots; engine hard fallback reads the snapshot fact. |
 | `f19f12d` | Route current completed-session and sub-agent timeout result signals through `EvidenceLedger` in engine hooks. |
 | `da7af31` | Extract `TerminalCloseoutController` for approval wait-timeout fallback assembly, pseudo tool-call terminal synthesis message selection, and sub-agent timeout result visibility decoration. |
+| `b1e756a` | Centralize generic `tool_evidence_fallback` closeout metadata/redaction in `TerminalCloseoutController`; model-call-error fallback now uses the same builder as the hard approval wait-timeout fallback. |
 
 ## Current Extracted Implementation
 
@@ -289,8 +291,9 @@ Real implementation now exists in:
   browser failure-bucket visibility, recovered-timeout/continuation visibility,
   and final forbidden local URL redaction.
 - `react-engine/terminal-closeout-controller.ts` for deterministic approval
-  wait-timeout terminal fallback assembly, pseudo tool-call terminal synthesis
-  message selection, and non-completed timeout closeout visibility decoration.
+  wait-timeout terminal fallback assembly, generic `tool_evidence_fallback`
+  metadata/redaction assembly, pseudo tool-call terminal synthesis message
+  selection, and non-completed timeout closeout visibility decoration.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -378,8 +381,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 3 / 3 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 153 / 153 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 4 / 4 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 154 / 154 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -441,9 +444,10 @@ Stage 8 boundaries/slices are now real:
   round-limit closeout, and generic closeout fallback; non-completed terminal
   model synthesis and run-state recording still live in the adapter's
   `onTerminate`.
-- deterministic approval wait-timeout fallback assembly, pseudo tool-call
-  terminal synthesis message selection, and sub-agent timeout closeout
-  visibility decoration route through `TerminalCloseoutController`.
+- deterministic approval wait-timeout fallback assembly, generic
+  `tool_evidence_fallback` metadata/redaction, pseudo tool-call terminal
+  synthesis message selection, and sub-agent timeout closeout visibility
+  decoration route through `TerminalCloseoutController`.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -573,7 +577,9 @@ Stage 8 boundaries/slices are now real:
   the raw result-content collector directly.
 - engine hard approval wait-timeout fallback now reads approval runtime
   evidence through `EvidenceLedger` and assembles its deterministic fallback
-  result through `TerminalCloseoutController`.
+  result through `TerminalCloseoutController`; model-call-error local evidence
+  fallback now uses the same controller-owned `tool_evidence_fallback`
+  metadata/redaction path.
 - engine continuation and post-execute closeout hooks now read current
   completed-session and sub-agent timeout result signals through
   `EvidenceLedger`.
@@ -628,8 +634,8 @@ Continue with the remaining high-risk pieces:
   evidence, current-result-content, current result signals,
   approval-timeout-runtime evidence, tool-trace-result-content, and
   usable-evidence snapshot facts; extract non-completed terminal closeout model
-  synthesis/run-state application beyond the current deterministic fallback,
-  synthesis-context selection, and timeout result-decoration slice; keep thinning
-  the adapter.
+  synthesis/run-state application beyond the current deterministic/generic
+  fallback, synthesis-context selection, and timeout result-decoration slice;
+  keep thinning the adapter.
 
 The branch is **not pushed**.
