@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `d2afbb116d613e4c4e02796dafefe090ff22254e`
+**Code HEAD before this docs-only report:** `84b1ae933284f7084c7e0cac6ff3e041c8008093`
 **Date:** 2026-07-02
 
 ## Summary
@@ -116,7 +116,12 @@ could not move the normalizer without making the inline parity reference import 
   capability inputs instead of being assembled in the adapter.
   Read-only permission-query suppression context construction now lives in
   `react-engine/permission-policy.ts`; the adapter passes calls/task/messages
-  for both the suppression decision and the pending-closeout pre-emption guard.
+  for the pending-closeout pre-emption guard. The full `onSuppressToolCalls`
+  hook flow now also enters through
+  `PermissionPolicy.applySuppressToolCallsHook()`, which owns read-only
+  permission-query pre-emption before awaiting-context setup-only no-tool
+  suppression; the adapter passes only calls, task, messages, last text, and the
+  repair-marker ledger.
   Remaining pending-call closeout session context construction now lives in
   `react-engine/closeout-policy-registry.ts`; the adapter passes task/messages
   instead of concatenating the closeout session context locally.
@@ -174,9 +179,10 @@ could not move the normalizer without making the inline parity reference import 
   live in that neutral TaskFacts owner, including awaiting-context suppression
   hook-result application. The adapter, `RepairPolicyRegistry`, and
   `CompletedCloseoutController` all call the same implementation instead of
-  carrying duplicate helper copies. Read-only permission-query suppression
-  hook-result application now lives in `PermissionPolicy`; the adapter supplies
-  only hook state.
+  carrying duplicate helper copies. Read-only permission-query suppression and
+  awaiting-context setup-only no-tool suppression now compose inside
+  `PermissionPolicy.applySuppressToolCallsHook()` for the engine suppress hook;
+  the adapter supplies only hook state.
   The final allowed tool-round warning now routes through that controller while
   the warning text itself lives in neutral shared code used by inline and engine.
   Final-recovery budget parsing, prior-call counting, closeout reason lines, and
@@ -347,6 +353,7 @@ application outside the terminal completion path.
 | `ef56638` | Move the full pending-call closeout hook flow into `CloseoutPolicyRegistry.applyPendingCallsCloseout`; adapter supplies callbacks/state instead of stitching the closeout windows locally. |
 | `38a7a56` | Move model-call-error forced pending-approval flow selection into `TerminalCloseoutController.completeModelCallErrorFlow`; route model-error usable-evidence through `EvidenceLedger.snapshot()`. |
 | `d2afbb1` | Add `EvidenceLedger.forRun()` and route engine run evidence snapshots through the ledger-owned run snapshotter instead of an adapter-local closure. |
+| `84b1ae9` | Move the full `onSuppressToolCalls` read-only / awaiting-context suppression flow into `PermissionPolicy.applySuppressToolCallsHook`; update the hook contract and policy-trace golden. |
 
 ## Current Extracted Implementation
 
@@ -365,7 +372,9 @@ Real implementation now exists in:
   resolution, and browser/explore worker availability derivation.
 - `react-engine/permission-policy.ts` for approval-gate normalization,
   read-only permission-query suppression selection, and read-only suppression
-  context construction / hook-result application.
+  context construction / hook-result application, plus the
+  `onSuppressToolCalls` hook entrypoint that applies read-only permission-query
+  pre-emption before awaiting-context setup-only no-tool suppression.
 - `react-engine/finalization-pipeline.ts`
 - `react-engine/engine-run-observer.ts` for model/tool lifecycle observation,
   runtime progress/native trace persistence, and normal post-execute plus
@@ -560,8 +569,9 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/evidence-ledger.test.ts` | 9 / 9 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 194 / 194 |
+| `npx tsx --test packages/role-runtime/src/react-engine/permission-policy.test.ts` | 4 / 4 |
+| `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts packages/role-runtime/src/react-engine/policy-trace-characterization.test.ts` | 10 / 10 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 195 / 195 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -585,9 +595,12 @@ Stage 8 boundaries/slices are now real:
 - engine policy-trace debug gating routes through `policy-trace.ts`; the adapter
   imports the owner-owned helper instead of carrying the env check locally.
 - approval-gate normalizer steps and read-only suppression selection/application
-  route through `PermissionPolicy` in the engine path; read-only suppression
-  context construction for both suppression and closeout pre-emption now lives
-  there as well.
+  route through `PermissionPolicy` in the engine path; the full
+  `onSuppressToolCalls` hook now enters
+  `PermissionPolicy.applySuppressToolCallsHook()` for read-only suppression
+  pre-emption before awaiting-context setup-only suppression, and read-only
+  suppression context construction for closeout pre-emption now lives there as
+  well.
 - the unconditional engine finalization epilogue routes through
   `finalizeEngineAnswer`.
 - model/tool lifecycle observability routes through `EngineRunObserver`, including
