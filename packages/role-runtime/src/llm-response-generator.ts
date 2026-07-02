@@ -196,13 +196,14 @@ import type {
   SubAgentToolTimeoutSignal,
 } from "./tool-loop-shared";
 import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
-import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/react-loop";
+import type { ModelClient, ReActState } from "@turnkeyai/agent-core/react-loop";
 // Stage 8 cleanup (Batch 0.5): engine policy-trace plumbing. The trace is a
 // behavior-neutral observability sink that records the per-hook decision sequence
 // so later batches can prove byte-identical behavior and so production-behind-flag
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
   createCloseoutPolicyRegistry,
+  createCompletedCloseoutController,
   createContinuationController,
   createEnginePolicyTrace,
   createExecutionBudgetController,
@@ -2696,6 +2697,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const continuation = createContinuationController();
     const closeoutPolicy = createCloseoutPolicyRegistry();
     const repairPolicy = createRepairPolicyRegistry();
+    const completedCloseout = createCompletedCloseoutController();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     type RoleEngineRunStateValues = DefaultEngineRunStateValues & {
@@ -4133,311 +4135,116 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ]
               .filter((text) => text.trim().length > 0)
               .join("\n\n");
-            let repairMessages = state.messages;
-            // Stage 7 S10: the browser-evidence / product-signal completed-cascade
-            // repairs (inline :1880/:1907) re-arm a REAL sessions_spawn TOOL round — they
-            // cannot re-synthesize in place. This helper builds the reArm directive for
-            // whichever fires (browser-evidence first, then product-signal). It reads the
-            // current loop state (repairMessages / synthesisResult / synthesisReduction)
-            // by closure. `productSignalEvidenceText` is the round-dependent product-
-            // signal evidence: the completed-block join on round 0 (inline :1914),
-            // undefined on round >0 (inline natural-finish :776). Persisting the pending
-            // reduction before the reArm mirrors inline recording `generated.reduction`
-            // before it `continue`s (codex #520 P2) — the early return otherwise skips
-            // the runState reduction record after the loop.
-            const maybeReArmForMissingBrowserEvidence = (
-              productSignalEvidenceText: string | undefined,
-            ): ReActReArm | null => {
-              const persistAndReArm = (repairPrompt: string): ReActReArm => {
-                if (synthesisReduction) {
-                  runState.recordReduction({
-                    reduction: synthesisReduction,
-                    reductionSnapshot: synthesisReductionSnapshot,
-                  });
-                }
-                return {
-                  reArm: {
-                    messages: [
-                      ...repairMessages,
-                      { role: "assistant", content: synthesisResult.text },
-                      recordRepairPrompt(repairMarkers, repairPrompt),
-                    ],
+            const repairLoopResult = await completedCloseout.runRepairLoop({
+              activation,
+              taskPrompt: packet.taskPrompt,
+              toolTrace,
+              repairMessages: state.messages,
+              repairMarkers,
+              completedSessionFinalContents: completedSession.finalContents,
+              completedEvidenceText: completedProductBriefEvidenceText,
+              completedSessionEvidenceText: evidenceText,
+              initialResult: synthesisResult,
+              ...(synthesisReduction
+                ? { initialReduction: synthesisReduction }
+                : {}),
+              ...(synthesisReductionSnapshot
+                ? { initialReductionSnapshot: synthesisReductionSnapshot }
+                : {}),
+              repairPolicy,
+              findReArmRepair: ({
+                repairMessages,
+                repairMarkers,
+                resultText,
+                productSignalEvidenceText,
+              }) => {
+                if (
+                  shouldRepairMissingBrowserEvidence({
+                    taskPrompt: packet.taskPrompt,
+                    resultText,
+                    messages: repairMessages,
+                    repairMarkers,
+                    toolTrace,
+                    tools: initialGatewayInput.tools,
+                  })
+                ) {
+                  return {
+                    repairPrompt: buildMissingBrowserEvidenceRepairPrompt(
+                      packet.taskPrompt,
+                    ),
                     forceToolChoice: { name: "sessions_spawn" },
+                  };
+                }
+                if (
+                  shouldRepairMissingProductSignalBrowserEvidence({
+                    taskPrompt: packet.taskPrompt,
+                    resultText,
+                    messages: repairMessages,
+                    repairMarkers,
+                    toolTrace,
+                    tools: initialGatewayInput.tools,
+                    ...(productSignalEvidenceText !== undefined
+                      ? { evidenceText: productSignalEvidenceText }
+                      : {}),
+                  })
+                ) {
+                  return {
+                    repairPrompt:
+                      buildMissingProductSignalBrowserEvidenceRepairPrompt(
+                        packet.taskPrompt,
+                      ),
+                    forceToolChoice: { name: "sessions_spawn" },
+                  };
+                }
+                return null;
+              },
+              synthesizeRepair: async ({ messages }) => {
+                const repairGatewayMessages = prepareToolHistoryForGateway(messages);
+                return this.generateWithEnvelopeRetry({
+                  activation,
+                  packet,
+                  selection,
+                  gatewayInput: {
+                    ...withoutToolUse(initialGatewayInput),
+                    messages: repairGatewayMessages,
+                    envelope: {
+                      ...(initialGatewayInput.envelope ?? {}),
+                      toolCount: 0,
+                      toolSchemaBytes: 0,
+                      ...deriveToolResultEnvelope(repairGatewayMessages),
+                    },
                   },
-                };
-              };
-              if (
-                shouldRepairMissingBrowserEvidence({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                  toolTrace,
-                  tools: initialGatewayInput.tools,
-                })
-              ) {
-                return persistAndReArm(
-                  buildMissingBrowserEvidenceRepairPrompt(packet.taskPrompt),
-                );
-              }
-              if (
-                shouldRepairMissingProductSignalBrowserEvidence({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                  toolTrace,
-                  tools: initialGatewayInput.tools,
-                  ...(productSignalEvidenceText !== undefined
-                    ? { evidenceText: productSignalEvidenceText }
-                    : {}),
-                })
-              ) {
-                return persistAndReArm(
-                  buildMissingProductSignalBrowserEvidenceRepairPrompt(
-                    packet.taskPrompt,
-                  ),
-                );
-              }
-              return null;
-            };
-            const MAX_COMPLETED_REPAIR_ROUNDS = 16;
-            for (let repairRound = 0; repairRound < MAX_COMPLETED_REPAIR_ROUNDS; repairRound++) {
-              let repairPrompt: string | null = null;
-              // Round >0 IS inline's tool-free natural-finish cascade, where browser-
-              // evidence / product-signal are checked FIRST — before table-columns /
-              // extraneous (inline :748/:776 precede :1139/:1167). Check them at the top
-              // here so a repaired completed answer that still lacks browser evidence
-              // re-arms a sessions_spawn round rather than taking a tool-free table/
-              // extraneous repair (codex #520 P2). Round 0 (the completed block) keeps
-              // the inline completed-block order (after extraneous, below).
-              if (repairRound > 0) {
-                const browserReArm = maybeReArmForMissingBrowserEvidence(undefined);
-                if (browserReArm) {
-                  return browserReArm;
-                }
-              }
-              // Evidence for the cross-cascade members (source-evidence, weak-evidence),
-              // round-dependent to match the two inline cascades exactly:
-              //  - round 0 IS the inline completed block: use completedProductBriefEvidence
-              //    Text (finalContents + the completing round's raw tool results, inline
-              //    :1933/:2159).
-              //  - round >0 IS inline's tool-free natural-finish cascade (reached after the
-              //    first completed repair `continue`s): use sourceBoundedEvidenceText
-              //    (inline :1192), recomputed each round from the CURRENT repairMessages so
-              //    a repaired answer is re-evaluated like inline's re-entered cascade. Its
-              //    collectNativeToolTraceEvidenceText spans the WHOLE toolTrace, so it sees
-              //    labels from earlier tool rounds the completing-round-only completed
-              //    ProductBriefEvidenceText cannot — the parity-relevant difference.
-              const naturalFinishEvidenceText =
-                repairRound === 0
-                  ? completedProductBriefEvidenceText
-                  : [
-                      collectSourceBoundedEvidenceText({
-                        taskPrompt: packet.taskPrompt,
-                        messages: repairMessages,
-                        toolTrace,
-                      }),
-                      collectCompletedSessionEvidenceText(toolTrace),
-                    ]
-                      .filter((text) => text.trim().length > 0)
-                      .join("\n\n");
-              // Missing-requested-table-columns (inline completed :1826 / natural-finish
-              // :1139) — FIRST in the cascade, and an every-round member: it lives in
-              // BOTH inline cascades, so a repaired answer can re-trip it on a later
-              // round exactly as inline would. No evidenceText; self-suppresses via its
-              // repairMarker after firing once. Pass `activation` (inline :1828) so the
-              // requested columns resolve from the same activation context inline uses.
-              if (
-                shouldRepairMissingRequestedTableColumns({
+                  modelCallTrace,
+                  tracePhase: "final_synthesis_repair",
+                });
+              },
+              synthesizeToolCallArtifactCleanup: async ({ messages }) =>
+                this.generateFinalAfterToolRoundLimit({
                   activation,
-                  taskPrompt: packet.taskPrompt,
-                  messages: repairMessages,
-                  repairMarkers,
-                  resultText: synthesisResult.text,
-                })
-              ) {
-                repairPrompt = buildMissingRequestedTableColumnsRepairPrompt({
-                  activation,
-                  taskPrompt: packet.taskPrompt,
-                  messages: repairMessages,
-                  resultText: synthesisResult.text,
-                });
-              }
-              // Extraneous-provider-table-schema (inline completed :1854 / natural-finish
-              // :1167) — SECOND, every round (in both inline cascades). Fires when the
-              // synthesis introduces a provider/search/model-support table the original
-              // task never requested. No evidenceText; self-suppresses via its repairMarker.
-              // `!repairPrompt`-guarded so a same-round table-columns hit still wins.
-              // Note: generateFinalAfterToolRoundLimit ALREADY repairs extraneous schema in
-              // the FIRST closeout synthesis (its own internal pass), so this block is
-              // load-bearing only for a LATER re-synthesis (a round-0 repair via
-              // generateWithEnvelopeRetry that introduces the schema) — exactly the case
-              // inline's natural-finish :1167 covers and the parity test exercises.
-              if (
-                !repairPrompt &&
-                shouldRepairExtraneousProviderTableSchema({
-                  activation,
-                  taskPrompt: packet.taskPrompt,
-                  messages: repairMessages,
-                  repairMarkers,
-                  resultText: synthesisResult.text,
-                })
-              ) {
-                repairPrompt = buildExtraneousProviderTableSchemaRepairPrompt({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                });
-              }
-              // Stage 7 S10 (round 0 = the inline completed block, :1880/:1907): the
-              // browser-evidence / product-signal repairs sit AFTER extraneous here,
-              // `!repairPrompt`-guarded (a same-round table-columns/extraneous hit wins,
-              // matching inline's first-match-wins `continue`). The round >0 ordering is
-              // DIFFERENT (browser/product FIRST) and is handled at the top of the loop —
-              // see the maybeReArmForMissingBrowserEvidence call before table-columns.
-              // Round 0 passes the completed-block product-signal evidenceText (inline
-              // :1914); round >0 passes none (inline natural-finish :776).
-              if (repairRound === 0 && !repairPrompt) {
-                const browserReArm = maybeReArmForMissingBrowserEvidence(evidenceText);
-                if (browserReArm) {
-                  return browserReArm;
-                }
-              }
-              // Source-evidence carry-forward — every repair round. It appears in both
-              // inline cascades: the completed block (:1941, round 0) AND the tool-free
-              // natural-finish cascade (:1204, round >0), so a repaired answer can re-trip
-              // it on a later round exactly as inline would. It self-suppresses via its
-              // repairMarker after firing once. evidenceText is naturalFinishEvidenceText
-              // (round-dependent above) so round 0 uses the completed-block formula and
-              // round >0 uses the natural-finish formula — matching inline :1946 vs :1209.
-              // Truthy-gated exactly like inline (:1940/:1203). `!repairPrompt`-guarded so
-              // a same-round table-columns/extraneous hit wins (inline's cascade `continue`).
-              if (
-                !repairPrompt &&
-                naturalFinishEvidenceText &&
-                shouldRepairSourceEvidenceCarryForward({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                  evidenceText: naturalFinishEvidenceText,
-                })
-              ) {
-                repairPrompt = buildSourceEvidenceCarryForwardRepairPrompt({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  evidenceText: naturalFinishEvidenceText,
-                });
-              }
-              // Completed-ONLY predicates: timeout-followup (:1968), missing-next-action
-              // (:1995), deliverables (:2016), false-evidence (:2130). Inline runs the
-              // completed cascade EXACTLY ONCE — the round the session completes — then
-              // every subsequent repaired answer flows through the narrower tool-free
-              // natural-finish cascade (:1110-1272), which contains table-columns,
-              // extraneous, source-evidence and weak-evidence but NONE of these four.
-              // So gate them to the first repair round; otherwise a round-1 repair's
-              // output could re-trip a completed-only predicate the inline natural-finish
-              // path would never check (the compound over-repair). The natural-finish
-              // members that do run every round live outside this block.
-              if (repairRound === 0) {
-                const completedOnlyRepair = repairPolicy.evaluateCompletedSynthesis({
-                  completedEvidenceText: completedProductBriefEvidenceText,
-                  completedSessionEvidenceText: evidenceText,
-                  completedSessionFinalContents: completedSession.finalContents,
-                  messages: repairMessages,
-                  repairMarkers,
-                  resultText: synthesisResult.text,
-                  taskPrompt: packet.taskPrompt,
-                });
-                if (completedOnlyRepair) {
-                  repairPrompt = completedOnlyRepair.repairPrompt;
-                }
-              }
-              // Weak-evidence-synthesis (inline completed :2154 / natural-finish :1231) —
-              // LAST in the cascade and an every-round member (after the round-0 block, so
-              // a repaired answer can re-trip it exactly as inline's natural-finish does).
-              // self-suppresses via its repairMarker. evidenceText is naturalFinishEvidence
-              // Text (round-dependent above) so round 0 uses the completed-block formula
-              // (:2159) and round >0 uses the natural-finish sourceBoundedEvidenceText
-              // (:1236) — matching inline. `!repairPrompt`-guarded so an earlier same-round
-              // repair wins.
-              if (
-                !repairPrompt &&
-                shouldRepairWeakEvidenceSynthesis({
-                  taskPrompt: packet.taskPrompt,
-                  resultText: synthesisResult.text,
-                  messages: repairMessages,
-                  repairMarkers,
-                  evidenceText: naturalFinishEvidenceText,
-                })
-              ) {
-                repairPrompt = buildWeakEvidenceSynthesisRepairPrompt();
-              }
-              if (!repairPrompt) {
-                break;
-              }
-              repairMessages = [
-                ...repairMessages,
-                { role: "assistant", content: synthesisResult.text },
-                recordRepairPrompt(repairMarkers, repairPrompt),
-              ];
-              const repairGatewayMessages = prepareToolHistoryForGateway(repairMessages);
-              const repaired = await this.generateWithEnvelopeRetry({
-                activation,
-                packet,
-                selection,
-                gatewayInput: {
-                  ...withoutToolUse(initialGatewayInput),
-                  messages: repairGatewayMessages,
-                  envelope: {
-                    ...(initialGatewayInput.envelope ?? {}),
-                    toolCount: 0,
-                    toolSchemaBytes: 0,
-                    ...deriveToolResultEnvelope(repairGatewayMessages),
-                  },
-                },
-                modelCallTrace,
-                tracePhase: "final_synthesis_repair",
-              });
-              synthesisResult = repaired.result;
-              if (repaired.reduction) {
-                synthesisReduction = repaired.reduction;
-                synthesisReductionSnapshot = repaired.reductionSnapshot;
-              }
-              if (repaired.memoryFlush) {
-                runState.recordMemoryFlush(repaired.memoryFlush);
-              }
+                  packet,
+                  selection,
+                  baseGatewayInput: initialGatewayInput,
+                  messages,
+                  maxRounds,
+                  modelCallTrace,
+                }),
+            });
+            for (const memoryFlush of repairLoopResult.memoryFlushes) {
+              runState.recordMemoryFlush(memoryFlush);
             }
-            // Inline main-loop re-entry parity: a completed-cascade repair
-            // re-synthesis can return a TOOL CALL on the tc=none synthesis round (the
-            // model tries a tool when told not to). Inline re-enters its main loop,
-            // which produces one more clean tool-free synthesis
-            // (generateFinalAfterToolRoundLimit) instead of using the tool-call text —
-            // otherwise the final answer becomes the tool-call artifact
-            // ("Calling a tool.") rather than the evidence-based synthesis. The
-            // onTerminate simulation must do the same: one clean pass (inline's single
-            // trailing synthesis), bounded by the round cap + the recorded markers.
-            if (synthesisResult.toolCalls?.length) {
-              const cleanup = await this.generateFinalAfterToolRoundLimit({
-                activation,
-                packet,
-                selection,
-                baseGatewayInput: initialGatewayInput,
-                messages: [
-                  ...repairMessages,
-                  { role: "assistant" as const, content: synthesisResult.text },
-                ],
-                maxRounds,
-                modelCallTrace,
-              });
-              synthesisResult = cleanup.result;
-              if (cleanup.reduction) {
-                synthesisReduction = cleanup.reduction;
-                synthesisReductionSnapshot = cleanup.reductionSnapshot;
+            if (repairLoopResult.kind === "rearm") {
+              if (repairLoopResult.reduction) {
+                runState.recordReduction({
+                  reduction: repairLoopResult.reduction,
+                  reductionSnapshot: repairLoopResult.reductionSnapshot,
+                });
               }
-              if (cleanup.memoryFlush) {
-                runState.recordMemoryFlush(cleanup.memoryFlush);
-              }
+              return repairLoopResult.reArm;
+            }
+            synthesisResult = repairLoopResult.result;
+            if (repairLoopResult.reduction) {
+              synthesisReduction = repairLoopResult.reduction;
+              synthesisReductionSnapshot = repairLoopResult.reductionSnapshot;
             }
           }
           // Mirror the inline completed-closeout visibility appenders (inline
