@@ -19,6 +19,7 @@ import {
   shouldAppendTimeoutContinuationVisibility,
   shouldPreserveRecoveredTimeoutCloseout,
 } from "../tool-loop-shared";
+import { recordRepairPrompt } from "../task-facts-shared";
 import {
   createRepairPolicyRegistry,
   type RepairPolicyRegistry,
@@ -537,15 +538,6 @@ function buildReArmIfNeeded(input: {
       forceToolChoice: repair.forceToolChoice,
     },
   };
-}
-
-function recordRepairPrompt(
-  repairMarkers: LLMMessage[],
-  content: string,
-): LLMMessage {
-  const message: LLMMessage = { role: "user", content };
-  repairMarkers.push(message);
-  return message;
 }
 
 function appendMemoryFlush<T>(memoryFlushes: T[], memoryFlush: T | undefined): void {

@@ -248,15 +248,13 @@ import {
   type EngineCloseoutReason,
 } from "./react-engine";
 import {
-  buildOriginalRequestTableColumnContext,
-  buildRequestedTableColumnActivationContext,
-  explicitlyRequestsProviderSupportSchema,
-  markdownTableHasExactRequestedColumns,
-  normalizeColumnDetectionText,
-  requestedColumnsLookLikeProviderSearchPricing,
-  requestedTableColumnMessageContext,
-  resolveRequestedTableColumns,
-  resultIntroducesProviderSupportSchema,
+  buildAwaitingContextSetupNoToolRepairPrompt,
+  buildExtraneousProviderTableSchemaRepairPrompt,
+  buildMissingRequestedTableColumnsRepairPrompt,
+  recordRepairPrompt,
+  shouldRepairExtraneousProviderTableSchema,
+  shouldRepairMissingRequestedTableColumns,
+  shouldSuppressToolsForAwaitingContextSetup,
 } from "./task-facts-shared";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type {
@@ -1195,7 +1193,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolCalls.length > 0 &&
         shouldSuppressToolsForAwaitingContextSetup({
           taskPrompt: input.packet.taskPrompt,
-          messages,
           repairMarkers,
         })
       ) {
@@ -2953,7 +2950,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (
             !shouldSuppressToolsForAwaitingContextSetup({
               taskPrompt: packet.taskPrompt,
-              messages: state.messages,
               repairMarkers,
             })
           ) {
@@ -5452,188 +5448,6 @@ function allowsSupplementalBrowserProbe(packet: RolePromptPacket): boolean {
   const unavailable =
     packet.capabilityInspection?.unavailableCapabilities ?? [];
   return !unavailable.some((capability) => /\bbrowser\b/i.test(capability));
-}
-
-// Stage 6 prereq: record an injected repair prompt in the idempotency ledger and
-// return it so it can also be appended to the model conversation in one step.
-// Every `shouldRepair*` "already tried" guard scans this ledger (the repair
-// prompts we injected) instead of the full message history, so the guards no
-// longer depend on conversation storage. The hasX*RepairPrompt helpers are
-// unchanged — they still scan an LLMMessage[]; we just pass them this ledger.
-function recordRepairPrompt(
-  repairMarkers: LLMMessage[],
-  content: string,
-): LLMMessage {
-  const message: LLMMessage = { role: "user", content };
-  repairMarkers.push(message);
-  return message;
-}
-
-function shouldSuppressToolsForAwaitingContextSetup(input: {
-  taskPrompt: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-}): boolean {
-  if (hasAwaitingContextSetupNoToolRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  return taskPromptRequestsAwaitingContextSetup(input.taskPrompt);
-}
-
-function taskPromptRequestsAwaitingContextSetup(taskPrompt: string): boolean {
-  if (
-    /\b(?:durable memory|memory_search|memory_get|check durable memory|inspect any candidate memory|recover the launch window|launch window|residual risk|previously captured)\b/i.test(
-      taskPrompt,
-    )
-  ) {
-    return false;
-  }
-  return (
-    /\bno research (?:is )?(?:needed|required)\b|\bno action (?:is )?(?:needed|required)\b/i.test(
-      taskPrompt,
-    ) &&
-    /\bbriefly acknowledge\b|\backnowledge\b/i.test(taskPrompt) &&
-    /\b(?:continue|resume|proceed)\b[\s\S]{0,120}\b(?:context|details?|available|provided)\b/i.test(
-      taskPrompt,
-    )
-  );
-}
-
-function shouldRepairMissingRequestedTableColumns(input: {
-  activation?: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  resultText: string;
-}): boolean {
-  if (hasMissingRequestedTableColumnsRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  const requestedColumns = resolveRequestedTableColumns([
-    input.taskPrompt,
-    ...buildRequestedTableColumnActivationContext(input.activation),
-    ...requestedTableColumnMessageContext(input.messages),
-  ]);
-  if (requestedColumns.length === 0) return false;
-  const normalizedResult = normalizeColumnDetectionText(input.resultText);
-  if (
-    !markdownTableHasExactRequestedColumns(input.resultText, requestedColumns)
-  ) {
-    return true;
-  }
-  return requestedColumns.some(
-    (column) => !normalizedResult.includes(normalizeColumnDetectionText(column)),
-  );
-}
-
-function hasMissingRequestedTableColumnsRepairPrompt(messages: LLMMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readToolResultContentText(message.content).includes(
-        "did not preserve the table columns explicitly requested",
-      ),
-  );
-}
-
-function buildMissingRequestedTableColumnsRepairPrompt(input: {
-  activation?: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-  resultText: string;
-}): string {
-  const requestedColumns = resolveRequestedTableColumns([
-    input.taskPrompt,
-    ...buildRequestedTableColumnActivationContext(input.activation),
-    ...requestedTableColumnMessageContext(input.messages),
-  ]);
-  return [
-    "The previous final answer did not preserve the table columns explicitly requested by the original user/task.",
-    `Required table header columns: ${requestedColumns.join(" | ")}`,
-    "Rewrite the final answer now without calling tools.",
-    "The main table must include every required column above. Do not rename columns, transpose the table into Slot x Provider form, merge columns, or move any requested column into prose.",
-    "For any cell not directly supported by source evidence already present, write 未验证.",
-    "If any required goal slot remains unverified, mark the answer as blocked/partial and list the missing slots briefly after the table.",
-  ].join("\n");
-}
-
-function shouldRepairExtraneousProviderTableSchema(input: {
-  activation?: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  resultText: string;
-}): boolean {
-  if (hasExtraneousProviderTableSchemaRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (!resultIntroducesProviderSupportSchema(input.resultText)) {
-    return false;
-  }
-  const originalContext = [
-    input.taskPrompt,
-    ...buildOriginalRequestTableColumnContext(input.activation),
-  ].join("\n");
-  const originalRequestedColumns = resolveRequestedTableColumns([
-    originalContext,
-  ]);
-  if (
-    originalRequestedColumns.length > 0 &&
-    explicitlyRequestsProviderSupportSchema(originalContext)
-  ) {
-    return false;
-  }
-  return !explicitlyRequestsProviderSupportSchema(originalContext);
-}
-
-function hasExtraneousProviderTableSchemaRepairPrompt(messages: LLMMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readToolResultContentText(message.content).includes(
-        "introduced provider/search/model-support columns that were not requested",
-      ),
-  );
-}
-
-function buildExtraneousProviderTableSchemaRepairPrompt(input: {
-  taskPrompt: string;
-  resultText: string;
-}): string {
-  return [
-    "Runtime correction: final answer introduced provider/search/model-support columns that were not requested by the original task.",
-    "Do not call tools. Rewrite the final answer using only the evidence already present.",
-    "Remove the provider/search_web_search/target-model/input-price/output-price table schema unless those exact dimensions were requested by the original task.",
-    "Use the original task dimensions instead: pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead when those are requested.",
-    "Do not mark the whole mission blocked merely because provider support, target-model support, search/web_search support, or token input/output pricing are absent when the original task did not ask for them.",
-    "Keep residual risk visible only for source-bounded gaps actually relevant to the original task.",
-    `Original task:\n${sliceUtf8(input.taskPrompt, 1400)}`,
-    `Previous final answer:\n${sliceUtf8(input.resultText, 1400)}`,
-  ].join("\n");
-}
-
-function hasAwaitingContextSetupNoToolRepairPrompt(
-  messages: LLMMessage[],
-): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: this turn is setup-only",
-      ),
-  );
-}
-
-function buildAwaitingContextSetupNoToolRepairPrompt(
-  taskPrompt: string,
-): string {
-  return [
-    "Runtime correction: this turn is setup-only and explicitly says no research or action is needed yet.",
-    "Do not call memory, browser, search, session, or task tools for this turn.",
-    "Write a brief final answer that acknowledges the thread is ready, states no research is queued, and says the mission can continue when context is provided.",
-    "Keep it concise and complete.",
-    `Original task:\n${sliceUtf8(taskPrompt, 1000)}`,
-  ].join("\n");
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> | null {

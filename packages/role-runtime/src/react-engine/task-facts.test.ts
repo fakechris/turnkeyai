@@ -4,14 +4,22 @@ import test from "node:test";
 import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 
 import {
+  buildAwaitingContextSetupNoToolRepairPrompt,
+  buildExtraneousProviderTableSchemaRepairPrompt,
+  buildMissingRequestedTableColumnsRepairPrompt,
   buildOriginalRequestTableColumnContext,
   buildRequestedTableColumnActivationContext,
   explicitlyRequestsProviderSupportSchema,
   markdownTableHasExactRequestedColumns,
+  recordRepairPrompt,
   requestedColumnsLookLikeProviderSearchPricing,
   requestedTableColumnMessageContext,
   resolveRequestedTableColumns,
   resultIntroducesProviderSupportSchema,
+  shouldRepairExtraneousProviderTableSchema,
+  shouldRepairMissingRequestedTableColumns,
+  shouldSuppressToolsForAwaitingContextSetup,
+  taskPromptRequestsAwaitingContextSetup,
 } from "./task-facts";
 import type { LLMMessage } from "./types";
 
@@ -128,5 +136,104 @@ test("TaskFacts detects extraneous provider support schema and explicit requests
       "输出价格",
     ]),
     true,
+  );
+});
+
+test("TaskFacts owns missing requested table column repair prompts and markers", () => {
+  const taskPrompt = "Return table: provider, evidence URL.";
+  const messages: LLMMessage[] = [];
+  const repairMarkers: LLMMessage[] = [];
+  const resultText = ["| provider |", "| --- |", "| A |"].join("\n");
+
+  assert.equal(
+    shouldRepairMissingRequestedTableColumns({
+      taskPrompt,
+      messages,
+      repairMarkers,
+      resultText,
+    }),
+    true,
+  );
+
+  const prompt = buildMissingRequestedTableColumnsRepairPrompt({
+    taskPrompt,
+    messages,
+    resultText,
+  });
+  assert.match(prompt, /Required table header columns: provider \| evidence URL/);
+  assert.equal(recordRepairPrompt(repairMarkers, prompt), repairMarkers[0]);
+  assert.equal(
+    shouldRepairMissingRequestedTableColumns({
+      taskPrompt,
+      messages,
+      repairMarkers,
+      resultText,
+    }),
+    false,
+  );
+});
+
+test("TaskFacts owns extraneous provider schema repair prompts and markers", () => {
+  const taskPrompt =
+    "Compare pricing, strengths, risks, tradeoff, and recommendation.";
+  const messages: LLMMessage[] = [];
+  const repairMarkers: LLMMessage[] = [];
+  const resultText = [
+    "| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+    "| --- | --- | --- | --- |",
+    "| A | 未验证 | 未验证 | 未验证 |",
+  ].join("\n");
+
+  assert.equal(
+    shouldRepairExtraneousProviderTableSchema({
+      taskPrompt,
+      messages,
+      repairMarkers,
+      resultText,
+    }),
+    true,
+  );
+
+  const prompt = buildExtraneousProviderTableSchemaRepairPrompt({
+    taskPrompt,
+    resultText,
+  });
+  assert.match(prompt, /provider\/search\/model-support columns/);
+  recordRepairPrompt(repairMarkers, prompt);
+  assert.equal(
+    shouldRepairExtraneousProviderTableSchema({
+      taskPrompt,
+      messages,
+      repairMarkers,
+      resultText,
+    }),
+    false,
+  );
+});
+
+test("TaskFacts owns awaiting-context setup suppression and marker idempotency", () => {
+  const taskPrompt =
+    "No research is needed. Briefly acknowledge and continue when context is provided.";
+  const repairMarkers: LLMMessage[] = [];
+
+  assert.equal(taskPromptRequestsAwaitingContextSetup(taskPrompt), true);
+  assert.equal(
+    taskPromptRequestsAwaitingContextSetup(
+      "No research is needed. Briefly acknowledge and recover the launch window from durable memory.",
+    ),
+    false,
+  );
+  assert.equal(
+    shouldSuppressToolsForAwaitingContextSetup({ taskPrompt, repairMarkers }),
+    true,
+  );
+
+  recordRepairPrompt(
+    repairMarkers,
+    buildAwaitingContextSetupNoToolRepairPrompt(taskPrompt),
+  );
+  assert.equal(
+    shouldSuppressToolsForAwaitingContextSetup({ taskPrompt, repairMarkers }),
+    false,
   );
 });
