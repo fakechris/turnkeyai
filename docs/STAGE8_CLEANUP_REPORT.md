@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `acb9db9f78fc9c3991acff79e8d4883fc0bbcb12`
+**Code HEAD before this docs-only report:** `d2be68d3b447284fd49c7d2b9568ebbe4cce555c`
 **Date:** 2026-07-02
 
 ## Summary
@@ -55,6 +55,9 @@ could not move the normalizer without making the inline parity reference import 
   routes through `react-engine/completed-closeout-controller.ts`; model calls
   are still injected by the adapter, but browser/product-signal re-arm
   decisions now run inside the controller through `RepairPolicyRegistry`.
+  Completed-closeout source-evidence carry-forward and weak-evidence synthesis
+  repair decisions also now route through that registry using controller-provided
+  evidence formula text.
   The completed-closeout post-synthesis visibility chain now routes through that
   controller too, while shared browser recovery/failure-bucket and timeout
   continuation helpers remain neutral for inline + engine parity.
@@ -141,6 +144,7 @@ of controller actions.
 | `c0011d3` | Move missing browser/product-signal evidence repair detectors and prompt builders into neutral shared code. |
 | `200f9e6` | Route missing browser/product-signal evidence natural-finish repair decisions through `RepairPolicyRegistry`; add focused policy tests. |
 | `acb9db9` | Move completed-closeout browser/product-signal re-arm ownership into `CompletedCloseoutController`; remove the adapter-injected predicate closure. |
+| `d2be68d` | Route completed-closeout source-evidence and weak-evidence repair decisions through `RepairPolicyRegistry`; add controller-provided evidence-text coverage. |
 
 ## Current Extracted Implementation
 
@@ -192,7 +196,8 @@ Real implementation now exists in:
   failed-repair deterministic local closeout gating, incomplete approved-browser
   action repair gating, requested table-column repair gating, extraneous
   provider-support-schema repair gating, source-evidence carry-forward repair
-  gating, weak-evidence synthesis repair gating, plus
+  gating, weak-evidence synthesis repair gating, controller-provided evidence
+  formula text for completed-closeout source/weak repairs, plus
   `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER` and the completed-only
   repair policies `timeout_followup_final_guidance`,
   `missing_requested_next_action`, `missing_required_final_deliverables`,
@@ -205,8 +210,9 @@ Real implementation now exists in:
   browser/product-signal re-arm precedence through `RepairPolicyRegistry`,
   repair marker insertion, memory flush/reduction carry-forward, and one clean
   tool-free cleanup synthesis when a completed repair produces tool-call
-  artifact text, plus the completed closeout post-synthesis visibility chain
-  for browser recovery visibility,
+  artifact text, source-evidence/weak-evidence repair dispatch through
+  `RepairPolicyRegistry`, plus the completed closeout post-synthesis visibility
+  chain for browser recovery visibility,
   browser failure-bucket visibility, recovered-timeout/continuation visibility,
   and final forbidden local URL redaction.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
@@ -261,8 +267,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 47 / 47 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 139 / 139 |
+| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 48 / 48 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 140 / 140 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -276,7 +282,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifty-two
+root plus several policy-heavy hook bodies. The main improvement is that fifty-three
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -422,6 +428,9 @@ Stage 8 boundaries/slices are now real:
 - completed-closeout browser/product-signal re-arm decisions now run inside
   `CompletedCloseoutController` through `RepairPolicyRegistry`; the adapter
   passes tools/evidence and no longer injects a predicate closure.
+- completed-closeout source-evidence carry-forward and weak-evidence synthesis
+  repair decisions now route through `RepairPolicyRegistry` using the
+  controller's selected evidence formula text.
 
 ## Remaining Work
 
