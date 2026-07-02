@@ -176,6 +176,7 @@ import {
   createEngineRunState,
   createEngineRunObserver,
   createPermissionPolicy,
+  createRepairPolicyRegistry,
   type DefaultEngineRunStateValues,
   finalizeEngineAnswer,
   normalizeEngineToolCalls,
@@ -2652,6 +2653,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const executionBudget = createExecutionBudgetController();
     const continuation = createContinuationController();
     const closeoutPolicy = createCloseoutPolicyRegistry();
+    const repairPolicy = createRepairPolicyRegistry();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     type RoleEngineRunStateValues = DefaultEngineRunStateValues & {
@@ -3411,15 +3413,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // `nextToolChoice = "none"; continue;` with round--). The recovery_tool_budget
           // closeout in onToolCallsClose defers to this via the same predicate, so the
           // repaired blocked closeout still routes through that closeout next round.
+          const finalRecoveryBudgetRepair = repairPolicy.evaluateNaturalFinish({
+            finalRecoveryBudget: recoveryToolBudget
+              ? {
+                  maxToolCalls: recoveryToolBudget.maxToolCalls,
+                  usedToolCalls:
+                    recoveryToolCallsBeforeActivation + countToolCalls(toolTrace),
+                }
+              : null,
+            messages: state.messages,
+            repairMarkers,
+            resultText: state.lastText,
+          });
           if (
-            recoveryToolBudget &&
-            recoveryToolCallsBeforeActivation + countToolCalls(toolTrace) >=
-              recoveryToolBudget.maxToolCalls &&
-            shouldRepairFinalRecoveryBudgetCloseout({
-              messages: state.messages,
-              repairMarkers,
-              resultText: state.lastText,
-            })
+            finalRecoveryBudgetRepair?.policyId ===
+            "final_recovery_budget_closeout_repair"
           ) {
             return {
               messages: [
@@ -3427,12 +3435,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildFinalRecoveryBudgetCloseoutRepairPrompt(
-                    recoveryToolBudget.maxToolCalls,
-                  ),
+                  finalRecoveryBudgetRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: "none",
+              forceToolChoice: finalRecoveryBudgetRepair.forceToolChoice,
             };
           }
           // Stage 7 S2/S3: forced-spawn browser-evidence repairs — FIRST in the
