@@ -8,7 +8,9 @@ import {
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildIndependentEvidenceStreamContinuationPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
+  buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   countCompletedSessionEvidenceResults,
+  FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   findIncompleteApprovedBrowserSession,
@@ -78,6 +80,12 @@ export interface IncompleteApprovedBrowserSessionInput {
 
 export interface IndependentEvidenceStreamsInput {
   messages: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly ContinuationToolDefinition[];
+}
+
+export interface ForcedPermissionResultInput {
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];
   tools?: readonly ContinuationToolDefinition[];
@@ -324,6 +332,25 @@ export class ContinuationController {
       ],
       forceToolChoice: { name: "sessions_spawn" },
       reason: "independent_evidence_stream_continuation",
+    };
+  }
+
+  forcePendingApprovalWaitTimeoutPermissionResult(
+    input: ForcedPermissionResultInput,
+  ): EngineContinueAction {
+    const call = buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
+      taskPrompt: input.taskPrompt,
+      toolTrace: input.toolTrace,
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
+    });
+    if (!call) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "forced_tool_round",
+      calls: [call],
+      assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
+      reason: "forced_pending_approval_wait_timeout_permission_result",
     };
   }
 }

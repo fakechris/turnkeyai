@@ -46,6 +46,12 @@ export type EngineContinueAction =
   | { kind: "none" }
   | { kind: "inject_calls"; calls: LLMToolCall[]; reason: string }
   | {
+      kind: "forced_tool_round";
+      calls: LLMToolCall[];
+      assistantText: string;
+      reason: string;
+    }
+  | {
       kind: "continue";
       messages: LLMMessage[];
       forceToolChoice?: ReActToolChoice;

@@ -41,6 +41,9 @@ export interface IncompleteApprovedBrowserSessionContinuation {
   evidence: string;
 }
 
+export const FORCED_PERMISSION_RESULT_ASSISTANT_TEXT =
+  "Checking the pending approval result before closing out." as const;
+
 export const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
 
 export const SUPPLEMENTAL_LOCAL_TIMEOUT_PROBE_TIMEOUT_SECONDS = 45;
@@ -925,7 +928,7 @@ export function buildIncompleteApprovedBrowserSessionContinuationPrompt(
 export function hasPermissionAppliedEvidence(
   toolTrace: NativeToolRoundTrace[],
 ): boolean {
-  if (latestPermissionToolNameForTrace(toolTrace) === "permission_applied") {
+  if (latestPermissionToolName(toolTrace) === "permission_applied") {
     return true;
   }
   return toolTrace.some((round) =>
@@ -935,7 +938,7 @@ export function hasPermissionAppliedEvidence(
   );
 }
 
-function latestPermissionToolNameForTrace(
+export function latestPermissionToolName(
   toolTrace: NativeToolRoundTrace[],
 ): string | null {
   for (
@@ -956,6 +959,153 @@ function latestPermissionToolNameForTrace(
     }
   }
   return null;
+}
+
+export function latestPermissionResultStatus(
+  toolTrace: NativeToolRoundTrace[],
+): string | null {
+  for (
+    let roundIndex = toolTrace.length - 1;
+    roundIndex >= 0;
+    roundIndex -= 1
+  ) {
+    const round = toolTrace[roundIndex]!;
+    for (
+      let progressIndex = (round.progress?.length ?? 0) - 1;
+      progressIndex >= 0;
+      progressIndex -= 1
+    ) {
+      const progress = round.progress![progressIndex]!;
+      if (
+        progress.toolName === "permission_result" &&
+        progress.detail?.["eventType"] === "permission.result"
+      ) {
+        const status = progress.detail["status"];
+        if (typeof status === "string") return status;
+      }
+    }
+    for (
+      let resultIndex = round.results.length - 1;
+      resultIndex >= 0;
+      resultIndex -= 1
+    ) {
+      const result = round.results[resultIndex]!;
+      if (result.toolName !== "permission_result") continue;
+      const parsed = parseJsonObject(result.content);
+      const status = parsed?.["status"];
+      if (typeof status === "string") return status;
+    }
+  }
+  return null;
+}
+
+export function taskPromptRequestsApprovalWaitTimeoutCloseout(
+  taskPrompt: string,
+): boolean {
+  return (
+    /\b(?:operator decision|approval|permission)\b[\s\S]{0,180}\b(?:does not arrive|doesn't arrive|does not come through|doesn't come through|no decision arrives|no approval arrives|wait timeout|wait-timeout|timed out|timeout|during this attempt|attempt cycle)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\bif\b[\s\S]{0,120}\b(?:decision|approval|permission)\b[\s\S]{0,120}\b(?:not arrive|pending|timeout|timed out|wait)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+export function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input: {
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly { name: string }[];
+}): LLMToolCall | null {
+  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+    return null;
+  }
+  if (!hasToolDefinition(input.tools, "permission_result")) {
+    return null;
+  }
+  if (latestPermissionToolName(input.toolTrace) !== "permission_query") {
+    return null;
+  }
+  if (latestPermissionResultStatus(input.toolTrace)) {
+    return null;
+  }
+  const approvalId = latestPendingPermissionQueryApprovalId(input.toolTrace);
+  if (!approvalId) {
+    return null;
+  }
+  return {
+    id: `toolu-runtime-permission-result-${input.toolTrace.length + 1}`,
+    name: "permission_result",
+    input: { approval_id: approvalId },
+  };
+}
+
+export function latestPendingPermissionQueryApprovalId(
+  toolTrace: NativeToolRoundTrace[],
+): string | null {
+  for (
+    let roundIndex = toolTrace.length - 1;
+    roundIndex >= 0;
+    roundIndex -= 1
+  ) {
+    const round = toolTrace[roundIndex]!;
+    for (
+      let progressIndex = (round.progress?.length ?? 0) - 1;
+      progressIndex >= 0;
+      progressIndex -= 1
+    ) {
+      const progress = round.progress![progressIndex]!;
+      if (
+        progress.toolName !== "permission_query" ||
+        progress.detail?.["eventType"] !== "permission.query"
+      ) {
+        continue;
+      }
+      const status = progress.detail["status"];
+      if (typeof status === "string" && status !== "pending") {
+        continue;
+      }
+      const approvalId = readApprovalId(progress.detail);
+      if (approvalId) return approvalId;
+    }
+    for (
+      let resultIndex = round.results.length - 1;
+      resultIndex >= 0;
+      resultIndex -= 1
+    ) {
+      const result = round.results[resultIndex]!;
+      if (result.toolName !== "permission_query") continue;
+      const parsed = parseJsonObject(result.content);
+      if (!parsed) continue;
+      const status = parsed["status"];
+      if (typeof status === "string" && status !== "pending") {
+        continue;
+      }
+      const approvalId = readApprovalId(parsed);
+      if (approvalId) return approvalId;
+    }
+  }
+  return null;
+}
+
+function readApprovalId(value: Record<string, unknown> | undefined): string | null {
+  if (!value) return null;
+  const direct = value["approval_id"] ?? value["approvalId"];
+  return typeof direct === "string" && direct.trim().length > 0
+    ? direct.trim()
+    : null;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {

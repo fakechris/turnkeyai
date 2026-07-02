@@ -49,11 +49,13 @@ import {
   toolCallSignature,
 } from "./react/predicates";
 import {
+  FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
   SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS,
   INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS,
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
   buildApprovedBrowserTimeoutContinuationPrompt,
+  buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildIndependentEvidenceStreamContinuationPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
@@ -100,6 +102,8 @@ import {
   isBrowserSessionSpawn,
   isExplicitSessionContinuationRequest,
   isLoopbackHostname,
+  latestPermissionResultStatus,
+  latestPermissionToolName,
   limitIndependentEvidenceSpawnCalls,
   looksBoundedTimeoutSourceCheck,
   matchesAny,
@@ -137,6 +141,7 @@ import {
   shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
   taskAllowsPermissionTools,
+  taskPromptRequestsApprovalWaitTimeoutCloseout,
   taskPromptLooksLikeSourceCheckContinuation,
   taskPromptSaysApprovalAlreadyApplied,
   taskRequestsSessionTranscript,
@@ -505,7 +510,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ? buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
                 taskPrompt: input.packet.taskPrompt,
                 toolTrace,
-                tools: initialGatewayInput.tools,
+                ...(initialGatewayInput.tools === undefined
+                  ? {}
+                  : { tools: initialGatewayInput.tools }),
               })
             : null;
         if (forcedPermissionResultCall) {
@@ -518,8 +525,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             round: round + 1,
             toolLoopStartedAtMs,
             ...(input.signal ? { signal: input.signal } : {}),
-            assistantText:
-              "Checking the pending approval result before closing out.",
+            assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
           });
           messages = forcedRound.messages;
           continue;
@@ -1817,7 +1823,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
             taskPrompt: input.packet.taskPrompt,
             toolTrace,
-            tools: initialGatewayInput.tools,
+            ...(initialGatewayInput.tools === undefined
+              ? {}
+              : { tools: initialGatewayInput.tools }),
           });
         if (forcedPermissionResultCall) {
           const forcedRound = await this.executeRuntimeForcedToolRound({
@@ -1829,8 +1837,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             round: toolTrace.length + 1,
             toolLoopStartedAtMs,
             ...(input.signal ? { signal: input.signal } : {}),
-            assistantText:
-              "Checking the pending approval result before closing out.",
+            assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
           });
           messages = forcedRound.messages;
           continue;
@@ -3448,13 +3455,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // builder's guards (approval-wait-timeout task + pending permission_query +
           // a pending approval_id) are the idempotency: once permission_result lands,
           // latestPermissionToolName !== "permission_query" so it does not re-fire.
-          const forcedPermissionResultCall =
-            buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
+          const forcedPermissionResult =
+            continuation.forcePendingApprovalWaitTimeoutPermissionResult({
               taskPrompt: packet.taskPrompt,
               toolTrace,
-              tools: initialGatewayInput.tools,
+              ...(initialGatewayInput.tools === undefined
+                ? {}
+                : { tools: initialGatewayInput.tools }),
             });
-          if (!forcedPermissionResultCall) {
+          if (forcedPermissionResult.kind !== "forced_tool_round") {
             return null;
           }
           const forcedRound = await this.executeRuntimeForcedToolRound({
@@ -3462,12 +3471,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             packet,
             messages: state.messages,
             toolTrace,
-            toolCalls: [forcedPermissionResultCall],
+            toolCalls: forcedPermissionResult.calls,
             round: toolTrace.length + 1,
             toolLoopStartedAtMs,
             ...(signal ? { signal } : {}),
-            assistantText:
-              "Checking the pending approval result before closing out.",
+            assistantText: forcedPermissionResult.assistantText,
           });
           return { messages: forcedRound.messages };
         },
@@ -4724,26 +4732,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return "rethrow";
           }
           runState.captureFinalMessages(state.messages);
-          const forcedPermissionResultCall =
+          const forcedPermissionResult =
             activeToolLoop && hasUsableEvidence(toolTrace)
-              ? buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
+              ? continuation.forcePendingApprovalWaitTimeoutPermissionResult({
                   taskPrompt: packet.taskPrompt,
                   toolTrace,
-                  tools: initialGatewayInput.tools,
+                  ...(initialGatewayInput.tools === undefined
+                    ? {}
+                    : { tools: initialGatewayInput.tools }),
                 })
-              : null;
-          if (forcedPermissionResultCall) {
+              : { kind: "none" as const };
+          if (forcedPermissionResult.kind === "forced_tool_round") {
             const forcedRound = await this.executeRuntimeForcedToolRound({
               activation,
               packet,
               messages: state.messages,
               toolTrace,
-              toolCalls: [forcedPermissionResultCall],
+              toolCalls: forcedPermissionResult.calls,
               round: toolTrace.length + 1,
               toolLoopStartedAtMs,
               ...(signal ? { signal } : {}),
-              assistantText:
-                "Checking the pending approval result before closing out.",
+              assistantText: forcedPermissionResult.assistantText,
             });
             return { messages: forcedRound.messages };
           }
@@ -6894,90 +6903,6 @@ function shouldRepairPendingApprovalWaitTimeoutCheck(input: {
   return latestPermissionToolName(input.toolTrace) === "permission_query";
 }
 
-function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input: {
-  taskPrompt: string;
-  toolTrace: NativeToolRoundTrace[];
-  tools?: GenerateTextInput["tools"];
-}): LLMToolCall | null {
-  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
-    return null;
-  }
-  if (!hasToolDefinition(input.tools, "permission_result")) {
-    return null;
-  }
-  if (latestPermissionToolName(input.toolTrace) !== "permission_query") {
-    return null;
-  }
-  if (latestPermissionResultStatus(input.toolTrace)) {
-    return null;
-  }
-  const approvalId = latestPendingPermissionQueryApprovalId(input.toolTrace);
-  if (!approvalId) {
-    return null;
-  }
-  return {
-    id: `toolu-runtime-permission-result-${input.toolTrace.length + 1}`,
-    name: "permission_result",
-    input: { approval_id: approvalId },
-  };
-}
-
-function latestPendingPermissionQueryApprovalId(
-  toolTrace: NativeToolRoundTrace[],
-): string | null {
-  for (
-    let roundIndex = toolTrace.length - 1;
-    roundIndex >= 0;
-    roundIndex -= 1
-  ) {
-    const round = toolTrace[roundIndex]!;
-    for (
-      let progressIndex = (round.progress?.length ?? 0) - 1;
-      progressIndex >= 0;
-      progressIndex -= 1
-    ) {
-      const progress = round.progress![progressIndex]!;
-      if (
-        progress.toolName !== "permission_query" ||
-        progress.detail?.["eventType"] !== "permission.query"
-      ) {
-        continue;
-      }
-      const status = progress.detail["status"];
-      if (typeof status === "string" && status !== "pending") {
-        continue;
-      }
-      const approvalId = readApprovalId(progress.detail);
-      if (approvalId) return approvalId;
-    }
-    for (
-      let resultIndex = round.results.length - 1;
-      resultIndex >= 0;
-      resultIndex -= 1
-    ) {
-      const result = round.results[resultIndex]!;
-      if (result.toolName !== "permission_query") continue;
-      const parsed = parseJsonObject(result.content);
-      if (!parsed) continue;
-      const status = parsed["status"];
-      if (typeof status === "string" && status !== "pending") {
-        continue;
-      }
-      const approvalId = readApprovalId(parsed);
-      if (approvalId) return approvalId;
-    }
-  }
-  return null;
-}
-
-function readApprovalId(value: Record<string, unknown> | undefined): string | null {
-  if (!value) return null;
-  const direct = value["approval_id"] ?? value["approvalId"];
-  return typeof direct === "string" && direct.trim().length > 0
-    ? direct.trim()
-    : null;
-}
-
 function shouldRepairPrematurePendingApprovalFinal(input: {
   taskPrompt: string;
   resultText: string;
@@ -7914,67 +7839,6 @@ function shouldRepairStaleDeniedApproval(input: {
   return latestPermissionResultStatus(input.toolTrace) === "denied";
 }
 
-function latestPermissionToolName(
-  toolTrace: NativeToolRoundTrace[],
-): string | null {
-  for (
-    let roundIndex = toolTrace.length - 1;
-    roundIndex >= 0;
-    roundIndex -= 1
-  ) {
-    const round = toolTrace[roundIndex]!;
-    for (
-      let callIndex = round.calls.length - 1;
-      callIndex >= 0;
-      callIndex -= 1
-    ) {
-      const name = round.calls[callIndex]!.name;
-      if (name.startsWith("permission_")) {
-        return name;
-      }
-    }
-  }
-  return null;
-}
-
-function latestPermissionResultStatus(
-  toolTrace: NativeToolRoundTrace[],
-): string | null {
-  for (
-    let roundIndex = toolTrace.length - 1;
-    roundIndex >= 0;
-    roundIndex -= 1
-  ) {
-    const round = toolTrace[roundIndex]!;
-    for (
-      let progressIndex = (round.progress?.length ?? 0) - 1;
-      progressIndex >= 0;
-      progressIndex -= 1
-    ) {
-      const progress = round.progress![progressIndex]!;
-      if (
-        progress.toolName === "permission_result" &&
-        progress.detail?.["eventType"] === "permission.result"
-      ) {
-        const status = progress.detail["status"];
-        if (typeof status === "string") return status;
-      }
-    }
-    for (
-      let resultIndex = round.results.length - 1;
-      resultIndex >= 0;
-      resultIndex -= 1
-    ) {
-      const result = round.results[resultIndex]!;
-      if (result.toolName !== "permission_result") continue;
-      const parsed = parseJsonObject(result.content);
-      const status = parsed?.["status"];
-      if (typeof status === "string") return status;
-    }
-  }
-  return null;
-}
-
 function hasApprovalWaitTimeoutEvidence(
   toolTrace: NativeToolRoundTrace[],
 ): boolean {
@@ -8179,19 +8043,6 @@ function hasMissingBrowserEvidenceDimensionsRepairPrompt(
 function mentionsPendingApproval(text: string): boolean {
   return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission is (?:now )?pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|standby for (?:the )?decision|once you approve|after you approve|before (?:the )?(?:browser worker )?can)\b/i.test(
     text,
-  );
-}
-
-function taskPromptRequestsApprovalWaitTimeoutCloseout(
-  taskPrompt: string,
-): boolean {
-  return (
-    /\b(?:operator decision|approval|permission)\b[\s\S]{0,180}\b(?:does not arrive|doesn't arrive|does not come through|doesn't come through|no decision arrives|no approval arrives|wait timeout|wait-timeout|timed out|timeout|during this attempt|attempt cycle)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\bif\b[\s\S]{0,120}\b(?:decision|approval|permission)\b[\s\S]{0,120}\b(?:not arrive|pending|timeout|timed out|wait)\b/i.test(
-      taskPrompt,
-    )
   );
 }
 

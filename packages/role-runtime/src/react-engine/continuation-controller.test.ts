@@ -194,6 +194,58 @@ function independentEvidenceTrace(): NativeToolRoundTrace[] {
   ];
 }
 
+function pendingApprovalTrace(
+  includePermissionResult = false,
+): NativeToolRoundTrace[] {
+  return [
+    {
+      round: 1,
+      calls: [
+        {
+          id: "toolu-permission-query",
+          name: "permission_query",
+          input: { action: "browser.form.submit" },
+        },
+      ],
+      results: includePermissionResult
+        ? [
+            {
+              toolCallId: "toolu-permission-result",
+              toolName: "permission_result",
+              content: JSON.stringify({
+                status: "pending",
+                approval_id: "ap-1",
+              }),
+              isError: false,
+              contentBytes: 0,
+            },
+          ]
+        : [],
+      progress: [
+        {
+          toolCallId: "toolu-permission-query",
+          toolName: "permission_query",
+          phase: "completed",
+          summary: "permission query pending",
+          detail: {
+            eventType: "permission.query",
+            status: "pending",
+            approval_id: "ap-1",
+          },
+          ts: 1,
+        },
+      ],
+    },
+  ];
+}
+
+function approvalWaitTimeoutTaskPrompt(): string {
+  return [
+    "Submit the form only if the operator approves.",
+    "If the operator decision does not arrive during this attempt, check the pending permission result before closing out.",
+  ].join("\n");
+}
+
 test("ContinuationController injects sessions_send for an empty continuation round", () => {
   const controller = createContinuationController();
 
@@ -579,6 +631,49 @@ test("ContinuationController does not repeat an independent evidence stream prom
       taskPrompt: independentEvidenceTaskPrompt(),
       toolTrace: independentEvidenceTrace(),
       tools: [{ name: "sessions_spawn" }],
+    }),
+    { kind: "none" },
+  );
+});
+
+test("ContinuationController builds a forced pending approval permission_result round", () => {
+  const controller = createContinuationController();
+
+  const action =
+    controller.forcePendingApprovalWaitTimeoutPermissionResult({
+      taskPrompt: approvalWaitTimeoutTaskPrompt(),
+      toolTrace: pendingApprovalTrace(),
+      tools: [{ name: "permission_result" }],
+    });
+
+  assert.equal(action.kind, "forced_tool_round");
+  assert.equal(
+    action.kind === "forced_tool_round" && action.reason,
+    "forced_pending_approval_wait_timeout_permission_result",
+  );
+  assert.equal(
+    action.kind === "forced_tool_round" && action.calls[0]?.name,
+    "permission_result",
+  );
+  assert.equal(
+    action.kind === "forced_tool_round" &&
+      action.calls[0]?.input["approval_id"],
+    "ap-1",
+  );
+  assert.match(
+    action.kind === "forced_tool_round" ? action.assistantText : "",
+    /Checking the pending approval result/,
+  );
+});
+
+test("ContinuationController does not repeat forced permission_result after a result exists", () => {
+  const controller = createContinuationController();
+
+  assert.deepEqual(
+    controller.forcePendingApprovalWaitTimeoutPermissionResult({
+      taskPrompt: approvalWaitTimeoutTaskPrompt(),
+      toolTrace: pendingApprovalTrace(true),
+      tools: [{ name: "permission_result" }],
     }),
     { kind: "none" },
   );
