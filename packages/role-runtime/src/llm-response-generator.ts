@@ -3856,9 +3856,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 "approval wait-timeout repair omitted required pending evidence",
               ),
             });
-            runState.recordToolLoopCloseout(fallback.closeout);
-            runState.recordCloseoutResult(fallback.result);
-            return terminalCloseout.buildFinalResponse(fallback.result);
+            return terminalCloseout.applyCloseoutApplication(
+              {
+                reason: "tool_evidence_fallback",
+                closeout: fallback.closeout,
+                result: fallback.result,
+              },
+              runState,
+            );
           }
           // Each closeout reason rebuilds the inline reasonLines + closeout
           // metadata it produced inline; the round_limit defaults remain the
@@ -3941,6 +3946,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           let synthesisReduction = generated.reduction;
           let synthesisReductionSnapshot = generated.reductionSnapshot;
           let closeoutResult: GenerateTextResult;
+          let terminalMemoryFlushes: PreCompactionMemoryFlushResult[] = [];
           const completedSessionForRepair = runState.completedSession();
           if (reason === "completed_sub_agent_final" && completedSessionForRepair) {
             const repairMarkers = (ctx.repairMarkers ??= []);
@@ -3993,34 +3999,28 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   }),
                 toolTrace,
               });
-            for (const memoryFlush of completedTerminal.memoryFlushes) {
-              runState.recordMemoryFlush(memoryFlush);
-            }
             if (completedTerminal.kind === "rearm") {
-              if (completedTerminal.reduction) {
-                runState.recordReduction({
-                  reduction: completedTerminal.reduction,
-                  reductionSnapshot: completedTerminal.reductionSnapshot,
-                });
-              }
+              terminalCloseout.recordSynthesisEffects(
+                completedTerminal,
+                runState,
+              );
               return completedTerminal.reArm;
             }
             closeoutResult = completedTerminal.result;
             synthesisReduction = completedTerminal.reduction;
             synthesisReductionSnapshot = completedTerminal.reductionSnapshot;
+            terminalMemoryFlushes = completedTerminal.memoryFlushes;
           } else {
             const nonCompletedTerminal =
               terminalCloseout.applyNonCompletedGeneratedSynthesis({
                 reason: reason as EngineCloseoutReason,
                 generated,
               });
-            for (const memoryFlush of nonCompletedTerminal.memoryFlushes) {
-              runState.recordMemoryFlush(memoryFlush);
-            }
             closeoutResult = nonCompletedTerminal.result;
             synthesisReduction = nonCompletedTerminal.reduction;
             synthesisReductionSnapshot =
               nonCompletedTerminal.reductionSnapshot;
+            terminalMemoryFlushes = nonCompletedTerminal.memoryFlushes;
           }
           // Reason-gated, matching inline: ONLY completed_sub_agent_final is sticky
           // (`??=`, inline :1729) — the completed branch set it early so an S10 re-armed
@@ -4029,22 +4029,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // (sub_agent_timeout / round_limit / a pending-call closeout), that reason's
           // metadata must replace the stale completed one, exactly as inline reassigns
           // `toolLoopCloseout =` for non-completed reasons (codex #520 P2).
-          const closeoutRecordMode = terminalCloseout.closeoutRecordMode(
-            reason as EngineCloseoutReason,
+          return terminalCloseout.applyCloseoutApplication(
+            {
+              reason: reason as EngineCloseoutReason,
+              closeout,
+              result: closeoutResult,
+              memoryFlushes: terminalMemoryFlushes,
+              ...(synthesisReduction === undefined
+                ? {}
+                : { reduction: synthesisReduction }),
+              ...(synthesisReductionSnapshot === undefined
+                ? {}
+                : { reductionSnapshot: synthesisReductionSnapshot }),
+            },
+            runState,
           );
-          if (closeoutRecordMode === "if_absent") {
-            runState.recordToolLoopCloseoutIfAbsent(closeout);
-          } else {
-            runState.recordToolLoopCloseout(closeout);
-          }
-          runState.recordCloseoutResult(closeoutResult);
-          if (synthesisReduction) {
-            runState.recordReduction({
-              reduction: synthesisReduction,
-              reductionSnapshot: synthesisReductionSnapshot,
-            });
-          }
-          return terminalCloseout.buildFinalResponse(closeoutResult);
         },
         // Stage 5 closeout: a thrown tool-round model call converges onto the
         // inline tool_evidence_fallback closeout (when usable evidence exists). The
@@ -4105,9 +4104,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!fallback) {
             return "rethrow";
           }
-          runState.recordToolLoopCloseout(fallback.closeout);
-          runState.recordCloseoutResult(fallback.result);
-          return terminalCloseout.buildFinalResponse(fallback.result);
+          return terminalCloseout.applyCloseoutApplication(
+            {
+              reason: "tool_evidence_fallback",
+              closeout: fallback.closeout,
+              result: fallback.result,
+            },
+            runState,
+          );
         },
         // Capture the live message history for the post-loop finalization epilogue.
         // onTerminate / onModelCallError stash runState finalMessages on the closeout and

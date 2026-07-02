@@ -7,6 +7,7 @@ import type {
 } from "@turnkeyai/llm-adapter/index";
 
 import type { RolePromptPacket } from "../prompt-policy";
+import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
 import { createTerminalCloseoutController } from "./terminal-closeout-controller";
 
 function packet(
@@ -234,4 +235,85 @@ test("TerminalCloseoutController owns terminal closeout write mode and final res
   assert.deepEqual(controller.buildFinalResponse(result("Done.")), {
     text: "Done.",
   });
+});
+
+test("TerminalCloseoutController applies terminal closeout effects through a target", () => {
+  const controller = createTerminalCloseoutController();
+  const events: unknown[] = [];
+  const target = {
+    recordToolLoopCloseout: (input: unknown) => {
+      events.push(["overwrite", input]);
+    },
+    recordToolLoopCloseoutIfAbsent: (input: unknown) => {
+      events.push(["if_absent", input]);
+    },
+    recordCloseoutResult: (input: unknown) => {
+      events.push(["result", input]);
+    },
+    recordReduction: (input: unknown) => {
+      events.push(["reduction", input]);
+    },
+    recordMemoryFlush: (input: unknown) => {
+      events.push(["memory_flush", input]);
+    },
+  };
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "sub_agent_timeout",
+    maxRounds: 4,
+    toolCallCount: 2,
+    roundCount: 3,
+    evidenceAvailable: true,
+  };
+  const terminalResult = {
+    text: "Done.",
+    stopReason: "stop",
+  } as GenerateTextResult;
+
+  const response = controller.applyCloseoutApplication(
+    {
+      reason: "sub_agent_timeout",
+      closeout,
+      result: terminalResult,
+      memoryFlushes: ["flush-1"],
+      reduction: { level: "compact" },
+      reductionSnapshot: { level: "compact", omittedSections: ["history"] },
+    },
+    target,
+  );
+
+  assert.deepEqual(response, { text: "Done.", stopReason: "stop" });
+  assert.deepEqual(events, [
+    ["memory_flush", "flush-1"],
+    ["overwrite", closeout],
+    ["result", terminalResult],
+    ["reduction", {
+      reduction: { level: "compact" },
+      reductionSnapshot: { level: "compact", omittedSections: ["history"] },
+    }],
+  ]);
+
+  events.length = 0;
+  const completedResult = result("Completed.");
+  controller.applyCloseoutApplication(
+    {
+      reason: "completed_sub_agent_final",
+      closeout: {
+        ...closeout,
+        reason: "completed_sub_agent_final",
+      },
+      result: completedResult,
+    },
+    target,
+  );
+
+  assert.deepEqual(events, [
+    [
+      "if_absent",
+      {
+        ...closeout,
+        reason: "completed_sub_agent_final",
+      },
+    ],
+    ["result", completedResult],
+  ]);
 });

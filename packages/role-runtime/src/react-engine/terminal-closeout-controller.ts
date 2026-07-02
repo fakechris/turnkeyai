@@ -16,9 +16,9 @@ import type { EngineCloseoutReason } from "./types";
 
 // Stage 8 engine cleanup — TerminalCloseoutController.
 //
-// Authority: own behavior-neutral terminal closeout assembly that does not call
-// the model and does not mutate EngineRunState. The adapter still owns gateway
-// calls and run-state recording while inline remains the parity reference.
+// Authority: own behavior-neutral terminal closeout assembly and explicit
+// terminal state-effect application through an injected recorder. The adapter
+// still owns gateway calls while inline remains the parity reference.
 export const TERMINAL_CLOSEOUT_CONTROLLER_MODULE =
   "terminal-closeout-controller" as const;
 
@@ -118,6 +118,45 @@ export interface TerminalFinalResponse {
 }
 
 export type TerminalCloseoutRecordMode = "if_absent" | "overwrite";
+
+export interface TerminalCloseoutApplicationTarget<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  recordToolLoopCloseout(input: ToolLoopCloseoutMetadata): void;
+  recordToolLoopCloseoutIfAbsent(input: ToolLoopCloseoutMetadata): void;
+  recordCloseoutResult(input: GenerateTextResult): void;
+  recordReduction(input: {
+    reduction: TReduction;
+    reductionSnapshot: TReductionSnapshot | undefined;
+  }): void;
+  recordMemoryFlush(input: TMemoryFlush): void;
+}
+
+export interface TerminalSynthesisEffectsInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  memoryFlushes?: readonly TMemoryFlush[];
+  reduction?: TReduction;
+  reductionSnapshot?: TReductionSnapshot;
+}
+
+export interface TerminalCloseoutApplicationInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends TerminalSynthesisEffectsInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+  reason: EngineCloseoutReason;
+  closeout: ToolLoopCloseoutMetadata;
+  result: GenerateTextResult;
+}
 
 export class TerminalCloseoutController {
   buildApprovalWaitTimeoutFallback(
@@ -238,6 +277,68 @@ export class TerminalCloseoutController {
       text: result.text,
       ...(result.stopReason ? { stopReason: result.stopReason } : {}),
     };
+  }
+
+  recordSynthesisEffects<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalSynthesisEffectsInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): void {
+    for (const memoryFlush of input.memoryFlushes ?? []) {
+      target.recordMemoryFlush(memoryFlush);
+    }
+    if (input.reduction !== undefined) {
+      target.recordReduction({
+        reduction: input.reduction,
+        reductionSnapshot: input.reductionSnapshot,
+      });
+    }
+  }
+
+  applyCloseoutApplication<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalCloseoutApplicationInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): TerminalFinalResponse {
+    for (const memoryFlush of input.memoryFlushes ?? []) {
+      target.recordMemoryFlush(memoryFlush);
+    }
+
+    if (this.closeoutRecordMode(input.reason) === "if_absent") {
+      target.recordToolLoopCloseoutIfAbsent(input.closeout);
+    } else {
+      target.recordToolLoopCloseout(input.closeout);
+    }
+    target.recordCloseoutResult(input.result);
+    if (input.reduction !== undefined) {
+      target.recordReduction({
+        reduction: input.reduction,
+        reductionSnapshot: input.reductionSnapshot,
+      });
+    }
+    return this.buildFinalResponse(input.result);
   }
 }
 
