@@ -55,6 +55,7 @@ import {
   applySessionContinuationLookupDirective,
   buildApprovedBrowserTimeoutContinuationPrompt,
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
+  buildIndependentEvidenceStreamContinuationPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
   buildToolCallLimitExceededResult,
   buildReadOnlyPermissionQuerySuppressionPrompt,
@@ -127,6 +128,7 @@ import {
   resolveEffectiveToolLoopWallClockMs,
   shouldContinueTimedOutApprovedBrowserSession,
   shouldContinueTimedOutSiblingSession,
+  shouldContinueIndependentEvidenceStreams,
   shouldRunSupplementalLocalTimeoutProbe,
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
@@ -1770,7 +1772,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             taskPrompt: input.packet.taskPrompt,
             messages,
             toolTrace,
-            tools: initialGatewayInput.tools,
+            ...(initialGatewayInput.tools === undefined
+              ? {}
+              : { tools: initialGatewayInput.tools }),
           })
         ) {
           messages = [
@@ -3395,29 +3399,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // round (inline :1648), between branch 4 and S5. Idempotency: the predicate
           // returns false once its continuation prompt is in `messages`, so it fires at
           // most once; the model is then expected to spawn the remaining streams.
-          if (
-            shouldContinueIndependentEvidenceStreams({
+          const independentEvidenceStreams =
+            continuation.continueIndependentEvidenceStreams({
               taskPrompt: packet.taskPrompt,
               messages: state.messages,
               toolTrace,
-              tools: initialGatewayInput.tools,
-            })
-          ) {
+              ...(initialGatewayInput.tools === undefined
+                ? {}
+                : { tools: initialGatewayInput.tools }),
+            });
+          if (independentEvidenceStreams.kind === "continue") {
             return {
-              messages: [
-                ...state.messages,
-                {
-                  role: "user",
-                  content: buildIndependentEvidenceStreamContinuationPrompt({
-                    requiredStreams: inferIndependentEvidenceStreamCount(
-                      packet.taskPrompt,
-                    ),
-                    completedSessions:
-                      countCompletedSessionEvidenceResults(toolTrace),
-                  }),
-                },
-              ],
-              forceToolChoice: { name: "sessions_spawn" },
+              messages: independentEvidenceStreams.messages,
+              ...(independentEvidenceStreams.forceToolChoice
+                ? { forceToolChoice: independentEvidenceStreams.forceToolChoice }
+                : {}),
             };
           }
           // S9 (post-execute): an approval-gated browser task whose completed session
@@ -6546,52 +6542,6 @@ function shouldAllowRequiredTimeoutContinuationPastWallClock(input: {
     hasCoverageTimeoutContinuationPrompt(input.messages) &&
     isCoverageCriticalDelegationTask(input.taskPrompt)
   );
-}
-
-function shouldContinueIndependentEvidenceStreams(input: {
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-  tools?: GenerateTextInput["tools"];
-}): boolean {
-  if (!hasToolDefinition(input.tools, "sessions_spawn")) {
-    return false;
-  }
-  if (hasIndependentEvidenceStreamContinuationPrompt(input.messages)) {
-    return false;
-  }
-  const requiredStreams = inferIndependentEvidenceStreamCount(input.taskPrompt);
-  if (requiredStreams < 2) {
-    return false;
-  }
-  return (
-    countCompletedSessionEvidenceResults(input.toolTrace) < requiredStreams
-  );
-}
-
-function hasIndependentEvidenceStreamContinuationPrompt(
-  messages: LLMMessage[],
-): boolean {
-  const latestMessage = messages.at(-1);
-  if (!latestMessage) {
-    return false;
-  }
-  return readMessageContentText(latestMessage.content).includes(
-    "Runtime correction: this task declares multiple independent evidence streams.",
-  );
-}
-
-function buildIndependentEvidenceStreamContinuationPrompt(input: {
-  requiredStreams: number;
-  completedSessions: number;
-}): string {
-  return [
-    "Runtime correction: this task declares multiple independent evidence streams.",
-    `Only ${input.completedSessions} of ${input.requiredStreams} required delegated evidence stream(s) have completed.`,
-    "Do not finalize yet. Spawn separate focused sessions for the remaining independent streams so evidence is not collapsed into one worker.",
-    "Keep the original source labels, source URLs, required dimensions, and stop conditions. Use browser for browser-visible, live dashboard, rendered, or client-side evidence.",
-    "After all independent stream results return, synthesize once from the completed delegated evidence.",
-  ].join("\n");
 }
 
 function allowsSupplementalBrowserProbe(packet: RolePromptPacket): boolean {

@@ -201,6 +201,52 @@ export function countCompletedSessionEvidenceResults(
   return completedSessionKeys.size;
 }
 
+export function shouldContinueIndependentEvidenceStreams(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly { name: string }[];
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_spawn")) {
+    return false;
+  }
+  if (hasIndependentEvidenceStreamContinuationPrompt(input.messages)) {
+    return false;
+  }
+  const requiredStreams = inferIndependentEvidenceStreamCount(input.taskPrompt);
+  if (requiredStreams < 2) {
+    return false;
+  }
+  return (
+    countCompletedSessionEvidenceResults(input.toolTrace) < requiredStreams
+  );
+}
+
+export function hasIndependentEvidenceStreamContinuationPrompt(
+  messages: LLMMessage[],
+): boolean {
+  const latestMessage = messages.at(-1);
+  if (!latestMessage) {
+    return false;
+  }
+  return readMessageContentText(latestMessage.content).includes(
+    "Runtime correction: this task declares multiple independent evidence streams.",
+  );
+}
+
+export function buildIndependentEvidenceStreamContinuationPrompt(input: {
+  requiredStreams: number;
+  completedSessions: number;
+}): string {
+  return [
+    "Runtime correction: this task declares multiple independent evidence streams.",
+    `Only ${input.completedSessions} of ${input.requiredStreams} required delegated evidence stream(s) have completed.`,
+    "Do not finalize yet. Spawn separate focused sessions for the remaining independent streams so evidence is not collapsed into one worker.",
+    "Keep the original source labels, source URLs, required dimensions, and stop conditions. Use browser for browser-visible, live dashboard, rendered, or client-side evidence.",
+    "After all independent stream results return, synthesize once from the completed delegated evidence.",
+  ].join("\n");
+}
+
 export function enforceSupplementalLocalTimeoutProbeToolCall(
   toolCalls: LLMToolCall[],
   messages: LLMMessage[],

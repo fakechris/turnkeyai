@@ -151,6 +151,49 @@ function approvedBrowserActionTaskPrompt(): string {
   ].join("\n");
 }
 
+function independentEvidenceTaskPrompt(): string {
+  return [
+    "This task declares three independent evidence streams.",
+    "Research source: use an explore session for source A.",
+    "Capability source: use an explore session for source B.",
+    "Live readiness dashboard: use a browser session for source C.",
+  ].join("\n");
+}
+
+function independentEvidenceTrace(): NativeToolRoundTrace[] {
+  return [
+    {
+      round: 1,
+      calls: [
+        {
+          id: "toolu-source-a",
+          name: "sessions_spawn",
+          input: { agent_id: "explore", task: "source A" },
+        },
+      ],
+      results: [
+        {
+          toolCallId: "toolu-source-a",
+          toolName: "sessions_spawn",
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-1",
+            status: "completed",
+            session_key: "worker:explore:source-a:toolu-source-a",
+            agent_id: "explore",
+            tool_chain: ["explore"],
+            result: "Source A evidence.",
+            final_content: "Source A evidence.",
+            payload: null,
+          }),
+          isError: false,
+          contentBytes: 0,
+        },
+      ],
+    },
+  ];
+}
+
 test("ContinuationController injects sessions_send for an empty continuation round", () => {
   const controller = createContinuationController();
 
@@ -491,6 +534,51 @@ test("ContinuationController does not repeat an incomplete approved browser cont
       taskPrompt: approvedBrowserActionTaskPrompt(),
       toolTrace: permissionAppliedTrace(true),
       tools: [{ name: "sessions_send" }],
+    }),
+    { kind: "none" },
+  );
+});
+
+test("ContinuationController continues incomplete independent evidence streams", () => {
+  const controller = createContinuationController();
+
+  const action = controller.continueIndependentEvidenceStreams({
+    messages: [{ role: "user", content: "tool result history" }],
+    taskPrompt: independentEvidenceTaskPrompt(),
+    toolTrace: independentEvidenceTrace(),
+    tools: [{ name: "sessions_spawn" }],
+  });
+
+  assert.equal(action.kind, "continue");
+  assert.equal(
+    action.kind === "continue" && action.reason,
+    "independent_evidence_stream_continuation",
+  );
+  assert.deepEqual(
+    action.kind === "continue" && action.forceToolChoice,
+    { name: "sessions_spawn" },
+  );
+  assert.match(
+    String(action.kind === "continue" && action.messages.at(-1)?.content),
+    /Only 1 of 3 required delegated evidence stream/,
+  );
+});
+
+test("ContinuationController does not repeat an independent evidence stream prompt", () => {
+  const controller = createContinuationController();
+
+  assert.deepEqual(
+    controller.continueIndependentEvidenceStreams({
+      messages: [
+        {
+          role: "user",
+          content:
+            "Runtime correction: this task declares multiple independent evidence streams.",
+        },
+      ],
+      taskPrompt: independentEvidenceTaskPrompt(),
+      toolTrace: independentEvidenceTrace(),
+      tools: [{ name: "sessions_spawn" }],
     }),
     { kind: "none" },
   );

@@ -6,15 +6,19 @@ import {
   buildContinuationDirectiveContext,
   buildCoverageTimeoutContinuationPrompt,
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
+  buildIndependentEvidenceStreamContinuationPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
+  countCompletedSessionEvidenceResults,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   findIncompleteApprovedBrowserSession,
   hasExecutedSessionsSend,
   hasLatestSupplementalLocalTimeoutProbePrompt,
+  inferIndependentEvidenceStreamCount,
   isAppliedApprovalBrowserContinuation,
   shouldContinueTimedOutApprovedBrowserSession,
   shouldContinueTimedOutSiblingSession,
+  shouldContinueIndependentEvidenceStreams,
   shouldRunSupplementalLocalTimeoutProbe,
   type SubAgentToolTimeoutSignal,
 } from "../tool-loop-shared";
@@ -66,6 +70,13 @@ export interface SupplementalLocalTimeoutProbeInput {
 
 export interface IncompleteApprovedBrowserSessionInput {
   results: readonly { toolName: string; content: string }[];
+  messages: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly ContinuationToolDefinition[];
+}
+
+export interface IndependentEvidenceStreamsInput {
   messages: LLMMessage[];
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];
@@ -279,6 +290,40 @@ export class ContinuationController {
       ],
       forceToolChoice: { name: "sessions_send" },
       reason: "incomplete_approved_browser_session_continuation",
+    };
+  }
+
+  continueIndependentEvidenceStreams(
+    input: IndependentEvidenceStreamsInput,
+  ): EngineContinueAction {
+    if (
+      !shouldContinueIndependentEvidenceStreams({
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      })
+    ) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "continue",
+      messages: [
+        ...input.messages,
+        {
+          role: "user",
+          content: buildIndependentEvidenceStreamContinuationPrompt({
+            requiredStreams: inferIndependentEvidenceStreamCount(
+              input.taskPrompt,
+            ),
+            completedSessions: countCompletedSessionEvidenceResults(
+              input.toolTrace,
+            ),
+          }),
+        },
+      ],
+      forceToolChoice: { name: "sessions_spawn" },
+      reason: "independent_evidence_stream_continuation",
     };
   }
 }
