@@ -11,6 +11,7 @@ import type {
   CompletedSynthesisRepairDecision,
   NaturalFinishRepairDecision,
 } from "./repair-policy-registry";
+import type { LLMMessage } from "./types";
 
 const APPROVAL_WAIT_TIMEOUT_TASK_PROMPT =
   "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.";
@@ -162,6 +163,95 @@ test("RepairPolicyRegistry keeps disabled natural-finish policies from firing", 
         "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
       toolTrace: [],
       tools: [{ name: "permission_query" }],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry applies natural-finish repair decisions to repair hook results", () => {
+  const registry = createRepairPolicyRegistry();
+  const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];
+  const repairMarkers: LLMMessage[] = [];
+
+  const resynthesis = registry.applyNaturalFinishRepairDecision(
+    {
+      kind: "resynthesize",
+      policyId: "missing_requested_table_columns",
+      evidenceFormula: "candidate_final",
+      repairPrompt: "Runtime correction: include requested columns.",
+      forceToolChoice: "none",
+    },
+    {
+      messages,
+      resultText: "Draft answer",
+      repairMarkers,
+    },
+  );
+
+  assert.deepEqual(resynthesis, {
+    messages: [
+      { role: "user", content: "Do the task." },
+      { role: "assistant", content: "Draft answer" },
+      {
+        role: "user",
+        content: "Runtime correction: include requested columns.",
+      },
+    ],
+    forceToolChoice: "none",
+  });
+  assert.deepEqual(repairMarkers, [
+    { role: "user", content: "Runtime correction: include requested columns." },
+  ]);
+
+  const toolRound = registry.applyNaturalFinishRepairDecision(
+    {
+      kind: "force_tool_round",
+      policyId: "missing_browser_evidence",
+      evidenceFormula: "candidate_final",
+      repairPrompt: "Runtime correction: gather browser evidence.",
+      forceToolChoice: { name: "sessions_spawn" },
+      consumesRound: true,
+    },
+    {
+      messages,
+      resultText: "Browser evidence is unavailable.",
+      repairMarkers,
+    },
+  );
+
+  assert.deepEqual(toolRound, {
+    messages: [
+      { role: "user", content: "Do the task." },
+      { role: "assistant", content: "Browser evidence is unavailable." },
+      {
+        role: "user",
+        content: "Runtime correction: gather browser evidence.",
+      },
+    ],
+    forceToolChoice: { name: "sessions_spawn" },
+    consumesRound: true,
+  });
+
+  const closeout = registry.applyNaturalFinishRepairDecision(
+    {
+      kind: "closeout",
+      policyId: "approval_wait_timeout_local_closeout",
+      evidenceFormula: "candidate_final",
+      closeoutReason: "tool_evidence_fallback",
+    },
+    {
+      messages,
+      resultText: "Still waiting.",
+      repairMarkers,
+    },
+  );
+
+  assert.deepEqual(closeout, { closeout: "tool_evidence_fallback" });
+  assert.equal(
+    registry.applyNaturalFinishRepairDecision(null, {
+      messages,
+      resultText: "Complete.",
+      repairMarkers,
     }),
     null,
   );

@@ -1,10 +1,10 @@
 // Stage 8 engine cleanup — RepairPolicyRegistry.
 //
 // Authority: own candidate-answer repair rules, order, evidence formulas, and
-// markers. Each extracted repair returns a typed decision; the adapter applies
-// that decision to the ReAct hook by appending messages/markers. This module
-// does not execute tools, record progress, synthesize answers, or perform final
-// visibility appenders.
+// markers. Each extracted repair returns a typed decision and owns the
+// behavior-neutral ReAct hook application shape. This module does not execute
+// tools, record progress, synthesize answers, or perform final visibility
+// appenders.
 import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 
 import {
@@ -50,6 +50,7 @@ import { buildEvidenceSnapshot } from "./evidence-ledger";
 import {
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
+  recordRepairPrompt,
   shouldRepairExtraneousProviderTableSchema,
   shouldRepairMissingRequestedTableColumns,
 } from "./task-facts";
@@ -117,6 +118,22 @@ export interface CompletedSynthesisRepairInput {
   resultText: string;
   taskPrompt: string;
 }
+
+export interface NaturalFinishRepairApplicationInput {
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  resultText: string;
+}
+
+export type NaturalFinishRepairApplication =
+  | {
+      messages: LLMMessage[];
+      forceToolChoice: ReActToolChoice;
+      consumesRound?: true;
+    }
+  | {
+      closeout: "tool_evidence_fallback";
+    };
 
 export type NaturalFinishRepairDecision =
   | {
@@ -279,12 +296,37 @@ export interface RepairPolicyRegistry {
   evaluateNaturalFinish(
     input: NaturalFinishRepairInput,
   ): NaturalFinishRepairDecision | null;
+  applyNaturalFinishRepairDecision(
+    decision: NaturalFinishRepairDecision | null,
+    input: NaturalFinishRepairApplicationInput,
+  ): NaturalFinishRepairApplication | null;
   evaluateCompletedSynthesis(
     input: CompletedSynthesisRepairInput,
   ): CompletedSynthesisRepairDecision | null;
 }
 
 class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
+  applyNaturalFinishRepairDecision(
+    decision: NaturalFinishRepairDecision | null,
+    input: NaturalFinishRepairApplicationInput,
+  ): NaturalFinishRepairApplication | null {
+    if (!decision) {
+      return null;
+    }
+    if (decision.kind === "closeout") {
+      return { closeout: decision.closeoutReason };
+    }
+    return {
+      messages: [
+        ...input.messages,
+        { role: "assistant", content: input.resultText },
+        recordRepairPrompt(input.repairMarkers, decision.repairPrompt),
+      ],
+      forceToolChoice: decision.forceToolChoice,
+      ...(decision.consumesRound === true ? { consumesRound: true } : {}),
+    };
+  }
+
   evaluateNaturalFinish(
     input: NaturalFinishRepairInput,
   ): NaturalFinishRepairDecision | null {

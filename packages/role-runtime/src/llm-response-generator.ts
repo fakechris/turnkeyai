@@ -3367,6 +3367,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // local array would let the same repair re-fire. The engine already seeds
           // ctx.repairMarkers = []; this hardens against an unseeded ctx.
           const repairMarkers = (ctx.repairMarkers ??= []);
+          const applyNaturalFinishRepair = (
+            decision: ReturnType<typeof repairPolicy.evaluateNaturalFinish>,
+          ) =>
+            repairPolicy.applyNaturalFinishRepairDecision(decision, {
+              messages: state.messages,
+              repairMarkers,
+              resultText: state.lastText,
+            });
           // Stage 8B (Batch E — T7 execution budget plane): the empty-round
           // final-recovery-budget delegation-block repair (inline :685-712). It
           // runs BEFORE the natural-finish cascade inline (the recovery check at
@@ -3379,34 +3387,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // `nextToolChoice = "none"; continue;` with round--). The recovery_tool_budget
           // closeout in onToolCallsClose defers to this via the same predicate, so the
           // repaired blocked closeout still routes through that closeout next round.
-          const finalRecoveryBudgetRepair = repairPolicy.evaluateNaturalFinish({
-            enabledPolicies: ["final_recovery_budget_closeout_repair"],
-            finalRecoveryBudget: recoveryToolBudget
-              ? {
-                  maxToolCalls: recoveryToolBudget.maxToolCalls,
-                  usedToolCalls:
-                    recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace),
-                }
-              : null,
-            messages: state.messages,
-            repairMarkers,
-            resultText: state.lastText,
-          });
-          if (
-            finalRecoveryBudgetRepair?.policyId ===
-            "final_recovery_budget_closeout_repair"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  finalRecoveryBudgetRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: finalRecoveryBudgetRepair.forceToolChoice,
-            };
+          const finalRecoveryBudgetRepair = applyNaturalFinishRepair(
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["final_recovery_budget_closeout_repair"],
+              finalRecoveryBudget: recoveryToolBudget
+                ? {
+                    maxToolCalls: recoveryToolBudget.maxToolCalls,
+                    usedToolCalls:
+                      recoveryToolCallsBeforeActivation +
+                      countNativeToolCalls(toolTrace),
+                  }
+                : null,
+              messages: state.messages,
+              repairMarkers,
+              resultText: state.lastText,
+            }),
+          );
+          if (finalRecoveryBudgetRepair) {
+            return finalRecoveryBudgetRepair;
           }
           // Stage 7 S2/S3: forced-spawn browser-evidence repairs — FIRST in the
           // natural-finish cascade (inline :748 browser-evidence, :776 product-
@@ -3417,7 +3415,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // Both share one idempotency marker (hasMissingBrowserEvidenceRepairPrompt),
           // so once either fires neither re-fires. The {name} form (NOT {type,name})
           // is what the engine model adapter expects.
-          const missingBrowserEvidenceRepair =
+          const missingBrowserEvidenceRepair = applyNaturalFinishRepair(
             repairPolicy.evaluateNaturalFinish({
               enabledPolicies: ["missing_browser_evidence"],
               finalRecoveryBudget: null,
@@ -3429,27 +3427,39 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ...(initialGatewayInput.tools === undefined
                 ? {}
                 : { tools: initialGatewayInput.tools }),
-            });
-          if (
-            missingBrowserEvidenceRepair?.policyId ===
-            "missing_browser_evidence"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  missingBrowserEvidenceRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: missingBrowserEvidenceRepair.forceToolChoice,
-              consumesRound: missingBrowserEvidenceRepair.consumesRound,
-            };
+            }),
+          );
+          if (missingBrowserEvidenceRepair) {
+            return missingBrowserEvidenceRepair;
           }
           const missingProductSignalBrowserEvidenceRepair =
+            applyNaturalFinishRepair(
+              repairPolicy.evaluateNaturalFinish({
+                enabledPolicies: ["missing_product_signal_browser_evidence"],
+                finalRecoveryBudget: null,
+                taskPrompt: packet.taskPrompt,
+                resultText: state.lastText,
+                messages: state.messages,
+                repairMarkers,
+                toolTrace,
+                ...(initialGatewayInput.tools === undefined
+                  ? {}
+                  : { tools: initialGatewayInput.tools }),
+              }),
+            );
+          if (missingProductSignalBrowserEvidenceRepair) {
+            return missingProductSignalBrowserEvidenceRepair;
+          }
+          // Stage 7 S9 (natural-finish): an approval-gated browser task whose tool-free
+          // candidate never went through the approval gate re-arms a forced permission_
+          // query round (inline :804) — after the S2/S3 browser-evidence repairs, before
+          // the tool-free table-columns repair. Like S2/S3 this re-arms a REAL tool round
+          // (consumesRound), so the budget is charged. The recorded repair marker is the
+          // idempotency AND the key the onToolCalls enforce-gate normalizer reads to
+          // rewrite a resistant browser spawn into permission_query.
+          const missingApprovalGateRepair = applyNaturalFinishRepair(
             repairPolicy.evaluateNaturalFinish({
-              enabledPolicies: ["missing_product_signal_browser_evidence"],
+              enabledPolicies: ["missing_approval_gate"],
               finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
@@ -3459,60 +3469,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ...(initialGatewayInput.tools === undefined
                 ? {}
                 : { tools: initialGatewayInput.tools }),
-            });
-          if (
-            missingProductSignalBrowserEvidenceRepair?.policyId ===
-            "missing_product_signal_browser_evidence"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  missingProductSignalBrowserEvidenceRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice:
-                missingProductSignalBrowserEvidenceRepair.forceToolChoice,
-              consumesRound:
-                missingProductSignalBrowserEvidenceRepair.consumesRound,
-            };
-          }
-          // Stage 7 S9 (natural-finish): an approval-gated browser task whose tool-free
-          // candidate never went through the approval gate re-arms a forced permission_
-          // query round (inline :804) — after the S2/S3 browser-evidence repairs, before
-          // the tool-free table-columns repair. Like S2/S3 this re-arms a REAL tool round
-          // (consumesRound), so the budget is charged. The recorded repair marker is the
-          // idempotency AND the key the onToolCalls enforce-gate normalizer reads to
-          // rewrite a resistant browser spawn into permission_query.
-          const missingApprovalGateRepair = repairPolicy.evaluateNaturalFinish({
-            enabledPolicies: ["missing_approval_gate"],
-            finalRecoveryBudget: null,
-            taskPrompt: packet.taskPrompt,
-            resultText: state.lastText,
-            messages: state.messages,
-            repairMarkers,
-            toolTrace,
-            ...(initialGatewayInput.tools === undefined
-              ? {}
-              : { tools: initialGatewayInput.tools }),
-          });
-          if (
-            missingApprovalGateRepair?.policyId === "missing_approval_gate"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  missingApprovalGateRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: missingApprovalGateRepair.forceToolChoice,
-              consumesRound: missingApprovalGateRepair.consumesRound,
-            };
+            }),
+          );
+          if (missingApprovalGateRepair) {
+            return missingApprovalGateRepair;
           }
           // Stage 8B slice 1: the approval-wait-timeout repair family (inline :833-1009),
           // ported in inline precedence — AFTER the S9 missing-approval-gate repair and
@@ -3524,34 +3484,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // CloseoutAfterFailedRepair, inline :955-983) is expressed below via an
           // onRepairRound `{ closeout: "tool_evidence_fallback" }` directive.
           const pendingApprovalWaitTimeoutCheckRepair =
-            repairPolicy.evaluateNaturalFinish({
-              enabledPolicies: ["pending_approval_wait_timeout_check"],
-              finalRecoveryBudget: null,
-              taskPrompt: packet.taskPrompt,
-              resultText: state.lastText,
-              messages: state.messages,
-              repairMarkers,
-              toolTrace,
-            });
-          if (
-            pendingApprovalWaitTimeoutCheckRepair?.policyId ===
-            "pending_approval_wait_timeout_check"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  pendingApprovalWaitTimeoutCheckRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice:
-                pendingApprovalWaitTimeoutCheckRepair.forceToolChoice,
-              consumesRound: pendingApprovalWaitTimeoutCheckRepair.consumesRound,
-            };
+            applyNaturalFinishRepair(
+              repairPolicy.evaluateNaturalFinish({
+                enabledPolicies: ["pending_approval_wait_timeout_check"],
+                finalRecoveryBudget: null,
+                taskPrompt: packet.taskPrompt,
+                resultText: state.lastText,
+                messages: state.messages,
+                repairMarkers,
+                toolTrace,
+              }),
+            );
+          if (pendingApprovalWaitTimeoutCheckRepair) {
+            return pendingApprovalWaitTimeoutCheckRepair;
           }
-          const prematurePendingApprovalRepair =
+          const prematurePendingApprovalRepair = applyNaturalFinishRepair(
             repairPolicy.evaluateNaturalFinish({
               enabledPolicies: ["premature_pending_approval"],
               finalRecoveryBudget: null,
@@ -3560,98 +3507,53 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            });
-          if (
-            prematurePendingApprovalRepair?.policyId ===
-            "premature_pending_approval"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  prematurePendingApprovalRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: prematurePendingApprovalRepair.forceToolChoice,
-              consumesRound: prematurePendingApprovalRepair.consumesRound,
-            };
+            }),
+          );
+          if (prematurePendingApprovalRepair) {
+            return prematurePendingApprovalRepair;
           }
-          const stalePendingApprovalRepair = repairPolicy.evaluateNaturalFinish({
-            enabledPolicies: ["stale_pending_approval"],
-            finalRecoveryBudget: null,
-            taskPrompt: packet.taskPrompt,
-            resultText: state.lastText,
-            messages: state.messages,
-            repairMarkers,
-            toolTrace,
-          });
-          if (
-            stalePendingApprovalRepair?.policyId === "stale_pending_approval"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  stalePendingApprovalRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: stalePendingApprovalRepair.forceToolChoice,
-              consumesRound: stalePendingApprovalRepair.consumesRound,
-            };
-          }
-          const staleDeniedApprovalRepair = repairPolicy.evaluateNaturalFinish({
-            enabledPolicies: ["stale_denied_approval"],
-            finalRecoveryBudget: null,
-            taskPrompt: packet.taskPrompt,
-            resultText: state.lastText,
-            messages: state.messages,
-            repairMarkers,
-            toolTrace,
-          });
-          if (
-            staleDeniedApprovalRepair?.policyId === "stale_denied_approval"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  staleDeniedApprovalRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: staleDeniedApprovalRepair.forceToolChoice,
-            };
-          }
-          const approvalWaitTimeoutCloseoutRepair =
+          const stalePendingApprovalRepair = applyNaturalFinishRepair(
             repairPolicy.evaluateNaturalFinish({
-              enabledPolicies: ["approval_wait_timeout_closeout"],
+              enabledPolicies: ["stale_pending_approval"],
               finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            });
-          if (
-            approvalWaitTimeoutCloseoutRepair?.policyId ===
-            "approval_wait_timeout_closeout"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  approvalWaitTimeoutCloseoutRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: approvalWaitTimeoutCloseoutRepair.forceToolChoice,
-            };
+            }),
+          );
+          if (stalePendingApprovalRepair) {
+            return stalePendingApprovalRepair;
+          }
+          const staleDeniedApprovalRepair = applyNaturalFinishRepair(
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["stale_denied_approval"],
+              finalRecoveryBudget: null,
+              taskPrompt: packet.taskPrompt,
+              resultText: state.lastText,
+              messages: state.messages,
+              repairMarkers,
+              toolTrace,
+            }),
+          );
+          if (staleDeniedApprovalRepair) {
+            return staleDeniedApprovalRepair;
+          }
+          const approvalWaitTimeoutCloseoutRepair =
+            applyNaturalFinishRepair(
+              repairPolicy.evaluateNaturalFinish({
+                enabledPolicies: ["approval_wait_timeout_closeout"],
+                finalRecoveryBudget: null,
+                taskPrompt: packet.taskPrompt,
+                resultText: state.lastText,
+                messages: state.messages,
+                repairMarkers,
+                toolTrace,
+              }),
+            );
+          if (approvalWaitTimeoutCloseoutRepair) {
+            return approvalWaitTimeoutCloseoutRepair;
           }
           // Stage 8B slice 1c: the hard approval-wait-timeout local closeout (inline
           // :955-983). When the approval-wait-timeout-closeout repair above already fired
@@ -3660,7 +3562,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // than finalizing the incomplete answer. onRepairRound cannot finalize, so it
           // returns a { closeout } directive; onTerminate builds the local-evidence text
           // directly (no model synthesis) for that reason.
-          const approvalWaitTimeoutLocalCloseout =
+          const approvalWaitTimeoutLocalCloseout = applyNaturalFinishRepair(
             repairPolicy.evaluateNaturalFinish({
               enabledPolicies: ["approval_wait_timeout_local_closeout"],
               finalRecoveryBudget: null,
@@ -3669,147 +3571,86 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            });
-          if (
-            approvalWaitTimeoutLocalCloseout?.policyId ===
-            "approval_wait_timeout_local_closeout"
-          ) {
-            return {
-              closeout: approvalWaitTimeoutLocalCloseout.closeoutReason,
-            };
+            }),
+          );
+          if (approvalWaitTimeoutLocalCloseout) {
+            return approvalWaitTimeoutLocalCloseout;
           }
           const incompleteApprovedBrowserActionRepair =
-            repairPolicy.evaluateNaturalFinish({
-              enabledPolicies: ["incomplete_approved_browser_action"],
-              finalRecoveryBudget: null,
-              taskPrompt: packet.taskPrompt,
-              resultText: state.lastText,
-              messages: state.messages,
-              repairMarkers,
-              toolTrace,
-            });
-          if (
-            incompleteApprovedBrowserActionRepair?.policyId ===
-            "incomplete_approved_browser_action"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  incompleteApprovedBrowserActionRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice:
-                incompleteApprovedBrowserActionRepair.forceToolChoice,
-              consumesRound: incompleteApprovedBrowserActionRepair.consumesRound,
-            };
+            applyNaturalFinishRepair(
+              repairPolicy.evaluateNaturalFinish({
+                enabledPolicies: ["incomplete_approved_browser_action"],
+                finalRecoveryBudget: null,
+                taskPrompt: packet.taskPrompt,
+                resultText: state.lastText,
+                messages: state.messages,
+                repairMarkers,
+                toolTrace,
+              }),
+            );
+          if (incompleteApprovedBrowserActionRepair) {
+            return incompleteApprovedBrowserActionRepair;
           }
           const missingRequestedTableColumnsRepair =
-            repairPolicy.evaluateNaturalFinish({
-              activation,
-              enabledPolicies: ["missing_requested_table_columns"],
-              finalRecoveryBudget: null,
-              taskPrompt: packet.taskPrompt,
-              resultText: state.lastText,
-              messages: state.messages,
-              repairMarkers,
-              toolTrace,
-            });
-          if (
-            missingRequestedTableColumnsRepair?.policyId ===
-            "missing_requested_table_columns"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  missingRequestedTableColumnsRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: missingRequestedTableColumnsRepair.forceToolChoice,
-            };
+            applyNaturalFinishRepair(
+              repairPolicy.evaluateNaturalFinish({
+                activation,
+                enabledPolicies: ["missing_requested_table_columns"],
+                finalRecoveryBudget: null,
+                taskPrompt: packet.taskPrompt,
+                resultText: state.lastText,
+                messages: state.messages,
+                repairMarkers,
+                toolTrace,
+              }),
+            );
+          if (missingRequestedTableColumnsRepair) {
+            return missingRequestedTableColumnsRepair;
           }
           const extraneousProviderTableSchemaRepair =
-            repairPolicy.evaluateNaturalFinish({
-              activation,
-              enabledPolicies: ["extraneous_provider_table_schema"],
-              finalRecoveryBudget: null,
-              taskPrompt: packet.taskPrompt,
-              resultText: state.lastText,
-              messages: state.messages,
-              repairMarkers,
-              toolTrace,
-            });
-          if (
-            extraneousProviderTableSchemaRepair?.policyId ===
-            "extraneous_provider_table_schema"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  extraneousProviderTableSchemaRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice:
-                extraneousProviderTableSchemaRepair.forceToolChoice,
-            };
+            applyNaturalFinishRepair(
+              repairPolicy.evaluateNaturalFinish({
+                activation,
+                enabledPolicies: ["extraneous_provider_table_schema"],
+                finalRecoveryBudget: null,
+                taskPrompt: packet.taskPrompt,
+                resultText: state.lastText,
+                messages: state.messages,
+                repairMarkers,
+                toolTrace,
+              }),
+            );
+          if (extraneousProviderTableSchemaRepair) {
+            return extraneousProviderTableSchemaRepair;
           }
           const sourceEvidenceCarryForwardRepair =
+            applyNaturalFinishRepair(
+              repairPolicy.evaluateNaturalFinish({
+                enabledPolicies: ["source_evidence_carry_forward"],
+                finalRecoveryBudget: null,
+                taskPrompt: packet.taskPrompt,
+                resultText: state.lastText,
+                messages: state.messages,
+                repairMarkers,
+                toolTrace,
+              }),
+            );
+          if (sourceEvidenceCarryForwardRepair) {
+            return sourceEvidenceCarryForwardRepair;
+          }
+          const weakEvidenceSynthesisRepair = applyNaturalFinishRepair(
             repairPolicy.evaluateNaturalFinish({
-              enabledPolicies: ["source_evidence_carry_forward"],
+              enabledPolicies: ["weak_evidence_synthesis"],
               finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            });
-          if (
-            sourceEvidenceCarryForwardRepair?.policyId ===
-            "source_evidence_carry_forward"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  sourceEvidenceCarryForwardRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: sourceEvidenceCarryForwardRepair.forceToolChoice,
-            };
-          }
-          const weakEvidenceSynthesisRepair = repairPolicy.evaluateNaturalFinish({
-            enabledPolicies: ["weak_evidence_synthesis"],
-            finalRecoveryBudget: null,
-            taskPrompt: packet.taskPrompt,
-            resultText: state.lastText,
-            messages: state.messages,
-            repairMarkers,
-            toolTrace,
-          });
-          if (
-            weakEvidenceSynthesisRepair?.policyId === "weak_evidence_synthesis"
-          ) {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                recordRepairPrompt(
-                  repairMarkers,
-                  weakEvidenceSynthesisRepair.repairPrompt,
-                ),
-              ],
-              forceToolChoice: weakEvidenceSynthesisRepair.forceToolChoice,
-            };
+            }),
+          );
+          if (weakEvidenceSynthesisRepair) {
+            return weakEvidenceSynthesisRepair;
           }
           return null;
         },
