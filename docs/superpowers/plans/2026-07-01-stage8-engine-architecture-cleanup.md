@@ -127,6 +127,7 @@ Allowed dependencies for `react-engine/*`:
 
 - `@turnkeyai/agent-core/*`
 - sibling role-runtime modules such as `../session-tool-result-protocol`, `../native-tool-messages`, `../tool-capability-registry`
+- neutral shared role-runtime helper modules that do **not** import `llm-response-generator.ts`
 - pure helpers moved into `react-engine/*`
 - `../react/predicates` while compatibility is needed
 
@@ -137,7 +138,9 @@ Forbidden dependencies for `react-engine/*`:
 - test-only helpers from production code
 - composition-root feature flag logic
 
-If a helper currently lives inside `llm-response-generator.ts`, move it with the module that owns it. If two new modules need the same helper, put it in `react-engine/legacy-text-detectors.ts`, `react-engine/task-facts.ts`, or `react-engine/types.ts`, depending on what it does. Do not solve this by exporting helpers from `llm-response-generator.ts`.
+If a helper currently lives inside `llm-response-generator.ts`, move it with the module that owns it unless the inline loop and extracted engine modules both need the exact same compatibility helper. Shared text/url/session/detector helpers must move first into a neutral role-runtime module outside `react-engine/` so both the inline reference path and `react-engine/*` import the same implementation. Do not solve this by exporting helpers from `llm-response-generator.ts` or by making the inline loop import from `react-engine/*`.
+
+Inline-reference refinement: relocating a pure shared helper to a neutral module is allowed when the call sites remain byte-for-byte behavior-equivalent and the parity gates prove it. This is not considered an inline behavior change. Changing the helper logic, changing normalizer/repair/closeout order, or making inline import policy controllers remains forbidden.
 
 ## Layer Permissions Table
 
@@ -1060,6 +1063,28 @@ Expected output:
 - The trace snapshot establishes current behavior before extraction.
 - Wiring test fails if modules are called in the wrong order even when registry arrays are correct.
 
+### Batch 0.75: Shared Helper Extraction Prerequisite
+
+- [ ] Add a neutral shared role-runtime helper module outside `react-engine/` for pure text, URL, session-continuation, browser-evidence, approval-gate detector, and shared compatibility normalizer helpers needed by both inline and engine extraction work.
+- [ ] Move the shared helper dependency closure out of `llm-response-generator.ts` without changing logic, strings, regexes, order, or exported runtime behavior.
+- [ ] Update `llm-response-generator.ts` to import those helpers from the neutral module; `react-engine/*` must import the same helpers later rather than importing from `llm-response-generator.ts` or duplicating them.
+- [ ] Keep `ENGINE_TOOL_CALL_NORMALIZATION_ORDER` and the engine pipeline ownership in place until Batch 1; Batch 0.75 only removes the shared-helper ownership blocker.
+- [ ] Run:
+
+```bash
+npm run typecheck
+npx tsx --test packages/role-runtime/src/react-engine/*.test.ts
+npm run parity:inline
+npm run parity:engine
+git diff --check
+```
+
+Expected output:
+
+- The inline loop and engine path both remain behavior-equivalent to the pre-extraction code.
+- Shared helper movement is parity-proven, so Batch 1 can move the normalizer pipeline without making inline import from `react-engine/*`.
+- No `react-engine/*` module imports `llm-response-generator.ts`.
+
 ### Batch 1: Extract Observability, Normalization, And Finalization
 
 - [ ] Move mutable cross-hook run state into `engine-run-state.ts`.
@@ -1296,11 +1321,12 @@ Use this checklist during code review:
 
 1. `stage8 cleanup: add react-engine module shell and contracts`
 2. `stage8 cleanup: add policy trace characterization and wiring guards`
-3. `stage8 cleanup: extract run state observer permission normalizer finalizer`
-4. `stage8 cleanup: extract execution budget and continuation controllers`
-5. `stage8 cleanup: extract closeout and repair registries`
-6. `stage8 cleanup: extract completed closeout controller`
-7. `stage8 cleanup: add evidence ledger and task facts facade`
-8. `stage8 cleanup: thin engine adapter and add architecture guard`
+3. `stage8 cleanup: extract shared role-engine helper closure`
+4. `stage8 cleanup: extract run state observer permission normalizer finalizer`
+5. `stage8 cleanup: extract execution budget and continuation controllers`
+6. `stage8 cleanup: extract closeout and repair registries`
+7. `stage8 cleanup: extract completed closeout controller`
+8. `stage8 cleanup: add evidence ledger and task facts facade`
+9. `stage8 cleanup: thin engine adapter and add architecture guard`
 
 Each commit should leave the repository typecheck-green. Commits 2 through 8 should leave both parity jobs green.
