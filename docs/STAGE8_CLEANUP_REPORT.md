@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `3cfa87bbbb83fe49d85be39cae46a04b306fe171`
+**Code HEAD before this docs-only report:** `f8a2997e0bac098ea4ac0c68342519014b6bb305`
 **Date:** 2026-07-02
 
 ## Summary
@@ -153,7 +153,9 @@ could not move the normalizer without making the inline parity reference import 
   application boundary, plus post-execute missing approval-gate repair handoff,
   plus typed hook-result application for generic `continue` actions,
   repair-marker recording callbacks, and empty-round action hook-result
-  application for injected calls versus terminate decisions.
+  application for injected calls versus terminate decisions. The full
+  post-execute continuation cascade now also evaluates and applies through that
+  controller; the adapter supplies evidence facts and the forced-round executor.
   The timeout predicates, session detectors,
   permission-applied detector, permission-result detector, evidence-stream
   detector, missing approval-gate repair detector/prompt, and continuation
@@ -285,6 +287,7 @@ application outside the terminal completion path.
 | `78cae84` | Move pending closeout and post-execute closeout state-effect application into `CloseoutPolicyRegistry`; adapter passes the run-state target. |
 | `bdd5a13` | Move round-empty continuation hook-result application into `ContinuationController`; adapter consumes the controller-applied hook decision. |
 | `3cfa87b` | Move natural-finish repair cascade evaluation/application into `RepairPolicyRegistry`; adapter passes one cascade input instead of stepping policy windows. |
+| `f8a2997` | Move post-execute continuation cascade evaluation/application into `ContinuationController`; adapter supplies evidence facts and forced-round execution. |
 
 ## Current Extracted Implementation
 
@@ -401,7 +404,8 @@ Real implementation now exists in:
   post-execute missing approval-gate repair continuation, plus typed
   `continue` action hook-result application with repair-marker recording
   callback support, and empty-round action hook-result application for
-  injected-call and terminate decisions.
+  injected-call and terminate decisions, plus post-execute continuation cascade
+  precedence/application through one controller entrypoint.
 - `task-facts-shared.ts` for requested table-column inference, markdown table
   header matching, provider search/pricing evidence-column inference,
   provider-support-schema request/result detection, missing requested-column
@@ -476,8 +480,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 175 / 175 |
+| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 23 / 23 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 176 / 176 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -742,6 +746,9 @@ Stage 8 boundaries/slices are now real:
   `ContinuationController`, covering timeout continuations/probes, incomplete
   approved-browser continuation, independent evidence-stream continuation, and
   missing approval-gate repair marker recording through an adapter callback.
+- post-execute continuation cascade precedence and application now route through
+  a single `ContinuationController` entrypoint; the adapter supplies only
+  evidence facts, repair-marker storage, and the forced-round executor.
 - completed product-signal dashboard URL extraction now lives in neutral shared
   code, removing the adapter-local duplicate dashboard regex tail.
 - browser/product-signal missing evidence repair detectors and repair prompt
