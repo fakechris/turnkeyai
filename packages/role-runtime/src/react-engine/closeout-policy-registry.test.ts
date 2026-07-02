@@ -3,7 +3,10 @@ import test from "node:test";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { ExecutionBudgetCloseoutSnapshot } from "./execution-budget-controller";
-import type { RemainingPendingCallsCloseoutInput } from "./closeout-policy-registry";
+import type {
+  RemainingPendingCallsCloseoutInput,
+  TerminateCloseoutInput,
+} from "./closeout-policy-registry";
 import type { LLMToolCall } from "./types";
 import {
   createCloseoutPolicyRegistry,
@@ -84,6 +87,26 @@ function remainingPendingInput(
     taskPrompt: "Summarize the gathered evidence.",
     messages: [],
     sessionContext: "",
+    toolTrace: [],
+    maxRounds: 3,
+    usedToolCalls: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+    buildRoundLimitCloseoutSnapshot: roundLimitSnapshot,
+    ...overrides,
+  };
+}
+
+function terminateInput(
+  overrides: Partial<TerminateCloseoutInput> = {},
+): TerminateCloseoutInput {
+  return {
+    reason: "round_limit",
+    pendingCloseout: null,
+    completedSession: null,
+    timeoutSignal: null,
+    taskPrompt: "Summarize the gathered evidence.",
+    messages: [],
     toolTrace: [],
     maxRounds: 3,
     usedToolCalls: 2,
@@ -546,4 +569,152 @@ test("CloseoutPolicyRegistry gives completed session precedence over timeout", (
   });
 
   assert.equal(decision?.reason, "completed_sub_agent_final");
+});
+
+test("CloseoutPolicyRegistry passes through pending terminate closeout", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const pending = {
+    reason: "pseudo_tool_call" as const,
+    maxRounds: 3,
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  };
+
+  const decision = registry.evaluateTerminate(terminateInput({
+    reason: "pseudo_tool_call",
+    pendingCloseout: {
+      reason: "pseudo_tool_call",
+      reasonLines: ["pending closeout line"],
+      closeout: pending,
+    },
+  }));
+
+  assert.deepEqual(decision, {
+    kind: "closeout",
+    policyId: "pseudo_tool_call",
+    reason: "pseudo_tool_call",
+    reasonLines: ["pending closeout line"],
+    closeout: pending,
+  });
+});
+
+test("CloseoutPolicyRegistry builds completed terminate closeout", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluateTerminate(terminateInput({
+    reason: "completed_sub_agent_final",
+    taskPrompt: "Use the product-signals live signal dashboard evidence.",
+    completedSession: {
+      toolName: "sessions_spawn",
+      finalContents: [
+        [
+          "Rendered browser-visible product signal dashboard counters.",
+          "Active signals: 12.",
+          "Conversion rate: 34%.",
+          "Recommendation count: 3.",
+        ].join(" "),
+      ],
+      browserRecoverySummaries: ["reopened worker:browser:abc"],
+    },
+    usedToolCalls: 4,
+    roundCount: 3,
+  }));
+
+  assert.equal(decision.kind, "closeout");
+  assert.equal(decision.reason, "completed_sub_agent_final");
+  assert.equal(decision.sticky, true);
+  assert.equal(
+    decision.reasonLines?.some((line) =>
+      line.includes(
+        "Completed browser evidence verifies product signal dashboard counters",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    decision.reasonLines?.some((line) =>
+      line.includes("Browser continuity 1: reopened worker:browser:abc"),
+    ),
+    true,
+  );
+  assert.equal(
+    decision.reasonLines?.some((line) => line.startsWith("Source 1 evidence:")),
+    true,
+  );
+  assert.deepEqual(decision.closeout, {
+    reason: "completed_sub_agent_final",
+    maxRounds: 3,
+    toolName: "sessions_spawn",
+    finalContentCount: 1,
+    toolCallCount: 4,
+    roundCount: 3,
+    evidenceAvailable: true,
+  });
+});
+
+test("CloseoutPolicyRegistry builds sub-agent timeout terminate closeout", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluateTerminate(terminateInput({
+    reason: "sub_agent_timeout",
+    timeoutSignal: {
+      toolName: "sessions_spawn",
+      timeoutSeconds: 45,
+      evidenceAvailable: false,
+    },
+    usedToolCalls: 5,
+    roundCount: 4,
+    evidenceAvailable: false,
+  }));
+
+  assert.equal(decision.reason, "sub_agent_timeout");
+  assert.match(decision.reasonLines?.[0] ?? "", /timed out after 45s/);
+  assert.deepEqual(decision.closeout, {
+    reason: "sub_agent_timeout",
+    maxRounds: 3,
+    toolName: "sessions_spawn",
+    timeoutSeconds: 45,
+    evidenceAvailable: false,
+    toolCallCount: 5,
+    roundCount: 4,
+  });
+});
+
+test("CloseoutPolicyRegistry builds round-limit terminate closeout", () => {
+  const registry = createCloseoutPolicyRegistry();
+  let builtSnapshot = 0;
+
+  const decision = registry.evaluateTerminate(terminateInput({
+    reason: "round_limit",
+    buildRoundLimitCloseoutSnapshot: () => {
+      builtSnapshot += 1;
+      return roundLimitSnapshot();
+    },
+  }));
+
+  assert.equal(builtSnapshot, 1);
+  assert.equal(decision.reason, "round_limit");
+  assert.deepEqual(decision.closeout, roundLimitSnapshot().closeout);
+});
+
+test("CloseoutPolicyRegistry builds generic terminate closeout", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluateTerminate(terminateInput({
+    reason: "repeated_tool_failure",
+    usedToolCalls: 7,
+    roundCount: 6,
+    evidenceAvailable: false,
+  }));
+
+  assert.equal(decision.reason, "repeated_tool_failure");
+  assert.equal(decision.reasonLines, undefined);
+  assert.deepEqual(decision.closeout, {
+    reason: "repeated_tool_failure",
+    maxRounds: 3,
+    toolCallCount: 7,
+    roundCount: 6,
+    evidenceAvailable: false,
+  });
 });

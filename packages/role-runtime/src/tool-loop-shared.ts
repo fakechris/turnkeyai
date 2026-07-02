@@ -1579,8 +1579,64 @@ function hasProductSignalDashboardUnverifiedContradiction(
   );
 }
 
-function hasProductSignalDashboardMetrics(text: string): boolean {
+export function taskRequestsProductSignalDashboardEvidence(text: string): boolean {
+  return /\b(?:product-signals|live signal dashboard|product signal dashboard)\b/i.test(
+    text,
+  );
+}
+
+export function hasProductSignalDashboardMetrics(text: string): boolean {
   return PRODUCT_SIGNAL_DASHBOARD_COUNTERS_PATTERN.test(text);
+}
+
+export function summarizeProductSignalDashboardMetrics(
+  evidenceText: string,
+): string | null {
+  const metrics: string[] = [];
+  const seen = new Set<string>();
+  const metricPattern =
+    /(?:^|[\n.;,|])\s*([A-Za-z][A-Za-z0-9 _/-]{1,48}?)\s*(?::|=|-|\bis\b)\s*(\d+(?:\.\d+)?%?)(?![\d.])/g;
+  for (const match of evidenceText.matchAll(metricPattern)) {
+    const label = match[1]?.replace(/\s+/g, " ").trim();
+    const value = match[2]?.trim();
+    if (!label || !value) {
+      continue;
+    }
+    const normalizedLabel = label.toLowerCase();
+    if (
+      seen.has(normalizedLabel) ||
+      /^(?:http|https|port|status|code|line|id|url)$/i.test(label)
+    ) {
+      continue;
+    }
+    seen.add(normalizedLabel);
+    metrics.push(`${label}: ${value}`);
+    if (metrics.length >= 4) {
+      break;
+    }
+  }
+  return metrics.length > 0 ? metrics.join("; ") : null;
+}
+
+export function buildCompletedBrowserEvidenceDimensionCarryForwardLines(input: {
+  taskPrompt: string;
+  finalContents: readonly string[];
+}): string[] {
+  if (!taskRequestsProductSignalDashboardEvidence(input.taskPrompt)) {
+    return [];
+  }
+  const evidenceText = input.finalContents.join("\n\n");
+  if (!hasProductSignalDashboardMetrics(evidenceText)) {
+    return [];
+  }
+  const metrics = summarizeProductSignalDashboardMetrics(evidenceText);
+  if (!metrics) {
+    return [];
+  }
+  return [
+    `Completed browser evidence verifies product signal dashboard counters: ${metrics}.`,
+    "Carry those counters into the final answer as rendered browser evidence. Do not say dashboard counters, rates, signal IDs, or recommendations are unverified unless the completed browser evidence lacks that exact field.",
+  ];
 }
 
 const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [

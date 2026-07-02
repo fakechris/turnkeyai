@@ -54,6 +54,7 @@ import {
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
   buildApprovedBrowserTimeoutContinuationPrompt,
+  buildCompletedBrowserEvidenceDimensionCarryForwardLines,
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   buildIncompleteApprovedBrowserActionRepairPrompt,
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
@@ -104,6 +105,7 @@ import {
   formatDurationMs,
   hasApprovedBrowserTimeoutContinuationPrompt,
   hasCompletedBrowserSessionEvidence,
+  hasProductSignalDashboardMetrics,
   hasCoverageTimeoutContinuationPrompt,
   hasExecutedSessionsSend,
   hasSessionTimeoutEvidence,
@@ -186,6 +188,7 @@ import {
   taskPromptIsAppliedApprovalBrowserContinuation,
   taskPromptLooksLikeSourceCheckContinuation,
   taskPromptSaysApprovalAlreadyApplied,
+  taskRequestsProductSignalDashboardEvidence,
   taskRequestsSessionTranscript,
   taskRequestsTimeoutFollowupContinuation,
   taskRequiresBrowserEvidence,
@@ -229,6 +232,7 @@ import {
   resolveRequestedTableColumns,
   resultIntroducesProviderSupportSchema,
   traceEngineHooks,
+  type EngineCloseoutReason,
 } from "./react-engine";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type {
@@ -3927,69 +3931,42 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // metadata it produced inline; the round_limit defaults remain the
           // fallback for any reason without a bespoke branch. completed/timeout
           // read the signal onAfterExecute stashed on `run`.
-          let reasonLines: string[] | undefined;
-          let closeout: ToolLoopCloseoutMetadata;
+          const usedToolCalls = countToolCalls(toolTrace);
+          const roundCount = toolTrace.length;
+          const evidenceAvailable = hasUsableEvidence(toolTrace);
           const pendingCloseout = runState.pendingCloseout();
           const completedSessionSignal = runState.completedSession();
           const timeoutSignal = runState.timeoutSignal();
-          if (pendingCloseout && pendingCloseout.closeout.reason === reason) {
-            // PR2d pending-call closeouts: onToolCallsClose already built the
-            // inline reasonLines + metadata for this reason (no trailing
-            // transform — the inline pre-execute closeouts use the synthesis as-is).
-            reasonLines = pendingCloseout.reasonLines;
-            closeout = pendingCloseout.closeout;
-          } else if (reason === "completed_sub_agent_final" && completedSessionSignal) {
-            const completedSession = completedSessionSignal;
-            const preserveRecoveredTimeoutCloseout = shouldPreserveRecoveredTimeoutCloseout({
-              taskPrompt: packet.taskPrompt,
-              messages: state.messages,
-              toolTrace,
-              evidenceText: completedSession.finalContents.join("\n\n"),
-            });
-            reasonLines = [
-              `${completedSession.toolName} returned completed delegated session evidence.`,
-              "Do not call sessions_history or sessions_list just to restate this delegated result.",
-              "Use the delegated session evidence below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
-              "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
-              "Do not add DNS/IP resolution, IANA allocation details, production-environment bans, real-service claims, security-scanner claims, or abuse-risk claims unless those exact facts are stated in this source content.",
-              "If the source states a narrow scope limit or usage caveat, preserve its exact wording (or state that wider use is outside the verified scope); do not upgrade a narrow caveat into a broader production-environment or real-service ban.",
-              ...buildCompletedBrowserEvidenceDimensionCarryForwardLines({
-                taskPrompt: packet.taskPrompt,
-                finalContents: completedSession.finalContents,
+          const terminateCloseout = closeoutPolicy.evaluateTerminate({
+            reason: reason as EngineCloseoutReason,
+            pendingCloseout: pendingCloseout
+              ? {
+                  reason: pendingCloseout.closeout.reason,
+                  reasonLines: pendingCloseout.reasonLines,
+                  closeout: pendingCloseout.closeout,
+                }
+              : null,
+            completedSession: completedSessionSignal ?? null,
+            timeoutSignal: timeoutSignal ?? null,
+            taskPrompt: packet.taskPrompt,
+            messages: state.messages,
+            toolTrace,
+            maxRounds,
+            usedToolCalls,
+            roundCount,
+            evidenceAvailable,
+            buildRoundLimitCloseoutSnapshot: () =>
+              executionBudget.buildRoundLimitCloseoutSnapshot({
+                maxRounds,
+                usedToolCalls,
+                roundCount,
+                evidenceAvailable,
               }),
-              "If a requested dimension is missing or uncertain in the source content, write not verified.",
-              "Preserve uncertainty labels. Preserve source URLs only when the original user did not forbid links or source URLs.",
-              "For each Source N evidence block below, carry at least one verified fact into the final answer or explicitly say that source did not verify a required dimension.",
-              "For approval-gated work, include the approved action, the evidence observed after the approved action, and the residual risk or no-external-side-effect boundary.",
-              ...(preserveRecoveredTimeoutCloseout
-                ? [
-                    "This completed source followed a timeout or timed-out continuation.",
-                    "Preserve user-visible timeout closeout: say what was recovered, whether the timeout still limits the conclusion, and what continue/retry/longer-timeout path remains if future evidence is missing.",
-                    "Do not reduce the timeout closeout to 'no action required' solely because resumed evidence eventually arrived.",
-                  ]
-                : []),
-              ...(completedSession.browserRecoverySummaries.length
-                ? [
-                    "The source also includes browser continuity metadata.",
-                    "If the user asked to continue, recover, reopen, reconnect, or handle an unavailable browser session, include one concise user-visible continuity sentence in the final answer.",
-                    ...completedSession.browserRecoverySummaries.map(
-                      (summary, index) => `Browser continuity ${index + 1}: ${summary}`,
-                    ),
-                  ]
-                : []),
-              ...completedSession.finalContents.map(
-                (content, index) => `Source ${index + 1} evidence:\n${sliceUtf8(content, 8 * 1024)}`,
-              ),
-            ];
-            closeout = {
-              reason: "completed_sub_agent_final",
-              maxRounds,
-              toolName: completedSession.toolName,
-              finalContentCount: completedSession.finalContents.length,
-              toolCallCount: countToolCalls(toolTrace),
-              roundCount: toolTrace.length,
-              evidenceAvailable: true,
-            };
+          });
+          const reasonLines = terminateCloseout.reasonLines;
+          const closeout =
+            terminateCloseout.closeout as ToolLoopCloseoutMetadata;
+          if (terminateCloseout.sticky) {
             // Sticky completed-closeout metadata (inline `toolLoopCloseout ??=`, :1729):
             // captured on the FIRST completed session, BEFORE the S10 browser-evidence
             // repair re-arms a sessions_spawn round. So the metadata (roundCount/
@@ -3998,48 +3975,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             // re-entered completed block. The final TEXT still comes from the last
             // synthesis (runState.closeoutResult below).
             runState.recordToolLoopCloseoutIfAbsent(closeout);
-          } else if (reason === "sub_agent_timeout" && timeoutSignal) {
-            reasonLines = [
-              `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
-              "Do not call more tools or spawn fallback sessions for this timeout.",
-              "Do not copy internal fetch URLs, local fixture URLs, session keys, or raw tool arguments into the final answer unless the original user requested those exact raw identifiers.",
-              timeoutSignal.evidenceAvailable
-                ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
-                : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
-              "Include one concise continuation sentence: the user can continue the same source check if the missing evidence is still worth waiting for.",
-            ];
-            closeout = {
-              reason: "sub_agent_timeout",
-              maxRounds,
-              toolName: timeoutSignal.toolName,
-              ...(timeoutSignal.timeoutSeconds == null
-                ? {}
-                : { timeoutSeconds: timeoutSignal.timeoutSeconds }),
-              evidenceAvailable: timeoutSignal.evidenceAvailable,
-              toolCallCount: countToolCalls(toolTrace),
-              roundCount: toolTrace.length,
-            };
-          } else {
-            if (reason === "round_limit") {
-              const roundLimitCloseout =
-                executionBudget.buildRoundLimitCloseoutSnapshot({
-                  maxRounds,
-                  usedToolCalls: countToolCalls(toolTrace),
-                  roundCount: toolTrace.length,
-                  evidenceAvailable: hasUsableEvidence(toolTrace),
-                });
-              reasonLines = roundLimitCloseout.reasonLines;
-              closeout = roundLimitCloseout.closeout;
-            } else {
-              reasonLines = undefined;
-              closeout = {
-                reason: reason as ToolLoopCloseoutMetadata["reason"],
-                maxRounds,
-                toolCallCount: countToolCalls(toolTrace),
-                roundCount: toolTrace.length,
-                evidenceAvailable: hasUsableEvidence(toolTrace),
-              };
-            }
           }
           // pseudo_tool_call synthesizes from the malformed assistant text it must
           // recover from, so append it to the synthesis context (mirrors inline
@@ -6457,54 +6392,6 @@ function buildAwaitingContextSetupNoToolRepairPrompt(
   ].join("\n");
 }
 
-function buildCompletedBrowserEvidenceDimensionCarryForwardLines(input: {
-  taskPrompt: string;
-  finalContents: string[];
-}): string[] {
-  if (!taskRequestsProductSignalDashboardEvidence(input.taskPrompt)) {
-    return [];
-  }
-  const evidenceText = input.finalContents.join("\n\n");
-  if (!hasProductSignalDashboardMetrics(evidenceText)) {
-    return [];
-  }
-  const metrics = summarizeProductSignalDashboardMetrics(evidenceText);
-  if (!metrics) {
-    return [];
-  }
-  return [
-    `Completed browser evidence verifies product signal dashboard counters: ${metrics}.`,
-    "Carry those counters into the final answer as rendered browser evidence. Do not say dashboard counters, rates, signal IDs, or recommendations are unverified unless the completed browser evidence lacks that exact field.",
-  ];
-}
-
-function summarizeProductSignalDashboardMetrics(evidenceText: string): string | null {
-  const metrics: string[] = [];
-  const seen = new Set<string>();
-  const metricPattern =
-    /(?:^|[\n.;,|])\s*([A-Za-z][A-Za-z0-9 _/-]{1,48}?)\s*(?::|=|-|\bis\b)\s*(\d+(?:\.\d+)?%?)(?![\d.])/g;
-  for (const match of evidenceText.matchAll(metricPattern)) {
-    const label = match[1]?.replace(/\s+/g, " ").trim();
-    const value = match[2]?.trim();
-    if (!label || !value) {
-      continue;
-    }
-    const normalizedLabel = label.toLowerCase();
-    if (
-      seen.has(normalizedLabel) ||
-      /^(?:http|https|port|status|code|line|id|url)$/i.test(label)
-    ) {
-      continue;
-    }
-    seen.add(normalizedLabel);
-    metrics.push(`${label}: ${value}`);
-    if (metrics.length >= 4) {
-      break;
-    }
-  }
-  return metrics.length > 0 ? metrics.join("; ") : null;
-}
-
 function parseJsonObject(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "string" || value.trim().length === 0) return null;
   try {
@@ -6563,12 +6450,6 @@ function buildBrowserEvidenceRepairContext(
   ].join("\n");
 }
 
-function taskRequestsProductSignalDashboardEvidence(text: string): boolean {
-  return /\b(?:product-signals|live signal dashboard|product signal dashboard)\b/i.test(
-    text,
-  );
-}
-
 const PRODUCT_SIGNAL_NUMERIC_METRIC_PATTERN =
   "\\b[A-Za-z][A-Za-z0-9 _/-]{1,48}\\b\\s*(?:[:=\\-]|\\bis\\b)\\s*(?:\\*\\*)?\\d+(?:\\.\\d+)?(?:\\*\\*)?\\b";
 const PRODUCT_SIGNAL_RATE_METRIC_PATTERN =
@@ -6591,10 +6472,6 @@ function hasProductSignalDashboardUnverifiedContradiction(text: string): boolean
     PRODUCT_SIGNAL_DASHBOARD_COUNTERS_UNVERIFIED_PATTERN.test(text) ||
     PRODUCT_SIGNAL_BROWSER_EVIDENCE_UNVERIFIED_PATTERN.test(text)
   );
-}
-
-function hasProductSignalDashboardMetrics(text: string): boolean {
-  return PRODUCT_SIGNAL_DASHBOARD_COUNTERS_PATTERN.test(text);
 }
 
 function extractProductSignalDashboardUrl(taskPrompt: string): string | null {

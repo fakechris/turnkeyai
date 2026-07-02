@@ -10,11 +10,14 @@
 // precedence; it is defined in Batch 0 so the contract is pinnable, and the
 // evaluating registry methods are added in Batch 3.
 import {
+  buildCompletedBrowserEvidenceDimensionCarryForwardLines,
   containsAnyToolCallForm,
   findExcessiveSessionContinuationCall,
   findRepeatedSessionInspectionCall,
+  shouldPreserveRecoveredTimeoutCloseout,
   shouldCloseoutCancelledSessionWithoutContinuation,
   shouldRepairFinalRecoveryBudgetCloseout,
+  sliceUtf8,
 } from "../tool-loop-shared";
 import { findRepeatedFailedToolCall } from "../react/predicates";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
@@ -22,6 +25,7 @@ import type { ExecutionBudgetCloseoutSnapshot } from "./execution-budget-control
 import type {
   CloseoutDecision,
   CloseoutDeferDecision,
+  EngineCloseoutReason,
   LLMMessage,
   LLMToolCall,
 } from "./types";
@@ -144,6 +148,48 @@ export interface PostExecuteCloseoutInput {
   timeoutSignal: unknown | null;
 }
 
+export interface PendingTerminateCloseout<TCloseout = unknown> {
+  reason: EngineCloseoutReason;
+  reasonLines: string[];
+  closeout: TCloseout;
+}
+
+export interface CompletedSessionTerminateSignal {
+  toolName: string;
+  finalContents: readonly string[];
+  browserRecoverySummaries: readonly string[];
+}
+
+export interface SubAgentTimeoutTerminateSignal {
+  toolName: string;
+  timeoutSeconds?: number | null;
+  evidenceAvailable: boolean;
+}
+
+export interface TerminateCloseoutInput {
+  reason: EngineCloseoutReason;
+  pendingCloseout: PendingTerminateCloseout | null;
+  completedSession: CompletedSessionTerminateSignal | null;
+  timeoutSignal: SubAgentTimeoutTerminateSignal | null;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  maxRounds: number;
+  usedToolCalls: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+  buildRoundLimitCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
+}
+
+export interface TerminateCloseoutDecision {
+  kind: "closeout";
+  policyId: EngineCloseoutReason;
+  reason: EngineCloseoutReason;
+  reasonLines?: string[];
+  closeout: unknown;
+  sticky?: boolean;
+}
+
 export type RecoveryToolBudgetCloseoutDecision =
   | (CloseoutDecision<ExecutionBudgetCloseoutSnapshot["closeout"]> & {
       closeout: ExecutionBudgetCloseoutSnapshot["closeout"];
@@ -194,6 +240,8 @@ export interface CloseoutPolicyRegistry {
   evaluatePostExecute(
     input: PostExecuteCloseoutInput,
   ): PostExecuteCloseoutDecision | null;
+
+  evaluateTerminate(input: TerminateCloseoutInput): TerminateCloseoutDecision;
 }
 
 class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
@@ -408,6 +456,131 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
       };
     }
     return null;
+  }
+
+  evaluateTerminate(input: TerminateCloseoutInput): TerminateCloseoutDecision {
+    const pendingCloseout = input.pendingCloseout;
+    if (pendingCloseout && pendingCloseout.reason === input.reason) {
+      return {
+        kind: "closeout",
+        policyId: pendingCloseout.reason,
+        reason: pendingCloseout.reason,
+        reasonLines: pendingCloseout.reasonLines,
+        closeout: pendingCloseout.closeout,
+      };
+    }
+    const completedSession = input.completedSession;
+    if (input.reason === "completed_sub_agent_final" && completedSession) {
+      const preserveRecoveredTimeoutCloseout =
+        shouldPreserveRecoveredTimeoutCloseout({
+          taskPrompt: input.taskPrompt,
+          messages: input.messages,
+          toolTrace: input.toolTrace,
+          evidenceText: completedSession.finalContents.join("\n\n"),
+        });
+      return {
+        kind: "closeout",
+        policyId: "completed_sub_agent_final",
+        reason: "completed_sub_agent_final",
+        reasonLines: [
+          `${completedSession.toolName} returned completed delegated session evidence.`,
+          "Do not call sessions_history or sessions_list just to restate this delegated result.",
+          "Use the delegated session evidence below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
+          "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
+          "Do not add DNS/IP resolution, IANA allocation details, production-environment bans, real-service claims, security-scanner claims, or abuse-risk claims unless those exact facts are stated in this source content.",
+          "If the source states a narrow scope limit or usage caveat, preserve its exact wording (or state that wider use is outside the verified scope); do not upgrade a narrow caveat into a broader production-environment or real-service ban.",
+          ...buildCompletedBrowserEvidenceDimensionCarryForwardLines({
+            taskPrompt: input.taskPrompt,
+            finalContents: completedSession.finalContents,
+          }),
+          "If a requested dimension is missing or uncertain in the source content, write not verified.",
+          "Preserve uncertainty labels. Preserve source URLs only when the original user did not forbid links or source URLs.",
+          "For each Source N evidence block below, carry at least one verified fact into the final answer or explicitly say that source did not verify a required dimension.",
+          "For approval-gated work, include the approved action, the evidence observed after the approved action, and the residual risk or no-external-side-effect boundary.",
+          ...(preserveRecoveredTimeoutCloseout
+            ? [
+                "This completed source followed a timeout or timed-out continuation.",
+                "Preserve user-visible timeout closeout: say what was recovered, whether the timeout still limits the conclusion, and what continue/retry/longer-timeout path remains if future evidence is missing.",
+                "Do not reduce the timeout closeout to 'no action required' solely because resumed evidence eventually arrived.",
+              ]
+            : []),
+          ...(completedSession.browserRecoverySummaries.length
+            ? [
+                "The source also includes browser continuity metadata.",
+                "If the user asked to continue, recover, reopen, reconnect, or handle an unavailable browser session, include one concise user-visible continuity sentence in the final answer.",
+                ...completedSession.browserRecoverySummaries.map(
+                  (summary, index) =>
+                    `Browser continuity ${index + 1}: ${summary}`,
+                ),
+              ]
+            : []),
+          ...completedSession.finalContents.map(
+            (content, index) =>
+              `Source ${index + 1} evidence:\n${sliceUtf8(content, 8 * 1024)}`,
+          ),
+        ],
+        closeout: {
+          reason: "completed_sub_agent_final",
+          maxRounds: input.maxRounds,
+          toolName: completedSession.toolName,
+          finalContentCount: completedSession.finalContents.length,
+          toolCallCount: input.usedToolCalls,
+          roundCount: input.roundCount,
+          evidenceAvailable: true,
+        },
+        sticky: true,
+      };
+    }
+    const timeoutSignal = input.timeoutSignal;
+    if (input.reason === "sub_agent_timeout" && timeoutSignal) {
+      return {
+        kind: "closeout",
+        policyId: "sub_agent_timeout",
+        reason: "sub_agent_timeout",
+        reasonLines: [
+          `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
+          "Do not call more tools or spawn fallback sessions for this timeout.",
+          "Do not copy internal fetch URLs, local fixture URLs, session keys, or raw tool arguments into the final answer unless the original user requested those exact raw identifiers.",
+          timeoutSignal.evidenceAvailable
+            ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
+            : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
+          "Include one concise continuation sentence: the user can continue the same source check if the missing evidence is still worth waiting for.",
+        ],
+        closeout: {
+          reason: "sub_agent_timeout",
+          maxRounds: input.maxRounds,
+          toolName: timeoutSignal.toolName,
+          ...(timeoutSignal.timeoutSeconds == null
+            ? {}
+            : { timeoutSeconds: timeoutSignal.timeoutSeconds }),
+          evidenceAvailable: timeoutSignal.evidenceAvailable,
+          toolCallCount: input.usedToolCalls,
+          roundCount: input.roundCount,
+        },
+      };
+    }
+    if (input.reason === "round_limit") {
+      const snapshot = input.buildRoundLimitCloseoutSnapshot();
+      return {
+        kind: "closeout",
+        policyId: "round_limit",
+        reason: "round_limit",
+        reasonLines: snapshot.reasonLines,
+        closeout: snapshot.closeout,
+      };
+    }
+    return {
+      kind: "closeout",
+      policyId: input.reason,
+      reason: input.reason,
+      closeout: {
+        reason: input.reason,
+        maxRounds: input.maxRounds,
+        toolCallCount: input.usedToolCalls,
+        roundCount: input.roundCount,
+        evidenceAvailable: input.evidenceAvailable,
+      },
+    };
   }
 }
 
