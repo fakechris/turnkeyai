@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `f8a2997e0bac098ea4ac0c68342519014b6bb305`
+**Code HEAD before this docs-only report:** `a552f634121f2b471163a728e3782b7c064bf97a`
 **Date:** 2026-07-02
 
 ## Summary
@@ -35,7 +35,10 @@ could not move the normalizer without making the inline parity reference import 
   anti-loop closeout metadata, and post-execute completed-vs-timeout selection.
   Pending closeout and post-execute closeout state-effect application now also
   route through `CloseoutPolicyRegistry` application helpers; the adapter passes
-  the run-state target.
+  the run-state target. The pending-call closeout windows now also enter through
+  registry-owned application helpers for recovery-budget and remaining pending
+  calls; the adapter keeps only the cross-module ordering around empty-round
+  continuation preview.
   The first natural-finish repair policies,
   `final_recovery_budget_closeout_repair`, `missing_approval_gate`, and
   the approval-state repair sequence through
@@ -156,6 +159,12 @@ could not move the normalizer without making the inline parity reference import 
   application for injected calls versus terminate decisions. The full
   post-execute continuation cascade now also evaluates and applies through that
   controller; the adapter supplies evidence facts and the forced-round executor.
+  Pending-call closeout application now also routes through
+  `CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout()` before
+  empty-round continuation preview and
+  `CloseoutPolicyRegistry.applyRemainingPendingCallsCloseout()` after that
+  preview, preserving the pinned hook orchestration order while removing the
+  adapter-local evaluate/apply glue.
   The timeout predicates, session detectors,
   permission-applied detector, permission-result detector, evidence-stream
   detector, missing approval-gate repair detector/prompt, and continuation
@@ -288,6 +297,7 @@ application outside the terminal completion path.
 | `bdd5a13` | Move round-empty continuation hook-result application into `ContinuationController`; adapter consumes the controller-applied hook decision. |
 | `3cfa87b` | Move natural-finish repair cascade evaluation/application into `RepairPolicyRegistry`; adapter passes one cascade input instead of stepping policy windows. |
 | `f8a2997` | Move post-execute continuation cascade evaluation/application into `ContinuationController`; adapter supplies evidence facts and forced-round execution. |
+| `a552f63` | Move pending-call closeout evaluate/apply windows into `CloseoutPolicyRegistry` application helpers; adapter keeps only the recovery-before-preview ordering. |
 
 ## Current Extracted Implementation
 
@@ -324,7 +334,9 @@ Real implementation now exists in:
   metadata decisions for pending closeout passthrough, completed session
   closeout, sub-agent timeout closeout, round-limit closeout, and generic
   closeout fallback, plus pending closeout and post-execute closeout
-  state-effect application through injected targets.
+  state-effect application through injected targets, including the
+  recovery-budget and remaining pending-call evaluate/apply entrypoints used by
+  `onToolCallsClose`.
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
   repair policies: `final_recovery_budget_closeout_repair`,
@@ -480,8 +492,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 23 / 23 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 176 / 176 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts` | 37 / 37 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 178 / 178 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -535,6 +547,9 @@ Stage 8 boundaries/slices are now real:
   `excessive_session_continuation` pending-call closeout selection route through
   `CloseoutPolicyRegistry`, using shared session anti-loop detectors where
   needed.
+- pending-call closeout application for recovery-budget and remaining pending
+  calls routes through `CloseoutPolicyRegistry`; the adapter keeps only the
+  cross-module ordering around empty-round continuation preview.
 - post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
   selection and state-effect application route through `CloseoutPolicyRegistry`;
   the adapter passes the run-state target.
