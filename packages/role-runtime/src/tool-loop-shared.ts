@@ -1658,6 +1658,203 @@ export function extractProductSignalDashboardUrl(
   );
 }
 
+const MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS = [
+  /\b(?:browser|rendered|DOM|page|snapshot|screenshot|popup|iframe|frame|shadow)\b[\s\S]{0,120}\b(?:tools?|tooling|worker|agent|session)\b[\s\S]{0,80}\b(?:unavailable|not available|disabled|missing|could not be called|cannot be called|failed)\b/i,
+  /\b(?:tools?|tooling|worker|agent|session)\b[\s\S]{0,80}\b(?:unavailable|not available|disabled|missing|could not be called|cannot be called|failed)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|page|snapshot|screenshot|popup|iframe|frame|shadow)\b/i,
+  /\b(?:static|raw|server|HTTP)\s+(?:fetch|HTML|extraction|request)\b[\s\S]{0,160}\b(?:instead of|without|not)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b/i,
+  /\b(?:static|raw|server|HTTP)\s+(?:fetch|HTML|extraction|request)\b[\s\S]{0,180}\b(?:cannot|can't|could not|unable to)\b[\s\S]{0,160}\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b/i,
+  /\blive browser session\b[\s\S]{0,120}\b(?:needed|required|necessary)\b/i,
+  /\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b[\s\S]{0,160}\b(?:not verified|unverified|unable to verify|was not verified|could not verify)\b/i,
+];
+
+export function shouldRepairMissingBrowserEvidence(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly { name: string }[] | undefined;
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_spawn")) {
+    return false;
+  }
+  if (hasMissingBrowserEvidenceRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!taskRequiresBrowserEvidence(input.taskPrompt)) {
+    return false;
+  }
+  if (hasCompletedBrowserSessionEvidence(input.toolTrace)) {
+    return false;
+  }
+  if (
+    hasAttemptedBrowserSessionEvidence(input.toolTrace) ||
+    contextHasBrowserSessionAttempt(
+      buildBrowserEvidenceRepairContext(input.taskPrompt, input.messages),
+    )
+  ) {
+    return false;
+  }
+  return matchesAny(input.resultText, MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS);
+}
+
+export function shouldRepairMissingProductSignalBrowserEvidence(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly { name: string }[] | undefined;
+  evidenceText?: string | undefined;
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_spawn")) {
+    return false;
+  }
+  if (hasMissingBrowserEvidenceRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!taskRequestsProductSignalDashboardEvidence(input.taskPrompt)) {
+    return false;
+  }
+  const evidenceText = [
+    input.evidenceText,
+    collectCompletedSessionEvidenceText(input.toolTrace),
+  ]
+    .filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0,
+    )
+    .join("\n\n");
+  if (hasProductSignalDashboardMetrics(input.resultText)) {
+    return false;
+  }
+  if (hasProductSignalDashboardMetrics(evidenceText)) {
+    return false;
+  }
+  return (
+    matchesAny(input.resultText, MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS) ||
+    /\b(?:SPAs?|server HTML shells?|HTML shells?|shell only|partial text|browser rendering)\b[\s\S]{0,180}\b(?:not confirmed|not verified|unconfirmed|unverified|without|lacks?)\b/i.test(
+      input.resultText,
+    ) ||
+    /\b(?:not confirmed|not verified|unconfirmed|unverified|without|lacks?)\b[\s\S]{0,180}\b(?:SPAs?|server HTML shells?|HTML shells?|shell only|browser rendering|rendered dashboard)\b/i.test(
+      input.resultText,
+    )
+  );
+}
+
+function hasMissingBrowserEvidenceRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: browser-visible evidence is missing",
+      ),
+  );
+}
+
+export function buildMissingBrowserEvidenceRepairPrompt(
+  taskPrompt: string,
+): string {
+  const supplementalLocalTimeoutProbe =
+    shouldAddSupplementalLocalTimeoutProbeToBrowserRepair(taskPrompt);
+  return [
+    "Runtime correction: browser-visible evidence is missing.",
+    ...(supplementalLocalTimeoutProbe
+      ? [
+          "Runtime correction: resumed timeout evidence is still content-poor.",
+          `The resumed source-check still lacks response status/body/header or rendered page evidence for ${supplementalLocalTimeoutProbe}.`,
+          `Supplemental local timeout probe mode: call browser_open with timeout_ms ${SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS}, then stop with observed evidence or explicit unavailable fields.`,
+        ]
+      : []),
+    "The task requires browser-observed evidence such as rendered DOM, JavaScript/client-side state, iframe/frame content, shadow-style component state, popup state, dashboard state, or a user-visible page review.",
+    "Do not finalize from raw HTTP fetch, server HTML, memory, or a tool-unavailable explanation while native session tools are still available.",
+    "Call sessions_spawn with agent_id=browser for the browser-visible portion of the task.",
+    "The delegated browser task must include the relevant URL, the visible states to inspect, and a requirement to return only observed facts plus any concrete blocker.",
+    `Original task:\n${sliceUtf8(taskPrompt, 1400)}`,
+  ].join("\n");
+}
+
+export function buildMissingProductSignalBrowserEvidenceRepairPrompt(
+  taskPrompt: string,
+): string {
+  const dashboardUrl = extractProductSignalDashboardUrl(taskPrompt);
+  return [
+    "Runtime correction: browser-visible evidence is missing.",
+    "Runtime correction: the live product signal dashboard evidence is still incomplete.",
+    "Do not finalize from SPA/server HTML shell evidence or from a generic browser-unavailable explanation while native session tools are still available.",
+    "Call sessions_spawn with agent_id=browser for the product signal dashboard only.",
+    `Dashboard URL: ${dashboardUrl ?? "use the product-signals/live signal dashboard URL from the original task"}.`,
+    "The browser sub-agent must inspect the rendered page as an operator would see it and return exact visible dashboard counters, rates, recommendations, final URL, page title, and any concrete blocker.",
+    "If rendering still cannot be verified, report the attempted browser observation and explicit unavailable fields; do not substitute raw HTML shell text for dashboard evidence.",
+    `Original task:\n${sliceUtf8(taskPrompt, 1400)}`,
+  ].join("\n");
+}
+
+function shouldAddSupplementalLocalTimeoutProbeToBrowserRepair(
+  taskPrompt: string,
+): string | null {
+  if (!looksBoundedTimeoutSourceCheck(taskPrompt)) {
+    return null;
+  }
+  return (
+    extractHttpUrls(taskPrompt).find((candidate) => {
+      try {
+        return isLoopbackHostname(new URL(candidate).hostname);
+      } catch {
+        return false;
+      }
+    }) ?? null
+  );
+}
+
+function hasAttemptedBrowserSessionEvidence(
+  toolTrace: NativeToolRoundTrace[],
+): boolean {
+  return toolTrace.some(
+    (round) =>
+      round.calls.some(isBrowserSessionSpawn) ||
+      round.results.some((result) => {
+        if (
+          result.toolName !== "sessions_spawn" &&
+          result.toolName !== "sessions_send"
+        ) {
+          return false;
+        }
+        const parsed = result.content
+          ? parseSessionToolResult(result.content)
+          : null;
+        return Boolean(
+          parsed &&
+            (parsed.agent_id === "browser" ||
+              /^worker:browser:/i.test(String(parsed.session_key ?? ""))),
+        );
+      }),
+  );
+}
+
+function contextHasBrowserSessionAttempt(context: string): boolean {
+  return extractSessionToolResultRecords(context).some((result) => {
+    const agentId = result["agent_id"];
+    const sessionKey = result["session_key"];
+    return (
+      agentId === "browser" ||
+      (typeof sessionKey === "string" && /^worker:browser:/i.test(sessionKey))
+    );
+  });
+}
+
+function buildBrowserEvidenceRepairContext(
+  taskPrompt: string,
+  messages: LLMMessage[],
+): string {
+  return [
+    buildContinuationDirectiveContext(taskPrompt, messages),
+    ...messages.map((message) => readMessageContentText(message.content)),
+  ].join("\n");
+}
+
 const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [
   /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b/i,
   /(?:^|[^A-Za-z0-9_])待确认(?![A-Za-z0-9_])/,
