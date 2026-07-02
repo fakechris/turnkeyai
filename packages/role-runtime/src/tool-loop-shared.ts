@@ -1335,6 +1335,45 @@ export function buildStalePendingApprovalRepairPrompt(): string {
   ].join("\n");
 }
 
+export function shouldRepairStaleDeniedApproval(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: readonly LLMMessage[];
+  repairMarkers: readonly LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasStaleDeniedApprovalRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (
+    !mentionsPendingApproval(input.resultText) ||
+    !requestsApprovalGatedBrowserAction(input.taskPrompt)
+  ) {
+    return false;
+  }
+  return latestPermissionResultStatus(input.toolTrace) === "denied";
+}
+
+function hasStaleDeniedApprovalRepairPrompt(
+  messages: readonly LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval was denied",
+      ),
+  );
+}
+
+export function buildStaleDeniedApprovalRepairPrompt(): string {
+  return [
+    "Runtime correction: approval was denied, but the assistant tried to finalize as if the approval were still pending.",
+    "Do not wait again and do not call browser or permission tools.",
+    "Write the final safe closeout now from the denied permission.result evidence: name the requested browser.form.submit action, state that no form submission or side effect ran, and give the safe fallback or next action.",
+  ].join("\n");
+}
+
 export function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input: {
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];

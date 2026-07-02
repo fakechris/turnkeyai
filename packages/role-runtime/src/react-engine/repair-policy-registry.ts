@@ -10,11 +10,13 @@ import {
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   buildPrematurePendingApprovalRepairPrompt,
+  buildStaleDeniedApprovalRepairPrompt,
   buildStalePendingApprovalRepairPrompt,
   shouldRepairFinalRecoveryBudgetCloseout,
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
+  shouldRepairStaleDeniedApproval,
   shouldRepairStalePendingApproval,
 } from "../tool-loop-shared";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
@@ -28,6 +30,7 @@ export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "pending_approval_wait_timeout_check",
   "premature_pending_approval",
   "stale_pending_approval",
+  "stale_denied_approval",
 ] as const;
 
 export type EngineNaturalFinishRepairPolicyId =
@@ -89,6 +92,14 @@ export type NaturalFinishRepairDecision =
       repairPrompt: string;
       forceToolChoice: { name: "sessions_spawn" };
       consumesRound: true;
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "stale_denied_approval";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: "none";
+      consumesRound?: false;
     };
 
 export interface RepairPolicyRegistry {
@@ -137,6 +148,13 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
         }
         case "stale_pending_approval": {
           const decision = evaluateStalePendingApprovalRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "stale_denied_approval": {
+          const decision = evaluateStaleDeniedApprovalRepair(input);
           if (decision) {
             return decision;
           }
@@ -288,6 +306,32 @@ function evaluateStalePendingApprovalRepair(
     repairPrompt: buildStalePendingApprovalRepairPrompt(),
     forceToolChoice: { name: "sessions_spawn" },
     consumesRound: true,
+  };
+}
+
+function evaluateStaleDeniedApprovalRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    !shouldRepairStaleDeniedApproval({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      toolTrace: input.toolTrace,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "stale_denied_approval",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildStaleDeniedApprovalRepairPrompt(),
+    forceToolChoice: "none",
   };
 }
 

@@ -68,6 +68,7 @@ import {
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   buildPrematurePendingApprovalRepairPrompt,
+  buildStaleDeniedApprovalRepairPrompt,
   buildStalePendingApprovalRepairPrompt,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
@@ -147,6 +148,7 @@ import {
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
+  shouldRepairStaleDeniedApproval,
   shouldRepairStalePendingApproval,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldSuppressReadOnlyPermissionQueryToolCalls,
@@ -3633,14 +3635,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               consumesRound: stalePendingApprovalRepair.consumesRound,
             };
           }
+          const staleDeniedApprovalRepair = repairPolicy.evaluateNaturalFinish({
+            enabledPolicies: ["stale_denied_approval"],
+            finalRecoveryBudget: null,
+            taskPrompt: packet.taskPrompt,
+            resultText: state.lastText,
+            messages: state.messages,
+            repairMarkers,
+            toolTrace,
+          });
           if (
-            shouldRepairStaleDeniedApproval({
-              taskPrompt: packet.taskPrompt,
-              resultText: state.lastText,
-              messages: state.messages,
-              repairMarkers,
-              toolTrace,
-            })
+            staleDeniedApprovalRepair?.policyId === "stale_denied_approval"
           ) {
             return {
               messages: [
@@ -3648,10 +3653,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildStaleDeniedApprovalRepairPrompt(),
+                  staleDeniedApprovalRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: "none",
+              forceToolChoice: staleDeniedApprovalRepair.forceToolChoice,
             };
           }
           if (
@@ -7486,25 +7491,6 @@ const ESTIMATE_REQUEST_PATTERNS = [
   /(?:^|[^A-Za-z0-9_])(?:估算|预估|大概|大致|范围)(?![A-Za-z0-9_])/,
 ];
 
-function shouldRepairStaleDeniedApproval(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  if (hasStaleDeniedApprovalRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (
-    !mentionsPendingApproval(input.resultText) ||
-    !requestsApprovalGatedBrowserAction(input.taskPrompt)
-  ) {
-    return false;
-  }
-  return latestPermissionResultStatus(input.toolTrace) === "denied";
-}
-
 function hasApprovalWaitTimeoutEvidence(
   toolTrace: NativeToolRoundTrace[],
 ): boolean {
@@ -7552,16 +7538,6 @@ function hasApprovalWaitTimeoutCloseoutRepairPrompt(
       message.role === "user" &&
       readMessageContentText(message.content).includes(
         "Runtime correction: approval wait-timeout evidence is available",
-      ),
-  );
-}
-
-function hasStaleDeniedApprovalRepairPrompt(messages: LLMMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: approval was denied",
       ),
   );
 }
@@ -7679,14 +7655,6 @@ function buildApprovalWaitTimeoutCloseoutRepairPrompt(): string {
     "Rewrite the final answer as a terminal closeout for this attempt and include the exact word pending.",
     "Name the source-backed runtime facts: permission_query requested approval for browser.form.submit, permission_result says the approval is still pending/approval_wait_timeout, no browser form submission or side effect ran, the unexecuted result is not verified, and the safe next action is to ask the operator to approve a new request or rerun the attempt when ready.",
     "Do not say the thread, flow, mission, or task remains open.",
-  ].join("\n");
-}
-
-function buildStaleDeniedApprovalRepairPrompt(): string {
-  return [
-    "Runtime correction: approval was denied, but the assistant tried to finalize as if the approval were still pending.",
-    "Do not wait again and do not call browser or permission tools.",
-    "Write the final safe closeout now from the denied permission.result evidence: name the requested browser.form.submit action, state that no form submission or side effect ran, and give the safe fallback or next action.",
   ].join("\n");
 }
 

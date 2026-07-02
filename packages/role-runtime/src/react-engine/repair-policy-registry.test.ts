@@ -13,6 +13,7 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
     "pending_approval_wait_timeout_check",
     "premature_pending_approval",
     "stale_pending_approval",
+    "stale_denied_approval",
   ]);
 });
 
@@ -419,6 +420,136 @@ test("RepairPolicyRegistry skips stale pending-approval repair without applied e
   assert.equal(
     registry.evaluateNaturalFinish({
       enabledPolicies: ["stale_pending_approval"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText: "Approval is still pending.",
+      taskPrompt:
+        "Approval required for browser.form.submit dry-run. Use the browser after native approval.",
+      toolTrace: [],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns stale denied-approval repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["stale_denied_approval"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending, so the browser worker cannot submit.",
+    taskPrompt:
+      "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [
+          {
+            id: "toolu-permission-result",
+            name: "permission_result",
+            input: {},
+          },
+        ],
+        results: [
+          {
+            toolCallId: "toolu-permission-result",
+            toolName: "permission_result",
+            content: JSON.stringify({ status: "denied" }),
+            isError: false,
+            contentBytes: JSON.stringify({ status: "denied" }).length,
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "stale_denied_approval");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.equal(decision?.consumesRound, undefined);
+  assert.match(decision?.repairPrompt ?? "", /approval was denied/i);
+});
+
+test("RepairPolicyRegistry does not repeat stale denied-approval repair after marker", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["stale_denied_approval"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending, so the browser worker cannot submit.",
+    taskPrompt:
+      "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [
+          {
+            id: "toolu-permission-result",
+            name: "permission_result",
+            input: {},
+          },
+        ],
+        results: [
+          {
+            toolCallId: "toolu-permission-result",
+            toolName: "permission_result",
+            content: JSON.stringify({ status: "denied" }),
+            isError: false,
+            contentBytes: JSON.stringify({ status: "denied" }).length,
+          },
+        ],
+      },
+    ],
+  });
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["stale_denied_approval"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      resultText: "Approval is still pending, so the browser worker cannot submit.",
+      taskPrompt:
+        "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+      toolTrace: [
+        {
+          round: 1,
+          calls: [
+            {
+              id: "toolu-permission-result",
+              name: "permission_result",
+              input: {},
+            },
+          ],
+          results: [
+            {
+              toolCallId: "toolu-permission-result",
+              toolName: "permission_result",
+              content: JSON.stringify({ status: "denied" }),
+              isError: false,
+              contentBytes: JSON.stringify({ status: "denied" }).length,
+            },
+          ],
+        },
+      ],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry skips stale denied-approval repair without denied result", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["stale_denied_approval"],
       finalRecoveryBudget: null,
       messages: [],
       repairMarkers: [],
