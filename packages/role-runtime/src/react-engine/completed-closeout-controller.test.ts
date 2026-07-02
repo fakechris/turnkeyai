@@ -7,6 +7,8 @@ import type {
   LLMToolCall,
 } from "@turnkeyai/llm-adapter/index";
 
+import type { NativeToolRoundTrace } from "../native-tool-messages";
+import type { RolePromptPacket } from "../prompt-policy";
 import { createCompletedCloseoutController } from "./completed-closeout-controller";
 import { createRepairPolicyRegistry } from "./repair-policy-registry";
 
@@ -30,6 +32,51 @@ function messageText(message: LLMMessage | undefined): string {
   return typeof message.content === "string"
     ? message.content
     : message.content.map((block) => JSON.stringify(block)).join("\n");
+}
+
+function packet(
+  taskPrompt: string,
+  outputContract = "",
+): RolePromptPacket {
+  return {
+    roleId: "role:test",
+    roleName: "Test Role",
+    seat: "member",
+    systemPrompt: "You are testing.",
+    taskPrompt,
+    outputContract,
+    suggestedMentions: [],
+  } as RolePromptPacket;
+}
+
+function sessionTrace(input: {
+  toolName?: "sessions_spawn" | "sessions_send";
+  status?: "completed" | "timeout";
+  result: string;
+}): NativeToolRoundTrace[] {
+  const toolName = input.toolName ?? "sessions_send";
+  const content = JSON.stringify({
+    task_id: "task-1",
+    session_key: "worker:browser:task-1",
+    agent_id: "browser",
+    status: input.status ?? "completed",
+    result: input.result,
+  });
+  return [
+    {
+      round: 1,
+      calls: [{ id: "toolu-session", name: toolName, input: {} }],
+      results: [
+        {
+          toolCallId: "toolu-session",
+          toolName,
+          content,
+          isError: false,
+          contentBytes: content.length,
+        },
+      ],
+    },
+  ];
 }
 
 test("CompletedCloseoutController repairs completed-only synthesis and cleans up tool-call artifacts", async () => {
@@ -144,4 +191,59 @@ test("CompletedCloseoutController re-arms before round>0 table repairs and retur
     /omitted required browser evidence/i,
   );
   assert.equal(repairMarkers.length, 2);
+});
+
+test("CompletedCloseoutController finalizes completed browser visibility in order", () => {
+  const controller = createCompletedCloseoutController();
+
+  const result = controller.finalizeCompletedVisibility({
+    packet: packet(
+      "Continue the previous browser session after it timed out and recover the dashboard.",
+    ),
+    result: textResult("The dashboard shows the expected marker."),
+    messages: [],
+    toolTrace: [],
+    completedSession: {
+      finalContents: ["The dashboard reopened with the expected marker."],
+      browserRecoverySummaries: [
+        "Browser recovery metadata: Resume mode: warm.",
+      ],
+    },
+    completedSessionToolResultText: "cdp_command_timeout",
+  });
+
+  assert.match(result.text, /Browser continuity: browser context was recovered/i);
+  assert.match(result.text, /Browser limitation: cdp_command_timeout/i);
+  assert.ok(
+    result.text.indexOf("Browser continuity:") <
+      result.text.indexOf("Browser limitation:"),
+  );
+});
+
+test("CompletedCloseoutController appends timeout closeout before final URL redaction", () => {
+  const controller = createCompletedCloseoutController();
+
+  const result = controller.finalizeCompletedVisibility({
+    packet: packet(
+      "Continue the same source check and say whether the earlier timeout still limits the conclusion.",
+      "Do not include URLs.",
+    ),
+    result: textResult("Verified http://127.0.0.1:4173/status is healthy."),
+    messages: [],
+    toolTrace: sessionTrace({
+      status: "timeout",
+      result: "The previous source check timed out.",
+    }),
+    completedSession: {
+      finalContents: [
+        "Recovered after the earlier timeout with source-backed evidence.",
+      ],
+      browserRecoverySummaries: [],
+    },
+    completedSessionToolResultText: "",
+  });
+
+  assert.match(result.text, /Timeout closeout:/i);
+  assert.doesNotMatch(result.text, /127\.0\.0\.1|localhost/);
+  assert.match(result.text, /local fixture source/);
 });

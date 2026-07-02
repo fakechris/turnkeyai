@@ -496,6 +496,38 @@ export function normalizeBrowserFailureBucketRecords(value: unknown): Array<{ bu
   });
 }
 
+export function readBrowserRecoverySummary(
+  payload: Record<string, unknown>,
+): string | null {
+  const recovery = payload["browserRecovery"];
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
+    return null;
+  }
+  const record = recovery as Record<string, unknown>;
+  const summary = record["summary"];
+  if (typeof summary === "string" && summary.trim()) {
+    return summary.trim();
+  }
+  const resumeMode = record["resumeMode"];
+  if (resumeMode === "warm" || resumeMode === "cold") {
+    return `Browser recovery metadata: Resume mode: ${resumeMode}.`;
+  }
+  return null;
+}
+
+export function readInlineBrowserRecoverySummary(values: string[]): string | null {
+  const joined = values.join("\n").trim();
+  if (!joined) return null;
+  if (
+    !/\b(?:browser_cdp_unavailable|cdp_command_timeout|detached_target|attach_failed|target_not_found|expert_session_detached|session_not_found|CDP command timed out|browser target detached|target attach failed|cold recreation|new (?:cold )?browser session|new session `?browser-session-|session was unavailable|browser session .*unavailable|dashboard reopened)\b/i.test(
+      joined,
+    )
+  ) {
+    return null;
+  }
+  return sliceUtf8(joined, 600);
+}
+
 export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -4729,6 +4761,97 @@ export function maybeAppendBrowserFailureBucketVisibility(input: {
   };
 }
 
+export function maybeAppendBrowserRecoveryVisibility(input: {
+  result: GenerateTextResult;
+  taskPrompt: string;
+  browserRecoverySummaries: string[];
+}): GenerateTextResult {
+  if (input.browserRecoverySummaries.length === 0) {
+    return input.result;
+  }
+  if (
+    !/continue|recover|reopen|reconnect|restart|unavailable|previous browser session|times? out|timed? out|timeout|detach(?:ed|es)?|attach(?:ed)?|CDP/i.test(
+      input.taskPrompt,
+    )
+  ) {
+    return input.result;
+  }
+  if (isBrowserRecoveryVisible(input.result.text, input.browserRecoverySummaries)) {
+    return input.result;
+  }
+  if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
+    return input.result;
+  }
+  const joinedSummaries = input.browserRecoverySummaries.join("\n");
+  const resumeMode = joinedSummaries
+    .match(/Resume mode:\s*(warm|cold)/i)?.[1]
+    ?.toLowerCase();
+  const continuity = resumeMode
+    ? `Browser continuity: browser context was recovered before the page was rechecked (resume mode: ${resumeMode}).`
+    : `Browser continuity: ${sliceUtf8(joinedSummaries, 600)}`;
+  return {
+    ...input.result,
+    text: `${input.result.text.trim()}\n\n${continuity}`.trim(),
+  };
+}
+
+export function isBrowserRecoveryVisible(
+  resultText: string,
+  browserRecoverySummaries: string[],
+): boolean {
+  const summaryText = browserRecoverySummaries.join("\n");
+  const requiresColdSessionVisibility =
+    /\b(?:cold recreation|session_not_found|new (?:cold )?browser session|new session `?browser-session-|session was unavailable|browser session .*unavailable|Resume mode:\s*cold)\b/i.test(
+      summaryText,
+    );
+  if (requiresColdSessionVisibility) {
+    return /\b(?:cold recreation|session_not_found|new (?:cold )?browser session|new session `?browser-session-|session was unavailable|browser session .*unavailable|resume mode:\s*cold|cold resume mode)\b/i.test(
+      resultText,
+    );
+  }
+  return /\b(recovered|recovery|reopen(?:ed)?|reconnect(?:ed)?|warm|cold|session was unavailable|new browser session|timed? out|timeout|cdp_command_timeout|detached|attach(?:ed)? failed|browser_cdp_unavailable)\b/i.test(
+    resultText,
+  );
+}
+
+export function collectBrowserRecoverySummariesFromToolTrace(
+  rounds: NativeToolRoundTrace[],
+): string[] {
+  const summaries: string[] = [];
+  for (const round of rounds) {
+    for (const result of round.results) {
+      if (
+        result.toolName !== "sessions_spawn" &&
+        result.toolName !== "sessions_send"
+      ) {
+        continue;
+      }
+      const parsed = result.content ? parseSessionToolResult(result.content) : null;
+      if (!parsed) {
+        continue;
+      }
+      const payload = parsed.payload;
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+        const browserRecoverySummary = readBrowserRecoverySummary(
+          payload as Record<string, unknown>,
+        );
+        if (browserRecoverySummary) {
+          summaries.push(browserRecoverySummary);
+        }
+      }
+      const inlineBrowserRecoverySummary = readInlineBrowserRecoverySummary(
+        [parsed.evidence_summary, parsed.result, parsed.final_content].filter(
+          (item): item is string => typeof item === "string",
+        ),
+      );
+      if (inlineBrowserRecoverySummary) {
+        summaries.push(inlineBrowserRecoverySummary);
+      }
+    }
+  }
+  return dedupeStrings(summaries);
+}
+
 export function collectBrowserFailureBucketNames(text: string): string[] {
   const buckets = new Set<string>();
   const pattern =
@@ -4857,6 +4980,18 @@ export function maybeAppendRecoveredTimeoutCloseoutVisibility(
   return {
     ...result,
     text: `${result.text.trim()}\n\nTimeout closeout: the resumed source produced source-backed evidence. Continue or retry the same source-check with a bounded timeout if future release-gated evidence is missing or if production-equivalent validation is required.`.trim(),
+  };
+}
+
+export function maybeAppendTimeoutContinuationVisibility(
+  result: GenerateTextResult,
+): GenerateTextResult {
+  if (hasTimeoutCloseoutGuidance(result.text)) {
+    return result;
+  }
+  return {
+    ...result,
+    text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.`.trim(),
   };
 }
 

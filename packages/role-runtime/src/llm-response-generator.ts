@@ -80,6 +80,7 @@ import {
   buildWeakEvidenceSynthesisRepairPrompt,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
+  collectBrowserRecoverySummariesFromToolTrace,
   collectCompletedSessionEvidenceText,
   collectSourceBoundedEvidenceText,
   createToolExecutionSignal,
@@ -136,13 +137,17 @@ import {
   normalizeSessionToolAliasCalls,
   normalizeSessionToolCalls,
   maybeAppendBrowserFailureBucketVisibility,
+  maybeAppendBrowserRecoveryVisibility,
   maybeAppendBrowserRecoveryResidualRiskVisibility,
   maybeAppendRecoveredTimeoutCloseoutVisibility,
   maybeAppendRequiredTimeoutFollowupVisibility,
+  maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
   mentionsPendingApproval,
   mentionsTimeout,
+  readBrowserRecoverySummary,
   readCompletedSessionEvidence,
+  readInlineBrowserRecoverySummary,
   readMessageContentText,
   readSessionKeyFromToolInput,
   readStringField,
@@ -4247,102 +4252,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               synthesisReductionSnapshot = repairLoopResult.reductionSnapshot;
             }
           }
-          // Mirror the inline completed-closeout visibility appenders (inline
-          // :1796-1814): a completed session that recovered a prior timeout, or a
-          // task that requested a timeout-continuation closeout, gets a user-visible
-          // recovered-timeout / continuation line before redaction.
-          const appendCompletedTimeoutVisibility = (
-            synth: GenerateTextResult,
-          ): GenerateTextResult => {
-            const completedSessionForVisibility = runState.completedSession();
-            const preserveRecoveredTimeoutCloseout = completedSessionForVisibility
-              ? shouldPreserveRecoveredTimeoutCloseout({
-                  taskPrompt: packet.taskPrompt,
-                  messages: state.messages,
-                  toolTrace,
-                  evidenceText: completedSessionForVisibility.finalContents.join("\n\n"),
-                })
-              : false;
-            if (
-              preserveRecoveredTimeoutCloseout ||
-              shouldAppendRecoveredTimeoutCloseoutVisibility({
-                resultText: synth.text,
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-                toolTrace,
-              })
-            ) {
-              return maybeAppendRecoveredTimeoutCloseoutVisibility(synth);
-            }
-            if (
-              shouldAppendTimeoutContinuationVisibility({
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-                toolTrace,
-              })
-            ) {
-              return maybeAppendTimeoutContinuationVisibility(synth);
-            }
-            return synth;
-          };
-          // Stage 8C (Batch C — T10 browser/session finalization plane): mirror the
-          // inline completed-closeout visibility appender chain (inline :1928-1960)
-          // in EXACT order before redaction:
-          //   1. maybeAppendBrowserRecoveryVisibility     (inline :1928)
-          //   2. maybeAppendBrowserFailureBucketVisibility (inline :1933)
-          //   3. recovered-timeout OR continuation appender (inline :1942-1960,
-          //      handled by appendCompletedTimeoutVisibility above)
-          //   4. maybeRedactForbiddenLocalUrls           (inline :1961)
-          // The recovery + failure-bucket appenders are pure post-synthesis transforms
-          // that append at most once when their own guards fire (no repair marker, no
-          // re-synthesis loop), so ordering — not idempotency — is load-bearing.
-          //
-          // browserRecoverySummaries mirror inline :1924-1927: the completed session's
-          // own summaries merged with any collected from the full tool trace. The
-          // failure-bucket evidence text mirrors inline :1936-1940 (the completing
-          // round's tool-result text + the recovery summaries + the final contents).
-          //
-          // Scope: the unconditional finalization epilogue appenders
-          // (maybeAppendRequiredTimeoutFollowupVisibility /
-          // maybeAppendBrowserRecoveryResidualRiskVisibility, inline :2417-2432) run
-          // after the agent finishes, not inside this completed-closeout transform.
-          const appendCompletedBrowserVisibility = (
-            synth: GenerateTextResult,
-          ): GenerateTextResult => {
-            const completedSessionForBrowser = runState.completedSession();
-            if (!completedSessionForBrowser) {
-              return synth;
-            }
-            const completedSession = completedSessionForBrowser;
-            const browserRecoverySummaries = dedupeStrings([
-              ...completedSession.browserRecoverySummaries,
-              ...collectBrowserRecoverySummariesFromToolTrace(toolTrace),
-            ]);
-            let visible = maybeAppendBrowserRecoveryVisibility({
-              result: synth,
-              taskPrompt: packet.taskPrompt,
-              browserRecoverySummaries,
-            });
-            visible = maybeAppendBrowserFailureBucketVisibility({
-              result: visible,
-              taskPrompt: packet.taskPrompt,
-              evidenceText: [
-                collectToolResultContentText(
-                  runState.completedSessionToolResults() ?? [],
-                ),
-                ...browserRecoverySummaries,
-                ...completedSession.finalContents,
-              ].join("\n\n"),
-            });
-            return visible;
-          };
           const closeoutResult =
             reason === "completed_sub_agent_final"
-              ? maybeRedactForbiddenLocalUrls({
-                  result: appendCompletedTimeoutVisibility(
-                    appendCompletedBrowserVisibility(synthesisResult),
-                  ),
+              ? completedCloseout.finalizeCompletedVisibility({
                   packet,
+                  result: synthesisResult,
+                  messages: state.messages,
+                  toolTrace,
+                  completedSession: runState.completedSession() ?? null,
+                  completedSessionToolResultText: collectToolResultContentText(
+                    runState.completedSessionToolResults() ?? [],
+                  ),
                 })
               : reason === "sub_agent_timeout"
                 ? maybeAppendTimeoutContinuationVisibility(synthesisResult)
@@ -6135,124 +6055,6 @@ function isResumablePartialSessionResult(
   return typeof resumableReason === "string" && resumableReason.trim().length > 0;
 }
 
-function readBrowserRecoverySummary(
-  payload: Record<string, unknown>,
-): string | null {
-  const recovery = payload["browserRecovery"];
-  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
-    return null;
-  }
-  const record = recovery as Record<string, unknown>;
-  const summary = record["summary"];
-  if (typeof summary === "string" && summary.trim()) {
-    return summary.trim();
-  }
-  const resumeMode = record["resumeMode"];
-  if (resumeMode === "warm" || resumeMode === "cold") {
-    return `Browser recovery metadata: Resume mode: ${resumeMode}.`;
-  }
-  return null;
-}
-
-function readInlineBrowserRecoverySummary(values: string[]): string | null {
-  const joined = values.join("\n").trim();
-  if (!joined) return null;
-  if (
-    !/\b(?:browser_cdp_unavailable|cdp_command_timeout|detached_target|attach_failed|target_not_found|expert_session_detached|session_not_found|CDP command timed out|browser target detached|target attach failed|cold recreation|new (?:cold )?browser session|new session `?browser-session-|session was unavailable|browser session .*unavailable|dashboard reopened)\b/i.test(
-      joined,
-    )
-  ) {
-    return null;
-  }
-  return sliceUtf8(joined, 600);
-}
-
-function maybeAppendBrowserRecoveryVisibility(input: {
-  result: GenerateTextResult;
-  taskPrompt: string;
-  browserRecoverySummaries: string[];
-}): GenerateTextResult {
-  if (input.browserRecoverySummaries.length === 0) {
-    return input.result;
-  }
-  if (
-    !/continue|recover|reopen|reconnect|restart|unavailable|previous browser session|times? out|timed? out|timeout|detach(?:ed|es)?|attach(?:ed)?|CDP/i.test(
-      input.taskPrompt,
-    )
-  ) {
-    return input.result;
-  }
-  if (isBrowserRecoveryVisible(input.result.text, input.browserRecoverySummaries)) {
-    return input.result;
-  }
-  if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
-    return input.result;
-  }
-  const joinedSummaries = input.browserRecoverySummaries.join("\n");
-  const resumeMode = joinedSummaries
-    .match(/Resume mode:\s*(warm|cold)/i)?.[1]
-    ?.toLowerCase();
-  const continuity = resumeMode
-    ? `Browser continuity: browser context was recovered before the page was rechecked (resume mode: ${resumeMode}).`
-    : `Browser continuity: ${sliceUtf8(joinedSummaries, 600)}`;
-  return {
-    ...input.result,
-    text: `${input.result.text.trim()}\n\n${continuity}`.trim(),
-  };
-}
-
-function isBrowserRecoveryVisible(resultText: string, browserRecoverySummaries: string[]): boolean {
-  const summaryText = browserRecoverySummaries.join("\n");
-  const requiresColdSessionVisibility =
-    /\b(?:cold recreation|session_not_found|new (?:cold )?browser session|new session `?browser-session-|session was unavailable|browser session .*unavailable|Resume mode:\s*cold)\b/i.test(
-      summaryText,
-    );
-  if (requiresColdSessionVisibility) {
-    return /\b(?:cold recreation|session_not_found|new (?:cold )?browser session|new session `?browser-session-|session was unavailable|browser session .*unavailable|resume mode:\s*cold|cold resume mode)\b/i.test(
-      resultText,
-    );
-  }
-  return /\b(recovered|recovery|reopen(?:ed)?|reconnect(?:ed)?|warm|cold|session was unavailable|new browser session|timed? out|timeout|cdp_command_timeout|detached|attach(?:ed)? failed|browser_cdp_unavailable)\b/i.test(
-    resultText,
-  );
-}
-
-function collectBrowserRecoverySummariesFromToolTrace(
-  rounds: NativeToolRoundTrace[],
-): string[] {
-  const summaries: string[] = [];
-  for (const round of rounds) {
-    for (const result of round.results) {
-      if (
-        result.toolName !== "sessions_spawn" &&
-        result.toolName !== "sessions_send"
-      ) {
-        continue;
-      }
-      const parsed = result.content ? parseSessionToolResult(result.content) : null;
-      if (!parsed) {
-        continue;
-      }
-      const payload = parsed.payload;
-      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-        const browserRecoverySummary = readBrowserRecoverySummary(payload as Record<string, unknown>);
-        if (browserRecoverySummary) {
-          summaries.push(browserRecoverySummary);
-        }
-      }
-      const inlineBrowserRecoverySummary = readInlineBrowserRecoverySummary(
-        [parsed.evidence_summary, parsed.result, parsed.final_content].filter(
-          (item): item is string => typeof item === "string",
-        ),
-      );
-      if (inlineBrowserRecoverySummary) {
-        summaries.push(inlineBrowserRecoverySummary);
-      }
-    }
-  }
-  return dedupeStrings(summaries);
-}
-
 function collectToolResultContentText(
   results: RoleToolExecutionResult[],
 ): string {
@@ -6299,18 +6101,6 @@ function normalizeRequestedThreeLineLabel(line: string, label: string): string {
   );
   const value = line.replace(leadingLabel, "").trim();
   return `${label}: ${value || line}`;
-}
-
-function maybeAppendTimeoutContinuationVisibility(
-  result: GenerateTextResult,
-): GenerateTextResult {
-  if (hasTimeoutCloseoutGuidance(result.text)) {
-    return result;
-  }
-  return {
-    ...result,
-    text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.`.trim(),
-  };
 }
 
 // Stage 6 prereq: record an injected repair prompt in the idempotency ledger and

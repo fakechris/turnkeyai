@@ -6,13 +6,24 @@ import type {
 } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import type { RolePromptPacket } from "../prompt-policy";
 import {
   buildSourceEvidenceCarryForwardRepairPrompt,
   buildWeakEvidenceSynthesisRepairPrompt,
+  collectBrowserRecoverySummariesFromToolTrace,
   collectCompletedSessionEvidenceText,
   collectSourceBoundedEvidenceText,
+  dedupeStrings,
+  maybeAppendBrowserFailureBucketVisibility,
+  maybeAppendBrowserRecoveryVisibility,
+  maybeAppendRecoveredTimeoutCloseoutVisibility,
+  maybeAppendTimeoutContinuationVisibility,
+  maybeRedactForbiddenLocalUrls,
+  shouldAppendRecoveredTimeoutCloseoutVisibility,
+  shouldAppendTimeoutContinuationVisibility,
   shouldRepairSourceEvidenceCarryForward,
   shouldRepairWeakEvidenceSynthesis,
+  shouldPreserveRecoveredTimeoutCloseout,
 } from "../tool-loop-shared";
 import {
   createRepairPolicyRegistry,
@@ -24,11 +35,12 @@ import {
 // Authority: own the completed-session repair loop that runs after terminal
 // completed-session synthesis, including completed-only repair round gating,
 // real tool-round re-arm message construction, repair marker insertion, and the
-// final clean synthesis when a repair produces tool-call artifact text.
+// final clean synthesis when a repair produces tool-call artifact text. It also
+// owns the completed-closeout post-synthesis visibility appender chain.
 //
-// It does not own ordinary tool execution, the normalizer pipeline, model
-// gateway calls, or completed-closeout visibility appenders. Those remain
-// injected or adapter-owned while the inline path is still the parity reference.
+// It does not own ordinary tool execution, the normalizer pipeline, or model
+// gateway calls. Those remain injected or adapter-owned while the inline path is
+// still the parity reference.
 export const COMPLETED_CLOSEOUT_CONTROLLER_MODULE =
   "completed-closeout-controller" as const;
 
@@ -108,12 +120,40 @@ export type CompletedCloseoutRepairLoopResult<
       memoryFlushes: TMemoryFlush[];
     } & OptionalReduction<TReduction, TReductionSnapshot>);
 
+export interface CompletedCloseoutVisibilitySession {
+  finalContents: readonly string[];
+  browserRecoverySummaries: readonly string[];
+}
+
+export interface CompletedCloseoutVisibilityInput {
+  packet: RolePromptPacket;
+  result: GenerateTextResult;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  completedSession?: CompletedCloseoutVisibilitySession | null;
+  completedSessionToolResultText: string;
+}
+
 type OptionalReduction<TReduction, TReductionSnapshot> = {
   reduction?: TReduction;
   reductionSnapshot?: TReductionSnapshot;
 };
 
 export class CompletedCloseoutController {
+  finalizeCompletedVisibility(
+    input: CompletedCloseoutVisibilityInput,
+  ): GenerateTextResult {
+    const browserVisible = appendCompletedBrowserVisibility(input);
+    const timeoutVisible = appendCompletedTimeoutVisibility({
+      ...input,
+      result: browserVisible,
+    });
+    return maybeRedactForbiddenLocalUrls({
+      result: timeoutVisible,
+      packet: input.packet,
+    });
+  }
+
   async runRepairLoop<
     TReduction = unknown,
     TReductionSnapshot = unknown,
@@ -398,4 +438,67 @@ function appendMemoryFlush<T>(memoryFlushes: T[], memoryFlush: T | undefined): v
   if (memoryFlush !== undefined) {
     memoryFlushes.push(memoryFlush);
   }
+}
+
+function appendCompletedBrowserVisibility(
+  input: CompletedCloseoutVisibilityInput,
+): GenerateTextResult {
+  const completedSession = input.completedSession;
+  if (!completedSession) {
+    return input.result;
+  }
+  const browserRecoverySummaries = dedupeStrings([
+    ...completedSession.browserRecoverySummaries,
+    ...collectBrowserRecoverySummariesFromToolTrace(input.toolTrace),
+  ]);
+  let visible = maybeAppendBrowserRecoveryVisibility({
+    result: input.result,
+    taskPrompt: input.packet.taskPrompt,
+    browserRecoverySummaries,
+  });
+  visible = maybeAppendBrowserFailureBucketVisibility({
+    result: visible,
+    taskPrompt: input.packet.taskPrompt,
+    evidenceText: [
+      input.completedSessionToolResultText,
+      ...browserRecoverySummaries,
+      ...completedSession.finalContents,
+    ].join("\n\n"),
+  });
+  return visible;
+}
+
+function appendCompletedTimeoutVisibility(
+  input: CompletedCloseoutVisibilityInput,
+): GenerateTextResult {
+  const completedSession = input.completedSession;
+  const preserveRecoveredTimeoutCloseout = completedSession
+    ? shouldPreserveRecoveredTimeoutCloseout({
+        taskPrompt: input.packet.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        evidenceText: completedSession.finalContents.join("\n\n"),
+      })
+    : false;
+  if (
+    preserveRecoveredTimeoutCloseout ||
+    shouldAppendRecoveredTimeoutCloseoutVisibility({
+      resultText: input.result.text,
+      taskPrompt: input.packet.taskPrompt,
+      messages: input.messages,
+      toolTrace: input.toolTrace,
+    })
+  ) {
+    return maybeAppendRecoveredTimeoutCloseoutVisibility(input.result);
+  }
+  if (
+    shouldAppendTimeoutContinuationVisibility({
+      taskPrompt: input.packet.taskPrompt,
+      messages: input.messages,
+      toolTrace: input.toolTrace,
+    })
+  ) {
+    return maybeAppendTimeoutContinuationVisibility(input.result);
+  }
+  return input.result;
 }
