@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `f19f12d884931b9e6af098aae13b4e44ec911578`
+**Code HEAD before this docs-only report:** `da7af31d4fa622f7bbad82fbb0da0148aa204d5a`
 **Date:** 2026-07-02
 
 ## Summary
@@ -77,11 +77,16 @@ could not move the normalizer without making the inline parity reference import 
   terminal-synthesis handoffs, and current-round completed-session / sub-agent
   timeout signals are now read through the ledger in engine continuation and
   post-execute closeout hooks.
+  `react-engine/terminal-closeout-controller.ts` now owns the engine's
+  deterministic approval wait-timeout fallback assembly, pseudo tool-call
+  terminal synthesis message selection, and non-completed timeout closeout
+  visibility decoration. The adapter still invokes the terminal model synthesis
+  and records run-state effects.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
   closeout fallback decisions. The adapter still owns non-completed terminal
-  model synthesis/result application and all run-state recording.
+  model synthesis and run-state recording.
   Requested table-column and provider-support-schema task facts now live in
   neutral `task-facts-shared.ts`; `react-engine/task-facts.ts` is now a
   compatibility wrapper for engine imports.
@@ -142,8 +147,8 @@ could not move the normalizer without making the inline parity reference import 
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence behavior,
-terminal closeout model synthesis/result application, and adapter-side application
-of controller actions.
+terminal closeout model synthesis/run-state recording, and adapter-side
+application of controller actions.
 
 ## Commits Added After The Blocked Report
 
@@ -209,6 +214,7 @@ of controller actions.
 | `0101bda` | Route current-round tool-result evidence text through `EvidenceLedger`; engine timeout-probe and completed terminal-synthesis handoffs stop calling the raw collector. |
 | `c35fd72` | Add approval wait-timeout runtime evidence to `EvidenceLedger` snapshots; engine hard fallback reads the snapshot fact. |
 | `f19f12d` | Route current completed-session and sub-agent timeout result signals through `EvidenceLedger` in engine hooks. |
+| `da7af31` | Extract `TerminalCloseoutController` for approval wait-timeout fallback assembly, pseudo tool-call terminal synthesis message selection, and sub-agent timeout result visibility decoration. |
 
 ## Current Extracted Implementation
 
@@ -282,6 +288,9 @@ Real implementation now exists in:
   plus the completed closeout post-synthesis visibility chain for browser recovery visibility,
   browser failure-bucket visibility, recovered-timeout/continuation visibility,
   and final forbidden local URL redaction.
+- `react-engine/terminal-closeout-controller.ts` for deterministic approval
+  wait-timeout terminal fallback assembly, pseudo tool-call terminal synthesis
+  message selection, and non-completed timeout closeout visibility decoration.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -369,8 +378,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/evidence-ledger.test.ts` | 7 / 7 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 150 / 150 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 3 / 3 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 153 / 153 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -430,8 +439,11 @@ Stage 8 boundaries/slices are now real:
   `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
   passthrough, completed session closeout, sub-agent timeout closeout,
   round-limit closeout, and generic closeout fallback; non-completed terminal
-  model synthesis and result application still live in the adapter's
+  model synthesis and run-state recording still live in the adapter's
   `onTerminate`.
+- deterministic approval wait-timeout fallback assembly, pseudo tool-call
+  terminal synthesis message selection, and sub-agent timeout closeout
+  visibility decoration route through `TerminalCloseoutController`.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -560,7 +572,8 @@ Stage 8 boundaries/slices are now real:
   current-round tool-result content through `EvidenceLedger` instead of calling
   the raw result-content collector directly.
 - engine hard approval wait-timeout fallback now reads approval runtime
-  evidence through `EvidenceLedger`.
+  evidence through `EvidenceLedger` and assembles its deterministic fallback
+  result through `TerminalCloseoutController`.
 - engine continuation and post-execute closeout hooks now read current
   completed-session and sub-agent timeout result signals through
   `EvidenceLedger`.
@@ -615,6 +628,8 @@ Continue with the remaining high-risk pieces:
   evidence, current-result-content, current result signals,
   approval-timeout-runtime evidence, tool-trace-result-content, and
   usable-evidence snapshot facts; extract non-completed terminal closeout model
-  synthesis/result application and keep thinning the adapter.
+  synthesis/run-state application beyond the current deterministic fallback,
+  synthesis-context selection, and timeout result-decoration slice; keep thinning
+  the adapter.
 
 The branch is **not pushed**.
