@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `93bdaf814f5b9cde44ae0dba67d69e136a618c00`
+**Code HEAD before this docs-only report:** `df4012cac3b65a5558bde308502e9c69e52c9589`
 **Date:** 2026-07-02
 
 ## Summary
@@ -26,15 +26,17 @@ could not move the normalizer without making the inline parity reference import 
   the selected policy fires. The first closeout registry policies also landed:
   `recovery_tool_budget`, `operator_cancelled`, `pseudo_tool_call`,
   `wall_clock_budget`, `round_limit`, `repeated_tool_failure`,
-  `repeated_session_inspection`, and `excessive_session_continuation` now return
-  typed decisions from `react-engine/closeout-policy-registry.ts`, including the
+  `repeated_session_inspection`, `excessive_session_continuation`,
+  `completed_sub_agent_final`, and `sub_agent_timeout` now return typed
+  decisions from `react-engine/closeout-policy-registry.ts`, including the
   recovery-budget repair-round defer handoff, the pseudo tool-call closeout's
   empty-call / pending-continuation gates, the wall-clock / round-limit
-  precedence handoff to execution-budget snapshots, and the pending-call/session
-  anti-loop closeout metadata. The final allowed tool-round warning now routes
-  through that controller while the warning text itself lives in neutral shared
-  code used by inline and engine. Final-recovery budget parsing, prior-call
-  counting, closeout reason lines, and repair prompt helpers also moved into
+  precedence handoff to execution-budget snapshots, pending-call/session
+  anti-loop closeout metadata, and post-execute completed-vs-timeout selection.
+  The final allowed tool-round warning now routes through that controller while
+  the warning text itself lives in neutral shared code used by inline and engine.
+  Final-recovery budget parsing, prior-call counting, closeout reason lines, and
+  repair prompt helpers also moved into
   neutral shared code. The first
   continuation slices now live in `react-engine/continuation-controller.ts`:
   empty-round direct `sessions_send` and lookup `sessions_list` injection, plus
@@ -78,6 +80,7 @@ evidence/task-fact behavior, and adapter-side application of controller actions.
 | `d394ab6` | Extract `pseudo_tool_call` closeout policy into `CloseoutPolicyRegistry`; share pseudo tool-call markup detector. |
 | `695082b` | Extract `wall_clock_budget` and `round_limit` closeout policy decisions into `CloseoutPolicyRegistry`; preserve budget snapshot ownership. |
 | `93bdaf8` | Extract repeated pending-call closeout policies into `CloseoutPolicyRegistry`; share session inspection/continuation anti-loop detectors. |
+| `df4012c` | Extract post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout selection into `CloseoutPolicyRegistry`. |
 
 ## Current Extracted Implementation
 
@@ -101,10 +104,12 @@ Real implementation now exists in:
   and the first pending-call closeout policies, `recovery_tool_budget`,
   `operator_cancelled`, `pseudo_tool_call`, `wall_clock_budget`, and
   `round_limit`, plus `repeated_tool_failure`,
-  `repeated_session_inspection`, and `excessive_session_continuation`, including
-  the recovery-budget repair-round defer decision, pseudo tool-call empty-round
-  gates, wall-clock continuation exceptions, limit-round pending-call gate, and
-  repeated pending-call/session anti-loop metadata.
+  `repeated_session_inspection`, `excessive_session_continuation`,
+  `completed_sub_agent_final`, and `sub_agent_timeout`, including the
+  recovery-budget repair-round defer decision, pseudo tool-call empty-round
+  gates, wall-clock continuation exceptions, limit-round pending-call gate,
+  repeated pending-call/session anti-loop metadata, and post-execute
+  completed-over-timeout precedence.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -125,7 +130,7 @@ Real implementation now exists in:
 
 Still shell/deferred or partial:
 
-- remaining `closeout-policy-registry.ts` policies after `excessive_session_continuation`
+- remaining `closeout-policy-registry.ts` policies after `completed_sub_agent_final`
 - `repair-policy-registry.ts`
 - `completed-closeout-controller.ts`
 - `evidence-ledger.ts`
@@ -138,13 +143,13 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 18 / 18 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 21 / 21 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 76 / 76 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 79 / 79 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 233 / 233, 0 fail |
-| `npm run parity:engine` | 233 / 233, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 272 / 272, 0 fail |
+| `npm run parity:engine` | 267 / 267, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -155,7 +160,7 @@ zero failures and zero incomplete tests after recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2503` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that twenty-two
+root plus several policy-heavy hook bodies. The main improvement is that twenty-three
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -190,6 +195,9 @@ Stage 8 boundaries/slices are now real:
   `excessive_session_continuation` pending-call closeout selection route through
   `CloseoutPolicyRegistry`, using shared session anti-loop detectors where
   needed.
+- post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
+  selection routes through `CloseoutPolicyRegistry`; terminal reasonLines and
+  synthesis metadata still live in the adapter's `onTerminate`.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -223,7 +231,7 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue extracting the remaining closeout policy registry decisions/precedence
-  after `excessive_session_continuation`, then repair, completed-closeout, evidence ledger,
+  after `completed_sub_agent_final`, then repair, completed-closeout, evidence ledger,
   task facts, and final adapter thinning.
 
 The branch is **not pushed**.
