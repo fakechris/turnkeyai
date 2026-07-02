@@ -80,12 +80,7 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     hook: "onToolCallsClose",
     phase: "tool_calls",
     installed: true,
-    moduleOps: [
-      "PermissionPolicy.wouldSuppressReadOnlyPermissionQuery",
-      "CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout",
-      "ContinuationController.previewEmptyRoundContinuation",
-      "CloseoutPolicyRegistry.applyRemainingPendingCallsCloseout",
-    ],
+    moduleOps: ["CloseoutPolicyRegistry.applyPendingCallsCloseout"],
   },
   {
     hook: "onBeforeExecute",

@@ -338,6 +338,183 @@ test("CloseoutPolicyRegistry applies remaining pending closeout through a target
   });
 });
 
+test("CloseoutPolicyRegistry pending-call flow honors read-only suppression preemption", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const order: string[] = [];
+  const writes: unknown[] = [];
+  const target = {
+    recordPendingCloseout(input: unknown) {
+      writes.push(input);
+    },
+  };
+
+  const reason = registry.applyPendingCallsCloseout(
+    {
+      pendingCalls: [toolCall("c1", "permission_query")],
+      lastText: "I need permission.",
+      taskPrompt: "Read-only status report.",
+      messages: [],
+      repairMarkers: [],
+      toolTrace: [],
+      maxRounds: 3,
+      usedToolCalls: 2,
+      recoveryUsedToolCalls: 2,
+      roundCount: 2,
+      evidenceAvailable: true,
+      recoveryToolBudget: { maxToolCalls: 2 },
+      shouldSuppressReadOnlyPermissionQuery: () => {
+        order.push("suppress");
+        return true;
+      },
+      previewEmptyRoundContinuation: () => {
+        order.push("preview");
+        return null;
+      },
+      buildRecoveryToolBudgetCloseoutSnapshot: () => {
+        order.push("recovery");
+        return recoverySnapshot();
+      },
+      buildWallClockBudgetCloseoutSignal: () => {
+        order.push("wall-clock");
+        return null;
+      },
+      buildRoundLimitCloseoutSnapshot: () => {
+        order.push("round-limit");
+        return roundLimitSnapshot();
+      },
+    },
+    target,
+  );
+
+  assert.equal(reason, null);
+  assert.deepEqual(order, ["suppress"]);
+  assert.deepEqual(writes, []);
+});
+
+test("CloseoutPolicyRegistry pending-call flow applies recovery before continuation preview", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const order: string[] = [];
+  const writes: unknown[] = [];
+  const target = {
+    recordPendingCloseout(input: unknown) {
+      writes.push(input);
+    },
+  };
+
+  const reason = registry.applyPendingCallsCloseout(
+    {
+      pendingCalls: [toolCall("c1", "sessions_spawn")],
+      lastText: "Checking one more source.",
+      taskPrompt: "Summarize the gathered evidence.",
+      messages: [],
+      repairMarkers: [],
+      toolTrace: [],
+      maxRounds: 3,
+      usedToolCalls: 2,
+      recoveryUsedToolCalls: 2,
+      roundCount: 2,
+      evidenceAvailable: false,
+      recoveryToolBudget: { maxToolCalls: 2 },
+      shouldSuppressReadOnlyPermissionQuery: () => {
+        order.push("suppress");
+        return false;
+      },
+      previewEmptyRoundContinuation: () => {
+        order.push("preview");
+        return toolCall("runtime-continuation-1", "sessions_send");
+      },
+      buildRecoveryToolBudgetCloseoutSnapshot: () => {
+        order.push("recovery");
+        return recoverySnapshot();
+      },
+      buildWallClockBudgetCloseoutSignal: () => {
+        order.push("wall-clock");
+        return null;
+      },
+      buildRoundLimitCloseoutSnapshot: () => {
+        order.push("round-limit");
+        return roundLimitSnapshot();
+      },
+    },
+    target,
+  );
+
+  assert.equal(reason, "recovery_tool_budget");
+  assert.deepEqual(order, ["suppress", "recovery"]);
+  assert.deepEqual(writes, [
+    {
+      reasonLines: ["Final recovery tool budget reached (2 tool calls)."],
+      closeout: recoverySnapshot().closeout,
+    },
+  ]);
+});
+
+test("CloseoutPolicyRegistry pending-call flow passes continuation preview into remaining closeouts", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const order: string[] = [];
+  const continuation = toolCall("runtime-continuation-1", "sessions_send");
+  const writes: unknown[] = [];
+  const target = {
+    recordPendingCloseout(input: unknown) {
+      writes.push(input);
+    },
+  };
+
+  const reason = registry.applyPendingCallsCloseout(
+    {
+      pendingCalls: [],
+      lastText: "<tool_call>{}</tool_call>",
+      taskPrompt: "Continue the browser session if needed.",
+      messages: [],
+      repairMarkers: [],
+      toolTrace: [],
+      maxRounds: 3,
+      usedToolCalls: 2,
+      recoveryUsedToolCalls: 2,
+      roundCount: 2,
+      evidenceAvailable: true,
+      recoveryToolBudget: null,
+      shouldSuppressReadOnlyPermissionQuery: () => {
+        order.push("suppress");
+        return false;
+      },
+      previewEmptyRoundContinuation: () => {
+        order.push("preview");
+        return continuation;
+      },
+      buildRecoveryToolBudgetCloseoutSnapshot: () => {
+        order.push("recovery");
+        return recoverySnapshot();
+      },
+      buildWallClockBudgetCloseoutSignal: (input) => {
+        order.push("wall-clock");
+        assert.deepEqual(input.pendingCalls, []);
+        assert.equal(input.pendingContinuation, continuation);
+        return {
+          maxWallClockMs: 90_000,
+          requiredTimeoutContinuationPastWallClock: false,
+          readElapsedMs: () => 90_000,
+          buildCloseoutSnapshot: wallClockSnapshot,
+        };
+      },
+      buildRoundLimitCloseoutSnapshot: () => {
+        order.push("round-limit");
+        return roundLimitSnapshot();
+      },
+    },
+    target,
+  );
+
+  assert.equal(reason, "wall_clock_budget");
+  assert.deepEqual(order, ["suppress", "preview", "wall-clock"]);
+  assert.deepEqual(writes, [
+    {
+      reasonLines: ["Tool-use wall-clock budget reached (1m 30s)."],
+      closeout: wallClockSnapshot().closeout,
+    },
+  ]);
+});
+
 test("CloseoutPolicyRegistry returns operator-cancelled closeout decision", () => {
   const registry = createCloseoutPolicyRegistry();
 

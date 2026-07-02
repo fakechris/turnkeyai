@@ -234,14 +234,13 @@ import {
   type ToolLoopCloseoutMetadata,
 } from "./runtime-derived-mission-report";
 import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
-import type { ModelClient, ReActState } from "@turnkeyai/agent-core/react-loop";
+import type { ModelClient } from "@turnkeyai/agent-core/react-loop";
 // Stage 8 cleanup (Batch 0.5): engine policy-trace plumbing. The trace is a
 // behavior-neutral observability sink that records the per-hook decision sequence
 // so later batches can prove byte-identical behavior and so production-behind-flag
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
   createCloseoutPolicyRegistry,
-  buildRemainingPendingCallsSessionContext,
   createCompletedCloseoutController,
   createContinuationController,
   createEnginePolicyTrace,
@@ -2691,22 +2690,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       persistNativeToolTrace: (options) =>
         this.persistNativeToolTraceSafely(activation, toolTrace, options),
     });
-    // Stage 7 S4: the synthetic sessions_send the empty-round continuation would
-    // inject (inline :567-587), or null. Shared by onToolCallsClose (the wall-clock
-    // pre-check below) and onRoundEmpty (the actual injection) so both agree on
-    // whether a continuation is pending — mirroring inline, where the injection at
-    // :577 populates toolCalls BEFORE the wall-clock check at :1285 sees it.
-    const computeEmptyRoundContinuationCall = (state: ReActState) =>
-      continuation.previewEmptyRoundContinuation({
-        active: Boolean(activeToolLoop),
-        messages: state.messages,
-        round: state.round,
-        taskPrompt: packet.taskPrompt,
-        toolTrace,
-        ...(initialGatewayInput.tools === undefined
-          ? {}
-          : { tools: initialGatewayInput.tools }),
-      });
     const agent = createReActAgent<RoleToolContext>({
       model,
       toolkit,
@@ -2872,69 +2855,85 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             repairMarkers,
           });
         },
-        // Stage 5 PR2d pending-call closeouts: mirror the inline pre-execute
-        // closeouts that fire on the round's pending (normalized) tool calls, in
-        // inline precedence order. Each builds the inline reasonLines + closeout
-        // metadata and stashes them on `runState.pendingCloseout`; onTerminate runs the
-        // synthesis. round_limit is intentionally omitted: the engine's maxRounds
-        // loop fires it post-loop at exactly round === maxRounds, where the inline
-        // `for(;;)` loop hits roundLimitReached, and this hook only runs on rounds
-        // 0..maxRounds-1, so the inline precedence (wall_clock before round_limit
-        // before repeated_*) is preserved without double-handling round_limit.
-        //
-        // Scope: this hook owns terminal pending-call closeouts. The inline
-        // branches that rewrite calls, inject continuations, suppress execution, or
-        // repair a tool-free candidate are expressed in the surrounding engine hooks
-        // (`onToolCalls`, `onSuppressToolCalls`, `onAfterExecuteContinue`, and
-        // `onRepairRound`) so this hook can keep the closeout precedence explicit.
-        // wall_clock_budget is checked before round_limit here, matching inline.
+        // Stage 5 PR2d pending-call closeouts: the registry owns the
+        // read-only-suppression pre-emption, recovery-budget-before-continuation
+        // ordering, empty-round continuation preview, and remaining pending-call
+        // closeout cascade. The adapter supplies live hook state plus the module
+        // callbacks that own each sub-decision.
         onToolCallsClose: (calls, state) => {
           if (!activeToolLoop) {
             return null;
           }
-          // Stage 8B slice 1b (codex #523 P2): the read-only permission-query suppression
-          // runs BEFORE the pending-call closeouts inline (:518 precedes :539+), but the
-          // engine's onSuppressToolCalls runs AFTER this hook. So pre-empt the closeouts:
-          // when the read-only suppression would fire, return null here (no closeout this
-          // round) and let onSuppressToolCalls perform the drop + tool-free re-prompt —
-          // preserving the inline ordering for the read-only + closeout compound case.
-          if (
-            permissionPolicy.wouldSuppressReadOnlyPermissionQuery(
-              buildPermissionSuppressInput({
-                calls,
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-              }),
-            )
-          ) {
-            return null;
-          }
           const roundCount = toolTrace.length;
+          const usedToolCalls = countNativeToolCalls(toolTrace);
           const stateEvidence = snapshotEvidence(state.messages);
-          // Stage 7 S4: the synthetic sessions_send an empty round WOULD inject (or
-          // null). Inline injects it (:567) BEFORE the pseudo_tool_call closeout
-          // (:1035) and the wall-clock check (:1285): the injection turns the round
-          // into a tool round, so the empty-gated pseudo closeout is bypassed while
-          // the wall-clock budget still applies to the injected call. Mirror that
-          // precedence below — recovery_tool_budget (step 1, inline :539) still runs
-          // BEFORE the injection, so it is computed after step 1.
-          let pendingContinuation: LLMToolCall | null = null;
-          // 1. recovery_tool_budget — the final recovery attempt's tool budget is
-          //    exhausted (fires regardless of pending-call count).
-          const usedToolCalls =
-            recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace);
-          const recoveryBudgetCloseoutReason =
-            closeoutPolicy.applyRecoveryToolBudgetCloseout({
-              recoveryToolBudget,
-              usedToolCalls,
-              pendingToolCallCount: calls.length,
+          return closeoutPolicy.applyPendingCallsCloseout(
+            {
+              pendingCalls: calls,
+              lastText: state.lastText,
+              taskPrompt: packet.taskPrompt,
               messages: state.messages,
               repairMarkers: ctx.repairMarkers ?? [],
-              resultText: state.lastText,
-              buildCloseoutSnapshot: () =>
+              toolTrace,
+              maxRounds,
+              usedToolCalls,
+              recoveryUsedToolCalls:
+                recoveryToolCallsBeforeActivation + usedToolCalls,
+              roundCount,
+              evidenceAvailable: stateEvidence.usableEvidence,
+              recoveryToolBudget,
+              shouldSuppressReadOnlyPermissionQuery: () =>
+                permissionPolicy.wouldSuppressReadOnlyPermissionQuery(
+                  buildPermissionSuppressInput({
+                    calls,
+                    taskPrompt: packet.taskPrompt,
+                    messages: state.messages,
+                  }),
+                ),
+              previewEmptyRoundContinuation: () =>
+                continuation.previewEmptyRoundContinuation({
+                  active: Boolean(activeToolLoop),
+                  messages: state.messages,
+                  round: state.round,
+                  taskPrompt: packet.taskPrompt,
+                  toolTrace,
+                  ...(initialGatewayInput.tools === undefined
+                    ? {}
+                    : { tools: initialGatewayInput.tools }),
+                }),
+              buildRecoveryToolBudgetCloseoutSnapshot: () =>
                 executionBudget.buildRecoveryToolBudgetCloseoutSnapshot({
                   maxRounds,
                   maxToolCalls: recoveryToolBudget?.maxToolCalls ?? 0,
+                  pendingToolCallCount: calls.length,
+                  usedToolCalls:
+                    recoveryToolCallsBeforeActivation + usedToolCalls,
+                  roundCount,
+                  evidenceAvailable: stateEvidence.usableEvidence,
+                }),
+              buildWallClockBudgetCloseoutSignal: ({
+                pendingCalls,
+                pendingContinuation,
+              }) =>
+                executionBudget.buildPendingCallsWallClockBudgetCloseoutSignal({
+                  pendingCalls,
+                  pendingContinuation,
+                  taskPrompt: packet.taskPrompt,
+                  messages: state.messages,
+                  toolTrace,
+                  maxRounds,
+                  usedToolCalls,
+                  roundCount,
+                  evidenceAvailable: stateEvidence.usableEvidence,
+                  now: () => this.clock.now(),
+                  toolLoopStartedAtMs,
+                  ...(activeToolLoop.maxWallClockMs === undefined
+                    ? {}
+                    : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
+                }),
+              buildRoundLimitCloseoutSnapshot: () =>
+                executionBudget.buildRoundLimitCloseoutSnapshot({
+                  maxRounds,
                   pendingToolCallCount: calls.length,
                   usedToolCalls,
                   roundCount,
@@ -2943,72 +2942,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
             runState,
           );
-          if (recoveryBudgetCloseoutReason) {
-            return recoveryBudgetCloseoutReason;
-          }
-          // Now that recovery_tool_budget (the only closeout inline checks BEFORE the
-          // empty-round injection) has run, resolve the pending continuation: every
-          // closeout below either gates on calls.length > 0 (so it no-ops here) or,
-          // for the empty-gated pseudo_tool_call, must yield to the injection (which
-          // inline performs first). operator_cancelled cannot collide — a live
-          // continuation directive means the user DID ask to continue, so its
-          // shouldCloseoutCancelledSessionWithoutContinuation guard is false.
-          pendingContinuation =
-            calls.length === 0 ? computeEmptyRoundContinuationCall(state) : null;
-          const wallClockBudgetCloseoutSignal =
-            executionBudget.buildPendingCallsWallClockBudgetCloseoutSignal({
-              pendingCalls: calls,
-              pendingContinuation,
-              taskPrompt: packet.taskPrompt,
-              messages: state.messages,
-              toolTrace,
-              maxRounds,
-              usedToolCalls: countNativeToolCalls(toolTrace),
-              roundCount,
-              evidenceAvailable: stateEvidence.usableEvidence,
-              now: () => this.clock.now(),
-              toolLoopStartedAtMs,
-              ...(activeToolLoop.maxWallClockMs === undefined
-                ? {}
-                : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
-            });
-          // 2-8. pending-call closeouts — operator_cancelled through the
-          // repeated-call/session anti-loop policies.
-          const remainingPendingCloseoutReason =
-            closeoutPolicy.applyRemainingPendingCallsCloseout({
-              pendingCalls: calls,
-              pendingToolCallCount: calls.length,
-              pendingContinuation: pendingContinuation !== null,
-              lastText: state.lastText,
-              wallClockBudget: wallClockBudgetCloseoutSignal,
-              taskPrompt: packet.taskPrompt,
-              messages: state.messages,
-              sessionContext: buildRemainingPendingCallsSessionContext({
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-              }),
-              toolTrace,
-              maxRounds,
-              usedToolCalls: countNativeToolCalls(toolTrace),
-              roundCount,
-              evidenceAvailable: stateEvidence.usableEvidence,
-              buildRoundLimitCloseoutSnapshot: () =>
-                executionBudget.buildRoundLimitCloseoutSnapshot({
-                  maxRounds,
-                  pendingToolCallCount: calls.length,
-                  usedToolCalls: countNativeToolCalls(toolTrace),
-                  roundCount,
-                  evidenceAvailable: stateEvidence.usableEvidence,
-                }),
-            },
-            runState,
-          );
-          if (remainingPendingCloseoutReason) {
-            return remainingPendingCloseoutReason;
-          }
-          // The registry preserves wall-clock empty-round continuation gates
-          // and the repeated-call/session anti-loop precedence.
-          return null;
         },
         // Stage 7 S7 + S5: post-execute continuation branches. After a tool round, the
         // inline loop runs an ordered cascade of continuations BEFORE the completed/

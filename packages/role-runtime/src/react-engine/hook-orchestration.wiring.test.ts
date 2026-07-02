@@ -81,27 +81,29 @@ test("wiring guard: spy modules recorded in the contract order pass", () => {
 });
 
 test("wiring guard: wrong cross-module order inside a hook FAILS", () => {
-  // onToolCallsClose's contract order is:
-  //   PermissionPolicy.wouldSuppressReadOnlyPermissionQuery ->
-  //   CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout ->
-  //   ContinuationController.previewEmptyRoundContinuation ->
-  //   CloseoutPolicyRegistry.applyRemainingPendingCallsCloseout
-  // Swapping recovery-budget after the continuation preview is a behavior change
-  // (recovery_tool_budget must be evaluated before the empty-round injection).
-  const contract = engineHookContract("onToolCallsClose");
+  // onAfterExecuteContinue's first boundary must be observability before the
+  // ordered continuation cascade. Swapping it after the first continuation
+  // operation is a behavior change because provider protocol recording belongs
+  // before continuation/closeout decisions consume the just-finished round.
+  const contract = engineHookContract("onAfterExecuteContinue");
   assert.ok(contract);
   const wrong = [
-    "PermissionPolicy.wouldSuppressReadOnlyPermissionQuery",
-    "ContinuationController.previewEmptyRoundContinuation",
-    "CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout",
-    "CloseoutPolicyRegistry.applyRemainingPendingCallsCloseout",
+    "ContinuationController.continueApprovedBrowserTimeout",
+    "EngineRunObserver.onProviderToolProtocolRound",
+    "ContinuationController.continueSiblingTimeout",
+    "ContinuationController.runGeneralSupplementalTimeoutProbe",
+    "ContinuationController.runSupplementalCompletedProbe",
+    "ContinuationController.continueIncompleteApprovedBrowser",
+    "ContinuationController.continueIndependentEvidenceStreams",
+    "RepairPolicyRegistry.repairPostExecuteMissingApprovalGate",
+    "ContinuationController.runForcedPermissionResultRound",
   ];
   // Sanity: the wrong order is genuinely a reordering of the real contract ops.
   assert.notDeepEqual(wrong, contract!.moduleOps);
   assert.deepEqual([...wrong].sort(), [...contract!.moduleOps].sort());
 
   const trace = createEnginePolicyTrace();
-  driveOrchestration(trace, { hook: "onToolCallsClose", moduleOps: wrong });
+  driveOrchestration(trace, { hook: "onAfterExecuteContinue", moduleOps: wrong });
   const recorded = trace.snapshot().map((e) => e.policyId);
   assert.notDeepEqual(
     recorded,
@@ -132,13 +134,12 @@ test("wiring guard: onAfterExecuteContinue completed-session branch order is pin
   assert.ok(repairIdx >= 0 && forcedIdx >= 0 && repairIdx < forcedIdx);
 });
 
-test("wiring guard: recovery_tool_budget is not applied twice in onToolCallsClose", () => {
+test("wiring guard: onToolCallsClose delegates to one pending-call closeout entrypoint", () => {
   const contract = engineHookContract("onToolCallsClose");
   assert.ok(contract);
-  const recoveryApplications = contract!.moduleOps.filter((op) =>
-    op.startsWith("CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout"),
-  );
-  assert.equal(recoveryApplications.length, 1);
+  assert.deepEqual(contract!.moduleOps, [
+    "CloseoutPolicyRegistry.applyPendingCallsCloseout",
+  ]);
 });
 
 // ---------------------------------------------------------------------------

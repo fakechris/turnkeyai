@@ -141,6 +141,33 @@ export interface RemainingPendingCallsCloseoutInput {
   buildRoundLimitCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
 }
 
+export interface PendingCallsWallClockBudgetSignalInput {
+  pendingCalls: LLMToolCall[];
+  pendingContinuation: LLMToolCall | null;
+}
+
+export interface PendingCallsCloseoutInput {
+  pendingCalls: LLMToolCall[];
+  lastText: string;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  maxRounds: number;
+  usedToolCalls: number;
+  recoveryUsedToolCalls: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+  recoveryToolBudget: RecoveryToolBudgetSignal | null;
+  shouldSuppressReadOnlyPermissionQuery(): boolean;
+  previewEmptyRoundContinuation(): LLMToolCall | null;
+  buildRecoveryToolBudgetCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
+  buildWallClockBudgetCloseoutSignal(
+    input: PendingCallsWallClockBudgetSignalInput,
+  ): WallClockBudgetCloseoutSignal | null;
+  buildRoundLimitCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
+}
+
 export interface RemainingPendingCallsSessionContextInput {
   taskPrompt: string;
   messages: LLMMessage[];
@@ -294,6 +321,11 @@ export interface CloseoutPolicyRegistry {
 
   applyRemainingPendingCallsCloseout(
     input: RemainingPendingCallsCloseoutInput,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null;
+
+  applyPendingCallsCloseout(
+    input: PendingCallsCloseoutInput,
     target: PendingCloseoutApplicationTarget,
   ): EngineCloseoutReason | null;
 
@@ -570,6 +602,60 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
   ): EngineCloseoutReason | null {
     return this.applyPendingCloseoutDecision(
       this.evaluateRemainingPendingCalls(input),
+      target,
+    );
+  }
+
+  applyPendingCallsCloseout(
+    input: PendingCallsCloseoutInput,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null {
+    if (input.shouldSuppressReadOnlyPermissionQuery()) {
+      return null;
+    }
+
+    const pendingToolCallCount = input.pendingCalls.length;
+    const recoveryCloseoutReason = this.applyRecoveryToolBudgetCloseout(
+      {
+        recoveryToolBudget: input.recoveryToolBudget,
+        usedToolCalls: input.recoveryUsedToolCalls,
+        pendingToolCallCount,
+        messages: input.messages,
+        repairMarkers: input.repairMarkers,
+        resultText: input.lastText,
+        buildCloseoutSnapshot: input.buildRecoveryToolBudgetCloseoutSnapshot,
+      },
+      target,
+    );
+    if (recoveryCloseoutReason) {
+      return recoveryCloseoutReason;
+    }
+
+    const pendingContinuation =
+      pendingToolCallCount === 0 ? input.previewEmptyRoundContinuation() : null;
+    return this.applyRemainingPendingCallsCloseout(
+      {
+        pendingCalls: input.pendingCalls,
+        pendingToolCallCount,
+        pendingContinuation: pendingContinuation !== null,
+        lastText: input.lastText,
+        wallClockBudget: input.buildWallClockBudgetCloseoutSignal({
+          pendingCalls: input.pendingCalls,
+          pendingContinuation,
+        }),
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        sessionContext: buildRemainingPendingCallsSessionContext({
+          taskPrompt: input.taskPrompt,
+          messages: input.messages,
+        }),
+        toolTrace: input.toolTrace,
+        maxRounds: input.maxRounds,
+        usedToolCalls: input.usedToolCalls,
+        roundCount: input.roundCount,
+        evidenceAvailable: input.evidenceAvailable,
+        buildRoundLimitCloseoutSnapshot: input.buildRoundLimitCloseoutSnapshot,
+      },
       target,
     );
   }
