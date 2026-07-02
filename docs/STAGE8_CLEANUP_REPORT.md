@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `6c79d6f9d80a33c2ec1bbfa9265a4ee2793253b8`
+**Code HEAD before this docs-only report:** `78cae84ed1acc4e14d38d9f6d0ed12bbebae9852`
 **Date:** 2026-07-02
 
 ## Summary
@@ -33,6 +33,9 @@ could not move the normalizer without making the inline parity reference import 
   empty-call / pending-continuation gates, the wall-clock / round-limit
   precedence handoff to execution-budget snapshots, pending-call/session
   anti-loop closeout metadata, and post-execute completed-vs-timeout selection.
+  Pending closeout and post-execute closeout state-effect application now also
+  route through `CloseoutPolicyRegistry` application helpers; the adapter passes
+  the run-state target.
   The first natural-finish repair policies,
   `final_recovery_budget_closeout_repair`, `missing_approval_gate`, and
   the approval-state repair sequence through
@@ -277,6 +280,7 @@ application outside the terminal completion path.
 | `e610f14` | Move model-call-error forced-round result trimming into `TerminalCloseoutController`; adapter returns the raw forced-round execution result. |
 | `fa0b83e` | Move natural-finish repair hook-result application into `RepairPolicyRegistry`; adapter keeps precedence selection but no longer assembles repair messages/markers. |
 | `6c79d6f` | Move read-only permission-query and awaiting-context no-tool suppression hook-result application into `PermissionPolicy` / neutral TaskFacts owners. |
+| `78cae84` | Move pending closeout and post-execute closeout state-effect application into `CloseoutPolicyRegistry`; adapter passes the run-state target. |
 
 ## Current Extracted Implementation
 
@@ -312,7 +316,8 @@ Real implementation now exists in:
   completed-over-timeout precedence, plus terminal `onTerminate` reasonLines and
   metadata decisions for pending closeout passthrough, completed session
   closeout, sub-agent timeout closeout, round-limit closeout, and generic
-  closeout fallback.
+  closeout fallback, plus pending closeout and post-execute closeout
+  state-effect application through injected targets.
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
   repair policies: `final_recovery_budget_closeout_repair`,
@@ -465,9 +470,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 18 / 18 |
-| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 21 / 21 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 171 / 171 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 28 / 28 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 173 / 173 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -522,7 +526,8 @@ Stage 8 boundaries/slices are now real:
   `CloseoutPolicyRegistry`, using shared session anti-loop detectors where
   needed.
 - post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
-  selection routes through `CloseoutPolicyRegistry`.
+  selection and state-effect application route through `CloseoutPolicyRegistry`;
+  the adapter passes the run-state target.
 - terminal closeout reasonLines and metadata construction routes through
   `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
   passthrough, completed session closeout, sub-agent timeout closeout,
