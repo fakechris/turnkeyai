@@ -2669,12 +2669,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // (toolLoopCloseout/result/reduction/memoryFlushes/completed signals).
     const runState = createEngineRunState<RoleEngineRunStateValues>();
     const toolTrace: NativeToolRoundTrace[] = [];
-    const snapshotEvidence = (messages: LLMMessage[]) =>
-      evidenceLedger.snapshot({
-        taskPrompt: packet.taskPrompt,
-        messages,
-        toolTrace,
-      });
+    const runEvidence = evidenceLedger.forRun({
+      taskPrompt: packet.taskPrompt,
+      toolTrace,
+    });
     const observer = createEngineRunObserver(toolTrace, {
       now: () => this.clock.now(),
       recordToolProgress: (call, progress) =>
@@ -2866,7 +2864,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           const roundCount = toolTrace.length;
           const usedToolCalls = countNativeToolCalls(toolTrace);
-          const stateEvidence = snapshotEvidence(state.messages);
+          const stateEvidence = runEvidence.snapshot(state.messages);
           return closeoutPolicy.applyPendingCallsCloseout(
             {
               pendingCalls: calls,
@@ -3121,7 +3119,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // read the signal onAfterExecute stashed on `run`.
           const usedToolCalls = countNativeToolCalls(toolTrace);
           const roundCount = toolTrace.length;
-          const terminateEvidence = snapshotEvidence(state.messages);
+          const terminateEvidence = runEvidence.snapshot(state.messages);
           const evidenceAvailable = terminateEvidence.usableEvidence;
           const pendingCloseout = runState.pendingCloseout();
           const completedSessionSignal = runState.completedSession();
@@ -3314,11 +3312,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           const errorEvidence = aborted
             ? { usableEvidence: false }
-            : evidenceLedger.snapshot({
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-                toolTrace,
-              });
+            : runEvidence.snapshot(state.messages);
           return terminalCloseout.completeModelCallErrorFlow(
             {
               aborted,
@@ -3443,7 +3437,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       taskPrompt: packet.taskPrompt,
       messages: epilogueMessages,
       toolTrace,
-      evidenceText: snapshotEvidence(epilogueMessages).toolTraceResultContent,
+      evidenceText:
+        runEvidence.snapshot(epilogueMessages).toolTraceResultContent,
     });
     finalText = finalResult.text;
 

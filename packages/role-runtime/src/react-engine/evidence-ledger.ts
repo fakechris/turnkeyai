@@ -38,6 +38,11 @@ export interface EvidenceLedgerInput {
   toolTrace: NativeToolRoundTrace[];
 }
 
+export interface EvidenceLedgerRunInput {
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+}
+
 export interface EvidenceSnapshot {
   sourceBoundedEvidenceText: string;
   completedSessionEvidenceText: string;
@@ -54,9 +59,17 @@ export interface EvidenceRoundSnapshot {
   timeoutSignal: ReturnType<typeof findSubAgentToolTimeout>;
 }
 
+export interface EvidenceRunSnapshotter {
+  snapshot(messages: LLMMessage[]): EvidenceSnapshot;
+}
+
 export class EvidenceLedger {
   snapshot(input: EvidenceLedgerInput): EvidenceSnapshot {
     return buildEvidenceSnapshot(input);
+  }
+
+  forRun(input: EvidenceLedgerRunInput): EvidenceRunSnapshotter {
+    return buildEvidenceRunSnapshotter(input);
   }
 
   currentRound(results: RoleToolExecutionResult[]): EvidenceRoundSnapshot {
@@ -110,6 +123,19 @@ export function buildEvidenceSnapshot(
     ]
       .filter((text) => text.trim().length > 0)
       .join("\n\n"),
+  };
+}
+
+export function buildEvidenceRunSnapshotter(
+  input: EvidenceLedgerRunInput,
+): EvidenceRunSnapshotter {
+  return {
+    snapshot: (messages) =>
+      buildEvidenceSnapshot({
+        taskPrompt: input.taskPrompt,
+        messages,
+        toolTrace: input.toolTrace,
+      }),
   };
 }
 

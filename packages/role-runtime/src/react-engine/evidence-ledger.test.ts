@@ -129,6 +129,43 @@ test("EvidenceLedger class returns the same snapshot contract", () => {
   assert.equal(snapshot.usableEvidence, true);
 });
 
+test("EvidenceLedger binds run snapshot inputs while preserving live tool trace reads", () => {
+  const ledger = createEvidenceLedger();
+  const toolTrace: NativeToolRoundTrace[] = [];
+  const runEvidence = ledger.forRun({
+    taskPrompt: "Summarize source evidence.",
+    toolTrace,
+  });
+
+  assert.equal(
+    runEvidence.snapshot([
+      { role: "user", content: "Use the latest source result." },
+    ]).usableEvidence,
+    false,
+  );
+
+  toolTrace.push({
+    round: 1,
+    calls: [],
+    results: [
+      result({
+        toolName: "web_fetch",
+        content: "Source evidence added after the binder was created.",
+      }),
+    ],
+  });
+
+  const snapshot = runEvidence.snapshot([
+    { role: "user", content: "Use the latest source result." },
+  ]);
+
+  assert.equal(snapshot.usableEvidence, true);
+  assert.match(
+    snapshot.toolTraceResultContent,
+    /Source evidence added after the binder was created/,
+  );
+});
+
 test("EvidenceLedger snapshots approval wait-timeout runtime evidence", () => {
   const snapshot = buildEvidenceSnapshot({
     taskPrompt: "Close out pending approval.",
