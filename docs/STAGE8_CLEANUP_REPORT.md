@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `b17d155c1da4d5382cb1b258199b217e8718d1e1`
+**Code HEAD before this docs-only report:** `c6e555b36ebae6c2d7219d43ad76ceefa4534709`
 **Date:** 2026-07-02
 
 ## Summary
@@ -139,7 +139,9 @@ could not move the normalizer without making the inline parity reference import 
   timeout probe continuation decisions, and incomplete approved-browser session
   continuation, independent evidence-stream continuation, and forced pending
   approval `permission_result` continuation and its forced tool-round
-  application boundary, plus post-execute missing approval-gate repair handoff.
+  application boundary, plus post-execute missing approval-gate repair handoff,
+  plus typed hook-result application for generic `continue` actions and
+  repair-marker recording callbacks.
   The timeout predicates, session detectors,
   permission-applied detector, permission-result detector, evidence-stream
   detector, missing approval-gate repair detector/prompt, and continuation
@@ -264,6 +266,7 @@ application outside the terminal completion path.
 | `87f5244` | Move model-call-error abort / forced pending-approval continuation / fallback selection into `TerminalCloseoutController`; adapter executes only the returned forced tool round. |
 | `16c90e2` | Move model-call-error hook-result application into `TerminalCloseoutController`; adapter supplies only the forced-round executor callback. |
 | `b17d155` | Move post-execute forced continuation application into `ContinuationController`; adapter supplies only the forced-round executor callback. |
+| `c6e555b` | Move generic continuation action hook-result application into `ContinuationController`; adapter consumes typed hook results and supplies only marker recording callbacks. |
 
 ## Current Extracted Implementation
 
@@ -369,7 +372,9 @@ Real implementation now exists in:
   continuation, independent evidence-stream continuation, and forced pending
   approval `permission_result` continuation, plus forced tool-round application
   into hook `{ messages }` continuations through an injected executor, plus
-  post-execute missing approval-gate repair continuation.
+  post-execute missing approval-gate repair continuation, plus typed
+  `continue` action hook-result application with repair-marker recording
+  callback support.
 - `task-facts-shared.ts` for requested table-column inference, markdown table
   header matching, provider search/pricing evidence-column inference,
   provider-support-schema request/result detection, missing requested-column
@@ -444,8 +449,8 @@ All gates below passed on the current code before the report update:
 | --- | --- |
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 18 / 18 |
-| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 20 / 20 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 169 / 169 |
+| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 21 / 21 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 170 / 170 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -699,6 +704,10 @@ Stage 8 boundaries/slices are now real:
 - post-execute missing approval-gate repair continuation routes through
   `ContinuationController`, returning the repair marker as typed action data while
   the adapter applies it to the idempotency ledger.
+- post-execute `continue` action hook-result application now routes through
+  `ContinuationController`, covering timeout continuations/probes, incomplete
+  approved-browser continuation, independent evidence-stream continuation, and
+  missing approval-gate repair marker recording through an adapter callback.
 - completed product-signal dashboard URL extraction now lives in neutral shared
   code, removing the adapter-local duplicate dashboard regex tail.
 - browser/product-signal missing evidence repair detectors and repair prompt
