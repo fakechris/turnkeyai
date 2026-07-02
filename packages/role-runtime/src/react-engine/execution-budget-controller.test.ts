@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
+import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import { createExecutionBudgetController } from "./execution-budget-controller";
 
@@ -105,6 +105,45 @@ test("ExecutionBudgetController treats invalid per-round caps as no cap", () => 
 
   assert.equal(decision.executable, calls);
   assert.deepEqual(decision.rejected, []);
+});
+
+test("ExecutionBudgetController appends final tool-round warning only on the final active round", () => {
+  const controller = createExecutionBudgetController();
+  const messages: LLMMessage[] = [{ role: "user", content: "start" }];
+
+  assert.equal(
+    controller.applyFinalToolRoundWarning({
+      messages,
+      active: false,
+      round: 1,
+      maxRounds: 2,
+    }),
+    messages,
+  );
+  assert.equal(
+    controller.applyFinalToolRoundWarning({
+      messages,
+      active: true,
+      round: 0,
+      maxRounds: 2,
+    }),
+    messages,
+  );
+
+  const warned = controller.applyFinalToolRoundWarning({
+    messages,
+    active: true,
+    round: 1,
+    maxRounds: 2,
+  });
+
+  assert.notEqual(warned, messages);
+  assert.equal(warned.length, 2);
+  assert.equal(warned[1]?.role, "user");
+  assert.match(
+    String(warned[1]?.content),
+    /final allowed tool-use round \(2\)/,
+  );
 });
 
 test("ExecutionBudgetController serializes order-dependent tool batches", async () => {

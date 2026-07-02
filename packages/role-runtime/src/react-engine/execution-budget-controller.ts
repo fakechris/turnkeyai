@@ -1,5 +1,5 @@
 import type { ToolResult } from "@turnkeyai/agent-core/tool";
-import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
+import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import { shouldSerializeToolBatch } from "../react/predicates";
 import {
@@ -7,19 +7,29 @@ import {
   createToolExecutionSignal,
   isAbortError,
   resolveEffectiveToolLoopWallClockMs,
+  withFinalToolRoundWarning,
 } from "../tool-loop-shared";
 
 // Stage 8 engine cleanup — ExecutionBudgetController.
 //
-// Current authority: own the engine path's admission mechanics that are pure
-// functions of pending calls and configured caps:
+// Current authority: own the engine path's budget mechanics that are pure
+// functions of pending calls, model round counters, and configured caps:
+// - final-allowed tool-round warning injection;
 // - final-recovery pending-call truncation;
 // - per-round tool-call cap admission and synthetic skipped results.
+// - tool-batch execution concurrency, wall-clock signal setup, and per-call
+//   non-abort failure shaping.
 //
-// Later slices still need to move wall-clock checks, batching, and closeout
-// signal data. This module must not choose closeout reasons or synthesize text.
+// This module must not choose closeout reasons or synthesize terminal answers.
 export const EXECUTION_BUDGET_CONTROLLER_MODULE =
   "execution-budget-controller" as const;
+
+export interface FinalToolRoundWarningInput {
+  messages: LLMMessage[];
+  active: boolean;
+  round: number;
+  maxRounds: number;
+}
 
 export interface RecoveryToolBudget {
   maxToolCalls: number;
@@ -62,6 +72,14 @@ export interface RunToolBatchInput<
 }
 
 export class ExecutionBudgetController {
+  applyFinalToolRoundWarning(input: FinalToolRoundWarningInput): LLMMessage[] {
+    return withFinalToolRoundWarning(input.messages, {
+      active: input.active,
+      round: input.round,
+      maxRounds: input.maxRounds,
+    });
+  }
+
   truncateForRecoveryBudget(
     input: TruncateForRecoveryBudgetInput,
   ): LLMToolCall[] {
