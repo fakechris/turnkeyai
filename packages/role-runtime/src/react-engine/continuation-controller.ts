@@ -102,6 +102,17 @@ export interface ForcedPermissionResultInput {
   tools?: readonly ContinuationToolDefinition[];
 }
 
+type ForcedToolRoundAction = Extract<
+  EngineContinueAction,
+  { kind: "forced_tool_round" }
+>;
+
+export type ForcedToolRoundExecutor = (
+  input: ForcedToolRoundAction,
+) => Promise<{
+  messages: LLMMessage[];
+}>;
+
 export class ContinuationController {
   previewEmptyRoundContinuation(
     input: EmptyRoundContinuationInput,
@@ -391,6 +402,16 @@ export class ContinuationController {
       assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
       reason: "forced_pending_approval_wait_timeout_permission_result",
     };
+  }
+
+  async applyForcedToolRoundContinuation(
+    action: EngineContinueAction,
+    executeForcedRound: ForcedToolRoundExecutor,
+  ): Promise<{ messages: LLMMessage[] } | null> {
+    if (action.kind !== "forced_tool_round") {
+      return null;
+    }
+    return executeForcedRound(action);
   }
 }
 

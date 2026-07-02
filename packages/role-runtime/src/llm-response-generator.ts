@@ -3274,21 +3274,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 ? {}
                 : { tools: initialGatewayInput.tools }),
             });
-          if (forcedPermissionResult.kind !== "forced_tool_round") {
-            return null;
-          }
-          const forcedRound = await this.executeRuntimeForcedToolRound({
-            activation,
-            packet,
-            messages: state.messages,
-            toolTrace,
-            toolCalls: forcedPermissionResult.calls,
-            round: toolTrace.length + 1,
-            toolLoopStartedAtMs,
-            ...(signal ? { signal } : {}),
-            assistantText: forcedPermissionResult.assistantText,
-          });
-          return { messages: forcedRound.messages };
+          return continuation.applyForcedToolRoundContinuation(
+            forcedPermissionResult,
+            async (forcedRoundAction) => {
+              const forcedRound = await this.executeRuntimeForcedToolRound({
+                activation,
+                packet,
+                messages: state.messages,
+                toolTrace,
+                toolCalls: forcedRoundAction.calls,
+                round: toolTrace.length + 1,
+                toolLoopStartedAtMs,
+                ...(signal ? { signal } : {}),
+                assistantText: forcedRoundAction.assistantText,
+              });
+              return { messages: forcedRound.messages };
+            },
+          );
         },
         // Stage 5 PR2c closeout detection: mirror the inline post-execute
         // terminal closeouts. After a tool round runs, inspect the round's

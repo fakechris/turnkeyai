@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
+
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import { createContinuationController } from "./continuation-controller";
 
@@ -740,6 +742,43 @@ test("ContinuationController builds a forced pending approval permission_result 
   assert.match(
     action.kind === "forced_tool_round" ? action.assistantText : "",
     /Checking the pending approval result/,
+  );
+});
+
+test("ContinuationController applies a forced permission_result round as hook continuation", async () => {
+  const controller = createContinuationController();
+  const action =
+    controller.forcePendingApprovalWaitTimeoutPermissionResult({
+      taskPrompt: approvalWaitTimeoutTaskPrompt(),
+      toolTrace: pendingApprovalTrace(),
+      tools: [{ name: "permission_result" }],
+    });
+  const forcedMessages: LLMMessage[] = [
+    { role: "user", content: "original task" },
+    {
+      role: "tool",
+      name: "permission_result",
+      content: "pending",
+    } as LLMMessage,
+  ];
+  const executed: unknown[] = [];
+
+  assert.deepEqual(
+    await controller.applyForcedToolRoundContinuation(action, async (round) => {
+      executed.push(round);
+      return { messages: forcedMessages };
+    }),
+    { messages: forcedMessages },
+  );
+  assert.deepEqual(executed, [action]);
+  assert.equal(
+    await controller.applyForcedToolRoundContinuation(
+      { kind: "none" },
+      async () => {
+        throw new Error("should not execute");
+      },
+    ),
+    null,
   );
 });
 
