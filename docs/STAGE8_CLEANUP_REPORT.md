@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `2cc758b61752af0091e817d4c4cc7a5b7a3a670e`
+**Code HEAD before this docs-only report:** `8b8d2cabd3ae5f91c2c9dba34d3f3dc0fae7f5a9`
 **Date:** 2026-07-02
 
 ## Summary
@@ -33,10 +33,11 @@ could not move the normalizer without making the inline parity reference import 
   empty-call / pending-continuation gates, the wall-clock / round-limit
   precedence handoff to execution-budget snapshots, pending-call/session
   anti-loop closeout metadata, and post-execute completed-vs-timeout selection.
-  The first natural-finish repair policy, `final_recovery_budget_closeout_repair`,
-  now returns a typed resynthesis decision from
+  The first natural-finish repair policies,
+  `final_recovery_budget_closeout_repair`, `missing_approval_gate`, and
+  `pending_approval_wait_timeout_check`, now return typed decisions from
   `react-engine/repair-policy-registry.ts`; the adapter still applies the repair
-  marker and appended messages.
+  marker and appended messages at the original precedence points.
   The final allowed tool-round warning now routes through that controller while
   the warning text itself lives in neutral shared code used by inline and engine.
   Final-recovery budget parsing, prior-call counting, closeout reason lines, and
@@ -87,6 +88,8 @@ application, and adapter-side application of controller actions.
 | `93bdaf8` | Extract repeated pending-call closeout policies into `CloseoutPolicyRegistry`; share session inspection/continuation anti-loop detectors. |
 | `df4012c` | Extract post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout selection into `CloseoutPolicyRegistry`. |
 | `2cc758b` | Extract final-recovery budget natural-finish repair selection into `RepairPolicyRegistry`; add focused repair registry tests. |
+| `581ba2e` | Extract missing approval-gate natural-finish repair selection into `RepairPolicyRegistry`; preserve browser-evidence precedence via explicit enabled-policy windows. |
+| `8b8d2ca` | Extract pending approval wait-timeout check repair selection into `RepairPolicyRegistry`; move its predicate/prompt into neutral shared code. |
 
 ## Current Extracted Implementation
 
@@ -118,9 +121,12 @@ Real implementation now exists in:
   completed-over-timeout precedence.
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
-  repair policy, `final_recovery_budget_closeout_repair`, including exhausted
-  final-recovery budget gating, bounded-closeout skip behavior, repair marker
-  idempotency, prompt construction, and the tool-free resynthesis decision.
+  repair policies: `final_recovery_budget_closeout_repair`,
+  `missing_approval_gate`, and `pending_approval_wait_timeout_check`, including
+  exhausted final-recovery budget gating, bounded-closeout skip behavior,
+  approval-gate repair gating, approval wait-timeout permission-result repair
+  gating, repair marker idempotency, prompt construction, and typed
+  tool-free/tool-round resynthesis decisions.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -135,13 +141,14 @@ Real implementation now exists in:
   detector/prompt helpers, independent evidence-stream detector/prompt helpers,
   permission-applied evidence checks, permission-result status readers, forced
   permission-result call construction, missing approval-gate repair predicate
-  and prompt construction, cancelled-session closeout detection, pseudo
-  tool-call markup detection, repeated session inspection/continuation
-  detectors, and completed browser-session evidence checks.
+  and prompt construction, pending approval wait-timeout check repair predicate
+  and prompt construction, cancelled-session closeout detection, pseudo tool-call
+  markup detection, repeated session inspection/continuation detectors, and
+  completed browser-session evidence checks.
 
 Still shell/deferred or partial:
 
-- `repair-policy-registry.ts` policies after `final_recovery_budget_closeout_repair`
+- `repair-policy-registry.ts` policies after `pending_approval_wait_timeout_check`
 - `completed-closeout-controller.ts`
 - `evidence-ledger.ts`
 - `task-facts.ts`
@@ -153,14 +160,14 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 5 / 5 |
+| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 10 / 10 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 84 / 84 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 89 / 89 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
-| `npm run parity:inline` | 233 / 233, 0 fail |
-| `npm run parity:engine` | 233 / 233, 0 fail, 0 incomplete after individual recovery; 10 chunks recovered individually |
+| `npm run parity:inline` | 262 / 262, 0 fail |
+| `npm run parity:engine` | 269 / 269, 0 fail, 0 incomplete after individual recovery; 12 chunks recovered individually |
 
 Note: the parity runner's discovered count varies by mode/run because the default
 runner uses chunk recovery and discovery filters; the invariant preserved here is
@@ -169,8 +176,8 @@ zero failures and zero incomplete tests after recovery.
 ## Is The Adapter Thin?
 
 No. `runViaReActEngine` still begins at
-`packages/role-runtime/src/llm-response-generator.ts:2504` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that twenty-four
+`packages/role-runtime/src/llm-response-generator.ts:2506` and remains the composition
+root plus several policy-heavy hook bodies. The main improvement is that twenty-six
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -211,6 +218,12 @@ Stage 8 boundaries/slices are now real:
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
+- missing approval-gate natural-finish repair selection routes through
+  `RepairPolicyRegistry`, with a transitional enabled-policy window preserving
+  the still-adapter-owned browser-evidence precedence.
+- pending approval wait-timeout check repair selection routes through
+  `RepairPolicyRegistry`, using neutral shared predicate and prompt helpers while
+  the adapter still appends the repair marker.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -244,7 +257,7 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue extracting remaining repair decisions after
-  `final_recovery_budget_closeout_repair`, then completed-closeout, evidence
+  `pending_approval_wait_timeout_check`, then completed-closeout, evidence
   ledger, task facts, terminal closeout synthesis/application, and final adapter
   thinning.
 
