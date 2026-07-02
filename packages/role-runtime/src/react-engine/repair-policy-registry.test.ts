@@ -50,6 +50,8 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
     "approval_wait_timeout_closeout",
     "approval_wait_timeout_local_closeout",
     "incomplete_approved_browser_action",
+    "missing_requested_table_columns",
+    "extraneous_provider_table_schema",
   ]);
 });
 
@@ -745,6 +747,125 @@ test("RepairPolicyRegistry skips incomplete approved-browser-action repair befor
       taskPrompt:
         "Approval required for browser.form.submit dry-run. Use the browser after native approval.",
       toolTrace: [],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns missing requested table columns repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["missing_requested_table_columns"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: ["| provider |", "| --- |", "| A |"].join("\n"),
+    taskPrompt: "table: provider, evidence URL",
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "missing_requested_table_columns");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.equal(decision?.consumesRound, undefined);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /did not preserve the table columns explicitly requested/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /provider \| evidence URL/);
+});
+
+test("RepairPolicyRegistry does not repeat missing requested table columns repair after marker", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["missing_requested_table_columns"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: ["| provider |", "| --- |", "| A |"].join("\n"),
+    taskPrompt: "table: provider, evidence URL",
+  });
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["missing_requested_table_columns"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
+      resultText: ["| provider |", "| --- |", "| A |"].join("\n"),
+      taskPrompt: "table: provider, evidence URL",
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry skips missing requested table columns repair when table preserves headers", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["missing_requested_table_columns"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText: [
+        "| provider | evidence URL |",
+        "| --- | --- |",
+        "| A | https://example.com |",
+      ].join("\n"),
+      taskPrompt: "table: provider, evidence URL",
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns extraneous provider table schema repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["extraneous_provider_table_schema"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: [
+      "| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+      "| --- | --- | --- | --- |",
+      "| A | 未验证 | 未验证 | 未验证 |",
+    ].join("\n"),
+    taskPrompt:
+      "Compare pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead.",
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "extraneous_provider_table_schema");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.equal(decision?.consumesRound, undefined);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /introduced provider\/search\/model-support columns/i,
+  );
+});
+
+test("RepairPolicyRegistry skips extraneous provider table schema when requested", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["extraneous_provider_table_schema"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText: [
+        "| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+        "| --- | --- | --- | --- |",
+        "| A | 未验证 | 未验证 | 未验证 |",
+      ].join("\n"),
+      taskPrompt:
+        "Compare provider options for DeepSeek R1 search/web_search support, input price, and output price.",
     }),
     null,
   );

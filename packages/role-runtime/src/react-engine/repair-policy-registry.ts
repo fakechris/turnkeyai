@@ -5,6 +5,8 @@
 // that decision to the ReAct hook by appending messages/markers. This module
 // does not execute tools, record progress, synthesize answers, or perform final
 // visibility appenders.
+import type { RoleActivationInput } from "@turnkeyai/core-types/team";
+
 import {
   buildApprovalWaitTimeoutCloseoutRepairPrompt,
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
@@ -23,8 +25,19 @@ import {
   shouldRepairPrematurePendingApprovalFinal,
   shouldRepairStaleDeniedApproval,
   shouldRepairStalePendingApproval,
+  sliceUtf8,
 } from "../tool-loop-shared";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  buildOriginalRequestTableColumnContext,
+  buildRequestedTableColumnActivationContext,
+  explicitlyRequestsProviderSupportSchema,
+  markdownTableHasExactRequestedColumns,
+  normalizeColumnDetectionText,
+  requestedTableColumnMessageContext,
+  resolveRequestedTableColumns,
+  resultIntroducesProviderSupportSchema,
+} from "./task-facts";
 import type { LLMMessage, ReActToolChoice } from "./types";
 
 export const REPAIR_POLICY_REGISTRY_MODULE = "repair-policy-registry" as const;
@@ -39,6 +52,8 @@ export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "approval_wait_timeout_closeout",
   "approval_wait_timeout_local_closeout",
   "incomplete_approved_browser_action",
+  "missing_requested_table_columns",
+  "extraneous_provider_table_schema",
 ] as const;
 
 export type EngineNaturalFinishRepairPolicyId =
@@ -50,6 +65,7 @@ export interface FinalRecoveryBudgetRepairSignal {
 }
 
 export interface NaturalFinishRepairInput {
+  activation?: RoleActivationInput;
   enabledPolicies?: readonly EngineNaturalFinishRepairPolicyId[];
   finalRecoveryBudget: FinalRecoveryBudgetRepairSignal | null;
   messages: LLMMessage[];
@@ -130,6 +146,22 @@ export type NaturalFinishRepairDecision =
       repairPrompt: string;
       forceToolChoice: { name: "sessions_spawn" };
       consumesRound: true;
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "missing_requested_table_columns";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: "none";
+      consumesRound?: false;
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "extraneous_provider_table_schema";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: "none";
+      consumesRound?: false;
     };
 
 export interface RepairPolicyRegistry {
@@ -208,6 +240,20 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
         case "incomplete_approved_browser_action": {
           const decision =
             evaluateIncompleteApprovedBrowserActionRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "missing_requested_table_columns": {
+          const decision = evaluateMissingRequestedTableColumnsRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "extraneous_provider_table_schema": {
+          const decision = evaluateExtraneousProviderTableSchemaRepair(input);
           if (decision) {
             return decision;
           }
@@ -464,6 +510,191 @@ function evaluateIncompleteApprovedBrowserActionRepair(
     forceToolChoice: { name: "sessions_spawn" },
     consumesRound: true,
   };
+}
+
+function evaluateMissingRequestedTableColumnsRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (
+    !shouldRepairMissingRequestedTableColumns({
+      activation: input.activation,
+      taskPrompt: input.taskPrompt ?? "",
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      resultText: input.resultText,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "missing_requested_table_columns",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildMissingRequestedTableColumnsRepairPrompt({
+      activation: input.activation,
+      taskPrompt: input.taskPrompt ?? "",
+      messages: input.messages,
+      resultText: input.resultText,
+    }),
+    forceToolChoice: "none",
+  };
+}
+
+function evaluateExtraneousProviderTableSchemaRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (
+    !shouldRepairExtraneousProviderTableSchema({
+      activation: input.activation,
+      taskPrompt: input.taskPrompt ?? "",
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      resultText: input.resultText,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "extraneous_provider_table_schema",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildExtraneousProviderTableSchemaRepairPrompt({
+      taskPrompt: input.taskPrompt ?? "",
+      resultText: input.resultText,
+    }),
+    forceToolChoice: "none",
+  };
+}
+
+function shouldRepairMissingRequestedTableColumns(input: {
+  activation: RoleActivationInput | undefined;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  resultText: string;
+}): boolean {
+  if (hasMissingRequestedTableColumnsRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  const requestedColumns = resolveRequestedTableColumns([
+    input.taskPrompt,
+    ...buildRequestedTableColumnActivationContext(input.activation),
+    ...requestedTableColumnMessageContext(input.messages),
+  ]);
+  if (requestedColumns.length === 0) return false;
+  const normalizedResult = normalizeColumnDetectionText(input.resultText);
+  if (
+    !markdownTableHasExactRequestedColumns(input.resultText, requestedColumns)
+  ) {
+    return true;
+  }
+  return requestedColumns.some(
+    (column) => !normalizedResult.includes(normalizeColumnDetectionText(column)),
+  );
+}
+
+function hasMissingRequestedTableColumnsRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      messageContentText(message.content).includes(
+        "did not preserve the table columns explicitly requested",
+      ),
+  );
+}
+
+function buildMissingRequestedTableColumnsRepairPrompt(input: {
+  activation: RoleActivationInput | undefined;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  resultText: string;
+}): string {
+  const requestedColumns = resolveRequestedTableColumns([
+    input.taskPrompt,
+    ...buildRequestedTableColumnActivationContext(input.activation),
+    ...requestedTableColumnMessageContext(input.messages),
+  ]);
+  return [
+    "The previous final answer did not preserve the table columns explicitly requested by the original user/task.",
+    `Required table header columns: ${requestedColumns.join(" | ")}`,
+    "Rewrite the final answer now without calling tools.",
+    "The main table must include every required column above. Do not rename columns, transpose the table into Slot x Provider form, merge columns, or move any requested column into prose.",
+    "For any cell not directly supported by source evidence already present, write 未验证.",
+    "If any required goal slot remains unverified, mark the answer as blocked/partial and list the missing slots briefly after the table.",
+  ].join("\n");
+}
+
+function shouldRepairExtraneousProviderTableSchema(input: {
+  activation: RoleActivationInput | undefined;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  resultText: string;
+}): boolean {
+  if (hasExtraneousProviderTableSchemaRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!resultIntroducesProviderSupportSchema(input.resultText)) {
+    return false;
+  }
+  const originalContext = [
+    input.taskPrompt,
+    ...buildOriginalRequestTableColumnContext(input.activation),
+  ].join("\n");
+  const originalRequestedColumns = resolveRequestedTableColumns([
+    originalContext,
+  ]);
+  if (
+    originalRequestedColumns.length > 0 &&
+    explicitlyRequestsProviderSupportSchema(originalContext)
+  ) {
+    return false;
+  }
+  return !explicitlyRequestsProviderSupportSchema(originalContext);
+}
+
+function hasExtraneousProviderTableSchemaRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      messageContentText(message.content).includes(
+        "introduced provider/search/model-support columns that were not requested",
+      ),
+  );
+}
+
+function buildExtraneousProviderTableSchemaRepairPrompt(input: {
+  taskPrompt: string;
+  resultText: string;
+}): string {
+  return [
+    "Runtime correction: final answer introduced provider/search/model-support columns that were not requested by the original task.",
+    "Do not call tools. Rewrite the final answer using only the evidence already present.",
+    "Remove the provider/search_web_search/target-model/input-price/output-price table schema unless those exact dimensions were requested by the original task.",
+    "Use the original task dimensions instead: pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead when those are requested.",
+    "Do not mark the whole mission blocked merely because provider support, target-model support, search/web_search support, or token input/output pricing are absent when the original task did not ask for them.",
+    "Keep residual risk visible only for source-bounded gaps actually relevant to the original task.",
+    `Original task:\n${sliceUtf8(input.taskPrompt, 1400)}`,
+    `Previous final answer:\n${sliceUtf8(input.resultText, 1400)}`,
+  ].join("\n");
+}
+
+function messageContentText(content: LLMMessage["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .map((block) => {
+      if (block.type === "tool_result") return block.content;
+      if (block.type === "text") return block.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function createRepairPolicyRegistry(): RepairPolicyRegistry {
