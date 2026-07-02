@@ -68,6 +68,7 @@ import {
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   buildPrematurePendingApprovalRepairPrompt,
+  buildStalePendingApprovalRepairPrompt,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
   createToolExecutionSignal,
@@ -146,11 +147,13 @@ import {
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
+  shouldRepairStalePendingApproval,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
   taskAllowsPermissionTools,
   taskPromptRequestsApprovalWaitTimeoutCloseout,
+  taskPromptIsAppliedApprovalBrowserContinuation,
   taskPromptLooksLikeSourceCheckContinuation,
   taskPromptSaysApprovalAlreadyApplied,
   taskRequestsSessionTranscript,
@@ -3605,14 +3608,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               consumesRound: prematurePendingApprovalRepair.consumesRound,
             };
           }
+          const stalePendingApprovalRepair = repairPolicy.evaluateNaturalFinish({
+            enabledPolicies: ["stale_pending_approval"],
+            finalRecoveryBudget: null,
+            taskPrompt: packet.taskPrompt,
+            resultText: state.lastText,
+            messages: state.messages,
+            repairMarkers,
+            toolTrace,
+          });
           if (
-            shouldRepairStalePendingApproval({
-              taskPrompt: packet.taskPrompt,
-              resultText: state.lastText,
-              messages: state.messages,
-              repairMarkers,
-              toolTrace,
-            })
+            stalePendingApprovalRepair?.policyId === "stale_pending_approval"
           ) {
             return {
               messages: [
@@ -3620,11 +3626,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildStalePendingApprovalRepairPrompt(),
+                  stalePendingApprovalRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: { name: "sessions_spawn" },
-              consumesRound: true,
+              forceToolChoice: stalePendingApprovalRepair.forceToolChoice,
+              consumesRound: stalePendingApprovalRepair.consumesRound,
             };
           }
           if (
@@ -6610,30 +6616,6 @@ function recordRepairPrompt(
   return message;
 }
 
-function shouldRepairStalePendingApproval(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  if (hasStalePendingApprovalRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (
-    !mentionsPendingApproval(input.resultText) ||
-    (!requestsApprovalGatedBrowserAction(input.taskPrompt) &&
-      !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt))
-  ) {
-    return false;
-  }
-  return (
-    hasPermissionAppliedEvidence(input.toolTrace) ||
-    taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
-    taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
-  );
-}
-
 function shouldRepairApprovalWaitTimeoutCloseout(input: {
   taskPrompt: string;
   resultText: string;
@@ -6720,15 +6702,6 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   return matchesAny(
     input.resultText,
     INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS,
-  );
-}
-
-function taskPromptIsAppliedApprovalBrowserContinuation(taskPrompt: string): boolean {
-  return (
-    taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
-    /\b(?:browser\.form\.submit|approved scoped action|approved point|operator approved|call sessions_spawn|agent_id="?browser"?|browser result|form submission|dry[- ]run)\b/i.test(
-      taskPrompt,
-    )
   );
 }
 
@@ -7571,16 +7544,6 @@ function looksLikeCompleteApprovalWaitTimeoutCloseout(text: string): boolean {
   );
 }
 
-function hasStalePendingApprovalRepairPrompt(messages: LLMMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: approval already applied",
-      ),
-  );
-}
-
 function hasApprovalWaitTimeoutCloseoutRepairPrompt(
   messages: LLMMessage[],
 ): boolean {
@@ -7707,14 +7670,6 @@ function hasMissingBrowserEvidenceDimensionsRepairPrompt(
         "Runtime correction: final answer omitted requested browser evidence dimensions",
       ),
   );
-}
-
-function buildStalePendingApprovalRepairPrompt(): string {
-  return [
-    "Runtime correction: approval already applied, but the assistant tried to finalize with a pending-approval explanation.",
-    "Do not wait again. Continue from the applied approval point now.",
-    "Use native tools for the approved scoped action, preferably sessions_spawn with agent_id=browser, then summarize the concrete browser result.",
-  ].join("\n");
 }
 
 function buildApprovalWaitTimeoutCloseoutRepairPrompt(): string {

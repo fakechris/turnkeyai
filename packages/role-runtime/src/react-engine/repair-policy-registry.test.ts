@@ -12,6 +12,7 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
     "missing_approval_gate",
     "pending_approval_wait_timeout_check",
     "premature_pending_approval",
+    "stale_pending_approval",
   ]);
 });
 
@@ -355,6 +356,76 @@ test("RepairPolicyRegistry skips premature pending-approval repair when task all
           results: [],
         },
       ],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns stale pending-approval repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["stale_pending_approval"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending, so the browser worker cannot submit.",
+    taskPrompt:
+      "Runtime permission cache already applied. Continue from the approved scoped action browser.form.submit dry-run by calling sessions_spawn with agent_id=browser.",
+    toolTrace: [],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "stale_pending_approval");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.deepEqual(decision?.forceToolChoice, { name: "sessions_spawn" });
+  assert.equal(decision?.consumesRound, true);
+  assert.match(decision?.repairPrompt ?? "", /approval already applied/i);
+});
+
+test("RepairPolicyRegistry does not repeat stale pending-approval repair after marker", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["stale_pending_approval"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending, so the browser worker cannot submit.",
+    taskPrompt:
+      "Runtime permission cache already applied. Continue from the approved scoped action browser.form.submit dry-run by calling sessions_spawn with agent_id=browser.",
+    toolTrace: [],
+  });
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["stale_pending_approval"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      resultText: "Approval is still pending, so the browser worker cannot submit.",
+      taskPrompt:
+        "Runtime permission cache already applied. Continue from the approved scoped action browser.form.submit dry-run by calling sessions_spawn with agent_id=browser.",
+      toolTrace: [],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry skips stale pending-approval repair without applied evidence", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["stale_pending_approval"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText: "Approval is still pending.",
+      taskPrompt:
+        "Approval required for browser.form.submit dry-run. Use the browser after native approval.",
+      toolTrace: [],
     }),
     null,
   );

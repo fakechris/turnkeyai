@@ -1280,6 +1280,61 @@ export function buildPrematurePendingApprovalRepairPrompt(): string {
   ].join("\n");
 }
 
+export function shouldRepairStalePendingApproval(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: readonly LLMMessage[];
+  repairMarkers: readonly LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasStalePendingApprovalRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (
+    !mentionsPendingApproval(input.resultText) ||
+    (!requestsApprovalGatedBrowserAction(input.taskPrompt) &&
+      !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt))
+  ) {
+    return false;
+  }
+  return (
+    hasPermissionAppliedEvidence(input.toolTrace) ||
+    taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
+    taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
+  );
+}
+
+function hasStalePendingApprovalRepairPrompt(
+  messages: readonly LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval already applied",
+      ),
+  );
+}
+
+export function taskPromptIsAppliedApprovalBrowserContinuation(
+  taskPrompt: string,
+): boolean {
+  return (
+    taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
+    /\b(?:browser\.form\.submit|approved scoped action|approved point|operator approved|call sessions_spawn|agent_id="?browser"?|browser result|form submission|dry[- ]run)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+export function buildStalePendingApprovalRepairPrompt(): string {
+  return [
+    "Runtime correction: approval already applied, but the assistant tried to finalize with a pending-approval explanation.",
+    "Do not wait again. Continue from the applied approval point now.",
+    "Use native tools for the approved scoped action, preferably sessions_spawn with agent_id=browser, then summarize the concrete browser result.",
+  ].join("\n");
+}
+
 export function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input: {
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];
