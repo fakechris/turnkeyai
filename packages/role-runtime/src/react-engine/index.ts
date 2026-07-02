@@ -22,6 +22,7 @@ export * from "./continuation-controller";
 export * from "./closeout-policy-registry";
 export * from "./repair-policy-registry";
 export * from "./completed-closeout-controller";
+export * from "./terminal-closeout-controller";
 export * from "./evidence-ledger";
 export * from "./task-facts";
 export * from "./legacy-text-detectors";

@@ -251,6 +251,7 @@ import {
   createEngineRunObserver,
   createPermissionPolicy,
   createRepairPolicyRegistry,
+  createTerminalCloseoutController,
   type DefaultEngineRunStateValues,
   finalizeEngineAnswer,
   normalizeEngineToolCalls,
@@ -2629,6 +2630,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const closeoutPolicy = createCloseoutPolicyRegistry();
     const repairPolicy = createRepairPolicyRegistry();
     const completedCloseout = createCompletedCloseoutController();
+    const terminalCloseout = createTerminalCloseoutController();
     const evidenceLedger = createEvidenceLedger();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
@@ -3842,30 +3844,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // is built DETERMINISTICALLY (no model synthesis), so this short-circuits the
           // standard reasonLines + generateFinalAfterToolRoundLimit path below.
           if (reason === "tool_evidence_fallback") {
-            const fallbackCloseout: ToolLoopCloseoutMetadata = {
-              reason: "tool_evidence_fallback",
+            const fallback = terminalCloseout.buildApprovalWaitTimeoutFallback({
+              selection,
+              packet,
               maxRounds,
               toolCallCount: countNativeToolCalls(toolTrace),
               roundCount: toolTrace.length,
-              evidenceAvailable: true,
-            };
-            const fallbackResult = maybeRedactForbiddenLocalUrls({
-              result: buildApprovalWaitTimeoutLocalEvidenceCloseout({
-                selection,
-                evidenceText: snapshotEvidence(state.messages)
-                  .approvalWaitTimeoutRuntimeEvidence,
-                error: new Error(
-                  "approval wait-timeout repair omitted required pending evidence",
-                ),
-              }),
-              packet,
+              evidenceText: snapshotEvidence(state.messages)
+                .approvalWaitTimeoutRuntimeEvidence,
+              error: new Error(
+                "approval wait-timeout repair omitted required pending evidence",
+              ),
             });
-            runState.recordToolLoopCloseout(fallbackCloseout);
-            runState.recordCloseoutResult(fallbackResult);
+            runState.recordToolLoopCloseout(fallback.closeout);
+            runState.recordCloseoutResult(fallback.result);
             return {
-              text: fallbackResult.text,
-              ...(fallbackResult.stopReason
-                ? { stopReason: fallbackResult.stopReason }
+              text: fallback.result.text,
+              ...(fallback.result.stopReason
+                ? { stopReason: fallback.result.stopReason }
                 : {}),
             };
           }
@@ -3923,10 +3919,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // recover from, so append it to the synthesis context (mirrors inline
           // :1032-1038). agent-core has not yet appended the current assistant
           // message to state.messages when this pre-execute closeout fires.
-          const synthesisMessages =
-            reason === "pseudo_tool_call"
-              ? [...state.messages, { role: "assistant" as const, content: state.lastText }]
-              : state.messages;
+          const synthesisMessages = terminalCloseout.buildSynthesisMessages({
+            reason: reason as EngineCloseoutReason,
+            messages: state.messages,
+            lastText: state.lastText,
+          });
           const generated = await this.generateFinalAfterToolRoundLimit({
             activation,
             packet,
@@ -4021,10 +4018,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             if (generated.memoryFlush) {
               runState.recordMemoryFlush(generated.memoryFlush);
             }
-            closeoutResult =
-              reason === "sub_agent_timeout"
-                ? maybeAppendTimeoutContinuationVisibility(generated.result)
-                : generated.result;
+            closeoutResult = terminalCloseout.finalizeGeneratedResult({
+              reason: reason as EngineCloseoutReason,
+              result: generated.result,
+            });
           }
           // Reason-gated, matching inline: ONLY completed_sub_agent_final is sticky
           // (`??=`, inline :1729) — the completed branch set it early so an S10 re-armed
