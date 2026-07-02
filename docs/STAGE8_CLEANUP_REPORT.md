@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `09f67bb1c9df0eb44b409cfbc200cd20924ff2bf`
+**Code HEAD before this docs-only report:** `cc24757586ac99ff1cc2f5f7d43e4447f27a26f8`
 **Date:** 2026-07-02
 
 ## Summary
@@ -76,8 +76,8 @@ could not move the normalizer without making the inline parity reference import 
   closeout fallback decisions. The adapter still owns non-completed terminal
   model synthesis/result application and all run-state recording.
   Requested table-column and provider-support-schema task facts now live in
-  `react-engine/task-facts.ts` and are shared by the adapter and repair
-  registry.
+  neutral `task-facts-shared.ts`; `react-engine/task-facts.ts` is now a
+  compatibility wrapper for engine imports.
   The final allowed tool-round warning now routes through that controller while
   the warning text itself lives in neutral shared code used by inline and engine.
   Final-recovery budget parsing, prior-call counting, closeout reason lines, and
@@ -95,11 +95,13 @@ could not move the normalizer without making the inline parity reference import 
   prompts/calls, plus completed product-signal dashboard carry-forward and URL
   extraction helpers, plus browser/product-signal missing evidence repair
   detectors and repair prompt builders, plus approval wait-timeout runtime
-  evidence collection and deterministic local closeout answer construction, are
-  shared by inline and engine through neutral role-runtime helper code.
+  evidence collection, approval wait-timeout deterministic local closeout
+  answer construction, and generic local evidence / requested-table fallback
+  answer construction, are shared by inline and engine through neutral
+  role-runtime helper code.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
-still an adapter-heavy bridge and still owns remaining evidence/task-fact behavior,
+still an adapter-heavy bridge and still owns remaining evidence behavior,
 terminal closeout model synthesis/result application, and adapter-side application
 of controller actions.
 
@@ -152,6 +154,7 @@ of controller actions.
 | `d2be68d` | Route completed-closeout source-evidence and weak-evidence repair decisions through `RepairPolicyRegistry`; add controller-provided evidence-text coverage. |
 | `00e1482` | Move completed terminal synthesis orchestration into `CompletedCloseoutController`; add direct terminal-entry coverage. |
 | `09f67bb` | Move approval wait-timeout local closeout evidence collection and deterministic answer construction into neutral shared helpers; add focused shared-helper tests. |
+| `cc24757` | Move generic local evidence fallback and requested-table fallback construction into neutral shared helpers; move TaskFacts implementation to `task-facts-shared.ts` with a react-engine wrapper. |
 
 ## Current Extracted Implementation
 
@@ -234,10 +237,12 @@ Real implementation now exists in:
   continuation, independent evidence-stream continuation, and forced pending
   approval `permission_result` continuation, plus post-execute missing
   approval-gate repair continuation.
-- `react-engine/task-facts.ts` for requested table-column inference, markdown
-  table header matching, provider search/pricing evidence-column inference, and
+- `task-facts-shared.ts` for requested table-column inference, markdown table
+  header matching, provider search/pricing evidence-column inference, and
   provider-support-schema request/result detection used by the adapter and
   repair registry.
+- `react-engine/task-facts.ts` as a compatibility wrapper around the neutral
+  TaskFacts implementation for engine import sites.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
@@ -250,7 +255,8 @@ Real implementation now exists in:
   and prompt construction, denied approval repair predicate and prompt
   construction, approval wait-timeout closeout repair predicates and prompt
   construction, approval wait-timeout runtime evidence collection and
-  deterministic local closeout answer construction,
+  deterministic local closeout answer construction, generic local evidence
+  fallback construction, requested-table local fallback answer construction,
   incomplete approved-browser-action repair predicate and prompt construction,
   source-bounded evidence collection, completed-session evidence
   collection, source-evidence carry-forward predicates/prompts, weak-evidence
@@ -267,7 +273,7 @@ Real implementation now exists in:
 Still shell/deferred or partial:
 
 - `evidence-ledger.ts` producer rewrite beyond the current facade
-- `task-facts.ts` facts beyond requested table/provider schema extraction
+- typed task facts beyond the current requested table/provider schema extraction
 - `legacy-text-detectors.ts`
 
 ## Latest Gates
@@ -277,8 +283,7 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/tool-loop-shared.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 49 / 49 |
+| `npx tsx --test packages/role-runtime/src/tool-loop-shared.test.ts packages/role-runtime/src/react-engine/task-facts.test.ts` | 9 / 9 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 141 / 141 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
@@ -293,7 +298,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifty-five
+root plus several policy-heavy hook bodies. The main improvement is that fifty-six
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -363,12 +368,16 @@ Stage 8 boundaries/slices are now real:
 - approval wait-timeout local closeout runtime evidence collection and
   deterministic answer construction are shared by inline and engine through
   `tool-loop-shared.ts`, with focused unit coverage.
+- generic local evidence fallback and requested-table local fallback answer
+  construction are shared by inline and engine through `tool-loop-shared.ts`,
+  with focused unit coverage; the adapter now calls the shared helper instead
+  of owning the fallback closure.
 - incomplete approved-browser-action repair selection routes through
   `RepairPolicyRegistry`, using shared approval-applied evidence/prompt
   predicates and returning a typed forced `sessions_spawn` repair round.
 - requested table-column and provider-support-schema facts route through
-  `TaskFacts`, including prompt/message/activation context extraction and
-  markdown table header matching.
+  neutral `TaskFacts`, including prompt/message/activation context extraction
+  and markdown table header matching.
 - missing requested table-column repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -459,7 +468,7 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue expanding the evidence ledger beyond the current facade, extracting
-  remaining task facts, non-completed terminal closeout model synthesis/result
-  application, and final adapter thinning.
+  typed facts as new shared facts appear, non-completed terminal closeout model
+  synthesis/result application, and final adapter thinning.
 
 The branch is **not pushed**.
