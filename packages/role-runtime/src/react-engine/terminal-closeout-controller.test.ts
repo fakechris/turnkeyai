@@ -119,6 +119,62 @@ test("TerminalCloseoutController applies approval wait-timeout fallback through 
   assert.equal(resultEvent[0], "result");
 });
 
+test("TerminalCloseoutController owns terminal hook fallback before synthesis", async () => {
+  const controller = createTerminalCloseoutController();
+  const { events, target } = recordingTarget();
+  let synthesizeCalls = 0;
+
+  const completion = await controller.handleTerminalCloseoutHook({
+    reason: "tool_evidence_fallback",
+    decision: {
+      closeout: {
+        reason: "tool_evidence_fallback",
+        maxRounds: 4,
+        toolCallCount: 3,
+        roundCount: 5,
+        evidenceAvailable: true,
+      },
+      reasonLines: ["unused because fallback is deterministic"],
+    },
+    messages: [{ role: "user", content: "Check approval." }],
+    lastText: "unused",
+    target,
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return { result: result("should not be used") };
+    },
+    approvalWaitTimeoutFallback: {
+      selection: { modelId: "model-a", modelChainId: "chain-a" },
+      packet: packet("Do not include URLs in the final answer."),
+      maxRounds: 4,
+      toolCallCount: 3,
+      roundCount: 5,
+      evidenceText:
+        "permission_result: pending approval_wait_timeout at http://localhost:3000/form",
+      error: new Error("synthesis unavailable"),
+    },
+  });
+
+  assert.equal(completion.kind, "final");
+  if (completion.kind === "final") {
+    assert.match(
+      completion.response.text,
+      /Approval wait-timeout closeout confirmed/,
+    );
+  }
+  assert.equal(synthesizeCalls, 0);
+  assert.deepEqual(events[0], [
+    "overwrite",
+    {
+      reason: "tool_evidence_fallback",
+      maxRounds: 4,
+      toolCallCount: 3,
+      roundCount: 5,
+      evidenceAvailable: true,
+    },
+  ]);
+});
+
 test("TerminalCloseoutController builds generic tool-evidence fallback closeout", () => {
   const controller = createTerminalCloseoutController();
 

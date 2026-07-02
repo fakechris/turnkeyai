@@ -3221,27 +3221,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // list so the post-loop epilogue can run the inline generate() finalization
           // appenders (:2407-2433) against the same context the inline path sees.
           runState.captureFinalMessages(state.messages);
-          // Stage 8B slice 1c: the hard approval-wait-timeout local closeout (inline
-          // :966-982), reached via the onRepairRound { closeout } directive. The answer
-          // is built DETERMINISTICALLY (no model synthesis), so this short-circuits the
-          // standard reasonLines + generateFinalAfterToolRoundLimit path below.
-          if (reason === "tool_evidence_fallback") {
-            return terminalCloseout.applyApprovalWaitTimeoutFallback(
-              {
-                selection,
-                packet,
-                maxRounds,
-                toolCallCount: countNativeToolCalls(toolTrace),
-                roundCount: toolTrace.length,
-                evidenceText: snapshotEvidence(state.messages)
-                  .approvalWaitTimeoutRuntimeEvidence,
-                error: new Error(
-                  "approval wait-timeout repair omitted required pending evidence",
-                ),
-              },
-              runState,
-            );
-          }
           // Each closeout reason rebuilds the inline reasonLines + closeout
           // metadata it produced inline; the round_limit defaults remain the
           // fallback for any reason without a bespoke branch. completed/timeout
@@ -3297,7 +3276,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // metadata must replace the stale completed one, exactly as inline reassigns
           // `toolLoopCloseout =` for non-completed reasons (codex #520 P2).
           const terminalCompletion =
-            await terminalCloseout.handleTerminalCloseout({
+            await terminalCloseout.handleTerminalCloseoutHook({
               reason: reason as EngineCloseoutReason,
               decision: {
                 closeout:
@@ -3312,6 +3291,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               messages: state.messages,
               lastText: state.lastText,
               target: runState,
+              // Stage 8B slice 1c: the hard approval-wait-timeout local closeout
+              // (inline :966-982), reached via the onRepairRound { closeout }
+              // directive. The answer is built deterministically (no model
+              // synthesis), so the controller short-circuits the standard
+              // reasonLines + generateFinalAfterToolRoundLimit path.
+              ...(reason === "tool_evidence_fallback"
+                ? {
+                    approvalWaitTimeoutFallback: {
+                      selection,
+                      packet,
+                      maxRounds,
+                      toolCallCount: usedToolCalls,
+                      roundCount,
+                      evidenceText:
+                        terminateEvidence.approvalWaitTimeoutRuntimeEvidence,
+                      error: new Error(
+                        "approval wait-timeout repair omitted required pending evidence",
+                      ),
+                    },
+                  }
+                : {}),
               synthesize: async ({
                 messages,
                 reasonLines: terminalReasonLines,

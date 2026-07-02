@@ -231,6 +231,18 @@ export interface TerminalCloseoutHandlingInput<
   decision: TerminalCloseoutDecisionInput;
 }
 
+export interface TerminalCloseoutHookInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends TerminalCloseoutHandlingInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+  approvalWaitTimeoutFallback?: ApprovalWaitTimeoutFallbackInput;
+}
+
 export type TerminalCloseoutCompletionResult =
   | {
       kind: "final";
@@ -668,6 +680,32 @@ export class TerminalCloseoutController {
         : { reasonLines: input.decision.reasonLines }),
       ...(input.completed === undefined ? {} : { completed: input.completed }),
     });
+  }
+
+  async handleTerminalCloseoutHook<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalCloseoutHookInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<TerminalCloseoutCompletionResult> {
+    if (
+      input.reason === "tool_evidence_fallback" &&
+      input.approvalWaitTimeoutFallback
+    ) {
+      return {
+        kind: "final",
+        response: this.applyApprovalWaitTimeoutFallback(
+          input.approvalWaitTimeoutFallback,
+          input.target,
+        ),
+      };
+    }
+    return this.handleTerminalCloseout(input);
   }
 
   finalizeGeneratedResult(input: TerminalGeneratedResultInput): GenerateTextResult {
