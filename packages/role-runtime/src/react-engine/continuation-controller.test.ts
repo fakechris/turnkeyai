@@ -88,6 +88,69 @@ function contentPoorTimeoutEvidence(): string {
   ].join("\n");
 }
 
+const incompleteBrowserSessionKey = "worker:browser:approved-submit:toolu-browser";
+
+function permissionAppliedTrace(
+  includePriorSend = false,
+): NativeToolRoundTrace[] {
+  return [
+    {
+      round: 1,
+      calls: [
+        {
+          id: "toolu-permission",
+          name: "permission_applied",
+          input: { approval_id: "ap-1" },
+        },
+        ...(includePriorSend
+          ? [
+              {
+                id: "toolu-prior-send",
+                name: "sessions_send",
+                input: {
+                  session_key: incompleteBrowserSessionKey,
+                  message: "already continued",
+                },
+              },
+            ]
+          : []),
+      ],
+      results: [],
+    },
+  ];
+}
+
+function incompleteApprovedBrowserResults(): Array<{
+  toolName: string;
+  content: string;
+}> {
+  return [
+    {
+      toolName: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-1",
+        status: "completed",
+        session_key: incompleteBrowserSessionKey,
+        agent_id: "browser",
+        tool_chain: ["browser"],
+        result:
+          "The approved submit was not completed because browser_act could not be called. No form submission ran.",
+        final_content:
+          "The approved submit was not completed because browser_act could not be called. No form submission ran.",
+        payload: null,
+      }),
+    },
+  ];
+}
+
+function approvedBrowserActionTaskPrompt(): string {
+  return [
+    "Operator approval ap-1 is already applied.",
+    "Use browser.form.submit to submit the form and verify the post-submit page state.",
+  ].join("\n");
+}
+
 test("ContinuationController injects sessions_send for an empty continuation round", () => {
   const controller = createContinuationController();
 
@@ -387,6 +450,47 @@ test("ContinuationController does not run the no-completed supplemental probe fo
       },
       tools: [{ name: "sessions_spawn" }],
       browserAvailable: true,
+    }),
+    { kind: "none" },
+  );
+});
+
+test("ContinuationController continues an incomplete approved browser session", () => {
+  const controller = createContinuationController();
+
+  const action = controller.continueIncompleteApprovedBrowserSession({
+    results: incompleteApprovedBrowserResults(),
+    messages: [{ role: "user", content: "tool result history" }],
+    taskPrompt: approvedBrowserActionTaskPrompt(),
+    toolTrace: permissionAppliedTrace(),
+    tools: [{ name: "sessions_send" }],
+  });
+
+  assert.equal(action.kind, "continue");
+  assert.equal(
+    action.kind === "continue" && action.reason,
+    "incomplete_approved_browser_session_continuation",
+  );
+  assert.deepEqual(
+    action.kind === "continue" && action.forceToolChoice,
+    { name: "sessions_send" },
+  );
+  assert.match(
+    String(action.kind === "continue" && action.messages.at(-1)?.content),
+    new RegExp(incompleteBrowserSessionKey),
+  );
+});
+
+test("ContinuationController does not repeat an incomplete approved browser continuation", () => {
+  const controller = createContinuationController();
+
+  assert.deepEqual(
+    controller.continueIncompleteApprovedBrowserSession({
+      results: incompleteApprovedBrowserResults(),
+      messages: [{ role: "user", content: "tool result history" }],
+      taskPrompt: approvedBrowserActionTaskPrompt(),
+      toolTrace: permissionAppliedTrace(true),
+      tools: [{ name: "sessions_send" }],
     }),
     { kind: "none" },
   );

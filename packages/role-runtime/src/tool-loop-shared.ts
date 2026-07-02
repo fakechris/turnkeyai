@@ -36,11 +36,20 @@ export interface SubAgentToolTimeoutSignal {
   evidenceAvailable: boolean;
 }
 
+export interface IncompleteApprovedBrowserSessionContinuation {
+  sessionKey: string;
+  evidence: string;
+}
+
 export const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
 
 export const SUPPLEMENTAL_LOCAL_TIMEOUT_PROBE_TIMEOUT_SECONDS = 45;
 
 export const SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS = 10_000;
+
+export function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(value));
+}
 
 export function taskPromptLooksLikeSourceCheckContinuation(taskPrompt: string): boolean {
   return (
@@ -765,6 +774,142 @@ export function hasCompletedBrowserSessionEvidence(
       );
     }),
   );
+}
+
+export const INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS = [
+  /\btools? (?:are |is )?(?:disabled|unavailable|not available)\b/i,
+  /\btool[- ]disabled\b/i,
+  /\bnot in (?:my |the )?current function namespace\b/i,
+  /\bcannot emit (?:the )?(?:approval|permission) request\b/i,
+  /\b(?:final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i,
+  /\b(?:re-?delegat(?:e|ed|ing|ion)|next step needed)\b/i,
+  /\bdelegat(?:e|ed|ing)[\s\S]{0,120}\b(?:approved|approval)[\s\S]{0,120}\b(?:browser|form|submit|submission)\b/i,
+  /\b(?:approved|approval)[\s\S]{0,120}\bdelegat(?:e|ed|ing)[\s\S]{0,120}\b(?:browser|form|submit|submission)\b/i,
+  /@role-browser\b/i,
+  /\b(?:not submitted|not yet submitted|submission can now be completed|submit can now be completed)\b/i,
+  /\bno\s+form\s+submission\s+(?:ran|executed|was performed)\b/i,
+  /\bpre[- ]approval\s+inspection\b/i,
+  /\bno\s+side\s+effects?\s+(?:ran|executed|were performed)\b/i,
+];
+
+export function findIncompleteApprovedBrowserSession(input: {
+  results: readonly { toolName: string; content: string }[];
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly { name: string }[];
+}): IncompleteApprovedBrowserSessionContinuation | null {
+  if (!hasToolDefinition(input.tools, "sessions_send")) {
+    return null;
+  }
+  if (hasIncompleteApprovedBrowserSessionContinuationPrompt(input.messages)) {
+    return null;
+  }
+  if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
+    return null;
+  }
+  if (
+    !hasPermissionAppliedEvidence(input.toolTrace) &&
+    !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
+  ) {
+    return null;
+  }
+  for (const result of input.results) {
+    if (
+      result.toolName !== "sessions_spawn" &&
+      result.toolName !== "sessions_send"
+    ) {
+      continue;
+    }
+    const parsed = parseSessionToolResult(result.content);
+    if (
+      !parsed ||
+      parsed.status !== "completed" ||
+      parsed.agent_id !== "browser"
+    ) {
+      continue;
+    }
+    if (typeof parsed.session_key !== "string") {
+      continue;
+    }
+    const sessionKey = parsed.session_key.trim();
+    if (!sessionKey) {
+      continue;
+    }
+    if (hasExecutedSessionsSend(input.toolTrace, sessionKey)) {
+      continue;
+    }
+    const evidence = readCompletedSessionEvidence(parsed) ?? "";
+    if (!matchesAny(evidence, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS)) {
+      continue;
+    }
+    return {
+      sessionKey,
+      evidence: sliceUtf8(evidence, 1400),
+    };
+  }
+  return null;
+}
+
+export function hasIncompleteApprovedBrowserSessionContinuationPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approved browser action is incomplete inside an existing browser session",
+      ),
+  );
+}
+
+export function buildIncompleteApprovedBrowserSessionContinuationPrompt(
+  input: IncompleteApprovedBrowserSessionContinuation,
+): string {
+  return [
+    "Runtime correction: approved browser action is incomplete inside an existing browser session.",
+    `Continue the same browser session with session_key ${input.sessionKey}; do not spawn a replacement session.`,
+    "The approval is already applied. Call sessions_send exactly once for that session_key.",
+    "Ask the browser sub-agent to perform the approved browser.form.submit action now, reuse the current page state, use browser_act on the submit control with submit=true, and verify the post-submit page state.",
+    "If the browser sub-agent still cannot execute the approved action after this continuation, it must return the concrete blocker and evidence instead of asking the parent to inspect again.",
+    `Incomplete browser evidence:\n${input.evidence}`,
+  ].join("\n");
+}
+
+export function hasPermissionAppliedEvidence(
+  toolTrace: NativeToolRoundTrace[],
+): boolean {
+  if (latestPermissionToolNameForTrace(toolTrace) === "permission_applied") {
+    return true;
+  }
+  return toolTrace.some((round) =>
+    (round.progress ?? []).some(
+      (progress) => progress.detail?.["eventType"] === "permission.applied",
+    ),
+  );
+}
+
+function latestPermissionToolNameForTrace(
+  toolTrace: NativeToolRoundTrace[],
+): string | null {
+  for (
+    let roundIndex = toolTrace.length - 1;
+    roundIndex >= 0;
+    roundIndex -= 1
+  ) {
+    const round = toolTrace[roundIndex]!;
+    for (
+      let callIndex = round.calls.length - 1;
+      callIndex >= 0;
+      callIndex -= 1
+    ) {
+      const name = round.calls[callIndex]!.name;
+      if (name.startsWith("permission_")) {
+        return name;
+      }
+    }
+  }
+  return null;
 }
 
 export function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {

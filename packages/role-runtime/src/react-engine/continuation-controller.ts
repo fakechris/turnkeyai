@@ -5,9 +5,11 @@ import {
   buildApprovedBrowserTimeoutContinuationPrompt,
   buildContinuationDirectiveContext,
   buildCoverageTimeoutContinuationPrompt,
+  buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
+  findIncompleteApprovedBrowserSession,
   hasExecutedSessionsSend,
   hasLatestSupplementalLocalTimeoutProbePrompt,
   isAppliedApprovalBrowserContinuation,
@@ -60,6 +62,14 @@ export interface SupplementalLocalTimeoutProbeInput {
   timeoutSignal: SubAgentToolTimeoutSignal | null;
   tools?: readonly ContinuationToolDefinition[];
   browserAvailable: boolean;
+}
+
+export interface IncompleteApprovedBrowserSessionInput {
+  results: readonly { toolName: string; content: string }[];
+  messages: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly ContinuationToolDefinition[];
 }
 
 export class ContinuationController {
@@ -239,6 +249,36 @@ export class ContinuationController {
       ],
       forceToolChoice: { name: "sessions_spawn" },
       reason: "supplemental_local_timeout_probe",
+    };
+  }
+
+  continueIncompleteApprovedBrowserSession(
+    input: IncompleteApprovedBrowserSessionInput,
+  ): EngineContinueAction {
+    const continuation = findIncompleteApprovedBrowserSession({
+      results: input.results,
+      taskPrompt: input.taskPrompt,
+      messages: input.messages,
+      toolTrace: input.toolTrace,
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
+    });
+    if (!continuation) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "continue",
+      messages: [
+        ...input.messages,
+        {
+          role: "user",
+          content:
+            buildIncompleteApprovedBrowserSessionContinuationPrompt(
+              continuation,
+            ),
+        },
+      ],
+      forceToolChoice: { name: "sessions_send" },
+      reason: "incomplete_approved_browser_session_continuation",
     };
   }
 }
