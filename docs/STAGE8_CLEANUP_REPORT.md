@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `8a27da3321bddc3bdac7c07c306552497ca40286`
+**Code HEAD before this docs-only report:** `7b4e2256f8d6d7c2a4a62a47c31f761339adb7aa`
 **Date:** 2026-07-02
 
 ## Summary
@@ -14,12 +14,13 @@ could not move the normalizer without making the inline parity reference import 
   helper closure into neutral role-runtime shared code.
 - **Batch 1 partial:** moved engine tool-call normalization order/pipeline into
   `react-engine/tool-call-normalizer.ts`, moved engine permission wrapper behavior into
-  `react-engine/permission-policy.ts`, and moved the engine finalization epilogue order
-  into `react-engine/finalization-pipeline.ts`.
+  `react-engine/permission-policy.ts`, moved the engine finalization epilogue order
+  into `react-engine/finalization-pipeline.ts`, and moved the engine tool-observability
+  lifecycle into `react-engine/engine-run-observer.ts`.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
-still an adapter-heavy bridge and still owns observability, execution budget,
-continuation, closeout, repair, completed-closeout, and evidence/task-fact behavior.
+still an adapter-heavy bridge and still owns execution budget, continuation, closeout,
+repair, completed-closeout, and evidence/task-fact behavior.
 
 ## Commits Added After The Blocked Report
 
@@ -28,6 +29,7 @@ continuation, closeout, repair, completed-closeout, and evidence/task-fact behav
 | `1600077` | Extract shared role-engine helper closure into `tool-loop-shared.ts`; amend the plan/spec with Batch 0.75 and the Rule 3 refinement. |
 | `5181294` | Extract `ToolCallNormalizer` order/pipeline and `PermissionPolicy` wrapper; add focused module tests. |
 | `8a27da3` | Extract `FinalizationPipeline` engine epilogue order; move shared finalization append/redaction helpers; add focused module tests. |
+| `7b4e225` | Extract `EngineRunObserver` lifecycle; move native tool trace conversion helpers into neutral shared code; add focused observer tests. |
 
 ## Current Extracted Implementation
 
@@ -42,11 +44,11 @@ Real implementation now exists in:
 - `react-engine/tool-call-normalizer.ts`
 - `react-engine/permission-policy.ts`
 - `react-engine/finalization-pipeline.ts`
+- `react-engine/engine-run-observer.ts`
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine.
 
 Still shell/deferred:
 
-- `engine-run-observer.ts`
 - `execution-budget-controller.ts`
 - `continuation-controller.ts`
 - `closeout-policy-registry.ts`
@@ -63,11 +65,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 19 / 19 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 23 / 23 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
-| `npx tsx --test packages/agent-core/src/react-agent.test.ts packages/agent-core/src/react-loop.test.ts` | 38 / 38 |
-| `npm run parity:inline` | 270 / 270, 0 fail |
-| `npm run parity:engine` | 231 / 231, 0 fail, 0 incomplete after individual recovery |
+| `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
+| `npm run parity:inline` | 231 / 231, 0 fail |
+| `npm run parity:engine` | 232 / 232, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -78,7 +80,7 @@ zero failures and zero incomplete tests after recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2441` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that three
+root plus several policy-heavy hook bodies. The main improvement is that four
 Batch 1 boundaries are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -86,13 +88,13 @@ Batch 1 boundaries are now real:
   `PermissionPolicy` in the engine path.
 - the unconditional engine finalization epilogue routes through
   `finalizeEngineAnswer`.
+- model/tool lifecycle observability routes through `EngineRunObserver`, including
+  `toolTrace`, runtime progress recorder events, and native tool-message persistence.
 
 ## Remaining Work
 
-Continue Batch 1 with the high-risk pieces:
+Continue Batch 1 with the remaining high-risk pieces:
 
-- extract `EngineRunObserver` without changing `toolTrace`, runtime progress, native
-  message persistence, and model-use metadata semantics;
 - migrate the remaining mutable cross-hook `run` object to `EngineRunState`;
 - then proceed to Batch 2+ for execution budget, continuation, closeout, repair,
   completed-closeout, evidence ledger, task facts, and final adapter thinning.
