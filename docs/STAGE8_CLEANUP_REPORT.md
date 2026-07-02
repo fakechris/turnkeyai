@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `e09679c363309c9d3dc1e6afa97e95251f5bfe0d`
+**Code HEAD before this docs-only report:** `cda764e02ad53282c570a43a126959f6dbc3b714`
 **Date:** 2026-07-02
 
 ## Summary
@@ -38,7 +38,9 @@ could not move the normalizer without making the inline parity reference import 
   the approval-state repair sequence through
   `incomplete_approved_browser_action`, plus
   `missing_requested_table_columns` and
-  `extraneous_provider_table_schema`, now return typed decisions from
+  `extraneous_provider_table_schema`, plus
+  `source_evidence_carry_forward` and `weak_evidence_synthesis`, now return
+  typed decisions from
   `react-engine/repair-policy-registry.ts`; the adapter still applies the
   repair marker and appended messages at the original precedence points.
   Requested table-column and provider-support-schema task facts now live in
@@ -102,6 +104,7 @@ application, and adapter-side application of controller actions.
 | `d298c29` | Extract approval wait-timeout closeout and failed-repair local closeout selections into `RepairPolicyRegistry`; share wait-timeout closeout predicates/prompt helpers. |
 | `c66dea9` | Extract incomplete approved-browser-action repair selection into `RepairPolicyRegistry`; share its predicate and forced-spawn repair prompt. |
 | `e09679c` | Extract requested table/provider schema facts into `TaskFacts`; route missing requested-column and extraneous provider-schema repair decisions through `RepairPolicyRegistry`. |
+| `cda764e` | Extract source-evidence carry-forward and weak-evidence synthesis repair selections into `RepairPolicyRegistry`; move their evidence collectors, detectors, and prompts into neutral shared code. |
 
 ## Current Extracted Implementation
 
@@ -139,15 +142,17 @@ Real implementation now exists in:
   `stale_denied_approval`, plus `approval_wait_timeout_closeout` and
   `approval_wait_timeout_local_closeout`, and
   `incomplete_approved_browser_action`, `missing_requested_table_columns`, and
-  `extraneous_provider_table_schema`, including exhausted final-recovery
+  `extraneous_provider_table_schema`, plus `source_evidence_carry_forward` and
+  `weak_evidence_synthesis`, including exhausted final-recovery
   budget gating, bounded-closeout skip behavior, approval-gate repair gating,
   approval wait-timeout permission-result repair gating, stale pending/denied
   approval repair gating, approval wait-timeout closeout repair gating,
   failed-repair deterministic local closeout gating, incomplete approved-browser
   action repair gating, requested table-column repair gating, extraneous
-  provider-support-schema repair gating, repair marker idempotency, prompt
-  construction, and typed tool-free/tool-round resynthesis or closeout
-  decisions.
+  provider-support-schema repair gating, source-evidence carry-forward repair
+  gating, weak-evidence synthesis repair gating, repair marker idempotency,
+  prompt construction, source-bounded evidence formula collection, and typed
+  tool-free/tool-round resynthesis or closeout decisions.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -171,13 +176,16 @@ Real implementation now exists in:
   and prompt construction, denied approval repair predicate and prompt
   construction, approval wait-timeout closeout repair predicates and prompt
   construction, incomplete approved-browser-action repair predicate and prompt
-  construction, cancelled-session closeout detection, pseudo tool-call markup
-  detection, repeated session inspection/continuation detectors, and completed
-  browser-session evidence checks.
+  construction, source-bounded evidence collection, completed-session evidence
+  collection, source-evidence carry-forward predicates/prompts, weak-evidence
+  synthesis predicates/prompts, cancelled-session closeout detection, pseudo
+  tool-call markup detection, repeated session inspection/continuation
+  detectors, and completed browser-session evidence checks.
 
 Still shell/deferred or partial:
 
-- `repair-policy-registry.ts` policies after `extraneous_provider_table_schema`
+- completed-only repair decisions after the natural-finish weak-evidence
+  synthesis boundary
 - `completed-closeout-controller.ts`
 - `evidence-ledger.ts`
 - `task-facts.ts` facts beyond requested table/provider schema extraction
@@ -189,9 +197,9 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/task-facts.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 35 / 35 |
+| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 34 / 34 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 114 / 114 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 118 / 118 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -205,7 +213,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that thirty-five
+root plus several policy-heavy hook bodies. The main improvement is that thirty-eight
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -277,6 +285,14 @@ Stage 8 boundaries/slices are now real:
   candidate and records the repair marker.
 - extraneous provider-support-schema repair selection routes through
   `RepairPolicyRegistry`, preserving the original-task requested-schema skip.
+- source-bounded and completed-session evidence collection now live in neutral
+  shared code and feed the natural-finish source/weak repair evidence formula.
+- source-evidence carry-forward repair selection routes through
+  `RepairPolicyRegistry`, while the adapter still appends the prior assistant
+  candidate and records the repair marker.
+- weak-evidence synthesis repair selection routes through
+  `RepairPolicyRegistry`, preserving exact final-shape and estimate-request
+  skips.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -309,9 +325,8 @@ Stage 8 boundaries/slices are now real:
 
 Continue with the remaining high-risk pieces:
 
-- continue extracting remaining repair decisions after
-  `extraneous_provider_table_schema` (source-evidence carry-forward and weak
-  evidence synthesis next), then completed-closeout, evidence ledger, remaining
-  task facts, terminal closeout synthesis/application, and final adapter thinning.
+- continue extracting the remaining completed-only repair decisions, then
+  completed-closeout, evidence ledger, remaining task facts, terminal closeout
+  synthesis/application, and final adapter thinning.
 
 The branch is **not pushed**.
