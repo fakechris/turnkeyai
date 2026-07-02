@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `920e16d622df45e00e996167a115b051c7a7f2eb`
+**Code HEAD before this docs-only report:** `ac0a765fc0e0a3ce375e15e0d5d4de0970224069`
 **Date:** 2026-07-02
 
 ## Summary
@@ -104,7 +104,9 @@ could not move the normalizer without making the inline parity reference import 
   terminal closeout entrypoint now also lives in that controller: the adapter
   passes the `CloseoutPolicyRegistry` decision and gateway callbacks, while the
   controller owns sticky pre-recording, reason-line handoff, completion path
-  selection, and final/re-arm state-effect application.
+  selection, and final/re-arm state-effect application. The model-call-error
+  local-evidence fallback/rethrow boundary now also returns a typed controller
+  result instead of adapter-local null handling.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -251,6 +253,7 @@ application outside the terminal completion path.
 | `8a22741` | Move completed terminal initial-synthesis handoff into `TerminalCloseoutController`; adapter supplies the completed-closeout callback instead of unpacking the initial generated result. |
 | `3dae00b` | Move terminal synthesis path selection and final/re-arm application into `TerminalCloseoutController`; adapter supplies gateway/completed-closeout callbacks. |
 | `920e16d` | Move the terminal closeout entrypoint into `TerminalCloseoutController`; adapter passes the terminate decision and gateway callbacks instead of stitching sticky/application steps locally. |
+| `ac0a765` | Move the model-call-error fallback/rethrow boundary into `TerminalCloseoutController`; adapter consumes a typed final-or-rethrow result. |
 
 ## Current Extracted Implementation
 
@@ -338,7 +341,8 @@ Real implementation now exists in:
   completed terminal initial-synthesis handoff into the completed-closeout
   controller callback, plus terminal synthesis path selection and final/re-arm
   application through an injected recorder target, plus the full terminal
-  closeout entrypoint from terminate decision to completion.
+  closeout entrypoint from terminate decision to completion, plus the
+  model-call-error local-evidence fallback/rethrow boundary.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -426,8 +430,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 15 / 15 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 165 / 165 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 16 / 16 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 166 / 166 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -508,7 +512,8 @@ Stage 8 boundaries/slices are now real:
   re-arm/effect application now also route through the controller-owned
   completion boundary. The adapter now enters terminal closeout through a single
   controller-owned entrypoint that consumes the terminate decision and applies
-  sticky pre-recording plus final/re-arm effects.
+  sticky pre-recording plus final/re-arm effects. Model-call-error local
+  evidence fallback now returns a controller-owned typed final/rethrow result.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -702,7 +707,7 @@ Continue with the remaining high-risk pieces:
   synthesis-effect application, final response shaping, closeout write-mode
   selection, explicit state-effect application, sticky completed closeout
   pre-recording, completed initial-synthesis handoff, terminal path selection,
-  final/re-arm application, and terminal entrypoint slices; keep thinning the
-  adapter.
+  final/re-arm application, terminal entrypoint, and model-error fallback
+  boundary slices; keep thinning the adapter.
 
 The branch is **not pushed**.
