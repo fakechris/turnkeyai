@@ -3,7 +3,12 @@ import type {
   LLMMessage,
   LLMToolCall,
 } from "@turnkeyai/llm-adapter/index";
-import type { NativeToolRoundTrace } from "./native-tool-messages";
+import type { ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
+import type {
+  NativeToolProgressTrace,
+  NativeToolResultTrace,
+  NativeToolRoundTrace,
+} from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
 import {
   normalizeToolInputForSignature,
@@ -3057,4 +3062,283 @@ export function shouldAppendTimeoutContinuationVisibility(input: {
     toolTraceHasTimeoutResult(input.toolTrace) ||
     contextHasTimeoutSessionResult(context)
   );
+}
+
+// PR K3.6: byte cap for the per-result content slice we persist in tool traces.
+// Generous enough to capture a full HTML snapshot of a typical page, small
+// enough that a chain of long-running browser sessions doesn't bloat metadata.
+// The full content still flows through the LLM tool loop in memory.
+export const ROLE_TOOL_RESULT_TRACE_CAP_BYTES = 8 * 1024;
+
+export function toNativeToolResultTrace(
+  toolResult: ToolResult,
+): NativeToolResultTrace {
+  const bytes = Buffer.byteLength(toolResult.content, "utf8");
+  const traceContent = compactToolResultTraceContent(toolResult.content);
+  const traceBytes = Buffer.byteLength(traceContent.content, "utf8");
+  const truncated = traceBytes > ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
+  return {
+    toolCallId: toolResult.toolCallId,
+    toolName: toolResult.toolName,
+    isError: toolResult.isError === true,
+    contentBytes: bytes,
+    content: truncated
+      ? sliceUtf8(traceContent.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES)
+      : traceContent.content,
+    ...(truncated || traceContent.compacted ? { contentTruncated: true } : {}),
+    ...(toolResult.cancelled ? { cancelled: true } : {}),
+    ...(toolResult.skipped ? { skipped: true } : {}),
+  };
+}
+
+export function compactToolResultTraceContent(content: string): {
+  content: string;
+  compacted: boolean;
+} {
+  const parsed = parseSessionToolResult(content);
+  if (!parsed) {
+    return { content, compacted: false };
+  }
+  const compacted = {
+    protocol: parsed.protocol,
+    status: parsed.status,
+    agent_id: parsed.agent_id,
+    ...(parsed.label ? { label: parsed.label } : {}),
+    session_key: parsed.session_key,
+    task_id: parsed.task_id,
+    ...(parsed.parent_session_key
+      ? { parent_session_key: parsed.parent_session_key }
+      : {}),
+    ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}),
+    ...(parsed.resumable ? { resumable: parsed.resumable } : {}),
+    ...(parsed.timeout_seconds == null
+      ? {}
+      : { timeout_seconds: parsed.timeout_seconds }),
+    ...(parsed.evidence_available == null
+      ? {}
+      : { evidence_available: parsed.evidence_available }),
+    tool_chain: parsed.tool_chain,
+    ...compactSessionPayloadArtifactRefs(parsed.payload),
+    ...compactSessionPayloadEvidenceExcerpt(parsed.payload),
+    ...(typeof parsed.evidence_summary === "string"
+      ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1024) }
+      : {}),
+    final_content:
+      typeof parsed.final_content === "string"
+        ? sliceUtf8(parsed.final_content, 3 * 1024)
+        : null,
+    result:
+      typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1024) : "",
+  };
+  const compactContent = fitCompactToolResultTraceContent(compacted);
+  return {
+    content: compactContent,
+    compacted: compactContent !== content,
+  };
+}
+
+export function fitCompactToolResultTraceContent(
+  input: Record<string, unknown>,
+): string {
+  const compacted = { ...input };
+  const serialize = () => JSON.stringify(compacted, null, 2);
+  const fits = (value: string) =>
+    Buffer.byteLength(value, "utf8") <= ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
+  const trySerialize = () => {
+    const value = serialize();
+    return fits(value) ? value : null;
+  };
+
+  const initial = trySerialize();
+  if (initial) return initial;
+
+  const shrinkStringField = (field: string, maxBytes: number) => {
+    const value = compacted[field];
+    if (typeof value === "string") {
+      compacted[field] = maxBytes > 0 ? sliceUtf8(value, maxBytes) : "";
+    }
+  };
+  const deleteField = (field: string) => {
+    delete compacted[field];
+  };
+  const prunePayload = (
+    field: "screenshotPaths" | "artifactIds",
+    limit: number,
+  ) => {
+    const payload = compacted.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return;
+    }
+    const record = payload as Record<string, unknown>;
+    const values = readStringArray(record[field]);
+    if (values.length > limit) {
+      record[field] = values.slice(0, limit);
+      record[`${field}Truncated`] = true;
+      record[`${field}Count`] = values.length;
+    }
+  };
+
+  const steps: Array<() => void> = [
+    () => shrinkStringField("final_content", 2048),
+    () => shrinkStringField("result", 768),
+    () => shrinkStringField("evidence_summary", 512),
+    () => shrinkStringField("evidence_excerpt", 512),
+    () => shrinkStringField("final_content", 1024),
+    () => shrinkStringField("result", 384),
+    () => deleteField("evidence_summary"),
+    () => deleteField("evidence_excerpt"),
+    () => shrinkStringField("final_content", 512),
+    () => shrinkStringField("result", 0),
+    () => {
+      compacted.final_content = null;
+    },
+    () => prunePayload("screenshotPaths", 4),
+    () => prunePayload("artifactIds", 16),
+  ];
+
+  for (const step of steps) {
+    step();
+    const value = trySerialize();
+    if (value) return value;
+  }
+
+  const minimal = {
+    protocol: compacted.protocol,
+    status: compacted.status,
+    agent_id: compacted.agent_id,
+    session_key: compacted.session_key,
+    task_id: compacted.task_id,
+    tool_chain: compacted.tool_chain,
+    payload: compacted.payload,
+    result: "session tool result compacted",
+    final_content: null,
+  };
+  const minimalContent = JSON.stringify(minimal, null, 2);
+  if (fits(minimalContent)) return minimalContent;
+  return JSON.stringify({
+    protocol: compacted.protocol,
+    status: compacted.status,
+    result: "session tool result compacted",
+  });
+}
+
+export function compactSessionPayloadEvidenceExcerpt(
+  payload: unknown,
+): { evidence_excerpt: string } | Record<string, never> {
+  const evidence = readPayloadEvidenceExcerpt(payload);
+  return evidence ? { evidence_excerpt: sliceUtf8(evidence, 2 * 1024) } : {};
+}
+
+export function compactSessionPayloadArtifactRefs(
+  payload: unknown,
+):
+  | { payload: { artifactIds?: string[]; screenshotPaths?: string[] } }
+  | Record<string, never> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {};
+  }
+  const record = payload as Record<string, unknown>;
+  const artifactIds = readStringArray(record.artifactIds);
+  const screenshotPaths = readStringArray(record.screenshotPaths);
+  if (artifactIds.length === 0 && screenshotPaths.length === 0) {
+    return {};
+  }
+  return {
+    payload: {
+      ...(artifactIds.length ? { artifactIds } : {}),
+      ...(screenshotPaths.length ? { screenshotPaths } : {}),
+    },
+  };
+}
+
+export function readPayloadEvidenceExcerpt(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  const pages = readPayloadEvidencePages(record);
+  const parts = [
+    readStringField(record.content),
+    ...pages.flatMap((page) => [
+      readStringField(page.finalUrl),
+      readStringField(page.title),
+      readStringField(page.textExcerpt),
+    ]),
+  ]
+    .filter((part): part is string => Boolean(part))
+    .map((part) => part.trim());
+  const joined = dedupeStrings(parts).join("\n");
+  return joined || null;
+}
+
+export function readPayloadEvidencePages(
+  record: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const pages: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  const addPage = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return;
+    }
+    const page = value as Record<string, unknown>;
+    const key =
+      readStringField(page.finalUrl) ??
+      readStringField(page.requestedUrl) ??
+      JSON.stringify(page).slice(0, 120);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    pages.push(page);
+  };
+  if (Array.isArray(record.pages)) {
+    for (const page of record.pages) {
+      addPage(page);
+    }
+  }
+  if (Array.isArray(record.sourceResults)) {
+    for (const sourceResult of record.sourceResults) {
+      if (
+        !sourceResult ||
+        typeof sourceResult !== "object" ||
+        Array.isArray(sourceResult)
+      ) {
+        continue;
+      }
+      addPage((sourceResult as Record<string, unknown>).page);
+    }
+  }
+  addPage(record.page);
+  return pages;
+}
+
+export function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0,
+    )
+    .map((item) => item.trim());
+}
+
+export function toNativeToolProgressTrace(
+  call: LLMToolCall,
+  progress: ToolProgressEvent,
+  ts: number,
+): NativeToolProgressTrace {
+  return {
+    toolCallId: call.id,
+    toolName: progress.toolName || call.name,
+    phase: progress.phase,
+    summary: progress.summary,
+    ...(progress.detail ? { detail: progress.detail } : {}),
+    ts,
+  };
+}
+
+export function readStringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }

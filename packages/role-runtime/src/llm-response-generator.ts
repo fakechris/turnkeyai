@@ -23,8 +23,6 @@ import type {
 } from "./deterministic-response-generator";
 import {
   buildNativeToolMessages,
-  type NativeToolProgressTrace,
-  type NativeToolResultTrace,
   type NativeToolRoundTrace,
 } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
@@ -99,6 +97,7 @@ import {
   readCompletedSessionEvidence,
   readMessageContentText,
   readSessionKeyFromToolInput,
+  readStringField,
   readStringInput,
   requestsApprovalGatedBrowserAction,
   requestsStatusVisibleTextEvidenceUrlLines,
@@ -113,6 +112,8 @@ import {
   taskRequestsSessionTranscript,
   taskRequestsTimeoutFollowupContinuation,
   taskRequiresBrowserEvidence,
+  toNativeToolProgressTrace,
+  toNativeToolResultTrace,
   toolTraceHasCall,
   expectsExactFinalAnswerShape,
 } from "./tool-loop-shared";
@@ -128,6 +129,7 @@ import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
   createEnginePolicyTrace,
+  createEngineRunObserver,
   createPermissionPolicy,
   finalizeEngineAnswer,
   normalizeEngineToolCalls,
@@ -2635,6 +2637,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       finalMessages: undefined,
     };
     const toolTrace: NativeToolRoundTrace[] = [];
+    const observer = createEngineRunObserver(toolTrace, {
+      now: () => this.clock.now(),
+      recordToolProgress: (call, progress) =>
+        this.recordToolProgressSafely(activation, call, progress),
+      persistNativeToolTrace: (options) =>
+        this.persistNativeToolTraceSafely(activation, toolTrace, options),
+    });
     // Stage 7 S4: the synthetic sessions_send the empty-round continuation would
     // inject (inline :567-587), or null. Shared by onToolCallsClose (the wall-clock
     // pre-check below) and onRoundEmpty (the actual injection) so both agree on
@@ -4888,137 +4897,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     });
 
     let finalText = "";
-    let currentRound: NativeToolRoundTrace | undefined;
     for await (const event of agent.run({
       messages: initialGatewayInput.messages,
       ctx,
       ...(signal ? { signal } : {}),
     })) {
       if (event.type === "model_response") {
-        if (event.toolCalls.length > 0) {
-          currentRound = {
-            round: event.round + 1,
-            calls: event.toolCalls.map((call) => ({
-              id: call.id,
-              name: call.name,
-              input: call.input,
-            })),
-            results: [],
-            progress: [],
-          };
-          toolTrace.push(currentRound);
-        }
-      } else if (event.type === "tool_started") {
-        // Injected-round support (onRoundEmpty, Stage 7 S4): when the host injects
-        // calls on an empty round, that round's model_response carried the model's
-        // (empty) calls, so no round was opened above. Open one from the first
-        // tool_started of a round the model_response didn't record — matching the
-        // inline path which pushes an injected round unconditionally (:1510-1520).
-        // No-op for normal rounds: their round is already open with these calls.
-        if (!currentRound || currentRound.round !== event.round + 1) {
-          currentRound = {
-            round: event.round + 1,
-            calls: [],
-            results: [],
-            progress: [],
-          };
-          toolTrace.push(currentRound);
-        }
-        if (!currentRound.calls.some((existing) => existing.id === event.call.id)) {
-          currentRound.calls.push({
-            id: event.call.id,
-            name: event.call.name,
-            input: event.call.input,
-          });
-        }
-        // Stage 8B (progress observability, codex #525 P2): emit the "started" lifecycle
-        // phase into round.progress, mirroring inline's executeToolCalls. Once round.
-        // progress is non-empty, buildRoundToolProgress treats it as authoritative and
-        // stops synthesizing started/completed from calls/results — so the engine must
-        // record the FULL lifecycle (started here + result.progress + completed below),
-        // not just the custom progress, or native tool messages lose the completed phase.
-        const startedProgress = {
-          phase: "started" as const,
-          toolName: event.call.name,
-          summary: `Tool call started: ${event.call.name}`,
-        };
-        currentRound.progress?.push(
-          toNativeToolProgressTrace(
-            { id: event.call.id, name: event.call.name, input: event.call.input },
-            startedProgress,
-            this.clock.now(),
-          ),
-        );
-        // Observability bridge: emit the "started" lifecycle to runtimeProgressRecorder
-        // too, mirroring inline's executeToolCalls (emitToolProgressSafely = recorder emit
-        // + native persistence). The engine's three observability sinks — toolTrace
-        // progress (above), the runtime progress recorder (here), and the native tool
-        // message store (below) — now all see the tool lifecycle, so nothing is dropped.
-        await this.recordToolProgressSafely(activation, event.call, startedProgress);
-        // Stage 8B (native-tool-message persistence): persist the pending/"started"
-        // native tool message BEFORE the tool runs, mirroring inline's executeToolCalls
-        // (which persists on the "started" progress with forceBlocking). The agent yields
-        // every tool_started before runToolBatch executes, so this lands while the tool is
-        // still running. forceBlocking keeps it synchronous so observers see the pending
-        // state even when deferToolObservability is set.
-        await this.persistNativeToolTraceSafely(activation, toolTrace, {
-          forceBlocking: true,
+        observer.onModelResponse({
+          round: event.round,
+          toolCalls: event.toolCalls,
         });
-      } else if (event.type === "tool_result" && currentRound) {
-        const roleToolResult = event.result as RoleToolExecutionResult;
-        // Stage 8B (Batch D — C5 memory/compaction/envelope plane): build the trace
-        // result via toNativeToolResultTrace, exactly like inline's executeToolCalls
-        // onResult (:1682). That helper compacts oversized session tool results into an
-        // evidence-first excerpt (compactToolResultTraceContent keeps final_content /
-        // verified facts / artifactIds and drops raw HTML/snapshots) and caps the
-        // persisted content at ROLE_TOOL_RESULT_TRACE_CAP_BYTES (8KB), setting
-        // contentTruncated while preserving the raw byte count in contentBytes. The
-        // previous engine push stored the RAW result content, so the toolUse trace
-        // diverged from inline on oversized results (the evidence-first-trace fixture
-        // asserts the compacted excerpt + the truncation flag). contentBytes keeps the
-        // uncompacted byte length so downstream size checks match inline.
-        currentRound.results.push(toNativeToolResultTrace(roleToolResult));
-        // Stage 8B (progress observability): capture the executor's progress events into
-        // the round trace, so progress-dependent predicates (hasPermissionAppliedEvidence,
-        // latestPendingPermissionQueryApprovalId, latestPermissionResultStatus, …) see the
-        // same evidence inline does — inline emits result.progress into roundTrace.progress
-        // via executeToolCalls' onProgress. The agent-core ToolResult does not declare a
-        // progress field, but the role-runtime executor result carries it at runtime.
-        const progressCall = {
-          id: event.result.toolCallId,
-          name: event.result.toolName,
-          input: {},
-        };
-        for (const progress of roleToolResult.progress ?? []) {
-          currentRound.progress?.push(
-            toNativeToolProgressTrace(progressCall, progress, this.clock.now()),
-          );
-          await this.recordToolProgressSafely(activation, progressCall, progress);
-        }
-        // The terminal lifecycle phase (codex #525 P2), after the custom progress —
-        // matching inline's executeToolCalls ordering (started → result.progress →
-        // completed/failed/cancelled).
-        const terminalProgress = {
-          phase: roleToolResult.cancelled
-            ? ("cancelled" as const)
-            : roleToolResult.isError
-              ? ("failed" as const)
-              : ("completed" as const),
-          toolName: event.result.toolName,
-          summary: roleToolResult.cancelled
-            ? `Tool call cancelled: ${event.result.toolName}`
-            : roleToolResult.isError
-              ? `Tool call failed: ${event.result.toolName}`
-              : `Tool call completed: ${event.result.toolName}`,
-        };
-        currentRound.progress?.push(
-          toNativeToolProgressTrace(progressCall, terminalProgress, this.clock.now()),
-        );
-        await this.recordToolProgressSafely(activation, progressCall, terminalProgress);
-        // Stage 8B (native-tool-message persistence): persist the completed native tool
-        // message (assistant toolStatus + the tool-result message) after the round's
-        // result lands, mirroring inline's executeToolCalls onResult persistence.
-        await this.persistNativeToolTraceSafely(activation, toolTrace);
+      } else if (event.type === "tool_started") {
+        await observer.onToolStarted({
+          round: event.round,
+          call: event.call,
+        });
+      } else if (event.type === "tool_result") {
+        await observer.onToolResult({ result: event.result });
       } else if (event.type === "final") {
         finalText = event.text;
       }
@@ -6494,13 +6389,6 @@ interface ToolResultPruningSnapshot {
   limits: ToolResultPruningLimits;
 }
 
-// PR K3.6: byte cap for the per-result content slice we persist on
-// each assistant message. Generous enough to capture a full HTML
-// snapshot of a typical page, small enough that a chain of
-// long-running browser sessions doesn't bloat the message log to
-// MBs. The full content still flows through the LLM tool loop in
-// memory; this cap only governs what lands on disk.
-const ROLE_TOOL_RESULT_TRACE_CAP_BYTES = 8 * 1024;
 const ROLE_TOOL_HISTORY_MAX_MESSAGES = 16;
 const TOOL_RESULT_RECENT_FULL_COUNT = 2;
 const TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES = 32 * 1024;
@@ -6553,27 +6441,6 @@ function readPositiveIntegerEnv(
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function toNativeToolResultTrace(
-  toolResult: RoleToolExecutionResult,
-): NativeToolResultTrace {
-  const bytes = Buffer.byteLength(toolResult.content, "utf8");
-  const traceContent = compactToolResultTraceContent(toolResult.content);
-  const traceBytes = Buffer.byteLength(traceContent.content, "utf8");
-  const truncated = traceBytes > ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
-  return {
-    toolCallId: toolResult.toolCallId,
-    toolName: toolResult.toolName,
-    isError: toolResult.isError === true,
-    contentBytes: bytes,
-    content: truncated
-      ? sliceUtf8(traceContent.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES)
-      : traceContent.content,
-    ...(truncated || traceContent.compacted ? { contentTruncated: true } : {}),
-    ...(toolResult.cancelled ? { cancelled: true } : {}),
-    ...(toolResult.skipped ? { skipped: true } : {}),
-  };
-}
-
 function canonicalizeSessionToolTraceCalls(
   roundTrace: NativeToolRoundTrace,
   toolResults: RoleToolExecutionResult[],
@@ -6601,245 +6468,6 @@ function canonicalizeSessionToolTraceCalls(
     changed = true;
   }
   return changed;
-}
-
-function compactToolResultTraceContent(content: string): {
-  content: string;
-  compacted: boolean;
-} {
-  const parsed = parseSessionToolResult(content);
-  if (!parsed) {
-    return { content, compacted: false };
-  }
-  const compacted = {
-    protocol: parsed.protocol,
-    status: parsed.status,
-    agent_id: parsed.agent_id,
-    ...(parsed.label ? { label: parsed.label } : {}),
-    session_key: parsed.session_key,
-    task_id: parsed.task_id,
-    ...(parsed.parent_session_key
-      ? { parent_session_key: parsed.parent_session_key }
-      : {}),
-    ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}),
-    ...(parsed.resumable ? { resumable: parsed.resumable } : {}),
-    ...(parsed.timeout_seconds == null
-      ? {}
-      : { timeout_seconds: parsed.timeout_seconds }),
-    ...(parsed.evidence_available == null
-      ? {}
-      : { evidence_available: parsed.evidence_available }),
-    tool_chain: parsed.tool_chain,
-    ...compactSessionPayloadArtifactRefs(parsed.payload),
-    ...compactSessionPayloadEvidenceExcerpt(parsed.payload),
-    ...(typeof parsed.evidence_summary === "string"
-      ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1024) }
-      : {}),
-    final_content:
-      typeof parsed.final_content === "string"
-        ? sliceUtf8(parsed.final_content, 3 * 1024)
-        : null,
-    result:
-      typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1024) : "",
-  };
-  const compactContent = fitCompactToolResultTraceContent(compacted);
-  return {
-    content: compactContent,
-    compacted: compactContent !== content,
-  };
-}
-
-function fitCompactToolResultTraceContent(
-  input: Record<string, unknown>,
-): string {
-  const compacted = { ...input };
-  const serialize = () => JSON.stringify(compacted, null, 2);
-  const fits = (value: string) =>
-    Buffer.byteLength(value, "utf8") <= ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
-  const trySerialize = () => {
-    const value = serialize();
-    return fits(value) ? value : null;
-  };
-
-  const initial = trySerialize();
-  if (initial) return initial;
-
-  const shrinkStringField = (field: string, maxBytes: number) => {
-    const value = compacted[field];
-    if (typeof value === "string") {
-      compacted[field] = maxBytes > 0 ? sliceUtf8(value, maxBytes) : "";
-    }
-  };
-  const deleteField = (field: string) => {
-    delete compacted[field];
-  };
-  const prunePayload = (
-    field: "screenshotPaths" | "artifactIds",
-    limit: number,
-  ) => {
-    const payload = compacted.payload;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      return;
-    }
-    const record = payload as Record<string, unknown>;
-    const values = readStringArray(record[field]);
-    if (values.length > limit) {
-      record[field] = values.slice(0, limit);
-      record[`${field}Truncated`] = true;
-      record[`${field}Count`] = values.length;
-    }
-  };
-
-  const steps: Array<() => void> = [
-    () => shrinkStringField("final_content", 2048),
-    () => shrinkStringField("result", 768),
-    () => shrinkStringField("evidence_summary", 512),
-    () => shrinkStringField("evidence_excerpt", 512),
-    () => shrinkStringField("final_content", 1024),
-    () => shrinkStringField("result", 384),
-    () => deleteField("evidence_summary"),
-    () => deleteField("evidence_excerpt"),
-    () => shrinkStringField("final_content", 512),
-    () => shrinkStringField("result", 0),
-    () => {
-      compacted.final_content = null;
-    },
-    () => prunePayload("screenshotPaths", 4),
-    () => prunePayload("artifactIds", 16),
-  ];
-
-  for (const step of steps) {
-    step();
-    const value = trySerialize();
-    if (value) return value;
-  }
-
-  const minimal = {
-    protocol: compacted.protocol,
-    status: compacted.status,
-    agent_id: compacted.agent_id,
-    session_key: compacted.session_key,
-    task_id: compacted.task_id,
-    tool_chain: compacted.tool_chain,
-    payload: compacted.payload,
-    result: "session tool result compacted",
-    final_content: null,
-  };
-  const minimalContent = JSON.stringify(minimal, null, 2);
-  if (fits(minimalContent)) return minimalContent;
-  return JSON.stringify({
-    protocol: compacted.protocol,
-    status: compacted.status,
-    result: "session tool result compacted",
-  });
-}
-
-function compactSessionPayloadEvidenceExcerpt(
-  payload: unknown,
-): { evidence_excerpt: string } | Record<string, never> {
-  const evidence = readPayloadEvidenceExcerpt(payload);
-  return evidence ? { evidence_excerpt: sliceUtf8(evidence, 2 * 1024) } : {};
-}
-
-function compactSessionPayloadArtifactRefs(
-  payload: unknown,
-):
-  | { payload: { artifactIds?: string[]; screenshotPaths?: string[] } }
-  | Record<string, never> {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return {};
-  }
-  const record = payload as Record<string, unknown>;
-  const artifactIds = readStringArray(record.artifactIds);
-  const screenshotPaths = readStringArray(record.screenshotPaths);
-  if (artifactIds.length === 0 && screenshotPaths.length === 0) {
-    return {};
-  }
-  return {
-    payload: {
-      ...(artifactIds.length ? { artifactIds } : {}),
-      ...(screenshotPaths.length ? { screenshotPaths } : {}),
-    },
-  };
-}
-
-function readPayloadEvidenceExcerpt(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return null;
-  }
-  const record = payload as Record<string, unknown>;
-  const pages = readPayloadEvidencePages(record);
-  const parts = [
-    readStringField(record.content),
-    ...pages.flatMap((page) => [
-      readStringField(page.finalUrl),
-      readStringField(page.title),
-      readStringField(page.textExcerpt),
-    ]),
-  ]
-    .filter((part): part is string => Boolean(part))
-    .map((part) => part.trim());
-  const joined = dedupeStrings(parts).join("\n");
-  return joined || null;
-}
-
-function readPayloadEvidencePages(record: Record<string, unknown>): Array<Record<string, unknown>> {
-  const pages: Array<Record<string, unknown>> = [];
-  const seen = new Set<string>();
-  const addPage = (value: unknown) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return;
-    }
-    const page = value as Record<string, unknown>;
-    const key = readStringField(page.finalUrl) ?? readStringField(page.requestedUrl) ?? JSON.stringify(page).slice(0, 120);
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    pages.push(page);
-  };
-  if (Array.isArray(record.pages)) {
-    for (const page of record.pages) {
-      addPage(page);
-    }
-  }
-  if (Array.isArray(record.sourceResults)) {
-    for (const sourceResult of record.sourceResults) {
-      if (!sourceResult || typeof sourceResult !== "object" || Array.isArray(sourceResult)) {
-        continue;
-      }
-      addPage((sourceResult as Record<string, unknown>).page);
-    }
-  }
-  addPage(record.page);
-  return pages;
-}
-
-function readStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .filter(
-      (item): item is string =>
-        typeof item === "string" && item.trim().length > 0,
-    )
-    .map((item) => item.trim());
-}
-
-function toNativeToolProgressTrace(
-  call: LLMToolCall,
-  progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
-  ts: number,
-): NativeToolProgressTrace {
-  return {
-    toolCallId: call.id,
-    toolName: progress.toolName || call.name,
-    phase: progress.phase,
-    summary: progress.summary,
-    ...(progress.detail ? { detail: progress.detail } : {}),
-    ts,
-  };
 }
 
 function findSubAgentToolTimeout(
@@ -11203,10 +10831,6 @@ function isLikelyFailedToolContent(content: string): boolean {
       content,
     ) || /^tool_call_.*(?:skipp|error|fail)/i.test(content.trim())
   );
-}
-
-function readStringField(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function formatDurationMs(ms: number): string {

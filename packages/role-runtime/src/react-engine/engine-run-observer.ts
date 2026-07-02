@@ -1,14 +1,160 @@
-// Stage 8 engine cleanup — EngineRunObserver (module shell).
+import type { ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
+import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
+
+import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  toNativeToolProgressTrace,
+  toNativeToolResultTrace,
+} from "../tool-loop-shared";
+
+// Stage 8 engine cleanup — EngineRunObserver.
 //
-// Authority: own every observability sink used by the engine path (toolTrace,
-// native tool messages, runtime progress events, provider tool protocol round
-// boundary, model-use summary, pruning/reduction/memory-flush metadata) and
-// produce one metadata snapshot at the end of the run.
-//
-// It does NOT decide whether a tool call is allowed, whether a continuation
-// fires, whether a repair fires, or transform final answer text.
-//
-// Implementation lands in Batch 1 ("Extract Observability, Normalization, And
-// Finalization"). This shell only reserves the module and its public entry
-// point so the layout compiles.
+// Authority: own the engine path's tool observability sinks (toolTrace,
+// runtime progress events, and native tool-message persistence). It does NOT
+// decide whether a tool call is allowed, whether a continuation fires, whether a
+// repair fires, or transform final answer text.
 export const ENGINE_RUN_OBSERVER_MODULE = "engine-run-observer" as const;
+
+export interface EngineRunObserverDependencies {
+  now(): number;
+  recordToolProgress(
+    call: LLMToolCall,
+    progress: ToolProgressEvent,
+  ): Promise<void>;
+  persistNativeToolTrace(options?: { forceBlocking?: boolean }): Promise<void>;
+}
+
+export interface EngineObservedModelResponse {
+  round: number;
+  toolCalls: LLMToolCall[];
+}
+
+export interface EngineObservedToolStart {
+  round: number;
+  call: LLMToolCall;
+}
+
+export interface EngineObservedToolResult {
+  result: ToolResult;
+}
+
+export class EngineRunObserver {
+  private currentRound: NativeToolRoundTrace | undefined;
+
+  constructor(
+    private readonly toolTrace: NativeToolRoundTrace[],
+    private readonly deps: EngineRunObserverDependencies,
+  ) {}
+
+  onModelResponse(input: EngineObservedModelResponse): void {
+    if (input.toolCalls.length === 0) {
+      return;
+    }
+    this.currentRound = {
+      round: input.round + 1,
+      calls: input.toolCalls.map((call) => ({
+        id: call.id,
+        name: call.name,
+        input: call.input,
+      })),
+      results: [],
+      progress: [],
+    };
+    this.toolTrace.push(this.currentRound);
+  }
+
+  async onToolStarted(input: EngineObservedToolStart): Promise<void> {
+    this.ensureRoundForToolStart(input);
+    const round = this.currentRound;
+    if (!round) {
+      return;
+    }
+    if (!round.calls.some((existing) => existing.id === input.call.id)) {
+      round.calls.push({
+        id: input.call.id,
+        name: input.call.name,
+        input: input.call.input,
+      });
+    }
+    const startedProgress: ToolProgressEvent = {
+      phase: "started",
+      toolName: input.call.name,
+      summary: `Tool call started: ${input.call.name}`,
+    };
+    round.progress?.push(
+      toNativeToolProgressTrace(input.call, startedProgress, this.deps.now()),
+    );
+    await this.deps.recordToolProgress(input.call, startedProgress);
+    await this.deps.persistNativeToolTrace({ forceBlocking: true });
+  }
+
+  async onToolResult(input: EngineObservedToolResult): Promise<void> {
+    const round = this.currentRound;
+    if (!round) {
+      return;
+    }
+    const roleToolResult = input.result;
+    round.results.push(toNativeToolResultTrace(roleToolResult));
+
+    const progressCall: LLMToolCall = {
+      id: roleToolResult.toolCallId,
+      name: roleToolResult.toolName,
+      input: {},
+    };
+    for (const progress of roleToolResult.progress ?? []) {
+      round.progress?.push(
+        toNativeToolProgressTrace(progressCall, progress, this.deps.now()),
+      );
+      await this.deps.recordToolProgress(progressCall, progress);
+    }
+
+    const terminalProgress: ToolProgressEvent = {
+      phase: roleToolResult.cancelled
+        ? "cancelled"
+        : roleToolResult.isError
+          ? "failed"
+          : "completed",
+      toolName: roleToolResult.toolName,
+      summary: roleToolResult.cancelled
+        ? `Tool call cancelled: ${roleToolResult.toolName}`
+        : roleToolResult.isError
+          ? `Tool call failed: ${roleToolResult.toolName}`
+          : `Tool call completed: ${roleToolResult.toolName}`,
+    };
+    round.progress?.push(
+      toNativeToolProgressTrace(progressCall, terminalProgress, this.deps.now()),
+    );
+    await this.deps.recordToolProgress(progressCall, terminalProgress);
+    await this.deps.persistNativeToolTrace();
+  }
+
+  snapshot(): {
+    toolTrace: NativeToolRoundTrace[];
+    currentRound: NativeToolRoundTrace | undefined;
+  } {
+    return {
+      toolTrace: this.toolTrace,
+      currentRound: this.currentRound,
+    };
+  }
+
+  private ensureRoundForToolStart(input: EngineObservedToolStart): void {
+    if (this.currentRound?.round === input.round + 1) {
+      return;
+    }
+    this.currentRound = {
+      round: input.round + 1,
+      calls: [],
+      results: [],
+      progress: [],
+    };
+    this.toolTrace.push(this.currentRound);
+  }
+}
+
+export function createEngineRunObserver(
+  toolTrace: NativeToolRoundTrace[],
+  deps: EngineRunObserverDependencies,
+): EngineRunObserver {
+  return new EngineRunObserver(toolTrace, deps);
+}
