@@ -11,8 +11,6 @@ import {
   buildSourceEvidenceCarryForwardRepairPrompt,
   buildWeakEvidenceSynthesisRepairPrompt,
   collectBrowserRecoverySummariesFromToolTrace,
-  collectCompletedSessionEvidenceText,
-  collectSourceBoundedEvidenceText,
   dedupeStrings,
   maybeAppendBrowserFailureBucketVisibility,
   maybeAppendBrowserRecoveryVisibility,
@@ -29,6 +27,7 @@ import {
   createRepairPolicyRegistry,
   type RepairPolicyRegistry,
 } from "./repair-policy-registry";
+import { buildEvidenceSnapshot } from "./evidence-ledger";
 
 // Stage 8 engine cleanup — CompletedCloseoutController.
 //
@@ -208,16 +207,11 @@ export class CompletedCloseoutController {
       const naturalFinishEvidenceText =
         repairRound === 0
           ? input.completedEvidenceText
-          : [
-              collectSourceBoundedEvidenceText({
-                taskPrompt: input.taskPrompt,
-                messages: repairMessages,
-                toolTrace: input.toolTrace,
-              }),
-              collectCompletedSessionEvidenceText(input.toolTrace),
-            ]
-              .filter((text) => text.trim().length > 0)
-              .join("\n\n");
+          : buildEvidenceSnapshot({
+              taskPrompt: input.taskPrompt,
+              messages: repairMessages,
+              toolTrace: input.toolTrace,
+            }).naturalFinishEvidenceText;
 
       let repairPrompt = evaluateTableOrSchemaRepair({
         input,

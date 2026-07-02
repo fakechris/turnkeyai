@@ -10,5 +10,60 @@
 // read the EvidenceSnapshot it produces; they may not invent inline regexes.
 //
 // Implementation lands in Batch 5 ("Add EvidenceLedger And TaskFacts Facade").
-// This shell reserves the module.
+// This first implementation is a behavior-neutral facade over existing shared
+// collectors so extracted policies can depend on a stable engine evidence
+// contract before the producer rewrite.
+import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
+
+import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  collectCompletedSessionEvidenceText,
+  collectSourceBoundedEvidenceText,
+} from "../tool-loop-shared";
+
 export const EVIDENCE_LEDGER_MODULE = "evidence-ledger" as const;
+
+export interface EvidenceLedgerInput {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}
+
+export interface EvidenceSnapshot {
+  sourceBoundedEvidenceText: string;
+  completedSessionEvidenceText: string;
+  naturalFinishEvidenceText: string;
+}
+
+export class EvidenceLedger {
+  snapshot(input: EvidenceLedgerInput): EvidenceSnapshot {
+    return buildEvidenceSnapshot(input);
+  }
+}
+
+export function createEvidenceLedger(): EvidenceLedger {
+  return new EvidenceLedger();
+}
+
+export function buildEvidenceSnapshot(
+  input: EvidenceLedgerInput,
+): EvidenceSnapshot {
+  const sourceBoundedEvidenceText = collectSourceBoundedEvidenceText({
+    taskPrompt: input.taskPrompt,
+    messages: input.messages,
+    toolTrace: input.toolTrace,
+  });
+  const completedSessionEvidenceText = collectCompletedSessionEvidenceText(
+    input.toolTrace,
+  );
+  return {
+    sourceBoundedEvidenceText,
+    completedSessionEvidenceText,
+    naturalFinishEvidenceText: [
+      sourceBoundedEvidenceText,
+      completedSessionEvidenceText,
+    ]
+      .filter((text) => text.trim().length > 0)
+      .join("\n\n"),
+  };
+}

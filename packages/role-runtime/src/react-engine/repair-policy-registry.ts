@@ -23,8 +23,6 @@ import {
   buildStalePendingApprovalRepairPrompt,
   buildTimeoutFollowupFinalGuidanceRepairPrompt,
   buildWeakEvidenceSynthesisRepairPrompt,
-  collectCompletedSessionEvidenceText,
-  collectSourceBoundedEvidenceText,
   findMissingRequiredFinalDeliverables,
   hasMissingRequiredFinalDeliverablesRepairPrompt,
   shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
@@ -45,6 +43,7 @@ import {
   sliceUtf8,
 } from "../tool-loop-shared";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import { buildEvidenceSnapshot } from "./evidence-ledger";
 import {
   buildOriginalRequestTableColumnContext,
   buildRequestedTableColumnActivationContext,
@@ -799,16 +798,11 @@ function collectNaturalFinishSourceBoundedEvidenceText(
   if (!input.taskPrompt || !input.toolTrace) {
     return "";
   }
-  return [
-    collectSourceBoundedEvidenceText({
-      taskPrompt: input.taskPrompt,
-      messages: input.messages,
-      toolTrace: input.toolTrace,
-    }),
-    collectCompletedSessionEvidenceText(input.toolTrace),
-  ]
-    .filter((text) => text.trim().length > 0)
-    .join("\n\n");
+  return buildEvidenceSnapshot({
+    taskPrompt: input.taskPrompt,
+    messages: input.messages,
+    toolTrace: input.toolTrace,
+  }).naturalFinishEvidenceText;
 }
 
 function evaluateTimeoutFollowupFinalGuidanceRepair(
