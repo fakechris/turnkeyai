@@ -73,6 +73,8 @@ test("EvidenceLedger snapshot preserves source and completed-session evidence fo
     snapshot.naturalFinishEvidenceText,
     /Delegated final source evidence/,
   );
+  assert.match(snapshot.toolTraceResultContent, /pricing page returned \$10/);
+  assert.equal(snapshot.usableEvidence, true);
 });
 
 test("EvidenceLedger class returns the same snapshot contract", () => {
@@ -96,4 +98,39 @@ test("EvidenceLedger class returns the same snapshot contract", () => {
 
   assert.equal(snapshot.completedSessionEvidenceText, "");
   assert.match(snapshot.naturalFinishEvidenceText, /feature is available/);
+  assert.match(snapshot.toolTraceResultContent, /feature is available/);
+  assert.equal(snapshot.usableEvidence, true);
+});
+
+test("EvidenceLedger marks skipped/error-only traces as not usable evidence", () => {
+  const snapshot = buildEvidenceSnapshot({
+    taskPrompt: "Summarize source evidence.",
+    messages: [],
+    toolTrace: [
+      {
+        round: 1,
+        calls: [],
+        results: [
+          {
+            ...result({
+              toolName: "web_fetch",
+              content: "source failed",
+            }),
+            isError: true,
+          },
+          {
+            ...result({
+              toolName: "web_fetch",
+              content: "source skipped",
+              id: "toolu-skipped",
+            }),
+            skipped: true,
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.match(snapshot.toolTraceResultContent, /source failed/);
+  assert.equal(snapshot.usableEvidence, false);
 });

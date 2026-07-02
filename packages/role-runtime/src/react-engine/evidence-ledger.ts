@@ -20,6 +20,10 @@ import {
   collectCompletedSessionEvidenceText,
   collectSourceBoundedEvidenceText,
 } from "../tool-loop-shared";
+import {
+  collectToolTraceResultContent,
+  hasUsableEvidence,
+} from "../tool-result-evidence";
 
 export const EVIDENCE_LEDGER_MODULE = "evidence-ledger" as const;
 
@@ -33,6 +37,8 @@ export interface EvidenceSnapshot {
   sourceBoundedEvidenceText: string;
   completedSessionEvidenceText: string;
   naturalFinishEvidenceText: string;
+  toolTraceResultContent: string;
+  usableEvidence: boolean;
 }
 
 export class EvidenceLedger {
@@ -56,9 +62,12 @@ export function buildEvidenceSnapshot(
   const completedSessionEvidenceText = collectCompletedSessionEvidenceText(
     input.toolTrace,
   );
+  const toolTraceResultContent = collectToolTraceResultContent(input.toolTrace);
   return {
     sourceBoundedEvidenceText,
     completedSessionEvidenceText,
+    toolTraceResultContent,
+    usableEvidence: hasUsableEvidence(input.toolTrace),
     naturalFinishEvidenceText: [
       sourceBoundedEvidenceText,
       completedSessionEvidenceText,

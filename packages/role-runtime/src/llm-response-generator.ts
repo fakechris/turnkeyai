@@ -246,6 +246,7 @@ import {
   createEnginePolicyTrace,
   enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
+  createEvidenceLedger,
   createEngineRunState,
   createEngineRunObserver,
   createPermissionPolicy,
@@ -2628,6 +2629,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const closeoutPolicy = createCloseoutPolicyRegistry();
     const repairPolicy = createRepairPolicyRegistry();
     const completedCloseout = createCompletedCloseoutController();
+    const evidenceLedger = createEvidenceLedger();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     type RoleEngineRunStateValues = DefaultEngineRunStateValues & {
@@ -2661,6 +2663,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // (toolLoopCloseout/result/reduction/memoryFlushes/completed signals).
     const runState = createEngineRunState<RoleEngineRunStateValues>();
     const toolTrace: NativeToolRoundTrace[] = [];
+    const snapshotEvidence = (messages: LLMMessage[]) =>
+      evidenceLedger.snapshot({
+        taskPrompt: packet.taskPrompt,
+        messages,
+        toolTrace,
+      });
     const observer = createEngineRunObserver(toolTrace, {
       now: () => this.clock.now(),
       recordToolProgress: (call, progress) =>
@@ -2932,6 +2940,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return null;
           }
           const roundCount = toolTrace.length;
+          const stateEvidence = snapshotEvidence(state.messages);
           // Stage 7 S4: the synthetic sessions_send an empty round WOULD inject (or
           // null). Inline injects it (:567) BEFORE the pseudo_tool_call closeout
           // (:1035) and the wall-clock check (:1285): the injection turns the round
@@ -2959,7 +2968,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   pendingToolCallCount: calls.length,
                   usedToolCalls,
                   roundCount,
-                  evidenceAvailable: hasUsableEvidence(toolTrace),
+                  evidenceAvailable: stateEvidence.usableEvidence,
                 }),
             });
           if (recoveryBudgetCloseout?.kind === "defer") {
@@ -2996,7 +3005,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   maxRounds,
                   usedToolCalls: countNativeToolCalls(toolTrace),
                   roundCount,
-                  evidenceAvailable: hasUsableEvidence(toolTrace),
+                  evidenceAvailable: stateEvidence.usableEvidence,
                   now: () => this.clock.now(),
                   toolLoopStartedAtMs,
                   ...(activeToolLoop.maxWallClockMs === undefined
@@ -3013,7 +3022,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     maxRounds,
                     usedToolCalls: countNativeToolCalls(toolTrace),
                     roundCount,
-                    evidenceAvailable: hasUsableEvidence(toolTrace),
+                    evidenceAvailable: stateEvidence.usableEvidence,
                     now: () => this.clock.now(),
                     toolLoopStartedAtMs,
                     ...(activeToolLoop.maxWallClockMs === undefined
@@ -3037,14 +3046,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               maxRounds,
               usedToolCalls: countNativeToolCalls(toolTrace),
               roundCount,
-              evidenceAvailable: hasUsableEvidence(toolTrace),
+              evidenceAvailable: stateEvidence.usableEvidence,
               buildRoundLimitCloseoutSnapshot: () =>
                 executionBudget.buildRoundLimitCloseoutSnapshot({
                   maxRounds,
                   pendingToolCallCount: calls.length,
                   usedToolCalls: countNativeToolCalls(toolTrace),
                   roundCount,
-                  evidenceAvailable: hasUsableEvidence(toolTrace),
+                  evidenceAvailable: stateEvidence.usableEvidence,
                 }),
             });
           if (remainingPendingCloseout?.kind === "closeout") {
@@ -3863,7 +3872,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // read the signal onAfterExecute stashed on `run`.
           const usedToolCalls = countNativeToolCalls(toolTrace);
           const roundCount = toolTrace.length;
-          const evidenceAvailable = hasUsableEvidence(toolTrace);
+          const terminateEvidence = snapshotEvidence(state.messages);
+          const evidenceAvailable = terminateEvidence.usableEvidence;
           const pendingCloseout = runState.pendingCloseout();
           const completedSessionSignal = runState.completedSession();
           const timeoutSignal = runState.timeoutSignal();
@@ -4055,8 +4065,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return "rethrow";
           }
           runState.captureFinalMessages(state.messages);
+          const errorEvidence = snapshotEvidence(state.messages);
           const forcedPermissionResult =
-            activeToolLoop && hasUsableEvidence(toolTrace)
+            activeToolLoop && errorEvidence.usableEvidence
               ? continuation.forcePendingApprovalWaitTimeoutPermissionResult({
                   taskPrompt: packet.taskPrompt,
                   toolTrace,
@@ -4080,7 +4091,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             return { messages: forcedRound.messages };
           }
           const localResult =
-            activeToolLoop && hasUsableEvidence(toolTrace)
+            activeToolLoop && errorEvidence.usableEvidence
               ? buildLocalEvidenceCloseout({
                   activation,
                   messages: state.messages,
@@ -4192,7 +4203,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       taskPrompt: packet.taskPrompt,
       messages: epilogueMessages,
       toolTrace,
-      evidenceText: collectToolTraceResultContent(toolTrace),
+      evidenceText: snapshotEvidence(epilogueMessages).toolTraceResultContent,
     });
     finalText = finalResult.text;
 
