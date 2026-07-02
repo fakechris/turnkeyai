@@ -3110,7 +3110,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           });
           // S7 branches 1-2: a sub-agent TIMEOUT signal that should be continued via
           // sessions_send, before the sub_agent_timeout closeout (inline :1562, :1583).
-          const timeoutSignal = findSubAgentToolTimeout(results);
+          const timeoutSignal = evidenceLedger.subAgentToolTimeout(results);
           const timeoutContinuation =
             continuation.onAfterExecuteTimeoutContinuation({
               messages: state.messages,
@@ -3131,7 +3131,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           // S7 branches 3-4 + S5: a COMPLETED delegated session, continued before the
           // completed_sub_agent_final closeout (inline :1603-1712, inside completedSession).
-          const completedSession = findCompletedSessionEvidence(results);
+          const completedSession =
+            evidenceLedger.completedSessionEvidence(results);
           if (!completedSession) {
             // General supplemental timeout probe (inline :2336-2360): a NON-browser
             // sub-agent timeout whose resumed evidence is still content-poor
@@ -3300,10 +3301,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // onAfterExecuteContinue above; this callback only decides whether the
         // just-executed round terminates.
         onAfterExecute: (results) => {
-          const completedSession = findCompletedSessionEvidence(results);
+          const completedSession =
+            evidenceLedger.completedSessionEvidence(results);
           const timeoutSignal = completedSession
             ? null
-            : findSubAgentToolTimeout(results);
+            : evidenceLedger.subAgentToolTimeout(results);
           const postExecuteCloseout = closeoutPolicy.evaluatePostExecute({
             completedSession,
             timeoutSignal,

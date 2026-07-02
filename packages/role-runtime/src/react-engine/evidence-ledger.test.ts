@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import { SESSION_TOOL_RESULT_PROTOCOL } from "../session-tool-result-protocol";
 import type { RoleToolExecutionResult } from "../tool-use";
 import {
   buildEvidenceSnapshot,
@@ -26,12 +27,32 @@ function result(input: {
 
 function completedSessionContent(finalContent: string): string {
   return JSON.stringify({
+    protocol: SESSION_TOOL_RESULT_PROTOCOL,
     task_id: "task-1",
     session_key: "worker:explore:task-1",
     agent_id: "explore",
     status: "completed",
+    tool_chain: [],
     result: finalContent,
     final_content: finalContent,
+    payload: null,
+  });
+}
+
+function timeoutSessionContent(): string {
+  return JSON.stringify({
+    protocol: SESSION_TOOL_RESULT_PROTOCOL,
+    task_id: "task-2",
+    session_key: "worker:explore:task-2",
+    agent_id: "explore",
+    status: "timeout",
+    tool_chain: [],
+    timeout_seconds: 90,
+    evidence_available: true,
+    evidence_summary: "partial source evidence",
+    result: "partial source evidence",
+    final_content: null,
+    payload: null,
   });
 }
 
@@ -200,4 +221,33 @@ test("EvidenceLedger owns current tool-result content text", () => {
     createEvidenceLedger().toolResultContentText(results),
     "first source result\n\nsecond delegated result",
   );
+});
+
+test("EvidenceLedger owns current completed-session and timeout signals", () => {
+  const ledger = createEvidenceLedger();
+  const completed = ledger.completedSessionEvidence([
+    {
+      toolCallId: "toolu-completed",
+      toolName: "sessions_spawn",
+      content: completedSessionContent("delegated final evidence"),
+    },
+  ]);
+  assert.ok(completed);
+  assert.equal(completed.toolName, "sessions_spawn");
+  assert.deepEqual(completed.finalContents, ["delegated final evidence"]);
+
+  const timeout = ledger.subAgentToolTimeout([
+    {
+      toolCallId: "toolu-timeout",
+      toolName: "sessions_send",
+      content: timeoutSessionContent(),
+    },
+  ]);
+  assert.deepEqual(timeout, {
+    toolName: "sessions_send",
+    sessionKey: "worker:explore:task-2",
+    agentId: "explore",
+    timeoutSeconds: 90,
+    evidenceAvailable: true,
+  });
 });

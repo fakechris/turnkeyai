@@ -25,6 +25,8 @@ import {
 import {
   collectToolResultContentText,
   collectToolTraceResultContent,
+  findCompletedSessionEvidence,
+  findSubAgentToolTimeout,
   hasUsableEvidence,
 } from "../tool-result-evidence";
 
@@ -52,6 +54,18 @@ export class EvidenceLedger {
 
   toolResultContentText(results: RoleToolExecutionResult[]): string {
     return buildToolResultContentText(results);
+  }
+
+  completedSessionEvidence(
+    results: RoleToolExecutionResult[],
+  ): ReturnType<typeof findCompletedSessionEvidence> {
+    return findCompletedSessionEvidence(results);
+  }
+
+  subAgentToolTimeout(
+    results: RoleToolExecutionResult[],
+  ): ReturnType<typeof findSubAgentToolTimeout> {
+    return findSubAgentToolTimeout(results);
   }
 }
 
