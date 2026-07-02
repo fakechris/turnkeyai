@@ -515,6 +515,16 @@ export function hasLatestSupplementalLocalTimeoutProbePrompt(
   );
 }
 
+export function hasSupplementalLocalTimeoutProbePrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some((message) =>
+    readMessageContentText(message.content).includes(
+      "Runtime correction: resumed timeout evidence is still content-poor.",
+    ),
+  );
+}
+
 export function isAppliedApprovalBrowserContinuation(taskPrompt: string): boolean {
   return (
     taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
@@ -634,6 +644,127 @@ export function buildCoverageTimeoutContinuationPrompt(
     "Ask the child session to return only the missing source evidence needed for the final answer.",
     "If the continued session still cannot verify the source, then close out as incomplete/resumable and keep the missing source unverified.",
   ].join("\n");
+}
+
+export function shouldRunSupplementalLocalTimeoutProbe(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  evidenceText: string;
+  tools?: readonly { name: string }[];
+  browserAvailable: boolean;
+}): { url: string; evidence: string } | null {
+  if (
+    !input.browserAvailable ||
+    !hasToolDefinition(input.tools, "sessions_spawn")
+  ) {
+    return null;
+  }
+  if (hasSupplementalLocalTimeoutProbePrompt(input.messages)) {
+    return null;
+  }
+  const context = buildContinuationDirectiveContext(
+    input.taskPrompt,
+    input.messages,
+  );
+  const sourceContext = `${input.taskPrompt}\n${context}\n${input.evidenceText}`;
+  if (explicitlyDisallowsBrowserEvidence(sourceContext)) {
+    return null;
+  }
+  const hasTimeoutEvidence =
+    hasSessionTimeoutEvidence(input) ||
+    mentionsTimeout(`${context}\n${input.evidenceText}`);
+  if (
+    !hasTimeoutEvidence ||
+    !toolTraceHasCall(input.toolTrace, "sessions_send")
+  ) {
+    return null;
+  }
+  if (hasCompletedBrowserSessionEvidence(input.toolTrace)) {
+    return null;
+  }
+  if (!looksBoundedTimeoutSourceCheck(sourceContext)) {
+    return null;
+  }
+  if (!isContentPoorTimeoutEvidence(`${context}\n${input.evidenceText}`)) {
+    return null;
+  }
+  const url = extractHttpUrls(sourceContext).find((candidate) => {
+    try {
+      return isLoopbackHostname(new URL(candidate).hostname);
+    } catch {
+      return false;
+    }
+  });
+  return url ? { url, evidence: sliceUtf8(input.evidenceText, 1800) } : null;
+}
+
+function explicitlyDisallowsBrowserEvidence(text: string): boolean {
+  return /\bbrowser[- ]visible\s*\/\s*rendered evidence was not requested\b|\b(?:browser[- ]visible|rendered|browser|DOM|screenshot|snapshot)\b[\s\S]{0,80}\b(?:was not|is not|not)\s+(?:requested|required|needed)\b|\b(?:do not|don't)\s+(?:use|call|inspect|open)\b[\s\S]{0,80}\b(?:browser|rendered|DOM|screenshot|snapshot)/i.test(
+    text,
+  );
+}
+
+function isContentPoorTimeoutEvidence(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized || !mentionsTimeout(normalized)) {
+    return false;
+  }
+  const hasPositiveSourceEvidence =
+    /\b(?:HTTP\s*(?:status\s*)?200|status\s*[:=]?\s*200|(?:response body|body text)\b[\s\S]{0,80}\b(?:observed|captured|returned)|headers?\b[\s\S]{0,80}\b(?:observed|captured|returned)|TURNKEYAI_[A-Z0-9_]+_OK|readyState\s*[:=]?\s*complete|page title|visible text|source (?:returned|responded)|returned release-risk evidence)\b/i.test(
+      normalized,
+    );
+  if (hasPositiveSourceEvidence) {
+    return false;
+  }
+  return (
+    /\b(?:no HTTP status|status code (?:was )?not obtained|no response headers?|no response body|body (?:was )?not retrieved|no usable evidence|no source content|returned no source content|verification did not complete|unverified|timed out before)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:sub-agent session timed out|execution paused before completion|WORKER_TIMEOUT|timed out after \d+(?:\.\d+)?s)\b/i.test(
+      normalized,
+    )
+  );
+}
+
+export function buildSupplementalLocalTimeoutProbePrompt(input: {
+  url: string;
+  evidence: string;
+}): string {
+  return [
+    "Runtime correction: resumed timeout evidence is still content-poor.",
+    `The resumed source-check still lacks response status/body/header or rendered page evidence for ${input.url}.`,
+    "Spawn exactly one focused browser session now. Use the browser worker for browser-visible/local runtime evidence; do not use explore or public-source fetch.",
+    `Supplemental local timeout probe mode: call browser_open with timeout_ms ${SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS}, then stop with observed evidence or explicit unavailable fields.`,
+    "Open the loopback URL as an operator would see it with a bounded local-runtime attempt.",
+    "Return only observed evidence: final URL, title, visible marker/text, whether loading completed, console/network failures if available, screenshot/artifact references if captured, and any remaining unverified items.",
+    "If the page still does not produce evidence, report that status/body/header/rendered content remain unavailable and keep the release-risk conclusion source-bounded.",
+    `Prior content-poor timeout evidence:\n${input.evidence}`,
+  ].join("\n");
+}
+
+export function hasCompletedBrowserSessionEvidence(
+  toolTrace: NativeToolRoundTrace[],
+): boolean {
+  return toolTrace.some((round) =>
+    round.results.some((result) => {
+      if (
+        result.toolName !== "sessions_spawn" &&
+        result.toolName !== "sessions_send"
+      ) {
+        return false;
+      }
+      const parsed = result.content
+        ? parseSessionToolResult(result.content)
+        : null;
+      return Boolean(
+        parsed &&
+          parsed.status === "completed" &&
+          parsed.agent_id === "browser" &&
+          readCompletedSessionEvidence(parsed),
+      );
+    }),
+  );
 }
 
 export function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {

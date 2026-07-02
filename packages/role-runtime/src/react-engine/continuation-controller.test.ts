@@ -53,6 +53,41 @@ function sentTrace(sentSessionKey = sessionKey): NativeToolRoundTrace[] {
   ];
 }
 
+function supplementalProbeTrace(): NativeToolRoundTrace[] {
+  return [
+    {
+      round: 1,
+      calls: [
+        {
+          id: "toolu-resume",
+          name: "sessions_send",
+          input: {
+            session_key: "worker:explore:slow-source:toolu-timeout",
+            message: "resume slow source",
+          },
+        },
+      ],
+      results: [],
+    },
+  ];
+}
+
+function supplementalProbeTaskPrompt(): string {
+  return [
+    "Continue the slow-source source-check after the previous timeout.",
+    "Verify the local fixture at http://127.0.0.1:4173/source with browser-visible evidence.",
+    "Do not finalize until response status/body/header or rendered page evidence is available.",
+  ].join("\n");
+}
+
+function contentPoorTimeoutEvidence(): string {
+  return [
+    "The resumed source-check timed out before completion.",
+    "No HTTP status was obtained, headers are unavailable, and no response body was retrieved.",
+    "The URL remained unverified: http://127.0.0.1:4173/source.",
+  ].join("\n");
+}
+
 test("ContinuationController injects sessions_send for an empty continuation round", () => {
   const controller = createContinuationController();
 
@@ -272,6 +307,86 @@ test("ContinuationController skips timeout continuation after marker or prior se
       toolTrace: sentTrace(timeoutSignal.sessionKey),
       timeoutSignal,
       tools: [{ name: "sessions_send" }],
+    }),
+    { kind: "none" },
+  );
+});
+
+test("ContinuationController runs a supplemental local timeout probe without a completed session", () => {
+  const controller = createContinuationController();
+
+  const action = controller.continueSupplementalLocalTimeoutProbe({
+    messages: [{ role: "user", content: "tool result history" }],
+    taskPrompt: supplementalProbeTaskPrompt(),
+    toolTrace: supplementalProbeTrace(),
+    evidenceText: contentPoorTimeoutEvidence(),
+    completedSessionEvidence: false,
+    timeoutSignal: {
+      toolName: "sessions_send",
+      sessionKey: "worker:explore:slow-source:toolu-timeout",
+      agentId: "explore",
+      timeoutSeconds: 45,
+      evidenceAvailable: true,
+    },
+    tools: [{ name: "sessions_spawn" }],
+    browserAvailable: true,
+  });
+
+  assert.equal(action.kind, "continue");
+  assert.equal(
+    action.kind === "continue" && action.reason,
+    "supplemental_local_timeout_probe",
+  );
+  assert.deepEqual(
+    action.kind === "continue" && action.forceToolChoice,
+    { name: "sessions_spawn" },
+  );
+  assert.match(
+    String(action.kind === "continue" && action.messages.at(-1)?.content),
+    /resumed timeout evidence is still content-poor/,
+  );
+});
+
+test("ContinuationController runs a supplemental local timeout probe for completed session evidence", () => {
+  const controller = createContinuationController();
+
+  const action = controller.continueSupplementalLocalTimeoutProbe({
+    messages: [{ role: "user", content: "tool result history" }],
+    taskPrompt: supplementalProbeTaskPrompt(),
+    toolTrace: supplementalProbeTrace(),
+    evidenceText: contentPoorTimeoutEvidence(),
+    completedSessionEvidence: true,
+    timeoutSignal: null,
+    tools: [{ name: "sessions_spawn" }],
+    browserAvailable: true,
+  });
+
+  assert.equal(action.kind, "continue");
+  assert.equal(
+    action.kind === "continue" && action.reason,
+    "supplemental_local_timeout_probe",
+  );
+});
+
+test("ContinuationController does not run the no-completed supplemental probe for browser timeouts", () => {
+  const controller = createContinuationController();
+
+  assert.deepEqual(
+    controller.continueSupplementalLocalTimeoutProbe({
+      messages: [{ role: "user", content: "tool result history" }],
+      taskPrompt: supplementalProbeTaskPrompt(),
+      toolTrace: supplementalProbeTrace(),
+      evidenceText: contentPoorTimeoutEvidence(),
+      completedSessionEvidence: false,
+      timeoutSignal: {
+        toolName: "sessions_send",
+        sessionKey: "worker:browser:slow-source:toolu-timeout",
+        agentId: "browser",
+        timeoutSeconds: 45,
+        evidenceAvailable: true,
+      },
+      tools: [{ name: "sessions_spawn" }],
+      browserAvailable: true,
     }),
     { kind: "none" },
   );

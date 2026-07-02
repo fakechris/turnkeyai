@@ -5,6 +5,7 @@ import {
   buildApprovedBrowserTimeoutContinuationPrompt,
   buildContinuationDirectiveContext,
   buildCoverageTimeoutContinuationPrompt,
+  buildSupplementalLocalTimeoutProbePrompt,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   hasExecutedSessionsSend,
@@ -12,6 +13,7 @@ import {
   isAppliedApprovalBrowserContinuation,
   shouldContinueTimedOutApprovedBrowserSession,
   shouldContinueTimedOutSiblingSession,
+  shouldRunSupplementalLocalTimeoutProbe,
   type SubAgentToolTimeoutSignal,
 } from "../tool-loop-shared";
 import type { EngineContinueAction } from "./types";
@@ -47,6 +49,17 @@ export interface TimeoutContinuationInput {
   toolTrace: NativeToolRoundTrace[];
   timeoutSignal: SubAgentToolTimeoutSignal | null;
   tools?: readonly ContinuationToolDefinition[];
+}
+
+export interface SupplementalLocalTimeoutProbeInput {
+  messages: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  evidenceText: string;
+  completedSessionEvidence: boolean;
+  timeoutSignal: SubAgentToolTimeoutSignal | null;
+  tools?: readonly ContinuationToolDefinition[];
+  browserAvailable: boolean;
 }
 
 export class ContinuationController {
@@ -192,6 +205,40 @@ export class ContinuationController {
       ],
       forceToolChoice: { name: "sessions_send" },
       reason: "coverage_timeout_continuation",
+    };
+  }
+
+  continueSupplementalLocalTimeoutProbe(
+    input: SupplementalLocalTimeoutProbeInput,
+  ): EngineContinueAction {
+    if (
+      !input.completedSessionEvidence &&
+      (!input.timeoutSignal || input.timeoutSignal.agentId === "browser")
+    ) {
+      return { kind: "none" };
+    }
+    const probe = shouldRunSupplementalLocalTimeoutProbe({
+      taskPrompt: input.taskPrompt,
+      messages: input.messages,
+      toolTrace: input.toolTrace,
+      evidenceText: input.evidenceText,
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
+      browserAvailable: input.browserAvailable,
+    });
+    if (!probe) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "continue",
+      messages: [
+        ...input.messages,
+        {
+          role: "user",
+          content: buildSupplementalLocalTimeoutProbePrompt(probe),
+        },
+      ],
+      forceToolChoice: { name: "sessions_spawn" },
+      reason: "supplemental_local_timeout_probe",
     };
   }
 }
