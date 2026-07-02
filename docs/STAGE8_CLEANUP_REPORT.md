@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `8a22741f0bd388f00f261e1ebea71929305d00e0`
+**Code HEAD before this docs-only report:** `3dae00b6d309786d1bdc18fd514f8aea9ffc0fb6`
 **Date:** 2026-07-02
 
 ## Summary
@@ -98,7 +98,9 @@ could not move the normalizer without making the inline parity reference import 
   boundary instead of branching in the adapter. Completed terminal initial
   synthesis now also hands off to the completed-closeout controller through a
   `TerminalCloseoutController` boundary instead of adapter-local generated-result
-  unpacking.
+  unpacking. Terminal synthesis path selection and final/re-arm application now
+  also route through `TerminalCloseoutController`; the adapter supplies only the
+  gateway/completed-closeout callbacks for that terminal path.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -166,8 +168,8 @@ could not move the normalizer without making the inline parity reference import 
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence behavior,
-terminal closeout gateway callback wiring, and remaining adapter-side
-application of controller actions.
+terminal closeout gateway callback wiring, and remaining adapter-side action
+application outside the terminal completion path.
 
 ## Commits Added After The Blocked Report
 
@@ -243,6 +245,7 @@ application of controller actions.
 | `8307b8b` | Move deterministic approval wait-timeout and model-call-error fallback application helpers into `TerminalCloseoutController`; adapter passes fallback inputs and the run-state recorder target. |
 | `ee3a57d` | Move sticky completed terminal closeout pre-recording into `TerminalCloseoutController`; adapter passes sticky metadata and the run-state recorder target. |
 | `8a22741` | Move completed terminal initial-synthesis handoff into `TerminalCloseoutController`; adapter supplies the completed-closeout callback instead of unpacking the initial generated result. |
+| `3dae00b` | Move terminal synthesis path selection and final/re-arm application into `TerminalCloseoutController`; adapter supplies gateway/completed-closeout callbacks. |
 
 ## Current Extracted Implementation
 
@@ -328,7 +331,8 @@ Real implementation now exists in:
   plus deterministic approval wait-timeout and model-call-error fallback
   application helpers, sticky completed terminal closeout pre-recording, and
   completed terminal initial-synthesis handoff into the completed-closeout
-  controller callback.
+  controller callback, plus terminal synthesis path selection and final/re-arm
+  application through an injected recorder target.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -416,8 +420,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 13 / 13 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 163 / 163 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 14 / 14 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 164 / 164 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -493,7 +497,10 @@ Stage 8 boundaries/slices are now real:
   now apply through controller helpers instead of adapter-local build/apply
   branches; sticky completed terminal closeout pre-recording also now routes
   through the controller target boundary, and completed terminal initial
-  synthesis now hands off through a controller-owned callback boundary.
+  synthesis now hands off through a controller-owned callback boundary. Terminal
+  synthesis path selection, final response application, and completed
+  re-arm/effect application now also route through the controller-owned
+  completion boundary.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -607,8 +614,9 @@ Stage 8 boundaries/slices are now real:
   `CompletedCloseoutController.synthesizeTerminalCloseout`, including completed
   evidence-text assembly, initial/repair memory-flush ordering, completed repair
   loop invocation, completed visibility finalization, and the re-arm/final
-  result boundary while the adapter injects model calls and applies run-state
-  effects.
+  result boundary while the adapter injects model calls. Terminal run-state
+  effects for final/re-arm completion now apply through
+  `TerminalCloseoutController`.
 - completed-closeout post-synthesis visibility routes through
   `CompletedCloseoutController`, preserving the original browser recovery,
   browser failure-bucket, recovered-timeout/continuation, and forbidden local
@@ -684,8 +692,8 @@ Continue with the remaining high-risk pieces:
   callback wiring beyond the current deterministic/generic/model-error fallback
   application, synthesis-context selection, synthesis invocation,
   synthesis-effect application, final response shaping, closeout write-mode
-  selection, explicit state-effect application, and sticky completed closeout
-  pre-recording / completed initial-synthesis handoff slices; keep thinning the
-  adapter.
+  selection, explicit state-effect application, sticky completed closeout
+  pre-recording, completed initial-synthesis handoff, terminal path selection,
+  and final/re-arm application slices; keep thinning the adapter.
 
 The branch is **not pushed**.
