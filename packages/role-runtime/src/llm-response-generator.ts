@@ -3083,19 +3083,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolResults: roundToolResults,
             messages: state.messages,
           });
-          const timeoutSignal = evidenceLedger.subAgentToolTimeout(results);
-          const completedSession =
-            evidenceLedger.completedSessionEvidence(results);
+          const roundEvidence = evidenceLedger.currentRound(roundToolResults);
           return continuation.applyAfterExecuteContinuation(
             {
               messages: state.messages,
               taskPrompt: packet.taskPrompt,
               toolTrace,
-              timeoutSignal,
+              timeoutSignal: roundEvidence.timeoutSignal,
               completedSessionFinalContents:
-                completedSession?.finalContents ?? null,
-              currentRoundEvidenceText:
-                evidenceLedger.toolResultContentText(results),
+                roundEvidence.completedSessionFinalContents,
+              currentRoundEvidenceText: roundEvidence.toolResultContentText,
               results: roundToolResults,
               repairMarkers: (hookCtx.repairMarkers ??= []),
               ...(initialGatewayInput.tools === undefined
@@ -3132,15 +3129,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // onAfterExecuteContinue above; this callback only decides whether the
         // just-executed round terminates.
         onAfterExecute: (results) => {
-          const completedSession =
-            evidenceLedger.completedSessionEvidence(results);
-          const timeoutSignal = completedSession
-            ? null
-            : evidenceLedger.subAgentToolTimeout(results);
+          const roundEvidence = evidenceLedger.currentRound(results);
           return closeoutPolicy.applyPostExecuteCloseout(
             {
-              completedSession,
-              timeoutSignal,
+              completedSession: roundEvidence.completedSession,
+              timeoutSignal: roundEvidence.timeoutSignal,
               toolResults: results,
             },
             runState,

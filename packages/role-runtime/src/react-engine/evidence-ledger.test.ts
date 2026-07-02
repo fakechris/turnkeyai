@@ -251,3 +251,39 @@ test("EvidenceLedger owns current completed-session and timeout signals", () => 
     evidenceAvailable: true,
   });
 });
+
+test("EvidenceLedger owns current round evidence snapshot for hook handoffs", () => {
+  const ledger = createEvidenceLedger();
+  const snapshot = ledger.currentRound([
+    {
+      toolCallId: "toolu-completed",
+      toolName: "sessions_spawn",
+      content: completedSessionContent("delegated final evidence"),
+    },
+    {
+      toolCallId: "toolu-timeout",
+      toolName: "sessions_send",
+      content: timeoutSessionContent(),
+    },
+    {
+      toolCallId: "toolu-source",
+      toolName: "web_fetch",
+      content: "standalone source evidence",
+    },
+  ]);
+
+  assert.ok(snapshot.completedSession);
+  assert.equal(snapshot.completedSession.toolName, "sessions_spawn");
+  assert.deepEqual(snapshot.completedSessionFinalContents, [
+    "delegated final evidence",
+  ]);
+  assert.deepEqual(snapshot.timeoutSignal, {
+    toolName: "sessions_send",
+    sessionKey: "worker:explore:task-2",
+    agentId: "explore",
+    timeoutSeconds: 90,
+    evidenceAvailable: true,
+  });
+  assert.match(snapshot.toolResultContentText, /delegated final evidence/);
+  assert.match(snapshot.toolResultContentText, /standalone source evidence/);
+});

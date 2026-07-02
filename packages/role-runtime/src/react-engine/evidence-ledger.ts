@@ -47,9 +47,20 @@ export interface EvidenceSnapshot {
   usableEvidence: boolean;
 }
 
+export interface EvidenceRoundSnapshot {
+  toolResultContentText: string;
+  completedSession: ReturnType<typeof findCompletedSessionEvidence>;
+  completedSessionFinalContents: readonly string[] | null;
+  timeoutSignal: ReturnType<typeof findSubAgentToolTimeout>;
+}
+
 export class EvidenceLedger {
   snapshot(input: EvidenceLedgerInput): EvidenceSnapshot {
     return buildEvidenceSnapshot(input);
+  }
+
+  currentRound(results: RoleToolExecutionResult[]): EvidenceRoundSnapshot {
+    return buildEvidenceRoundSnapshot(results);
   }
 
   toolResultContentText(results: RoleToolExecutionResult[]): string {
@@ -106,4 +117,16 @@ export function buildToolResultContentText(
   results: RoleToolExecutionResult[],
 ): string {
   return collectToolResultContentText(results);
+}
+
+export function buildEvidenceRoundSnapshot(
+  results: RoleToolExecutionResult[],
+): EvidenceRoundSnapshot {
+  const completedSession = findCompletedSessionEvidence(results);
+  return {
+    toolResultContentText: buildToolResultContentText(results),
+    completedSession,
+    completedSessionFinalContents: completedSession?.finalContents ?? null,
+    timeoutSignal: findSubAgentToolTimeout(results),
+  };
 }
