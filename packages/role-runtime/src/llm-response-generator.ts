@@ -67,6 +67,7 @@ import {
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
+  buildPrematurePendingApprovalRepairPrompt,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
   createToolExecutionSignal,
@@ -123,6 +124,7 @@ import {
   maybeAppendRecoveredTimeoutCloseoutVisibility,
   maybeAppendRequiredTimeoutFollowupVisibility,
   maybeRedactForbiddenLocalUrls,
+  mentionsPendingApproval,
   mentionsTimeout,
   readCompletedSessionEvidence,
   readMessageContentText,
@@ -143,6 +145,7 @@ import {
   shouldRepairFinalRecoveryBudgetCloseout,
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
+  shouldRepairPrematurePendingApprovalFinal,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
@@ -3575,14 +3578,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               consumesRound: pendingApprovalWaitTimeoutCheckRepair.consumesRound,
             };
           }
-          if (
-            shouldRepairPrematurePendingApprovalFinal({
+          const prematurePendingApprovalRepair =
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["premature_pending_approval"],
+              finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            })
+            });
+          if (
+            prematurePendingApprovalRepair?.policyId ===
+            "premature_pending_approval"
           ) {
             return {
               messages: [
@@ -3590,11 +3598,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildPrematurePendingApprovalRepairPrompt(),
+                  prematurePendingApprovalRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: { name: "permission_result" },
-              consumesRound: true,
+              forceToolChoice: prematurePendingApprovalRepair.forceToolChoice,
+              consumesRound: prematurePendingApprovalRepair.consumesRound,
             };
           }
           if (
@@ -6626,44 +6634,6 @@ function shouldRepairStalePendingApproval(input: {
   );
 }
 
-function shouldRepairPrematurePendingApprovalFinal(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  if (hasPrematurePendingApprovalRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (
-    !mentionsPendingApproval(input.resultText) ||
-    !requestsApprovalGatedBrowserAction(input.taskPrompt)
-  ) {
-    return false;
-  }
-  if (
-    taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) ||
-    taskPromptAllowsStoppingAtPendingApproval(input.taskPrompt)
-  ) {
-    return false;
-  }
-  if (hasPermissionAppliedEvidence(input.toolTrace) || taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
-    return false;
-  }
-  if (hasSessionToolEvidence(input.toolTrace)) {
-    return false;
-  }
-  return latestPermissionToolName(input.toolTrace) === "permission_query" || latestPermissionResultStatus(input.toolTrace) === "pending";
-}
-
-function hasSessionToolEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
-  return toolTrace.some((round) =>
-    round.calls.some((call) => call.name === "sessions_spawn" || call.name === "sessions_send") ||
-    round.results.some((result) => result.toolName === "sessions_spawn" || result.toolName === "sessions_send")
-  );
-}
-
 function shouldRepairApprovalWaitTimeoutCloseout(input: {
   taskPrompt: string;
   resultText: string;
@@ -7611,18 +7581,6 @@ function hasStalePendingApprovalRepairPrompt(messages: LLMMessage[]): boolean {
   );
 }
 
-function hasPrematurePendingApprovalRepairPrompt(
-  messages: LLMMessage[],
-): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: approval-gated browser action is still pending",
-      ),
-  );
-}
-
 function hasApprovalWaitTimeoutCloseoutRepairPrompt(
   messages: LLMMessage[],
 ): boolean {
@@ -7751,33 +7709,11 @@ function hasMissingBrowserEvidenceDimensionsRepairPrompt(
   );
 }
 
-function mentionsPendingApproval(text: string): boolean {
-  return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission is (?:now )?pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|standby for (?:the )?decision|once you approve|after you approve|before (?:the )?(?:browser worker )?can)\b/i.test(
-    text,
-  );
-}
-
-function taskPromptAllowsStoppingAtPendingApproval(taskPrompt: string): boolean {
-  return /\bstop\b[\s\S]{0,80}\b(?:approval request|permission request)\b[\s\S]{0,120}\b(?:wait|operator decision|approval|decision)\b|\bwait for (?:the )?operator decision\b[\s\S]{0,160}\bdo not (?:apply|submit|execute|proceed)/i.test(
-    taskPrompt,
-  );
-}
-
 function buildStalePendingApprovalRepairPrompt(): string {
   return [
     "Runtime correction: approval already applied, but the assistant tried to finalize with a pending-approval explanation.",
     "Do not wait again. Continue from the applied approval point now.",
     "Use native tools for the approved scoped action, preferably sessions_spawn with agent_id=browser, then summarize the concrete browser result.",
-  ].join("\n");
-}
-
-function buildPrematurePendingApprovalRepairPrompt(): string {
-  return [
-    "Runtime correction: approval-gated browser action is still pending, but this task requires carrying the approved action through instead of finalizing at the pending request.",
-    "Do not write a final pending-approval summary.",
-    "Call permission_result for the pending approval_id from permission.query now.",
-    "If permission_result is approved, call permission_applied, then call sessions_spawn with agent_id=browser for only the approved scoped browser.form.submit action and verify the browser result before finalizing.",
-    "If permission_result is denied, write a denied safe closeout. If it is still pending, keep checking permission_result within this tool loop; do not claim the dry-run completed.",
   ].join("\n");
 }
 

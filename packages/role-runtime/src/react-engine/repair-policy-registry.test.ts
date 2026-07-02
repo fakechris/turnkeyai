@@ -11,6 +11,7 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
     "final_recovery_budget_closeout_repair",
     "missing_approval_gate",
     "pending_approval_wait_timeout_check",
+    "premature_pending_approval",
   ]);
 });
 
@@ -228,6 +229,119 @@ test("RepairPolicyRegistry does not repeat pending-approval wait-timeout check r
       resultText: "Approval is still pending.",
       taskPrompt:
         "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.",
+      toolTrace: [
+        {
+          round: 1,
+          calls: [
+            {
+              id: "toolu-permission-query",
+              name: "permission_query",
+              input: {},
+            },
+          ],
+          results: [],
+        },
+      ],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns premature pending-approval repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["premature_pending_approval"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending, so the browser worker cannot submit.",
+    taskPrompt:
+      "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [
+          { id: "toolu-permission-query", name: "permission_query", input: {} },
+        ],
+        results: [],
+      },
+    ],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "premature_pending_approval");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.deepEqual(decision?.forceToolChoice, { name: "permission_result" });
+  assert.equal(decision?.consumesRound, true);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /approval-gated browser action is still pending/i,
+  );
+});
+
+test("RepairPolicyRegistry does not repeat premature pending-approval repair after marker", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["premature_pending_approval"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending, so the browser worker cannot submit.",
+    taskPrompt:
+      "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [
+          { id: "toolu-permission-query", name: "permission_query", input: {} },
+        ],
+        results: [],
+      },
+    ],
+  });
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["premature_pending_approval"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      resultText: "Approval is still pending, so the browser worker cannot submit.",
+      taskPrompt:
+        "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
+      toolTrace: [
+        {
+          round: 1,
+          calls: [
+            {
+              id: "toolu-permission-query",
+              name: "permission_query",
+              input: {},
+            },
+          ],
+          results: [],
+        },
+      ],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry skips premature pending-approval repair when task allows stopping", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["premature_pending_approval"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText: "Approval is still pending, so I am stopping here.",
+      taskPrompt:
+        "Approval required for browser.form.submit dry-run. Wait for the operator decision and do not submit until approved.",
       toolTrace: [
         {
           round: 1,

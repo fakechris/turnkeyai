@@ -9,9 +9,11 @@ import {
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
+  buildPrematurePendingApprovalRepairPrompt,
   shouldRepairFinalRecoveryBudgetCloseout,
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
+  shouldRepairPrematurePendingApprovalFinal,
 } from "../tool-loop-shared";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { LLMMessage, ReActToolChoice } from "./types";
@@ -22,6 +24,7 @@ export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "final_recovery_budget_closeout_repair",
   "missing_approval_gate",
   "pending_approval_wait_timeout_check",
+  "premature_pending_approval",
 ] as const;
 
 export type EngineNaturalFinishRepairPolicyId =
@@ -67,6 +70,14 @@ export type NaturalFinishRepairDecision =
       repairPrompt: string;
       forceToolChoice: { name: "permission_result" };
       consumesRound: true;
+    }
+  | {
+      kind: "force_tool_round";
+      policyId: "premature_pending_approval";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: { name: "permission_result" };
+      consumesRound: true;
     };
 
 export interface RepairPolicyRegistry {
@@ -101,6 +112,13 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
         case "pending_approval_wait_timeout_check": {
           const decision =
             evaluatePendingApprovalWaitTimeoutCheckRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "premature_pending_approval": {
+          const decision = evaluatePrematurePendingApprovalRepair(input);
           if (decision) {
             return decision;
           }
@@ -196,6 +214,33 @@ function evaluatePendingApprovalWaitTimeoutCheckRepair(
     policyId: "pending_approval_wait_timeout_check",
     evidenceFormula: "candidate_final",
     repairPrompt: buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
+    forceToolChoice: { name: "permission_result" },
+    consumesRound: true,
+  };
+}
+
+function evaluatePrematurePendingApprovalRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    !shouldRepairPrematurePendingApprovalFinal({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      toolTrace: input.toolTrace,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "force_tool_round",
+    policyId: "premature_pending_approval",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildPrematurePendingApprovalRepairPrompt(),
     forceToolChoice: { name: "permission_result" },
     consumesRound: true,
   };
