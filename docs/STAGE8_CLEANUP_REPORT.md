@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `16c90e2f8d9ae79d2f761b68e3e44ff6f514af9b`
+**Code HEAD before this docs-only report:** `b17d155c1da4d5382cb1b258199b217e8718d1e1`
 **Date:** 2026-07-02
 
 ## Summary
@@ -138,8 +138,9 @@ could not move the normalizer without making the inline parity reference import 
   approved-browser timeout, coverage/sibling timeout, and supplemental local
   timeout probe continuation decisions, and incomplete approved-browser session
   continuation, independent evidence-stream continuation, and forced pending
-  approval `permission_result` continuation, plus post-execute missing
-  approval-gate repair handoff. The timeout predicates, session detectors,
+  approval `permission_result` continuation and its forced tool-round
+  application boundary, plus post-execute missing approval-gate repair handoff.
+  The timeout predicates, session detectors,
   permission-applied detector, permission-result detector, evidence-stream
   detector, missing approval-gate repair detector/prompt, and continuation
   prompts/calls, plus completed product-signal dashboard carry-forward and URL
@@ -262,6 +263,7 @@ application outside the terminal completion path.
 | `ac0a765` | Move the model-call-error fallback/rethrow boundary into `TerminalCloseoutController`; adapter consumes a typed final-or-rethrow result. |
 | `87f5244` | Move model-call-error abort / forced pending-approval continuation / fallback selection into `TerminalCloseoutController`; adapter executes only the returned forced tool round. |
 | `16c90e2` | Move model-call-error hook-result application into `TerminalCloseoutController`; adapter supplies only the forced-round executor callback. |
+| `b17d155` | Move post-execute forced continuation application into `ContinuationController`; adapter supplies only the forced-round executor callback. |
 
 ## Current Extracted Implementation
 
@@ -365,8 +367,9 @@ Real implementation now exists in:
   coverage/sibling timeout continuation decisions and supplemental local timeout
   probe continuation decisions, and incomplete approved-browser session
   continuation, independent evidence-stream continuation, and forced pending
-  approval `permission_result` continuation, plus post-execute missing
-  approval-gate repair continuation.
+  approval `permission_result` continuation, plus forced tool-round application
+  into hook `{ messages }` continuations through an injected executor, plus
+  post-execute missing approval-gate repair continuation.
 - `task-facts-shared.ts` for requested table-column inference, markdown table
   header matching, provider search/pricing evidence-column inference,
   provider-support-schema request/result detection, missing requested-column
@@ -441,7 +444,8 @@ All gates below passed on the current code before the report update:
 | --- | --- |
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 18 / 18 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 168 / 168 |
+| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 20 / 20 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 169 / 169 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -689,7 +693,9 @@ Stage 8 boundaries/slices are now real:
   have completed.
 - forced pending approval `permission_result` continuation routes through
   `ContinuationController`, covering both post-execute completed-session
-  continuation and model-call-error continuation before evidence fallback.
+  continuation and model-call-error continuation before evidence fallback; the
+  post-execute forced-round hook application now also routes through that
+  controller with only an adapter-supplied executor callback.
 - post-execute missing approval-gate repair continuation routes through
   `ContinuationController`, returning the repair marker as typed action data while
   the adapter applies it to the idempotency ledger.
