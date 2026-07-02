@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `d2be68d3b447284fd49c7d2b9568ebbe4cce555c`
+**Code HEAD before this docs-only report:** `00e148235ffe580a5ad282a38bfdfc989148f87d`
 **Date:** 2026-07-02
 
 ## Summary
@@ -61,6 +61,11 @@ could not move the normalizer without making the inline parity reference import 
   The completed-closeout post-synthesis visibility chain now routes through that
   controller too, while shared browser recovery/failure-bucket and timeout
   continuation helpers remain neutral for inline + engine parity.
+  Completed terminal synthesis orchestration now also enters that controller:
+  it owns completed evidence-text assembly, initial/repair memory-flush ordering,
+  completed repair-loop invocation, completed visibility finalization, and the
+  re-arm/final result boundary. The adapter still injects the model gateway calls
+  and records the returned run-state effects.
   `react-engine/evidence-ledger.ts` now has a behavior-neutral snapshot facade
   over the existing source-bounded and completed-session evidence collectors,
   and the extracted completed-closeout controller / repair registry read that
@@ -68,9 +73,8 @@ could not move the normalizer without making the inline parity reference import 
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
-  closeout fallback decisions. The adapter still owns the terminal model
-  synthesis, repair loop application, result recording, and final appender
-  application.
+  closeout fallback decisions. The adapter still owns non-completed terminal
+  model synthesis/result application and all run-state recording.
   Requested table-column and provider-support-schema task facts now live in
   `react-engine/task-facts.ts` and are shared by the adapter and repair
   registry.
@@ -145,6 +149,7 @@ of controller actions.
 | `200f9e6` | Route missing browser/product-signal evidence natural-finish repair decisions through `RepairPolicyRegistry`; add focused policy tests. |
 | `acb9db9` | Move completed-closeout browser/product-signal re-arm ownership into `CompletedCloseoutController`; remove the adapter-injected predicate closure. |
 | `d2be68d` | Route completed-closeout source-evidence and weak-evidence repair decisions through `RepairPolicyRegistry`; add controller-provided evidence-text coverage. |
+| `00e1482` | Move completed terminal synthesis orchestration into `CompletedCloseoutController`; add direct terminal-entry coverage. |
 
 ## Current Extracted Implementation
 
@@ -206,13 +211,14 @@ Real implementation now exists in:
   prompt construction, source-bounded/completed-session evidence formula
   collection, and typed tool-free/tool-round resynthesis or closeout decisions.
 - `react-engine/completed-closeout-controller.ts` for the bounded
-  completed-session repair loop, completed-only round-0 gating, round>0
+  completed-session terminal synthesis handoff and repair loop, completed
+  evidence-text assembly, completed-only round-0 gating, round>0
   browser/product-signal re-arm precedence through `RepairPolicyRegistry`,
-  repair marker insertion, memory flush/reduction carry-forward, and one clean
-  tool-free cleanup synthesis when a completed repair produces tool-call
-  artifact text, source-evidence/weak-evidence repair dispatch through
-  `RepairPolicyRegistry`, plus the completed closeout post-synthesis visibility
-  chain for browser recovery visibility,
+  repair marker insertion, initial/repair memory flush ordering,
+  memory flush/reduction carry-forward, and one clean tool-free cleanup
+  synthesis when a completed repair produces tool-call artifact text,
+  source-evidence/weak-evidence repair dispatch through `RepairPolicyRegistry`,
+  plus the completed closeout post-synthesis visibility chain for browser recovery visibility,
   browser failure-bucket visibility, recovered-timeout/continuation visibility,
   and final forbidden local URL redaction.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
@@ -267,8 +273,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 48 / 48 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 140 / 140 |
+| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 49 / 49 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 141 / 141 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -282,7 +288,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifty-three
+root plus several policy-heavy hook bodies. The main improvement is that fifty-four
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -322,8 +328,9 @@ Stage 8 boundaries/slices are now real:
 - terminal closeout reasonLines and metadata construction routes through
   `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
   passthrough, completed session closeout, sub-agent timeout closeout,
-  round-limit closeout, and generic closeout fallback; terminal model synthesis
-  and result application still live in the adapter's `onTerminate`.
+  round-limit closeout, and generic closeout fallback; non-completed terminal
+  model synthesis and result application still live in the adapter's
+  `onTerminate`.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -383,6 +390,12 @@ Stage 8 boundaries/slices are now real:
   `CompletedCloseoutController`, including bounded repair rounds, repair marker
   insertion, forced real-tool re-arm message construction, and clean synthesis
   cleanup when a repair returns tool-call artifact text.
+- completed terminal synthesis orchestration routes through
+  `CompletedCloseoutController.synthesizeTerminalCloseout`, including completed
+  evidence-text assembly, initial/repair memory-flush ordering, completed repair
+  loop invocation, completed visibility finalization, and the re-arm/final
+  result boundary while the adapter injects model calls and applies run-state
+  effects.
 - completed-closeout post-synthesis visibility routes through
   `CompletedCloseoutController`, preserving the original browser recovery,
   browser failure-bucket, recovered-timeout/continuation, and forbidden local
@@ -437,7 +450,7 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue expanding the evidence ledger beyond the current facade, extracting
-  remaining task facts, terminal closeout model synthesis/result application,
-  and final adapter thinning.
+  remaining task facts, non-completed terminal closeout model synthesis/result
+  application, and final adapter thinning.
 
 The branch is **not pushed**.
