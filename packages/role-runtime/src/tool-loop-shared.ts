@@ -3339,6 +3339,39 @@ export function toNativeToolProgressTrace(
   };
 }
 
+/**
+ * The per-turn tool-call-cap "skipped" result.
+ * Shared by the inline executor and engine budget admission so both paths emit a
+ * byte-identical `tool_call_limit_exceeded` result + progress detail for an
+ * over-cap call.
+ */
+export function buildToolCallLimitExceededResult(
+  call: LLMToolCall,
+  maxToolCallsPerRound: number,
+  requestedToolCalls: number,
+): ToolResult {
+  return {
+    toolCallId: call.id,
+    toolName: call.name,
+    content: `tool_call_limit_exceeded: skipped ${call.name}; at most ${maxToolCallsPerRound} tool calls may be executed in one assistant turn.`,
+    isError: true,
+    skipped: true,
+    progress: [
+      {
+        phase: "failed",
+        toolName: call.name,
+        summary: `Skipped ${call.name}: per-turn tool call limit exceeded.`,
+        detail: {
+          admission: "skipped",
+          reason: "max_tool_calls_per_round",
+          max_tool_calls_per_round: maxToolCallsPerRound,
+          requested_tool_calls: requestedToolCalls,
+        },
+      },
+    ],
+  };
+}
+
 export function readStringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }

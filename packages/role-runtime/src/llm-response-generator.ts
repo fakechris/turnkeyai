@@ -53,6 +53,7 @@ import {
   SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS,
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
+  buildToolCallLimitExceededResult,
   buildReadOnlyPermissionQuerySuppressionPrompt,
   buildContinuationDirectiveContext,
   contextHasTimeoutSessionResult,
@@ -129,6 +130,7 @@ import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
   createEnginePolicyTrace,
+  createExecutionBudgetController,
   createEngineRunState,
   createEngineRunObserver,
   createPermissionPolicy,
@@ -2590,6 +2592,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
     const ctx: RoleToolContext = { activation, packet, repairMarkers: [], ...(signal ? { signal } : {}) };
     const permissionPolicy = createPermissionPolicy();
+    const executionBudget = createExecutionBudgetController();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     type RoleEngineRunStateValues = DefaultEngineRunStateValues & {
@@ -2788,15 +2791,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // conditions are mutually exclusive, so the engine order (onToolCalls
           // before onToolCallsClose) preserves the inline order (closeout at :752
           // before truncation at :817).
-          if (recoveryToolBudget) {
-            const remainingToolCalls =
-              recoveryToolBudget.maxToolCalls -
-              (recoveryToolCallsBeforeActivation + countToolCalls(toolTrace));
-            if (remainingToolCalls > 0 && normalized.length > remainingToolCalls) {
-              return normalized.slice(0, remainingToolCalls);
-            }
-          }
-          return normalized;
+          return executionBudget.truncateForRecoveryBudget({
+            calls: normalized,
+            recoveryToolBudget,
+            usedToolCalls:
+              recoveryToolCallsBeforeActivation + countToolCalls(toolTrace),
+          });
         },
         // Stage 8B (Batch E — T7 execution budget plane): the per-turn tool-call
         // execution cap (inline executeToolCalls :5343-5350) is applied HERE, in
@@ -2810,29 +2810,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // shaped `calls`), so `calls.length` is the requested count the inline
         // executor sees (its `input.toolCalls.length`).
         onBeforeExecute: (calls) => {
-          const maxToolCallsPerRound =
-            activeToolLoop &&
-            typeof activeToolLoop.maxToolCallsPerRound === "number" &&
-            Number.isFinite(activeToolLoop.maxToolCallsPerRound) &&
-            activeToolLoop.maxToolCallsPerRound > 0
-              ? Math.floor(activeToolLoop.maxToolCallsPerRound)
-              : calls.length;
-          if (maxToolCallsPerRound >= calls.length) {
-            return { executable: calls, rejected: [] };
-          }
-          const requestedToolCalls = calls.length;
-          return {
-            executable: calls.slice(0, maxToolCallsPerRound),
-            rejected: calls
-              .slice(maxToolCallsPerRound)
-              .map((call) =>
-                buildToolCallLimitExceededResult(
-                  call,
-                  maxToolCallsPerRound,
-                  requestedToolCalls,
-                ),
-              ),
-          };
+          return executionBudget.limitToolCallsPerRound({
+            calls,
+            ...(activeToolLoop?.maxToolCallsPerRound === undefined
+              ? {}
+              : { maxToolCallsPerRound: activeToolLoop.maxToolCallsPerRound }),
+          });
         },
         // Honor the remaining execution limits the per-call default bypasses:
         // order-dependent serialization, bounded concurrency, and per-chunk
@@ -10186,40 +10169,6 @@ function replaceToolResultContent(
           }
         : block,
     ),
-  };
-}
-
-/**
- * The per-turn tool-call-cap "skipped" result (inline executeToolCalls :5482-5503).
- * Shared by the inline executor and the engine's `runToolBatch` so both paths
- * emit a byte-identical `tool_call_limit_exceeded` result + progress detail for a
- * rejected (over-cap) call. Parity contract: the content string, the `skipped`
- * flag, and the progress `detail` fields are asserted by the execution-cap test.
- */
-function buildToolCallLimitExceededResult(
-  call: LLMToolCall,
-  maxToolCallsPerRound: number,
-  requestedToolCalls: number,
-): RoleToolExecutionResult {
-  return {
-    toolCallId: call.id,
-    toolName: call.name,
-    content: `tool_call_limit_exceeded: skipped ${call.name}; at most ${maxToolCallsPerRound} tool calls may be executed in one assistant turn.`,
-    isError: true,
-    skipped: true,
-    progress: [
-      {
-        phase: "failed",
-        toolName: call.name,
-        summary: `Skipped ${call.name}: per-turn tool call limit exceeded.`,
-        detail: {
-          admission: "skipped",
-          reason: "max_tool_calls_per_round",
-          max_tool_calls_per_round: maxToolCallsPerRound,
-          requested_tool_calls: requestedToolCalls,
-        },
-      },
-    ],
   };
 }
 

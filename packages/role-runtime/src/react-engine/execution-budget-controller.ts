@@ -1,16 +1,90 @@
-// Stage 8 engine cleanup — ExecutionBudgetController (module shell).
+import type { ToolResult } from "@turnkeyai/agent-core/tool";
+import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
+
+import { buildToolCallLimitExceededResult } from "../tool-loop-shared";
+
+// Stage 8 engine cleanup — ExecutionBudgetController.
 //
-// Authority: own execution budget and batching mechanics (final-round warning
-// before model call; max tool calls per round cap; wall-clock abort signal and
-// budget checks; batch grouping for serial vs concurrent execution;
-// recovery-budget truncation of pending calls; synthetic skipped results for
-// over-cap calls).
+// Current authority: own the engine path's admission mechanics that are pure
+// functions of pending calls and configured caps:
+// - final-recovery pending-call truncation;
+// - per-round tool-call cap admission and synthetic skipped results.
 //
-// It does NOT decide whether an answer needs repair, whether a completed
-// session closeout should synthesize final text, or continuation semantics
-// beyond budget signal data. It exposes wall-clock/recovery-budget snapshots for
-// CloseoutPolicyRegistry but must not independently select wall_clock_budget or
-// recovery_tool_budget closeouts.
-//
-// Implementation lands in Batch 2. This shell reserves the module.
-export const EXECUTION_BUDGET_CONTROLLER_MODULE = "execution-budget-controller" as const;
+// Later slices still need to move wall-clock checks, batching, and closeout
+// signal data. This module must not choose closeout reasons or synthesize text.
+export const EXECUTION_BUDGET_CONTROLLER_MODULE =
+  "execution-budget-controller" as const;
+
+export interface RecoveryToolBudget {
+  maxToolCalls: number;
+}
+
+export interface TruncateForRecoveryBudgetInput {
+  calls: LLMToolCall[];
+  recoveryToolBudget: RecoveryToolBudget | null;
+  usedToolCalls: number;
+}
+
+export interface LimitToolCallsPerRoundInput {
+  calls: LLMToolCall[];
+  maxToolCallsPerRound?: number;
+}
+
+export interface ToolCallAdmissionDecision {
+  executable: LLMToolCall[];
+  rejected: ToolResult[];
+}
+
+export class ExecutionBudgetController {
+  truncateForRecoveryBudget(
+    input: TruncateForRecoveryBudgetInput,
+  ): LLMToolCall[] {
+    const budget = input.recoveryToolBudget;
+    if (!budget) {
+      return input.calls;
+    }
+    const remainingToolCalls = budget.maxToolCalls - input.usedToolCalls;
+    if (remainingToolCalls > 0 && input.calls.length > remainingToolCalls) {
+      return input.calls.slice(0, remainingToolCalls);
+    }
+    return input.calls;
+  }
+
+  limitToolCallsPerRound(
+    input: LimitToolCallsPerRoundInput,
+  ): ToolCallAdmissionDecision {
+    const maxToolCallsPerRound = resolvePositiveIntegerLimit(
+      input.maxToolCallsPerRound,
+      input.calls.length,
+    );
+    if (maxToolCallsPerRound >= input.calls.length) {
+      return { executable: input.calls, rejected: [] };
+    }
+    const requestedToolCalls = input.calls.length;
+    return {
+      executable: input.calls.slice(0, maxToolCallsPerRound),
+      rejected: input.calls
+        .slice(maxToolCallsPerRound)
+        .map((call) =>
+          buildToolCallLimitExceededResult(
+            call,
+            maxToolCallsPerRound,
+            requestedToolCalls,
+          ),
+        ),
+    };
+  }
+}
+
+export function createExecutionBudgetController(): ExecutionBudgetController {
+  return new ExecutionBudgetController();
+}
+
+function resolvePositiveIntegerLimit(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
+}
