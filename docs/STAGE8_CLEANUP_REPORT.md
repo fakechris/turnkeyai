@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `d4eb8ca4b28f549598d33a206b98fb950db8aef0`
+**Code HEAD before this docs-only report:** `92240782f9c428b94be1b7713212bb779865b1b0`
 **Date:** 2026-07-02
 
 ## Summary
@@ -113,7 +113,12 @@ could not move the normalizer without making the inline parity reference import 
   live in neutral `model-call-trace.ts`.
   Gateway input construction, final synthesis format-contract lines, no-tool
   gateway transforms, mention extraction, and requested three-line label
-  normalization now live in neutral `gateway-input-builder.ts`.
+  normalization now live in neutral `gateway-input-builder.ts`; request-envelope
+  reduced prompt replacement now lives there too.
+  Session trace canonicalization from structured session results and native
+  tool-call counting now live in `native-tool-messages.ts`.
+  Shared JSON object parsing and the stable `AbortError` guard now live in
+  neutral `tool-loop-shared.ts`.
   Tool-result evidence collectors for completed sessions, timeout signals,
   session history evidence, tool-result text, tool-trace text, resumable partial
   sessions, and usable-evidence detection now live in neutral
@@ -180,6 +185,7 @@ of controller actions.
 | `4529706` | Move gateway input construction, final synthesis format-contract helpers, no-tool transforms, mention extraction, and requested three-line label normalization into neutral `gateway-input-builder.ts`; add focused builder tests. |
 | `7721010` | Move tool-result evidence collectors, completed-session/timeout readers, session-history evidence extraction, resumable partial-session detection, and usable-evidence checks into neutral `tool-result-evidence.ts`; add focused evidence tests. |
 | `d4eb8ca` | Move missing requested-table repair helpers, extraneous provider-schema repair helpers, awaiting-context no-tool suppression, and repair marker insertion into neutral TaskFacts shared code; remove duplicate adapter/registry/controller implementations. |
+| `9224078` | Move adapter utility helpers for session trace canonicalization, native tool-call counting, reduced prompt replacement, JSON object parsing, and abort guarding into neutral owners with focused tests. |
 
 ## Current Extracted Implementation
 
@@ -282,7 +288,11 @@ Real implementation now exists in:
 - `gateway-input-builder.ts` for gateway input construction, runtime session
   continuation directive prompt injection, final synthesis format-contract
   lines, no-tool gateway transforms, mention extraction, tool-definition lookup,
-  and requested three-line label normalization.
+  requested three-line label normalization, and request-envelope prompt-message
+  replacement.
+- `native-tool-messages.ts` for native tool-message construction, session trace
+  canonicalization from structured session results, and native tool-call
+  counting.
 - `tool-result-evidence.ts` for completed-session evidence summaries,
   sub-agent timeout signal extraction, session-history evidence extraction,
   required-timeout continuation allowance, resumable partial-session detection,
@@ -312,7 +322,8 @@ Real implementation now exists in:
   summary collection/visibility helpers, completed product-signal dashboard
   carry-forward and URL extraction helpers, browser/product-signal missing
   evidence repair detectors and prompt builders, and the timeout continuation
-  visibility appender.
+  visibility appender, plus shared JSON object parsing and the stable abort
+  guard used by adapter/controller code.
 
 Still shell/deferred or partial:
 
@@ -327,6 +338,7 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
+| `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts packages/role-runtime/src/gateway-input-builder.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 15 / 15 |
 | `npx tsx --test packages/role-runtime/src/react-engine/task-facts.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 57 / 57 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 144 / 144 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
@@ -341,8 +353,8 @@ the engine chunks without individual recovery.
 ## Is The Adapter Thin?
 
 No. `runViaReActEngine` still begins at
-`packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that sixty-two
+`packages/role-runtime/src/llm-response-generator.ts:2554` and remains the composition
+root plus several policy-heavy hook bodies. The main improvement is that more than sixty
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -432,6 +444,15 @@ Stage 8 boundaries/slices are now real:
   mention extraction, tool-definition lookup, and requested three-line label
   normalization now live in neutral `gateway-input-builder.ts`; the adapter
   calls the module instead of owning those context-construction helpers.
+- request-envelope reduced prompt replacement now lives in
+  `gateway-input-builder.ts`; the adapter calls the module instead of owning the
+  prompt/history splice helper.
+- session tool-trace canonicalization and native tool-call counting now live in
+  `native-tool-messages.ts`; the adapter calls the module instead of owning
+  trace mutation/counting helpers.
+- shared JSON object parsing and the stable abort guard now live in
+  `tool-loop-shared.ts`; the adapter imports them instead of keeping local
+  copies.
 - tool-result evidence collectors, completed-session evidence summaries,
   sub-agent timeout signal extraction, session-history evidence extraction,
   required-timeout continuation allowance, resumable partial-session detection,
