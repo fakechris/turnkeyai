@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `d394ab6a75833d27c8687322c4bf9ad00ef2bbe7`
+**Code HEAD before this docs-only report:** `695082bc2a116308b79d1d858e3cb13aedef1e97`
 **Date:** 2026-07-02
 
 ## Summary
@@ -24,14 +24,16 @@ could not move the normalizer without making the inline parity reference import 
   shaping. Budget closeout snapshots for final-recovery exhaustion, wall-clock
   exhaustion, and round-limit synthesis now route through that controller after
   the selected policy fires. The first closeout registry policies also landed:
-  `recovery_tool_budget`, `operator_cancelled`, and `pseudo_tool_call` now return
-  typed decisions from `react-engine/closeout-policy-registry.ts`, including the
-  recovery-budget repair-round defer handoff and the pseudo tool-call closeout's
-  empty-call / pending-continuation gates. The final allowed tool-round warning
-  now routes through that controller while the warning text itself lives in
-  neutral shared code used by inline and engine. Final-recovery budget parsing,
-  prior-call counting, closeout reason lines, and repair prompt helpers also
-  moved into neutral shared code. The first
+  `recovery_tool_budget`, `operator_cancelled`, `pseudo_tool_call`,
+  `wall_clock_budget`, and `round_limit` now return typed decisions from
+  `react-engine/closeout-policy-registry.ts`, including the recovery-budget
+  repair-round defer handoff, the pseudo tool-call closeout's empty-call /
+  pending-continuation gates, and the wall-clock / round-limit precedence
+  handoff to execution-budget snapshots. The final allowed tool-round warning now
+  routes through that controller while the warning text itself lives in neutral
+  shared code used by inline and engine. Final-recovery budget parsing, prior-call
+  counting, closeout reason lines, and repair prompt helpers also moved into
+  neutral shared code. The first
   continuation slices now live in `react-engine/continuation-controller.ts`:
   empty-round direct `sessions_send` and lookup `sessions_list` injection, plus
   approved-browser timeout, coverage/sibling timeout, and supplemental local
@@ -72,6 +74,7 @@ evidence/task-fact behavior, and adapter-side application of controller actions.
 | `fa80eb9` | Extract `recovery_tool_budget` closeout/defer policy into `CloseoutPolicyRegistry`; add golden-order and focused registry tests. |
 | `8205e16` | Extract `operator_cancelled` closeout policy into `CloseoutPolicyRegistry`; share cancelled-session detector. |
 | `d394ab6` | Extract `pseudo_tool_call` closeout policy into `CloseoutPolicyRegistry`; share pseudo tool-call markup detector. |
+| `695082b` | Extract `wall_clock_budget` and `round_limit` closeout policy decisions into `CloseoutPolicyRegistry`; preserve budget snapshot ownership. |
 
 ## Current Extracted Implementation
 
@@ -93,8 +96,10 @@ Real implementation now exists in:
   wall-clock, and round-limit terminal synthesis.
 - `react-engine/closeout-policy-registry.ts` for `ENGINE_CLOSEOUT_POLICY_ORDER`
   and the first pending-call closeout policies, `recovery_tool_budget`,
-  `operator_cancelled`, and `pseudo_tool_call`, including the recovery-budget
-  repair-round defer decision and pseudo tool-call empty-round gates.
+  `operator_cancelled`, `pseudo_tool_call`, `wall_clock_budget`, and
+  `round_limit`, including the recovery-budget repair-round defer decision,
+  pseudo tool-call empty-round gates, wall-clock continuation exceptions, and
+  limit-round pending-call gate.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -114,7 +119,7 @@ Real implementation now exists in:
 
 Still shell/deferred or partial:
 
-- remaining `closeout-policy-registry.ts` policies after `pseudo_tool_call`
+- remaining `closeout-policy-registry.ts` policies after `round_limit`
 - `repair-policy-registry.ts`
 - `completed-closeout-controller.ts`
 - `evidence-ledger.ts`
@@ -127,13 +132,13 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 10 / 10 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 15 / 15 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 68 / 68 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 73 / 73 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 263 / 263, 0 fail |
-| `npm run parity:engine` | 267 / 267, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 265 / 265, 0 fail |
+| `npm run parity:engine` | 272 / 272, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -144,7 +149,7 @@ zero failures and zero incomplete tests after recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2501` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that twenty
+root plus several policy-heavy hook bodies. The main improvement is that twenty-one
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -172,6 +177,9 @@ Stage 8 boundaries/slices are now real:
 - `pseudo_tool_call` pending-call closeout selection routes through
   `CloseoutPolicyRegistry`, using shared pseudo tool-call markup detection while
   preserving the empty-call and pending-continuation gates.
+- `wall_clock_budget` and `round_limit` pending-call closeout selection route
+  through `CloseoutPolicyRegistry`, while `ExecutionBudgetController` still owns
+  the closeout snapshot construction.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -205,7 +213,7 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue extracting the remaining closeout policy registry decisions/precedence
-  after `pseudo_tool_call`, then repair, completed-closeout, evidence ledger,
+  after `round_limit`, then repair, completed-closeout, evidence ledger,
   task facts, and final adapter thinning.
 
 The branch is **not pushed**.
