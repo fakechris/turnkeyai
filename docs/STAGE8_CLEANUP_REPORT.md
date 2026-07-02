@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `8307b8b13b5f982a863dd3169361eb4e2ab532b8`
+**Code HEAD before this docs-only report:** `ee3a57ddfeb30a93633fa2e6c34c02edf57db5cb`
 **Date:** 2026-07-02
 
 ## Summary
@@ -93,7 +93,9 @@ could not move the normalizer without making the inline parity reference import 
   supplies the gateway callback. The deterministic approval wait-timeout
   fallback and model-call-error local evidence fallback now also apply through
   controller-owned helper methods, so the adapter no longer builds then applies
-  those fallback closeouts itself.
+  those fallback closeouts itself. Sticky completed terminal closeout
+  pre-recording now also routes through the controller's recorder-target
+  boundary instead of branching in the adapter.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -236,6 +238,7 @@ application of controller actions.
 | `05c6d39` | Move terminal closeout state-effect application into `TerminalCloseoutController`; adapter passes the run-state recorder target instead of branching over memory flush, reduction, closeout metadata, and final result writes. |
 | `3f6ea65` | Move terminal synthesis invocation boundaries into `TerminalCloseoutController`; adapter supplies the gateway callback while controller owns pseudo-tool-call context selection and non-completed synthesis invocation/effect application. |
 | `8307b8b` | Move deterministic approval wait-timeout and model-call-error fallback application helpers into `TerminalCloseoutController`; adapter passes fallback inputs and the run-state recorder target. |
+| `ee3a57d` | Move sticky completed terminal closeout pre-recording into `TerminalCloseoutController`; adapter passes sticky metadata and the run-state recorder target. |
 
 ## Current Extracted Implementation
 
@@ -319,7 +322,7 @@ Real implementation now exists in:
   explicit terminal state-effect application through a recorder target, plus
   terminal synthesis invocation boundaries through an injected gateway callback,
   plus deterministic approval wait-timeout and model-call-error fallback
-  application helpers.
+  application helpers, plus sticky completed terminal closeout pre-recording.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -407,8 +410,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 11 / 11 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 161 / 161 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 12 / 12 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 162 / 162 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -482,7 +485,8 @@ Stage 8 boundaries/slices are now real:
   synthesis invocation through an injected gateway callback. The deterministic
   approval wait-timeout fallback and model-call-error local evidence fallback
   now apply through controller helpers instead of adapter-local build/apply
-  branches.
+  branches; sticky completed terminal closeout pre-recording also now routes
+  through the controller target boundary.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -673,7 +677,7 @@ Continue with the remaining high-risk pieces:
   callback wiring beyond the current deterministic/generic/model-error fallback
   application, synthesis-context selection, synthesis invocation,
   synthesis-effect application, final response shaping, closeout write-mode
-  selection, and explicit state-effect application slice; keep thinning the
-  adapter.
+  selection, explicit state-effect application, and sticky completed closeout
+  pre-recording slice; keep thinning the adapter.
 
 The branch is **not pushed**.
