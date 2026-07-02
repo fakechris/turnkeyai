@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `945119049110da0ed6aa0daf1fe4a67cdacedff5`
+**Code HEAD before this docs-only report:** `c0011d3a2c3a0db8afe79340a2cbd7c9fc7b4a4c`
 **Date:** 2026-07-02
 
 ## Summary
@@ -81,8 +81,9 @@ could not move the normalizer without making the inline parity reference import 
   permission-applied detector, permission-result detector, evidence-stream
   detector, missing approval-gate repair detector/prompt, and continuation
   prompts/calls, plus completed product-signal dashboard carry-forward and URL
-  extraction helpers, are shared by inline and engine through neutral
-  role-runtime helper code.
+  extraction helpers, plus browser/product-signal missing evidence repair
+  detectors and repair prompt builders, are shared by inline and engine through
+  neutral role-runtime helper code.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence/task-fact behavior,
@@ -132,6 +133,7 @@ of controller actions.
 | `7a11fa5` | Add the first behavior-neutral `EvidenceLedger` snapshot facade and route extracted natural-finish evidence formula users through it. |
 | `85a3c44` | Extract terminal closeout reasonLines/metadata decisions into `CloseoutPolicyRegistry.evaluateTerminate`; move completed product-signal carry-forward helpers into neutral shared code. |
 | `9451190` | Move product-signal dashboard URL extraction into neutral shared code and remove the adapter-local duplicate dashboard regex tail. |
+| `c0011d3` | Move missing browser/product-signal evidence repair detectors and prompt builders into neutral shared code. |
 
 ## Current Extracted Implementation
 
@@ -231,7 +233,8 @@ Real implementation now exists in:
   tool-call markup detection, repeated session inspection/continuation
   detectors, completed browser-session evidence checks, browser recovery
   summary collection/visibility helpers, completed product-signal dashboard
-  carry-forward and URL extraction helpers, and the timeout continuation
+  carry-forward and URL extraction helpers, browser/product-signal missing
+  evidence repair detectors and prompt builders, and the timeout continuation
   visibility appender.
 
 Still shell/deferred or partial:
@@ -262,7 +265,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that forty-nine
+root plus several policy-heavy hook bodies. The main improvement is that fifty
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -398,6 +401,10 @@ Stage 8 boundaries/slices are now real:
   the adapter applies it to the idempotency ledger.
 - completed product-signal dashboard URL extraction now lives in neutral shared
   code, removing the adapter-local duplicate dashboard regex tail.
+- browser/product-signal missing evidence repair detectors and repair prompt
+  builders now live in neutral shared code; the adapter still applies the
+  force-tool-choice and repair-marker re-arm behavior at the original
+  precedence points.
 
 ## Remaining Work
 
