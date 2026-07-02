@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `c6e555b36ebae6c2d7219d43ad76ceefa4534709`
+**Code HEAD before this docs-only report:** `e610f1494bb34017930b08afb9b6fbf5803a6453`
 **Date:** 2026-07-02
 
 ## Summary
@@ -112,7 +112,8 @@ could not move the normalizer without making the inline parity reference import 
   returned forced tool round or consumes the returned final/rethrow result. The
   controller now also applies that typed model-error recovery result into the
   react-loop hook shape (`"rethrow"`, `{ messages }`, or final response) through
-  an injected forced-round executor.
+  an injected forced-round executor, and trims raw forced-round execution
+  results down to the hook continuation shape.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -267,6 +268,7 @@ application outside the terminal completion path.
 | `16c90e2` | Move model-call-error hook-result application into `TerminalCloseoutController`; adapter supplies only the forced-round executor callback. |
 | `b17d155` | Move post-execute forced continuation application into `ContinuationController`; adapter supplies only the forced-round executor callback. |
 | `c6e555b` | Move generic continuation action hook-result application into `ContinuationController`; adapter consumes typed hook results and supplies only marker recording callbacks. |
+| `e610f14` | Move model-call-error forced-round result trimming into `TerminalCloseoutController`; adapter returns the raw forced-round execution result. |
 
 ## Current Extracted Implementation
 
@@ -357,7 +359,8 @@ Real implementation now exists in:
   closeout entrypoint from terminate decision to completion, plus the
   model-call-error local-evidence fallback/rethrow boundary and model-call-error
   abort / forced pending-approval continuation / fallback flow selection and
-  hook-result application through an injected forced-round executor.
+  hook-result application through an injected forced-round executor, including
+  raw forced-round execution result trimming.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -672,9 +675,9 @@ Stage 8 boundaries/slices are now real:
   `EvidenceLedger`.
 - model-call-error abort handling, forced pending-approval `permission_result`
   continuation selection, and local evidence fallback selection route through
-  `TerminalCloseoutController`; hook-result application now also routes through
-  the controller, while the adapter supplies only the forced tool-round executor
-  callback.
+  `TerminalCloseoutController`; hook-result application and raw forced-round
+  result trimming now also route through the controller, while the adapter
+  supplies only the forced tool-round executor callback.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -738,6 +741,7 @@ Continue with the remaining high-risk pieces:
   selection, explicit state-effect application, sticky completed closeout
   pre-recording, completed initial-synthesis handoff, terminal path selection,
   final/re-arm application, terminal entrypoint, and model-error fallback /
-  flow-selection / hook-application boundary slices; keep thinning the adapter.
+  flow-selection / hook-application / forced-round-result boundary slices; keep
+  thinning the adapter.
 
 The branch is **not pushed**.
