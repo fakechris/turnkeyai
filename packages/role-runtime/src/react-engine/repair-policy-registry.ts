@@ -12,8 +12,10 @@ import {
   buildFalseEvidenceBlockedSynthesisRepairPrompt,
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
   buildIncompleteApprovedBrowserActionRepairPrompt,
+  buildMissingBrowserEvidenceRepairPrompt,
   buildMissingBrowserEvidenceDimensionsRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
+  buildMissingProductSignalBrowserEvidenceRepairPrompt,
   buildMissingRequestedNextActionRepairPrompt,
   buildMissingRequiredFinalDeliverablesRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
@@ -30,8 +32,10 @@ import {
   shouldRepairFalseEvidenceBlockedSynthesis,
   shouldRepairFinalRecoveryBudgetCloseout,
   shouldRepairIncompleteApprovedBrowserAction,
+  shouldRepairMissingBrowserEvidence,
   shouldRepairMissingBrowserEvidenceDimensions,
   shouldRepairMissingApprovalGate,
+  shouldRepairMissingProductSignalBrowserEvidence,
   shouldRepairMissingRequestedNextAction,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
@@ -60,6 +64,8 @@ export const REPAIR_POLICY_REGISTRY_MODULE = "repair-policy-registry" as const;
 
 export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "final_recovery_budget_closeout_repair",
+  "missing_browser_evidence",
+  "missing_product_signal_browser_evidence",
   "missing_approval_gate",
   "pending_approval_wait_timeout_check",
   "premature_pending_approval",
@@ -124,6 +130,22 @@ export type NaturalFinishRepairDecision =
       repairPrompt: string;
       forceToolChoice: ReActToolChoice;
       consumesRound?: false;
+    }
+  | {
+      kind: "force_tool_round";
+      policyId: "missing_browser_evidence";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: { name: "sessions_spawn" };
+      consumesRound: true;
+    }
+  | {
+      kind: "force_tool_round";
+      policyId: "missing_product_signal_browser_evidence";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: { name: "sessions_spawn" };
+      consumesRound: true;
     }
   | {
       kind: "force_tool_round";
@@ -277,6 +299,21 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
       switch (policyId) {
         case "final_recovery_budget_closeout_repair": {
           const decision = evaluateFinalRecoveryBudgetCloseoutRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "missing_browser_evidence": {
+          const decision = evaluateMissingBrowserEvidenceRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "missing_product_signal_browser_evidence": {
+          const decision =
+            evaluateMissingProductSignalBrowserEvidenceRepair(input);
           if (decision) {
             return decision;
           }
@@ -489,6 +526,64 @@ function evaluateMissingApprovalGateRepair(
     evidenceFormula: "candidate_final",
     repairPrompt: buildMissingApprovalGateRepairPrompt(),
     forceToolChoice: { name: "permission_query" },
+    consumesRound: true,
+  };
+}
+
+function evaluateMissingBrowserEvidenceRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    !shouldRepairMissingBrowserEvidence({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      toolTrace: input.toolTrace,
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "force_tool_round",
+    policyId: "missing_browser_evidence",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildMissingBrowserEvidenceRepairPrompt(input.taskPrompt),
+    forceToolChoice: { name: "sessions_spawn" },
+    consumesRound: true,
+  };
+}
+
+function evaluateMissingProductSignalBrowserEvidenceRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    !shouldRepairMissingProductSignalBrowserEvidence({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      toolTrace: input.toolTrace,
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "force_tool_round",
+    policyId: "missing_product_signal_browser_evidence",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildMissingProductSignalBrowserEvidenceRepairPrompt(
+      input.taskPrompt,
+    ),
+    forceToolChoice: { name: "sessions_spawn" },
     consumesRound: true,
   };
 }

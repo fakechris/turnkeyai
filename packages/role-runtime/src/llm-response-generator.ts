@@ -3501,8 +3501,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // Both share one idempotency marker (hasMissingBrowserEvidenceRepairPrompt),
           // so once either fires neither re-fires. The {name} form (NOT {type,name})
           // is what the engine model adapter expects.
-          if (
-            shouldRepairMissingBrowserEvidence({
+          const missingBrowserEvidenceRepair =
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["missing_browser_evidence"],
+              finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
@@ -3511,7 +3513,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ...(initialGatewayInput.tools === undefined
                 ? {}
                 : { tools: initialGatewayInput.tools }),
-            })
+            });
+          if (
+            missingBrowserEvidenceRepair?.policyId ===
+            "missing_browser_evidence"
           ) {
             return {
               messages: [
@@ -3519,15 +3524,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildMissingBrowserEvidenceRepairPrompt(packet.taskPrompt),
+                  missingBrowserEvidenceRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: { name: "sessions_spawn" },
-              consumesRound: true,
+              forceToolChoice: missingBrowserEvidenceRepair.forceToolChoice,
+              consumesRound: missingBrowserEvidenceRepair.consumesRound,
             };
           }
-          if (
-            shouldRepairMissingProductSignalBrowserEvidence({
+          const missingProductSignalBrowserEvidenceRepair =
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["missing_product_signal_browser_evidence"],
+              finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
@@ -3536,7 +3543,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ...(initialGatewayInput.tools === undefined
                 ? {}
                 : { tools: initialGatewayInput.tools }),
-            })
+            });
+          if (
+            missingProductSignalBrowserEvidenceRepair?.policyId ===
+            "missing_product_signal_browser_evidence"
           ) {
             return {
               messages: [
@@ -3544,11 +3554,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildMissingProductSignalBrowserEvidenceRepairPrompt(packet.taskPrompt),
+                  missingProductSignalBrowserEvidenceRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: { name: "sessions_spawn" },
-              consumesRound: true,
+              forceToolChoice:
+                missingProductSignalBrowserEvidenceRepair.forceToolChoice,
+              consumesRound:
+                missingProductSignalBrowserEvidenceRepair.consumesRound,
             };
           }
           // Stage 7 S9 (natural-finish): an approval-gated browser task whose tool-free

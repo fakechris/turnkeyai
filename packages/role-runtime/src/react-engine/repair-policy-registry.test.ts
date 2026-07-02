@@ -49,6 +49,8 @@ function readRepairPrompt(
 test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence", () => {
   assert.deepEqual([...ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER], [
     "final_recovery_budget_closeout_repair",
+    "missing_browser_evidence",
+    "missing_product_signal_browser_evidence",
     "missing_approval_gate",
     "pending_approval_wait_timeout_check",
     "premature_pending_approval",
@@ -162,6 +164,63 @@ test("RepairPolicyRegistry keeps disabled natural-finish policies from firing", 
       tools: [{ name: "permission_query" }],
     }),
     null,
+  );
+});
+
+test("RepairPolicyRegistry returns missing browser evidence repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["missing_browser_evidence"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "I could not verify the rendered DOM because browser session tools are unavailable.",
+    taskPrompt:
+      "Inspect https://example.com in a browser-visible rendered page and report the visible DOM state.",
+    toolTrace: [],
+    tools: [{ name: "sessions_spawn" }],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "missing_browser_evidence");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.deepEqual(decision?.forceToolChoice, { name: "sessions_spawn" });
+  assert.equal(decision?.consumesRound, true);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /browser-visible evidence is missing/i,
+  );
+});
+
+test("RepairPolicyRegistry returns missing product-signal browser evidence repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["missing_product_signal_browser_evidence"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "The server HTML shell is not confirmed with browser rendering, so dashboard metrics are not verified.",
+    taskPrompt:
+      "Review the product-signals live signal dashboard at https://example.com/signals using rendered browser evidence.",
+    toolTrace: [],
+    tools: [{ name: "sessions_spawn" }],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(
+    decision?.policyId,
+    "missing_product_signal_browser_evidence",
+  );
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.deepEqual(decision?.forceToolChoice, { name: "sessions_spawn" });
+  assert.equal(decision?.consumesRound, true);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /live product signal dashboard evidence is still incomplete/i,
   );
 });
 
