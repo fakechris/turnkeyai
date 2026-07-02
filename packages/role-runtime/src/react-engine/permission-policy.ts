@@ -1,6 +1,7 @@
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import { applyAwaitingContextSetupNoToolSuppression } from "../task-facts-shared";
 import {
   buildContinuationDirectiveContext,
   buildReadOnlyPermissionQuerySuppressionPrompt,
@@ -54,6 +55,14 @@ export interface PermissionSuppressHookResult {
   forceToolChoice?: NonNullable<PermissionSuppressDecision["forceToolChoice"]>;
 }
 
+export interface PermissionSuppressHookInput {
+  calls: LLMToolCall[];
+  taskPrompt: string;
+  messages: LLMMessage[];
+  lastText: string;
+  repairMarkers: LLMMessage[];
+}
+
 export interface PermissionPolicy {
   normalizeMissingApprovalGateRepair(input: PermissionToolCallInput): LLMToolCall[];
   normalizeApprovalGatedBrowserSpawn(input: PermissionToolCallInput): LLMToolCall[];
@@ -61,6 +70,9 @@ export interface PermissionPolicy {
   applySuppressDecision(
     decision: EngineSuppressDecision,
     input: PermissionSuppressApplicationInput,
+  ): PermissionSuppressHookResult | null;
+  applySuppressToolCallsHook(
+    input: PermissionSuppressHookInput,
   ): PermissionSuppressHookResult | null;
   wouldSuppressReadOnlyPermissionQuery(input: PermissionSuppressInput): boolean;
 }
@@ -79,6 +91,46 @@ export function buildPermissionSuppressInput(
       input.taskPrompt,
       input.messages,
     ),
+  };
+}
+
+function suppressReadOnlyPermissionQuery(
+  input: PermissionSuppressInput,
+): EngineSuppressDecision {
+  if (!shouldSuppressReadOnlyPermissionQueryToolCalls(input.calls, input)) {
+    return { kind: "none" };
+  }
+  return {
+    kind: "suppress",
+    policyId: "read_only_permission_query",
+    messages: [
+      {
+        role: "user",
+        content: buildReadOnlyPermissionQuerySuppressionPrompt(),
+      },
+    ],
+    forceToolChoice: "none",
+    consumesRound: true,
+    reason: "read-only permission_query does not require approval",
+  };
+}
+
+function applySuppressDecision(
+  decision: EngineSuppressDecision,
+  input: PermissionSuppressApplicationInput,
+): PermissionSuppressHookResult | null {
+  if (decision.kind !== "suppress") {
+    return null;
+  }
+  return {
+    messages: [
+      ...input.messages,
+      { role: "assistant", content: input.lastText },
+      ...decision.messages,
+    ],
+    ...(decision.forceToolChoice === undefined
+      ? {}
+      : { forceToolChoice: decision.forceToolChoice }),
   };
 }
 
@@ -101,38 +153,34 @@ const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
   },
 
   suppressReadOnlyPermissionQuery(input) {
-    if (!shouldSuppressReadOnlyPermissionQueryToolCalls(input.calls, input)) {
-      return { kind: "none" };
-    }
-    return {
-      kind: "suppress",
-      policyId: "read_only_permission_query",
-      messages: [
-        {
-          role: "user",
-          content: buildReadOnlyPermissionQuerySuppressionPrompt(),
-        },
-      ],
-      forceToolChoice: "none",
-      consumesRound: true,
-      reason: "read-only permission_query does not require approval",
-    };
+    return suppressReadOnlyPermissionQuery(input);
   },
 
   applySuppressDecision(decision, input) {
-    if (decision.kind !== "suppress") {
-      return null;
+    return applySuppressDecision(decision, input);
+  },
+
+  applySuppressToolCallsHook(input) {
+    const readOnlySuppression = suppressReadOnlyPermissionQuery(
+      buildPermissionSuppressInput({
+        calls: input.calls,
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+      }),
+    );
+    const readOnlySuppressionResult = applySuppressDecision(readOnlySuppression, {
+      messages: input.messages,
+      lastText: input.lastText,
+    });
+    if (readOnlySuppressionResult) {
+      return readOnlySuppressionResult;
     }
-    return {
-      messages: [
-        ...input.messages,
-        { role: "assistant", content: input.lastText },
-        ...decision.messages,
-      ],
-      ...(decision.forceToolChoice === undefined
-        ? {}
-        : { forceToolChoice: decision.forceToolChoice }),
-    };
+    return applyAwaitingContextSetupNoToolSuppression({
+      taskPrompt: input.taskPrompt,
+      messages: input.messages,
+      lastText: input.lastText,
+      repairMarkers: input.repairMarkers,
+    });
   },
 
   wouldSuppressReadOnlyPermissionQuery(input) {

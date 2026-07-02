@@ -71,10 +71,7 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     hook: "onSuppressToolCalls",
     phase: "tool_calls",
     installed: true,
-    moduleOps: [
-      "PermissionPolicy.suppressReadOnlyPermissionQuery",
-      "RepairPolicyRegistry.suppressAwaitingContextSetup",
-    ],
+    moduleOps: ["PermissionPolicy.applySuppressToolCallsHook"],
   },
   {
     hook: "onToolCallsClose",

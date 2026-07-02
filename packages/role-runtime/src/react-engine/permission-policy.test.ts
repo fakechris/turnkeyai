@@ -116,3 +116,74 @@ test("buildPermissionSuppressInput resolves live continuation context", () => {
   assert.equal(input.taskPrompt, "Read the current browser session before answering.");
   assert.match(input.sessionContext, new RegExp(sessionKey));
 });
+
+test("PermissionPolicy owns suppress-tool-calls hook flow order", () => {
+  const policy = createPermissionPolicy();
+  const readOnlyRepairMarkers: Array<{ role: "user"; content: string }> = [];
+
+  const readOnlyResult = policy.applySuppressToolCallsHook({
+    calls: [
+      {
+        id: "call-permission",
+        name: "permission_query",
+        input: {
+          action: "browser.form.submit",
+          rationale: "approval-gated browser form submission",
+        },
+      },
+    ],
+    taskPrompt:
+      "Read-only browser inspection. No form submission is needed; summarize listed provider pricing sources only.",
+    messages: [{ role: "user", content: "Research provider pricing." }],
+    lastText: "I need approval before continuing.",
+    repairMarkers: readOnlyRepairMarkers,
+  });
+
+  assert.equal(readOnlyResult?.forceToolChoice, "none");
+  assert.deepEqual(readOnlyResult?.messages.slice(0, 2), [
+    { role: "user", content: "Research provider pricing." },
+    { role: "assistant", content: "I need approval before continuing." },
+  ]);
+  assert.match(
+    readOnlyResult?.messages[2]?.content as string,
+    /Runtime correction: read-only browser inspection/,
+  );
+  assert.equal(readOnlyRepairMarkers.length, 0);
+
+  const setupRepairMarkers: Array<{ role: "user"; content: string }> = [];
+  const setupResult = policy.applySuppressToolCallsHook({
+    calls: [
+      {
+        id: "call-search",
+        name: "web_search",
+        input: { query: "unneeded setup-only search" },
+      },
+    ],
+    taskPrompt:
+      "No research is needed. Briefly acknowledge we can continue when context is provided.",
+    messages: [{ role: "user", content: "Stand by for context." }],
+    lastText: "I will search first.",
+    repairMarkers: setupRepairMarkers,
+  });
+
+  assert.equal(setupResult?.forceToolChoice, "none");
+  assert.equal(setupResult?.messages[0]?.content, "Stand by for context.");
+  assert.equal(setupResult?.messages[1]?.content, "I will search first.");
+  assert.match(
+    setupResult?.messages[2]?.content as string,
+    /Runtime correction: this turn is setup-only/,
+  );
+  assert.equal(setupRepairMarkers.length, 1);
+  assert.deepEqual(setupResult?.messages[2], setupRepairMarkers[0]);
+
+  assert.equal(
+    policy.applySuppressToolCallsHook({
+      calls: [{ id: "call-search", name: "web_search", input: { query: "x" } }],
+      taskPrompt: "Research current provider pricing.",
+      messages: [{ role: "user", content: "Research pricing." }],
+      lastText: "Searching.",
+      repairMarkers: [],
+    }),
+    null,
+  );
+});

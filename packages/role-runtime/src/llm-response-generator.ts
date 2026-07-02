@@ -262,7 +262,6 @@ import {
   type EngineCloseoutReason,
 } from "./react-engine";
 import {
-  applyAwaitingContextSetupNoToolSuppression,
   buildAwaitingContextSetupNoToolRepairPrompt,
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
@@ -2822,35 +2821,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!activeToolLoop || calls.length === 0) {
             return null;
           }
-          // Stage 8B slice 1b: read-only permission-query suppression (inline :518).
-          // A source-backed/read-only task (or one disclaiming browser mutation) that
-          // emits a permission_query gets the calls dropped + a tool-free re-prompt, so
-          // it does not gate a non-mutating read. No marker: the forced tool-free round
-          // converges (no calls → no re-suppress). Checked BEFORE the awaiting-context
-          // suppression (inline :518 precedes :1013). sessionContext is the inline
-          // continuation-directive context over state.messages.
-          const readOnlySuppression =
-            permissionPolicy.suppressReadOnlyPermissionQuery(
-              buildPermissionSuppressInput({
-                calls,
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-              }),
-            );
-          const readOnlySuppressionResult =
-            permissionPolicy.applySuppressDecision(readOnlySuppression, {
-              messages: state.messages,
-              lastText: state.lastText,
-            });
-          if (readOnlySuppressionResult) {
-            return readOnlySuppressionResult;
-          }
-          const repairMarkers = (ctx.repairMarkers ??= []);
-          return applyAwaitingContextSetupNoToolSuppression({
+          return permissionPolicy.applySuppressToolCallsHook({
+            calls,
             taskPrompt: packet.taskPrompt,
             messages: state.messages,
             lastText: state.lastText,
-            repairMarkers,
+            repairMarkers: (ctx.repairMarkers ??= []),
           });
         },
         // Stage 5 PR2d pending-call closeouts: the registry owns the

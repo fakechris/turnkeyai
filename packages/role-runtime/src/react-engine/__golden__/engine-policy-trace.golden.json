@@ -17,8 +17,7 @@
   "contractModuleOpOrder": [
     "ToolCallNormalizer.normalize",
     "ExecutionBudgetController.truncateRecoveryBudgetCalls",
-    "PermissionPolicy.suppressReadOnlyPermissionQuery",
-    "RepairPolicyRegistry.suppressAwaitingContextSetup",
+    "PermissionPolicy.applySuppressToolCallsHook",
     "CloseoutPolicyRegistry.applyPendingCallsCloseout",
     "ExecutionBudgetController.applyMaxToolCallsPerRound",
     "ExecutionBudgetController.runToolBatch",
