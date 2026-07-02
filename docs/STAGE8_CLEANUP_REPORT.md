@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `7f63ebde7ad6d03afd6241ddd1a6bc3e7c218f81`
+**Code HEAD before this docs-only report:** `0101bda5e97e62653aee3ffa16a22307e37a4bf3`
 **Date:** 2026-07-02
 
 ## Summary
@@ -72,7 +72,9 @@ could not move the normalizer without making the inline parity reference import 
   natural-finish evidence formula through the facade. The same snapshot now
   owns tool-trace result content and usable-evidence truth for the engine
   terminal/error/finalization paths, so those adapter paths no longer call the
-  raw evidence helpers directly.
+  raw evidence helpers directly. Current-round tool-result content text is now
+  also exposed through the ledger for the engine timeout-probe and completed
+  terminal-synthesis handoffs.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -202,6 +204,7 @@ of controller actions.
 | `da476f9` | Move wall-clock closeout signal construction into `ExecutionBudgetController`; `CloseoutPolicyRegistry` consumes the controller-owned signal type. |
 | `e3c4e8e` | Move the policy-trace debug env gate into `react-engine/policy-trace.ts`; add focused env-gate coverage. |
 | `7f63ebd` | Expand `EvidenceLedger` snapshots with tool-trace result content and usable-evidence facts; route engine terminal/error/finalization consumers through the snapshot. |
+| `0101bda` | Route current-round tool-result evidence text through `EvidenceLedger`; engine timeout-probe and completed terminal-synthesis handoffs stop calling the raw collector. |
 
 ## Current Extracted Implementation
 
@@ -277,9 +280,10 @@ Real implementation now exists in:
   and final forbidden local URL redaction.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
-  evidence, tool-trace result content, usable-evidence truth, and the
-  natural-finish evidence formula consumed by extracted repair
-  policies/controllers and engine terminal/error/finalization paths.
+  evidence, current tool-result content, tool-trace result content,
+  usable-evidence truth, and the natural-finish evidence formula consumed by
+  extracted repair policies/controllers and engine continuation, terminal,
+  error, and finalization paths.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -360,8 +364,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/evidence-ledger.test.ts packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts packages/role-runtime/src/react-engine/execution-budget-controller.test.ts` | 43 / 43 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 147 / 147 |
+| `npx tsx --test packages/role-runtime/src/react-engine/evidence-ledger.test.ts` | 5 / 5 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 148 / 148 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -547,6 +551,9 @@ Stage 8 boundaries/slices are now real:
 - engine terminal/error/finalization paths now read tool-trace result content
   and usable-evidence truth from `EvidenceLedger` snapshots instead of calling
   the raw evidence helpers directly.
+- engine timeout-probe and completed terminal-synthesis handoffs now read
+  current-round tool-result content through `EvidenceLedger` instead of calling
+  the raw result-content collector directly.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -595,8 +602,8 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue expanding the evidence ledger beyond the current source/completed
-  evidence, tool-result-content, and usable-evidence snapshot facts; extract
-  non-completed terminal closeout model synthesis/result application and keep
-  thinning the adapter.
+  evidence, current-result-content, tool-trace-result-content, and
+  usable-evidence snapshot facts; extract non-completed terminal closeout model
+  synthesis/result application and keep thinning the adapter.
 
 The branch is **not pushed**.
