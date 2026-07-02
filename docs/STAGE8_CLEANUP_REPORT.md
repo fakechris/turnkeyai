@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `cda764e02ad53282c570a43a126959f6dbc3b714`
+**Code HEAD before this docs-only report:** `966082a4eac3c034911783d20d0cce63d5c00c04`
 **Date:** 2026-07-02
 
 ## Summary
@@ -43,6 +43,11 @@ could not move the normalizer without making the inline parity reference import 
   typed decisions from
   `react-engine/repair-policy-registry.ts`; the adapter still applies the
   repair marker and appended messages at the original precedence points.
+  The first completed-closeout-only repair policies also now return typed
+  decisions from that registry: `timeout_followup_final_guidance`,
+  `missing_requested_next_action`, `missing_required_final_deliverables`,
+  `missing_browser_evidence_dimensions`, and
+  `false_evidence_blocked_synthesis`.
   Requested table-column and provider-support-schema task facts now live in
   `react-engine/task-facts.ts` and are shared by the adapter and repair
   registry.
@@ -64,9 +69,9 @@ could not move the normalizer without making the inline parity reference import 
   helper code.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
-still an adapter-heavy bridge and still owns remaining repair,
-completed-closeout, remaining evidence/task-fact behavior, terminal closeout synthesis
-application, and adapter-side application of controller actions.
+still an adapter-heavy bridge and still owns completed-closeout controller behavior
+after repair selection, remaining evidence/task-fact behavior, terminal closeout
+synthesis application, and adapter-side application of controller actions.
 
 ## Commits Added After The Blocked Report
 
@@ -105,6 +110,7 @@ application, and adapter-side application of controller actions.
 | `c66dea9` | Extract incomplete approved-browser-action repair selection into `RepairPolicyRegistry`; share its predicate and forced-spawn repair prompt. |
 | `e09679c` | Extract requested table/provider schema facts into `TaskFacts`; route missing requested-column and extraneous provider-schema repair decisions through `RepairPolicyRegistry`. |
 | `cda764e` | Extract source-evidence carry-forward and weak-evidence synthesis repair selections into `RepairPolicyRegistry`; move their evidence collectors, detectors, and prompts into neutral shared code. |
+| `966082a` | Extract completed synthesis repair selections into `RepairPolicyRegistry`; move completed-only timeout guidance, next-action, deliverable, browser-dimension, and false-blocked predicates/prompts into neutral shared code. |
 
 ## Current Extracted Implementation
 
@@ -150,9 +156,14 @@ Real implementation now exists in:
   failed-repair deterministic local closeout gating, incomplete approved-browser
   action repair gating, requested table-column repair gating, extraneous
   provider-support-schema repair gating, source-evidence carry-forward repair
-  gating, weak-evidence synthesis repair gating, repair marker idempotency,
-  prompt construction, source-bounded evidence formula collection, and typed
-  tool-free/tool-round resynthesis or closeout decisions.
+  gating, weak-evidence synthesis repair gating, plus
+  `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER` and the completed-only
+  repair policies `timeout_followup_final_guidance`,
+  `missing_requested_next_action`, `missing_required_final_deliverables`,
+  `missing_browser_evidence_dimensions`, and
+  `false_evidence_blocked_synthesis`, including repair marker idempotency,
+  prompt construction, source-bounded/completed-session evidence formula
+  collection, and typed tool-free/tool-round resynthesis or closeout decisions.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -178,14 +189,14 @@ Real implementation now exists in:
   construction, incomplete approved-browser-action repair predicate and prompt
   construction, source-bounded evidence collection, completed-session evidence
   collection, source-evidence carry-forward predicates/prompts, weak-evidence
-  synthesis predicates/prompts, cancelled-session closeout detection, pseudo
+  synthesis predicates/prompts, completed-only timeout follow-up guidance,
+  requested next-action, required final deliverable, browser-dimension, and
+  false blocked-evidence synthesis predicates/prompts, cancelled-session closeout detection, pseudo
   tool-call markup detection, repeated session inspection/continuation
   detectors, and completed browser-session evidence checks.
 
 Still shell/deferred or partial:
 
-- completed-only repair decisions after the natural-finish weak-evidence
-  synthesis boundary
 - `completed-closeout-controller.ts`
 - `evidence-ledger.ts`
 - `task-facts.ts` facts beyond requested table/provider schema extraction
@@ -197,9 +208,9 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 34 / 34 |
+| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 41 / 41 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 118 / 118 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 125 / 125 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -213,7 +224,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that thirty-eight
+root plus several policy-heavy hook bodies. The main improvement is that forty-four
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -293,6 +304,19 @@ Stage 8 boundaries/slices are now real:
 - weak-evidence synthesis repair selection routes through
   `RepairPolicyRegistry`, preserving exact final-shape and estimate-request
   skips.
+- completed synthesis repair precedence is pinned in
+  `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER`.
+- completed-closeout timeout follow-up final-guidance repair selection routes
+  through `RepairPolicyRegistry`, using the completed product-brief evidence
+  formula.
+- completed-closeout missing requested next-action repair selection routes
+  through `RepairPolicyRegistry`.
+- completed-closeout missing required final deliverable repair selection routes
+  through `RepairPolicyRegistry`, using completed-session evidence.
+- completed-closeout missing browser evidence-dimension repair selection routes
+  through `RepairPolicyRegistry`, preserving the final-content gate.
+- completed-closeout false evidence-blocked repair selection routes through
+  `RepairPolicyRegistry`, preserving completed final-content prompt evidence.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -325,8 +349,8 @@ Stage 8 boundaries/slices are now real:
 
 Continue with the remaining high-risk pieces:
 
-- continue extracting the remaining completed-only repair decisions, then
-  completed-closeout, evidence ledger, remaining task facts, terminal closeout
+- continue extracting completed-closeout controller behavior after repair
+  selection, evidence ledger, remaining task facts, terminal closeout
   synthesis/application, and final adapter thinning.
 
 The branch is **not pushed**.
