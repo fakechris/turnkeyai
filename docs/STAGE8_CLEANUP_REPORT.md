@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `c66dea9f3074d36afb333438524ea16c792a7083`
+**Code HEAD before this docs-only report:** `e09679c363309c9d3dc1e6afa97e95251f5bfe0d`
 **Date:** 2026-07-02
 
 ## Summary
@@ -36,9 +36,14 @@ could not move the normalizer without making the inline parity reference import 
   The first natural-finish repair policies,
   `final_recovery_budget_closeout_repair`, `missing_approval_gate`, and
   the approval-state repair sequence through
-  `incomplete_approved_browser_action`, now return typed decisions from
+  `incomplete_approved_browser_action`, plus
+  `missing_requested_table_columns` and
+  `extraneous_provider_table_schema`, now return typed decisions from
   `react-engine/repair-policy-registry.ts`; the adapter still applies the
   repair marker and appended messages at the original precedence points.
+  Requested table-column and provider-support-schema task facts now live in
+  `react-engine/task-facts.ts` and are shared by the adapter and repair
+  registry.
   The final allowed tool-round warning now routes through that controller while
   the warning text itself lives in neutral shared code used by inline and engine.
   Final-recovery budget parsing, prior-call counting, closeout reason lines, and
@@ -58,7 +63,7 @@ could not move the normalizer without making the inline parity reference import 
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining repair,
-completed-closeout, evidence/task-fact behavior, terminal closeout synthesis
+completed-closeout, remaining evidence/task-fact behavior, terminal closeout synthesis
 application, and adapter-side application of controller actions.
 
 ## Commits Added After The Blocked Report
@@ -96,6 +101,7 @@ application, and adapter-side application of controller actions.
 | `78d92bc` | Extract denied approval repair selection into `RepairPolicyRegistry`; share denied-approval predicate/prompt helpers. |
 | `d298c29` | Extract approval wait-timeout closeout and failed-repair local closeout selections into `RepairPolicyRegistry`; share wait-timeout closeout predicates/prompt helpers. |
 | `c66dea9` | Extract incomplete approved-browser-action repair selection into `RepairPolicyRegistry`; share its predicate and forced-spawn repair prompt. |
+| `e09679c` | Extract requested table/provider schema facts into `TaskFacts`; route missing requested-column and extraneous provider-schema repair decisions through `RepairPolicyRegistry`. |
 
 ## Current Extracted Implementation
 
@@ -132,13 +138,16 @@ Real implementation now exists in:
   `premature_pending_approval`, `stale_pending_approval`, and
   `stale_denied_approval`, plus `approval_wait_timeout_closeout` and
   `approval_wait_timeout_local_closeout`, and
-  `incomplete_approved_browser_action`, including exhausted final-recovery
+  `incomplete_approved_browser_action`, `missing_requested_table_columns`, and
+  `extraneous_provider_table_schema`, including exhausted final-recovery
   budget gating, bounded-closeout skip behavior, approval-gate repair gating,
   approval wait-timeout permission-result repair gating, stale pending/denied
   approval repair gating, approval wait-timeout closeout repair gating,
   failed-repair deterministic local closeout gating, incomplete approved-browser
-  action repair gating, repair marker idempotency, prompt construction, and
-  typed tool-free/tool-round resynthesis or closeout decisions.
+  action repair gating, requested table-column repair gating, extraneous
+  provider-support-schema repair gating, repair marker idempotency, prompt
+  construction, and typed tool-free/tool-round resynthesis or closeout
+  decisions.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -146,6 +155,10 @@ Real implementation now exists in:
   continuation, independent evidence-stream continuation, and forced pending
   approval `permission_result` continuation, plus post-execute missing
   approval-gate repair continuation.
+- `react-engine/task-facts.ts` for requested table-column inference, markdown
+  table header matching, provider search/pricing evidence-column inference, and
+  provider-support-schema request/result detection used by the adapter and
+  repair registry.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
@@ -164,10 +177,10 @@ Real implementation now exists in:
 
 Still shell/deferred or partial:
 
-- `repair-policy-registry.ts` policies after `incomplete_approved_browser_action`
+- `repair-policy-registry.ts` policies after `extraneous_provider_table_schema`
 - `completed-closeout-controller.ts`
 - `evidence-ledger.ts`
-- `task-facts.ts`
+- `task-facts.ts` facts beyond requested table/provider schema extraction
 - `legacy-text-detectors.ts`
 
 ## Latest Gates
@@ -176,9 +189,9 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 25 / 25 |
+| `npx tsx --test packages/role-runtime/src/react-engine/task-facts.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 35 / 35 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 104 / 104 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 114 / 114 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -192,7 +205,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that thirty-two
+root plus several policy-heavy hook bodies. The main improvement is that thirty-five
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -256,6 +269,14 @@ Stage 8 boundaries/slices are now real:
 - incomplete approved-browser-action repair selection routes through
   `RepairPolicyRegistry`, using shared approval-applied evidence/prompt
   predicates and returning a typed forced `sessions_spawn` repair round.
+- requested table-column and provider-support-schema facts route through
+  `TaskFacts`, including prompt/message/activation context extraction and
+  markdown table header matching.
+- missing requested table-column repair selection routes through
+  `RepairPolicyRegistry`, while the adapter still appends the prior assistant
+  candidate and records the repair marker.
+- extraneous provider-support-schema repair selection routes through
+  `RepairPolicyRegistry`, preserving the original-task requested-schema skip.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -289,8 +310,8 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue extracting remaining repair decisions after
-  `incomplete_approved_browser_action`, then completed-closeout, evidence
-  ledger, task facts, terminal closeout synthesis/application, and final adapter
-  thinning.
+  `extraneous_provider_table_schema` (source-evidence carry-forward and weak
+  evidence synthesis next), then completed-closeout, evidence ledger, remaining
+  task facts, terminal closeout synthesis/application, and final adapter thinning.
 
 The branch is **not pushed**.
