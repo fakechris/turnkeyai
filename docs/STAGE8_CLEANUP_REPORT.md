@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `ef5663884eec8bf6986bb771273175da1c61fa42`
+**Code HEAD before this docs-only report:** `38a7a563acdc5d2285b0c9e410b578e7cbf12110`
 **Date:** 2026-07-02
 
 ## Summary
@@ -86,8 +86,8 @@ could not move the normalizer without making the inline parity reference import 
   and the extracted completed-closeout controller / repair registry read that
   natural-finish evidence formula through the facade. The same snapshot now
   owns tool-trace result content and usable-evidence truth for the engine
-  terminal/error/finalization paths, so those adapter paths no longer call the
-  raw evidence helpers directly. Current-round tool-result content text is now
+  terminal/model-error/finalization paths, so those adapter paths no longer call
+  the raw evidence helpers directly. Current-round tool-result content text is now
   also exposed through the ledger for the engine timeout-probe and completed
   terminal-synthesis handoffs, and current-round completed-session / sub-agent
   timeout signals are now read through the ledger in engine continuation and
@@ -145,13 +145,13 @@ could not move the normalizer without making the inline parity reference import 
   selection, and final/re-arm state-effect application. The model-call-error
   local-evidence fallback/rethrow boundary now also returns a typed controller
   result instead of adapter-local null handling. Model-call-error abort,
-  forced pending-approval `permission_result`, and fallback selection now also
-  route through `TerminalCloseoutController`; the adapter only executes the
-  returned forced tool round or consumes the returned final/rethrow result. The
-  controller now also applies that typed model-error recovery result into the
-  react-loop hook shape (`"rethrow"`, `{ messages }`, or final response) through
-  an injected forced-round executor, and trims raw forced-round execution
-  results down to the hook continuation shape.
+  active/usable-evidence gating, forced pending-approval `permission_result`,
+  fallback/rethrow selection, and hook-result application now enter through
+  `TerminalCloseoutController.completeModelCallErrorFlow`; the adapter supplies
+  only the forced-result builder callback and forced-round executor, and the
+  controller trims raw forced-round execution results down to the hook
+  continuation shape. The model-call-error usable-evidence read now also routes
+  through `EvidenceLedger.snapshot()`.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -341,6 +341,7 @@ application outside the terminal completion path.
 | `75ed47e` | Move remaining pending-call closeout session context construction into `CloseoutPolicyRegistry`; adapter passes task/messages. |
 | `1e0743c` | Move pending-call wall-clock closeout signal selection into `ExecutionBudgetController`; adapter passes native pending calls plus optional empty-round continuation. |
 | `ef56638` | Move the full pending-call closeout hook flow into `CloseoutPolicyRegistry.applyPendingCallsCloseout`; adapter supplies callbacks/state instead of stitching the closeout windows locally. |
+| `38a7a56` | Move model-call-error forced pending-approval flow selection into `TerminalCloseoutController.completeModelCallErrorFlow`; route model-error usable-evidence through `EvidenceLedger.snapshot()`. |
 
 ## Current Extracted Implementation
 
@@ -453,17 +454,19 @@ Real implementation now exists in:
   closeout entrypoint from terminate decision to completion, plus the terminal
   hook entrypoint that short-circuits deterministic approval wait-timeout
   fallback before synthesis, plus the model-call-error local-evidence
-  fallback/rethrow boundary and model-call-error
-  abort / forced pending-approval continuation / fallback flow selection and
-  hook-result application through an injected forced-round executor, including
-  raw forced-round execution result trimming.
+  fallback/rethrow boundary and `completeModelCallErrorFlow` ownership of
+  model-call-error abort, active/usable-evidence gating, forced
+  pending-approval continuation selection, fallback flow selection, and
+  hook-result application through injected forced-result builder /
+  forced-round executor callbacks, including raw forced-round execution result
+  trimming.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
   result signals, tool-trace result content, approval wait-timeout runtime
   evidence, usable-evidence truth, and the natural-finish evidence formula
   consumed by extracted repair policies/controllers and engine continuation,
-  terminal, error, and finalization paths, plus a current-round evidence
+  terminal, model-error, and finalization paths, plus a current-round evidence
   snapshot used by continuation and post-execute closeout hook handoffs.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
@@ -551,9 +554,9 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 35 / 35 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 20 / 20 |
 | `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts packages/role-runtime/src/react-engine/policy-trace-characterization.test.ts` | 10 / 10 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 192 / 192 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 193 / 193 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -786,9 +789,9 @@ Stage 8 boundaries/slices are now real:
   URL redaction order.
 - natural-finish evidence formula construction for extracted repair
   policies/controllers routes through `EvidenceLedger` snapshots.
-- engine terminal/error/finalization paths now read tool-trace result content
-  and usable-evidence truth from `EvidenceLedger` snapshots instead of calling
-  the raw evidence helpers directly.
+- engine terminal/model-error/finalization paths now read tool-trace result
+  content and usable-evidence truth from `EvidenceLedger` snapshots instead of
+  calling the raw evidence helpers directly.
 - engine timeout-probe and completed terminal-synthesis handoffs now read
   current-round tool-result content through `EvidenceLedger` instead of calling
   the raw result-content collector directly.
@@ -805,11 +808,13 @@ Stage 8 boundaries/slices are now real:
 - engine continuation and post-execute closeout hooks now read current
   completed-session and sub-agent timeout result signals through
   `EvidenceLedger`.
-- model-call-error abort handling, forced pending-approval `permission_result`
-  continuation selection, and local evidence fallback selection route through
-  `TerminalCloseoutController`; hook-result application and raw forced-round
-  result trimming now also route through the controller, while the adapter
-  supplies only the forced tool-round executor callback.
+- model-call-error abort handling, active/usable-evidence gating, forced
+  pending-approval `permission_result` continuation selection, local evidence
+  fallback/rethrow selection, hook-result application, and raw forced-round
+  result trimming enter through
+  `TerminalCloseoutController.completeModelCallErrorFlow`; the adapter supplies
+  only the forced-result builder callback and forced tool-round executor, and
+  the usable-evidence input comes from `EvidenceLedger.snapshot()`.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
