@@ -18,6 +18,7 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RoleToolExecutionResult } from "../tool-use";
 import {
+  collectApprovalWaitTimeoutRuntimeEvidence,
   collectCompletedSessionEvidenceText,
   collectSourceBoundedEvidenceText,
 } from "../tool-loop-shared";
@@ -40,6 +41,7 @@ export interface EvidenceSnapshot {
   completedSessionEvidenceText: string;
   naturalFinishEvidenceText: string;
   toolTraceResultContent: string;
+  approvalWaitTimeoutRuntimeEvidence: string;
   usableEvidence: boolean;
 }
 
@@ -69,10 +71,13 @@ export function buildEvidenceSnapshot(
     input.toolTrace,
   );
   const toolTraceResultContent = collectToolTraceResultContent(input.toolTrace);
+  const approvalWaitTimeoutRuntimeEvidence =
+    collectApprovalWaitTimeoutRuntimeEvidence(input.toolTrace);
   return {
     sourceBoundedEvidenceText,
     completedSessionEvidenceText,
     toolTraceResultContent,
+    approvalWaitTimeoutRuntimeEvidence,
     usableEvidence: hasUsableEvidence(input.toolTrace),
     naturalFinishEvidenceText: [
       sourceBoundedEvidenceText,

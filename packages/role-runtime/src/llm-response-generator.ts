@@ -3850,7 +3850,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             const fallbackResult = maybeRedactForbiddenLocalUrls({
               result: buildApprovalWaitTimeoutLocalEvidenceCloseout({
                 selection,
-                evidenceText: collectApprovalWaitTimeoutRuntimeEvidence(toolTrace),
+                evidenceText: snapshotEvidence(state.messages)
+                  .approvalWaitTimeoutRuntimeEvidence,
                 error: new Error(
                   "approval wait-timeout repair omitted required pending evidence",
                 ),

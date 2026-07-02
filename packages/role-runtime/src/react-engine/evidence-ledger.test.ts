@@ -76,6 +76,10 @@ test("EvidenceLedger snapshot preserves source and completed-session evidence fo
     /Delegated final source evidence/,
   );
   assert.match(snapshot.toolTraceResultContent, /pricing page returned \$10/);
+  assert.match(
+    snapshot.approvalWaitTimeoutRuntimeEvidence,
+    /permission_query\/permission_result evidence/,
+  );
   assert.equal(snapshot.usableEvidence, true);
 });
 
@@ -102,6 +106,38 @@ test("EvidenceLedger class returns the same snapshot contract", () => {
   assert.match(snapshot.naturalFinishEvidenceText, /feature is available/);
   assert.match(snapshot.toolTraceResultContent, /feature is available/);
   assert.equal(snapshot.usableEvidence, true);
+});
+
+test("EvidenceLedger snapshots approval wait-timeout runtime evidence", () => {
+  const snapshot = buildEvidenceSnapshot({
+    taskPrompt: "Close out pending approval.",
+    messages: [],
+    toolTrace: [
+      {
+        round: 1,
+        calls: [],
+        results: [
+          result({
+            toolName: "permission_query",
+            content: "approval requested for browser.form.submit",
+          }),
+          result({
+            toolName: "permission_result",
+            content: "approval_wait_timeout still pending",
+          }),
+        ],
+      },
+    ],
+  });
+
+  assert.match(
+    snapshot.approvalWaitTimeoutRuntimeEvidence,
+    /permission_query: approval requested/,
+  );
+  assert.match(
+    snapshot.approvalWaitTimeoutRuntimeEvidence,
+    /permission_result: approval_wait_timeout still pending/,
+  );
 });
 
 test("EvidenceLedger marks skipped/error-only traces as not usable evidence", () => {
