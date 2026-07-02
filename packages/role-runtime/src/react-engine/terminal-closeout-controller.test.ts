@@ -213,3 +213,25 @@ test("TerminalCloseoutController applies non-completed synthesis effects", () =>
   assert.equal(plain.reduction, undefined);
   assert.equal(plain.reductionSnapshot, undefined);
 });
+
+test("TerminalCloseoutController owns terminal closeout write mode and final response shape", () => {
+  const controller = createTerminalCloseoutController();
+
+  assert.equal(
+    controller.closeoutRecordMode("completed_sub_agent_final"),
+    "if_absent",
+  );
+  assert.equal(controller.closeoutRecordMode("sub_agent_timeout"), "overwrite");
+  assert.equal(controller.closeoutRecordMode("round_limit"), "overwrite");
+
+  assert.deepEqual(
+    controller.buildFinalResponse({
+      text: "Done.",
+      stopReason: "stop",
+    } as GenerateTextResult),
+    { text: "Done.", stopReason: "stop" },
+  );
+  assert.deepEqual(controller.buildFinalResponse(result("Done.")), {
+    text: "Done.",
+  });
+});

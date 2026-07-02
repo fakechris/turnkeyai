@@ -112,6 +112,13 @@ export interface NonCompletedTerminalSynthesisResult<
   reductionSnapshot?: TReductionSnapshot;
 }
 
+export interface TerminalFinalResponse {
+  text: string;
+  stopReason?: string;
+}
+
+export type TerminalCloseoutRecordMode = "if_absent" | "overwrite";
+
 export class TerminalCloseoutController {
   buildApprovalWaitTimeoutFallback(
     input: ApprovalWaitTimeoutFallbackInput,
@@ -219,6 +226,17 @@ export class TerminalCloseoutController {
       ...(input.generated.reductionSnapshot !== undefined
         ? { reductionSnapshot: input.generated.reductionSnapshot }
         : {}),
+    };
+  }
+
+  closeoutRecordMode(reason: EngineCloseoutReason): TerminalCloseoutRecordMode {
+    return reason === "completed_sub_agent_final" ? "if_absent" : "overwrite";
+  }
+
+  buildFinalResponse(result: GenerateTextResult): TerminalFinalResponse {
+    return {
+      text: result.text,
+      ...(result.stopReason ? { stopReason: result.stopReason } : {}),
     };
   }
 }

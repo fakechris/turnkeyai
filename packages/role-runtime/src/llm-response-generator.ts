@@ -3858,12 +3858,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             });
             runState.recordToolLoopCloseout(fallback.closeout);
             runState.recordCloseoutResult(fallback.result);
-            return {
-              text: fallback.result.text,
-              ...(fallback.result.stopReason
-                ? { stopReason: fallback.result.stopReason }
-                : {}),
-            };
+            return terminalCloseout.buildFinalResponse(fallback.result);
           }
           // Each closeout reason rebuilds the inline reasonLines + closeout
           // metadata it produced inline; the round_limit defaults remain the
@@ -4034,7 +4029,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // (sub_agent_timeout / round_limit / a pending-call closeout), that reason's
           // metadata must replace the stale completed one, exactly as inline reassigns
           // `toolLoopCloseout =` for non-completed reasons (codex #520 P2).
-          if (reason === "completed_sub_agent_final") {
+          const closeoutRecordMode = terminalCloseout.closeoutRecordMode(
+            reason as EngineCloseoutReason,
+          );
+          if (closeoutRecordMode === "if_absent") {
             runState.recordToolLoopCloseoutIfAbsent(closeout);
           } else {
             runState.recordToolLoopCloseout(closeout);
@@ -4046,10 +4044,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               reductionSnapshot: synthesisReductionSnapshot,
             });
           }
-          return {
-            text: closeoutResult.text,
-            ...(closeoutResult.stopReason ? { stopReason: closeoutResult.stopReason } : {}),
-          };
+          return terminalCloseout.buildFinalResponse(closeoutResult);
         },
         // Stage 5 closeout: a thrown tool-round model call converges onto the
         // inline tool_evidence_fallback closeout (when usable evidence exists). The
@@ -4112,12 +4107,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           runState.recordToolLoopCloseout(fallback.closeout);
           runState.recordCloseoutResult(fallback.result);
-          return {
-            text: fallback.result.text,
-            ...(fallback.result.stopReason
-              ? { stopReason: fallback.result.stopReason }
-              : {}),
-          };
+          return terminalCloseout.buildFinalResponse(fallback.result);
         },
         // Capture the live message history for the post-loop finalization epilogue.
         // onTerminate / onModelCallError stash runState finalMessages on the closeout and
