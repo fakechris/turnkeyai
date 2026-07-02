@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `3707df84d7d972b314c58894ff15ed1c64dd1261`
+**Code HEAD before this docs-only report:** `3c97ab87aa1ac8cd07badfd08de5fc30d627e64d`
 **Date:** 2026-07-02
 
 ## Summary
@@ -92,6 +92,10 @@ could not move the normalizer without making the inline parity reference import 
   post-execute closeout hooks. Those current-round facts now travel as a single
   `EvidenceLedger.currentRound()` snapshot for continuation and post-execute
   closeout hook handoffs instead of adapter-local per-fact reads.
+  Provider tool-protocol round recording for the normal post-execute engine hook
+  now also routes through `EngineRunObserver.onProviderToolProtocolRound()`; the
+  adapter injects the existing safe recorder instead of calling it directly from
+  `onAfterExecuteContinue`.
   `react-engine/terminal-closeout-controller.ts` now owns the engine's
   tool-evidence fallback closeout metadata/redaction assembly for hard approval
   wait-timeout fallback, plus model-call-error local evidence fallback gating,
@@ -308,6 +312,7 @@ application outside the terminal completion path.
 | `1660d44` | Move post-execute closeout evaluate/apply into `CloseoutPolicyRegistry.applyPostExecuteCloseout`; adapter passes hook input and run-state target. |
 | `2c15c61` | Route the hard approval wait-timeout terminal fallback through `TerminalCloseoutController.handleTerminalCloseoutHook`; adapter supplies fallback evidence instead of owning the early deterministic branch. |
 | `3707df8` | Route current-round tool-result content, completed-session signal, and timeout signal through one `EvidenceLedger.currentRound()` snapshot for continuation and post-execute closeout hook handoffs. |
+| `3c97ab8` | Route provider tool-protocol round recording for the normal post-execute engine hook through `EngineRunObserver`; adapter injects the existing safe recorder. |
 
 ## Current Extracted Implementation
 
@@ -325,7 +330,9 @@ Real implementation now exists in:
   read-only permission-query suppression selection, and read-only suppression
   hook-result application.
 - `react-engine/finalization-pipeline.ts`
-- `react-engine/engine-run-observer.ts`
+- `react-engine/engine-run-observer.ts` for model/tool lifecycle observation,
+  runtime progress/native trace persistence, and normal post-execute provider
+  tool-protocol round recording through an injected recorder.
 - `react-engine/execution-budget-controller.ts` for final tool-round warning,
   final-recovery truncation, per-round tool-call admission, and engine tool-batch
   execution, plus budget closeout snapshot construction for recovery-budget,
@@ -506,8 +513,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| evidence-ledger focused test plus continuation/closeout focused tests | 62 / 62 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 181 / 181 |
+| engine-run-observer focused test | 5 / 5 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 182 / 182 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -532,7 +539,8 @@ Stage 8 boundaries/slices are now real:
 - the unconditional engine finalization epilogue routes through
   `finalizeEngineAnswer`.
 - model/tool lifecycle observability routes through `EngineRunObserver`, including
-  `toolTrace`, runtime progress recorder events, and native tool-message persistence.
+  `toolTrace`, runtime progress recorder events, native tool-message persistence,
+  and normal post-execute provider tool-protocol round recording.
 - mutable cross-hook state routes through `EngineRunState`, including closeout
   result/metadata, completed/timeout signals, reductions, memory flushes, and final
   message snapshots.
