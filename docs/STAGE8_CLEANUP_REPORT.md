@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `05c6d3966a3461625761e9d23d619403f24a0ac7`
+**Code HEAD before this docs-only report:** `3f6ea65b30f5a1571ae6508041f2fe04a916d581`
 **Date:** 2026-07-02
 
 ## Summary
@@ -87,13 +87,17 @@ could not move the normalizer without making the inline parity reference import 
   carry-forward, and timeout closeout visibility decoration. It also owns
   terminal final response shaping, closeout metadata write-mode selection, and
   explicit terminal state-effect application through an injected recorder target.
-  The adapter still invokes the terminal model synthesis.
+  It now also owns terminal synthesis invocation boundaries: initial synthesis
+  context construction/callback invocation for completed closeouts and the full
+  non-completed synthesis invocation/effect application path. The adapter still
+  supplies the gateway callback.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
-  closeout fallback decisions. The adapter still invokes non-completed terminal
-  model synthesis, while terminal state-effect application routes through
-  `TerminalCloseoutController`.
+  closeout fallback decisions. Terminal synthesis context construction,
+  non-completed synthesis invocation, and terminal state-effect application now
+  route through `TerminalCloseoutController`; the adapter supplies the gateway
+  callback.
   Requested table-column and provider-support-schema task facts now live in
   neutral `task-facts-shared.ts`; `react-engine/task-facts.ts` is now a
   compatibility wrapper for engine imports.
@@ -154,8 +158,8 @@ could not move the normalizer without making the inline parity reference import 
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence behavior,
-terminal closeout model synthesis, and remaining adapter-side application of
-controller actions.
+terminal closeout gateway callback wiring, and remaining adapter-side
+application of controller actions.
 
 ## Commits Added After The Blocked Report
 
@@ -227,6 +231,7 @@ controller actions.
 | `decec6f` | Move non-completed terminal synthesis effect application into `TerminalCloseoutController`; adapter records returned memory flush, reduction, and final result effects. |
 | `7cc62f8` | Move terminal final response shaping and closeout metadata write-mode selection into `TerminalCloseoutController`; adapter only records through the returned mode/response boundary. |
 | `05c6d39` | Move terminal closeout state-effect application into `TerminalCloseoutController`; adapter passes the run-state recorder target instead of branching over memory flush, reduction, closeout metadata, and final result writes. |
+| `3f6ea65` | Move terminal synthesis invocation boundaries into `TerminalCloseoutController`; adapter supplies the gateway callback while controller owns pseudo-tool-call context selection and non-completed synthesis invocation/effect application. |
 
 ## Current Extracted Implementation
 
@@ -307,7 +312,8 @@ Real implementation now exists in:
   and non-completed terminal synthesis effect application including timeout
   closeout visibility, memory-flush carry-forward, and reduction carry-forward,
   plus terminal closeout write-mode selection, final response shaping, and
-  explicit terminal state-effect application through a recorder target.
+  explicit terminal state-effect application through a recorder target, plus
+  terminal synthesis invocation boundaries through an injected gateway callback.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -395,8 +401,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 8 / 8 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 158 / 158 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 9 / 9 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 159 / 159 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -455,9 +461,10 @@ Stage 8 boundaries/slices are now real:
 - terminal closeout reasonLines and metadata construction routes through
   `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
   passthrough, completed session closeout, sub-agent timeout closeout,
-  round-limit closeout, and generic closeout fallback; non-completed terminal
-  model synthesis still lives in the adapter's `onTerminate`, while terminal
-  state-effect application routes through `TerminalCloseoutController`.
+  round-limit closeout, and generic closeout fallback; terminal synthesis
+  context construction, non-completed synthesis invocation, and terminal
+  state-effect application route through `TerminalCloseoutController`, while the
+  adapter supplies the gateway callback.
 - deterministic approval wait-timeout fallback assembly, generic
   `tool_evidence_fallback` metadata/redaction, model-call-error local evidence
   fallback gating/answer construction, pseudo tool-call terminal synthesis
@@ -465,7 +472,8 @@ Stage 8 boundaries/slices are now real:
   route through `TerminalCloseoutController`, including sub-agent timeout
   closeout visibility, memory-flush carry-forward, reduction carry-forward,
   terminal closeout write-mode selection, final response shaping, and terminal
-  state-effect application through an injected recorder target.
+  state-effect application through an injected recorder target, plus terminal
+  synthesis invocation through an injected gateway callback.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -652,10 +660,10 @@ Continue with the remaining high-risk pieces:
 - continue expanding the evidence ledger beyond the current source/completed
   evidence, current-result-content, current result signals,
   approval-timeout-runtime evidence, tool-trace-result-content, and
-  usable-evidence snapshot facts; extract non-completed terminal closeout model
-  synthesis beyond the current deterministic/generic/model
-  error fallback, synthesis-context selection, synthesis-effect application,
-  final response shaping, closeout write-mode selection, and explicit
-  state-effect application slice; keep thinning the adapter.
+  usable-evidence snapshot facts; continue thinning terminal closeout gateway
+  callback wiring beyond the current deterministic/generic/model-error fallback,
+  synthesis-context selection, synthesis invocation, synthesis-effect
+  application, final response shaping, closeout write-mode selection, and
+  explicit state-effect application slice; keep thinning the adapter.
 
 The branch is **not pushed**.
