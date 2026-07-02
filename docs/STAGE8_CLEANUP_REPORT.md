@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `1e0743c4b8e3a0ddbca5528ae60fc724005f647f`
+**Code HEAD before this docs-only report:** `ef5663884eec8bf6986bb771273175da1c61fa42`
 **Date:** 2026-07-02
 
 ## Summary
@@ -35,10 +35,12 @@ could not move the normalizer without making the inline parity reference import 
   anti-loop closeout metadata, and post-execute completed-vs-timeout selection.
   Pending closeout and post-execute closeout state-effect application now also
   route through `CloseoutPolicyRegistry` application helpers; the adapter passes
-  the run-state target. The pending-call closeout windows now also enter through
-  registry-owned application helpers for recovery-budget and remaining pending
-  calls; the adapter keeps only the cross-module ordering around empty-round
-  continuation preview. The post-execute closeout hook now also enters through
+  the run-state target. The pending-call closeout hook flow now enters through
+  `CloseoutPolicyRegistry.applyPendingCallsCloseout()`: the registry owns the
+  read-only suppression pre-emption, recovery-budget-before-continuation
+  ordering, empty-round continuation preview handoff, and remaining pending-call
+  closeout cascade, while the adapter supplies only live state and module-owned
+  callbacks. The post-execute closeout hook now also enters through
   `CloseoutPolicyRegistry.applyPostExecuteCloseout()`, so completed-vs-timeout
   selection and state writes are one registry-owned application boundary.
   The first natural-finish repair policies,
@@ -338,6 +340,7 @@ application outside the terminal completion path.
 | `929d5d9` | Move read-only permission suppression context construction into `PermissionPolicy`; adapter passes calls/task/messages. |
 | `75ed47e` | Move remaining pending-call closeout session context construction into `CloseoutPolicyRegistry`; adapter passes task/messages. |
 | `1e0743c` | Move pending-call wall-clock closeout signal selection into `ExecutionBudgetController`; adapter passes native pending calls plus optional empty-round continuation. |
+| `ef56638` | Move the full pending-call closeout hook flow into `CloseoutPolicyRegistry.applyPendingCallsCloseout`; adapter supplies callbacks/state instead of stitching the closeout windows locally. |
 
 ## Current Extracted Implementation
 
@@ -383,11 +386,13 @@ Real implementation now exists in:
   metadata decisions for pending closeout passthrough, completed session
   closeout, sub-agent timeout closeout, round-limit closeout, and generic
   closeout fallback, plus pending closeout and post-execute closeout
-  state-effect application through injected targets, including the
-  recovery-budget and remaining pending-call evaluate/apply entrypoints used by
-  `onToolCallsClose`, plus remaining pending-call closeout session context
-  construction, plus the post-execute closeout application entrypoint used by
-  `onAfterExecute`.
+  state-effect application through injected targets, including the single
+  `onToolCallsClose` pending-call flow entrypoint that owns read-only
+  suppression pre-emption, recovery-budget-before-continuation ordering,
+  empty-round continuation preview handoff, wall-clock signal handoff, remaining
+  pending-call closeout evaluation/application, and remaining pending-call
+  closeout session context construction, plus the post-execute closeout
+  application entrypoint used by `onAfterExecute`.
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
   repair policies: `final_recovery_budget_closeout_repair`,
@@ -546,8 +551,9 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/execution-budget-controller.test.ts` | 14 / 14 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 189 / 189 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 35 / 35 |
+| `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts packages/role-runtime/src/react-engine/policy-trace-characterization.test.ts` | 10 / 10 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 192 / 192 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -611,11 +617,12 @@ Stage 8 boundaries/slices are now real:
   `excessive_session_continuation` pending-call closeout selection route through
   `CloseoutPolicyRegistry`, using shared session anti-loop detectors where
   needed.
-- pending-call closeout application for recovery-budget and remaining pending
-  calls routes through `CloseoutPolicyRegistry`; the adapter keeps only the
-  cross-module ordering around empty-round continuation preview. Remaining
-  pending-call closeout session context construction now also lives in the
-  registry owner.
+- pending-call closeout application now enters through
+  `CloseoutPolicyRegistry.applyPendingCallsCloseout`; the registry owns
+  read-only suppression pre-emption, recovery-budget-before-continuation
+  ordering, empty-round continuation preview handoff, and remaining pending-call
+  closeout evaluation/application. Remaining pending-call closeout session
+  context construction also lives in the registry owner.
 - post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
   selection and state-effect application route through `CloseoutPolicyRegistry`;
   the adapter passes the hook input and run-state target through a single
