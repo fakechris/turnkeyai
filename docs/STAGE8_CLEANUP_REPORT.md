@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `3f6ea65b30f5a1571ae6508041f2fe04a916d581`
+**Code HEAD before this docs-only report:** `8307b8b13b5f982a863dd3169361eb4e2ab532b8`
 **Date:** 2026-07-02
 
 ## Summary
@@ -90,7 +90,10 @@ could not move the normalizer without making the inline parity reference import 
   It now also owns terminal synthesis invocation boundaries: initial synthesis
   context construction/callback invocation for completed closeouts and the full
   non-completed synthesis invocation/effect application path. The adapter still
-  supplies the gateway callback.
+  supplies the gateway callback. The deterministic approval wait-timeout
+  fallback and model-call-error local evidence fallback now also apply through
+  controller-owned helper methods, so the adapter no longer builds then applies
+  those fallback closeouts itself.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -232,6 +235,7 @@ application of controller actions.
 | `7cc62f8` | Move terminal final response shaping and closeout metadata write-mode selection into `TerminalCloseoutController`; adapter only records through the returned mode/response boundary. |
 | `05c6d39` | Move terminal closeout state-effect application into `TerminalCloseoutController`; adapter passes the run-state recorder target instead of branching over memory flush, reduction, closeout metadata, and final result writes. |
 | `3f6ea65` | Move terminal synthesis invocation boundaries into `TerminalCloseoutController`; adapter supplies the gateway callback while controller owns pseudo-tool-call context selection and non-completed synthesis invocation/effect application. |
+| `8307b8b` | Move deterministic approval wait-timeout and model-call-error fallback application helpers into `TerminalCloseoutController`; adapter passes fallback inputs and the run-state recorder target. |
 
 ## Current Extracted Implementation
 
@@ -313,7 +317,9 @@ Real implementation now exists in:
   closeout visibility, memory-flush carry-forward, and reduction carry-forward,
   plus terminal closeout write-mode selection, final response shaping, and
   explicit terminal state-effect application through a recorder target, plus
-  terminal synthesis invocation boundaries through an injected gateway callback.
+  terminal synthesis invocation boundaries through an injected gateway callback,
+  plus deterministic approval wait-timeout and model-call-error fallback
+  application helpers.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -401,8 +407,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 9 / 9 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 159 / 159 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 11 / 11 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 161 / 161 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -473,7 +479,10 @@ Stage 8 boundaries/slices are now real:
   closeout visibility, memory-flush carry-forward, reduction carry-forward,
   terminal closeout write-mode selection, final response shaping, and terminal
   state-effect application through an injected recorder target, plus terminal
-  synthesis invocation through an injected gateway callback.
+  synthesis invocation through an injected gateway callback. The deterministic
+  approval wait-timeout fallback and model-call-error local evidence fallback
+  now apply through controller helpers instead of adapter-local build/apply
+  branches.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -661,9 +670,10 @@ Continue with the remaining high-risk pieces:
   evidence, current-result-content, current result signals,
   approval-timeout-runtime evidence, tool-trace-result-content, and
   usable-evidence snapshot facts; continue thinning terminal closeout gateway
-  callback wiring beyond the current deterministic/generic/model-error fallback,
-  synthesis-context selection, synthesis invocation, synthesis-effect
-  application, final response shaping, closeout write-mode selection, and
-  explicit state-effect application slice; keep thinning the adapter.
+  callback wiring beyond the current deterministic/generic/model-error fallback
+  application, synthesis-context selection, synthesis invocation,
+  synthesis-effect application, final response shaping, closeout write-mode
+  selection, and explicit state-effect application slice; keep thinning the
+  adapter.
 
 The branch is **not pushed**.
