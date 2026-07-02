@@ -69,10 +69,14 @@ import {
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   buildPrematurePendingApprovalRepairPrompt,
+  buildSourceEvidenceCarryForwardRepairPrompt,
   buildStaleDeniedApprovalRepairPrompt,
   buildStalePendingApprovalRepairPrompt,
+  buildWeakEvidenceSynthesisRepairPrompt,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
+  collectCompletedSessionEvidenceText,
+  collectSourceBoundedEvidenceText,
   createToolExecutionSignal,
   countCompletedSessionEvidenceResults,
   countRecoveryToolCallsBeforeActivation,
@@ -106,6 +110,7 @@ import {
   isProviderSearchPricingResearchTask,
   inferIndependentEvidenceStreamCount,
   isBrowserSessionSpawn,
+  isControlPlaneToolResultName,
   isExplicitSessionContinuationRequest,
   isLoopbackHostname,
   latestPermissionResultStatus,
@@ -152,8 +157,10 @@ import {
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
+  shouldRepairSourceEvidenceCarryForward,
   shouldRepairStaleDeniedApproval,
   shouldRepairStalePendingApproval,
+  shouldRepairWeakEvidenceSynthesis,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
@@ -3806,34 +3813,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 extraneousProviderTableSchemaRepair.forceToolChoice,
             };
           }
-          // Source-bounded evidence text (mirrors inline :1192), used by the
-          // source-evidence carry-forward and weak-evidence repairs below.
-          const sourceBoundedEvidenceText = [
-            collectSourceBoundedEvidenceText({
-              taskPrompt: packet.taskPrompt,
-              messages: state.messages,
-              toolTrace,
-            }),
-            collectCompletedSessionEvidenceText(toolTrace),
-          ]
-            .filter((text) => text.trim().length > 0)
-            .join("\n\n");
-          // Source-evidence carry-forward (inline natural-finish :1202, between
-          // extraneous and weak-evidence). Truthy-gated on sourceBoundedEvidenceText
-          // exactly like inline (:1203). This is the natural-finish counterpart of the
-          // completed-closeout source-evidence move (#505); the onTerminate completed
-          // loop uses completedProductBriefEvidenceText, the natural-finish hook uses
-          // sourceBoundedEvidenceText — matching the two distinct inline evidence
-          // formulas (:1933 vs :1192).
-          if (
-            sourceBoundedEvidenceText &&
-            shouldRepairSourceEvidenceCarryForward({
+          const sourceEvidenceCarryForwardRepair =
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["source_evidence_carry_forward"],
+              finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
               repairMarkers,
-              evidenceText: sourceBoundedEvidenceText,
-            })
+              toolTrace,
+            });
+          if (
+            sourceEvidenceCarryForwardRepair?.policyId ===
+            "source_evidence_carry_forward"
           ) {
             return {
               messages: [
@@ -3841,32 +3833,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildSourceEvidenceCarryForwardRepairPrompt({
-                    taskPrompt: packet.taskPrompt,
-                    resultText: state.lastText,
-                    evidenceText: sourceBoundedEvidenceText,
-                  }),
+                  sourceEvidenceCarryForwardRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: "none",
+              forceToolChoice: sourceEvidenceCarryForwardRepair.forceToolChoice,
             };
           }
+          const weakEvidenceSynthesisRepair = repairPolicy.evaluateNaturalFinish({
+            enabledPolicies: ["weak_evidence_synthesis"],
+            finalRecoveryBudget: null,
+            taskPrompt: packet.taskPrompt,
+            resultText: state.lastText,
+            messages: state.messages,
+            repairMarkers,
+            toolTrace,
+          });
           if (
-            shouldRepairWeakEvidenceSynthesis({
-              taskPrompt: packet.taskPrompt,
-              resultText: state.lastText,
-              messages: state.messages,
-              repairMarkers,
-              evidenceText: sourceBoundedEvidenceText,
-            })
+            weakEvidenceSynthesisRepair?.policyId === "weak_evidence_synthesis"
           ) {
             return {
               messages: [
                 ...state.messages,
                 { role: "assistant", content: state.lastText },
-                recordRepairPrompt(repairMarkers, buildWeakEvidenceSynthesisRepairPrompt()),
+                recordRepairPrompt(
+                  repairMarkers,
+                  weakEvidenceSynthesisRepair.repairPrompt,
+                ),
               ],
-              forceToolChoice: "none",
+              forceToolChoice: weakEvidenceSynthesisRepair.forceToolChoice,
             };
           }
           return null;
@@ -6534,71 +6528,6 @@ function collectToolTraceResultContent(rounds: NativeToolRoundTrace[]): string {
     .join("\n\n");
 }
 
-function collectNativeToolTraceEvidenceText(
-  rounds: NativeToolRoundTrace[],
-): string {
-  return rounds
-    .flatMap((round) => round.results)
-    .filter((result) => !result.isError && result.skipped !== true)
-    .filter((result) => !isControlPlaneToolResultName(result.toolName))
-    .map((result) => result.content ?? "")
-    .filter((content) => content.trim().length > 0)
-    .join("\n\n");
-}
-
-function collectSourceBoundedEvidenceText(input: {
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): string {
-  return [
-    collectNativeToolTraceEvidenceText(input.toolTrace),
-    extractSourceBoundedEvidenceSnippets(input.taskPrompt),
-    ...input.messages.map((message) =>
-      extractSourceBoundedEvidenceSnippets(
-        typeof message.content === "string"
-          ? message.content
-          : JSON.stringify(message.content),
-      ),
-    ),
-  ]
-    .filter((text) => text.trim().length > 0)
-    .join("\n\n");
-}
-
-function extractSourceBoundedEvidenceSnippets(text: string): string {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const snippets: string[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (!looksLikeSourceBoundedEvidenceLine(line)) continue;
-    snippets.push(
-      lines
-        .slice(Math.max(0, index - 1), Math.min(lines.length, index + 2))
-        .join("\n"),
-    );
-  }
-  return [...new Set(snippets)].join("\n\n");
-}
-
-function looksLikeSourceBoundedEvidenceLine(line: string): boolean {
-  return (
-    // Scope/usage caveats a source may state (kept general — no fixture
-    // literals): e.g. "for documentation use", "avoid use in operations",
-    // "not for production use", "without needing permission".
-    /\b(?:avoid use in\b|not (?:for|intended for) (?:production|operational|operations)|for (?:documentation|illustrative|example|testing) (?:use|purposes?)|without needing permission|outside the verified scope|scope[- ]limited)\b/i.test(
-      line,
-    ) ||
-    /\b(?:Evidence|source|observed|verified|final_url|status_code|title)\b/i.test(
-      line,
-    ) ||
-    /(?:证据|来源|已验证|关键原文|最终 URL|页面 title|取证方式|仅供(?:文档|示例|测试)|请勿用于(?:生产|运营|实际))/i.test(line)
-  );
-}
-
 function enforceRequestedThreeLineLabelShape(input: { taskPrompt: string; resultText: string }): string {
   if (!requestsStatusVisibleTextEvidenceUrlLines(input.taskPrompt)) {
     return input.resultText;
@@ -6919,310 +6848,6 @@ function buildExtraneousProviderTableSchemaRepairPrompt(input: {
   ].join("\n");
 }
 
-function shouldRepairWeakEvidenceSynthesis(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  evidenceText?: string;
-}): boolean {
-  if (hasWeakEvidenceSynthesisRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (
-    input.evidenceText &&
-    hasUnsupportedSourceBoundedExtrapolation(input.resultText, input.evidenceText)
-  ) {
-    return true;
-  }
-  if (expectsExactFinalAnswerShape(input.taskPrompt, input.resultText)) {
-    return false;
-  }
-  if (matchesAny(input.resultText, WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS)) {
-    return true;
-  }
-  if (shouldRepairMissingRequestedRiskDimension(input)) {
-    return true;
-  }
-  return (
-    !taskRequestsEstimate(input.taskPrompt) &&
-    matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS)
-  );
-}
-
-const PRODUCT_BRIEF_MULTI_AGENT_EVIDENCE_PATTERN =
-  /\bmulti[- ]agent decomposition\b|\bdurable sub-session history\b|\bspecialist agents?\b[\s\S]{0,120}\bdecision-ready brief\b/i;
-const PRODUCT_BRIEF_MULTI_AGENT_RESULT_PATTERN =
-  /\bmulti[- ]agent\b|multiple agents|specialist agents|delegated agents|agent coordination/i;
-
-function shouldRepairProductBriefEvidenceCarryForward(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  evidenceText: string;
-}): boolean {
-  if (hasProductBriefEvidenceCarryForwardRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (!taskRequestsAgentWorkbenchProductBrief(input.taskPrompt)) {
-    return false;
-  }
-  if (!PRODUCT_BRIEF_MULTI_AGENT_EVIDENCE_PATTERN.test(input.evidenceText)) {
-    return false;
-  }
-  const missingMultiAgent = !PRODUCT_BRIEF_MULTI_AGENT_RESULT_PATTERN.test(input.resultText);
-  const missingRenderedSignals =
-    hasProductSignalDashboardMetrics(input.evidenceText) &&
-    (!PRODUCT_SIGNAL_DASHBOARD_RENDERED_RESULT_PATTERN.test(input.resultText) ||
-      hasProductSignalDashboardUnverifiedContradiction(input.resultText));
-  return missingMultiAgent || missingRenderedSignals;
-}
-
-function shouldRepairSourceEvidenceCarryForward(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  evidenceText: string;
-}): boolean {
-  return (
-    shouldRepairProductBriefEvidenceCarryForward(input) ||
-    shouldRepairCompletedSessionLabelCarryForward(input)
-  );
-}
-
-function shouldRepairCompletedSessionLabelCarryForward(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  evidenceText: string;
-}): boolean {
-  if (hasCompletedSessionLabelCarryForwardRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  const labels = extractCompletedSessionEvidenceLabels(input.evidenceText);
-  if (labels.length === 0) {
-    return false;
-  }
-  if (taskRequestsAgentWorkbenchProductBrief(input.taskPrompt)) {
-    return false;
-  }
-  const labelSensitiveTask =
-    (requestsApprovalGatedBrowserAction(input.taskPrompt) &&
-      hasAppliedApprovalEvidenceText(input.evidenceText)) ||
-    /\b(?:source labels?|source URLs?|evidence streams?|source streams?|source checks?|sources?)\b/i.test(
-      input.taskPrompt,
-    );
-  if (!labelSensitiveTask) {
-    return false;
-  }
-  return labels.some((label) => !normalizedTextContains(input.resultText, label));
-}
-
-function taskRequestsAgentWorkbenchProductBrief(taskPrompt: string): boolean {
-  return (
-    /\bagent workbench\b/i.test(taskPrompt) &&
-    /\b(?:product[- ]ready brief|product brief|audit-ready product brief|next release)\b/i.test(taskPrompt) &&
-    /\b(?:independent evidence streams|specialist work|Mission Control|product-signals|live signal dashboard)\b/i.test(taskPrompt)
-  );
-}
-
-function productBriefEvidenceIsComplete(evidenceText: string): boolean {
-  return (
-    PRODUCT_BRIEF_MULTI_AGENT_EVIDENCE_PATTERN.test(evidenceText) &&
-    /\b(?:browser bridge|bridge capability|browser controls|inspect rendered DOM|collect screenshots?)\b/i.test(
-      evidenceText,
-    ) &&
-    hasProductSignalDashboardMetrics(evidenceText) &&
-    /\b(?:rendered browser|browser[- ]rendered|browser-visible|browser evidence|rendered JavaScript|screenshot|snapshot|DOM)\b/i.test(
-      evidenceText,
-    )
-  );
-}
-
-function productBriefFinalCarriesEvidence(resultText: string): boolean {
-  return (
-    PRODUCT_BRIEF_MULTI_AGENT_RESULT_PATTERN.test(resultText) &&
-    /\b(?:Mission Control|default entry|default human entry)\b/i.test(
-      resultText,
-    ) &&
-    /\b(?:browser bridge|bridge capability|browser controls|inspect rendered DOM|screenshots?)\b/i.test(
-      resultText,
-    ) &&
-    PRODUCT_SIGNAL_DASHBOARD_RENDERED_RESULT_PATTERN.test(resultText) &&
-    /\b(?:risk|residual risk|unverified|source-bounded|production validation)\b/i.test(
-      resultText,
-    )
-  );
-}
-
-function hasProductBriefEvidenceCarryForwardRepairPrompt(messages: LLMMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: final product brief dropped required source-backed workbench evidence",
-      ),
-  );
-}
-
-function buildSourceEvidenceCarryForwardRepairPrompt(input: {
-  taskPrompt: string;
-  resultText: string;
-  evidenceText: string;
-}): string {
-  if (
-    shouldRepairProductBriefEvidenceCarryForward({
-      ...input,
-      messages: [],
-      repairMarkers: [],
-    })
-  ) {
-    return buildProductBriefEvidenceCarryForwardRepairPrompt(input);
-  }
-  const missingLabels = extractCompletedSessionEvidenceLabels(input.evidenceText).filter(
-    (label) => !normalizedTextContains(input.resultText, label),
-  );
-  if (missingLabels.length > 0) {
-    return buildCompletedSessionLabelCarryForwardRepairPrompt({
-      ...input,
-      missingLabels,
-    });
-  }
-  return buildProductBriefEvidenceCarryForwardRepairPrompt(input);
-}
-
-function hasCompletedSessionLabelCarryForwardRepairPrompt(messages: LLMMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: final answer dropped visible evidence source labels",
-      ),
-  );
-}
-
-function buildCompletedSessionLabelCarryForwardRepairPrompt(input: {
-  taskPrompt: string;
-  resultText: string;
-  evidenceText: string;
-  missingLabels: string[];
-}): string {
-  return [
-    "Runtime correction: final answer dropped visible evidence source labels.",
-    `Missing exact label(s): ${input.missingLabels.join(", ")}`,
-    "Do not call tools. Rewrite the final answer using only the completed evidence below.",
-    "Keep the substantive answer, but add a compact Evidence / Sources line that includes each missing label exactly as written and the fact(s) it verified.",
-    "For approval-gated browser work, keep approval status, applied action, browser evidence, screenshot/artifact, and no-external-side-effect boundary visible.",
-    `Original task:\n${sliceUtf8(input.taskPrompt, 1400)}`,
-    `Previous final answer:\n${sliceUtf8(input.resultText, 1600)}`,
-    `Completed evidence:\n${sliceUtf8(input.evidenceText, 3600)}`,
-  ].join("\n");
-}
-
-function extractCompletedSessionEvidenceLabels(evidenceText: string): string[] {
-  const labels: string[] = [];
-  for (const match of evidenceText.matchAll(/"label"\s*:\s*"([^"\\]{3,120})"/g)) {
-    const label = match[1]?.trim();
-    if (label && isMeaningfulEvidenceLabel(label)) {
-      labels.push(label);
-    }
-  }
-  for (const match of evidenceText.matchAll(/\blabel\s*=\s*"([^"]{3,120})"/g)) {
-    const label = match[1]?.trim();
-    if (label && isMeaningfulEvidenceLabel(label)) {
-      labels.push(label);
-    }
-  }
-  return dedupeStrings(labels).slice(0, 6);
-}
-
-function isMeaningfulEvidenceLabel(label: string): boolean {
-  const normalized = label.trim().toLowerCase();
-  if (!normalized || normalized.length < 3) {
-    return false;
-  }
-  return !/^(?:local-url-fetch|browser|explore|source|fetch|research|session)$/i.test(normalized);
-}
-
-function hasAppliedApprovalEvidenceText(text: string): boolean {
-  return /\bpermission\.applied\b|["']event_type["']\s*:\s*["']permission\.applied["']|\bapproval\b[\s\S]{0,120}\bapplied\b/i.test(
-    text,
-  );
-}
-
-function normalizedTextContains(text: string, needle: string): boolean {
-  const compactText = text.replace(/\s+/g, " ").trim().toLowerCase();
-  const compactNeedle = needle.replace(/\s+/g, " ").trim().toLowerCase();
-  return compactNeedle.length > 0 && compactText.includes(compactNeedle);
-}
-
-function buildProductBriefEvidenceCarryForwardRepairPrompt(input: {
-  taskPrompt: string;
-  resultText: string;
-  evidenceText: string;
-}): string {
-  return [
-    "Runtime correction: final product brief dropped required source-backed workbench evidence.",
-    "Do not call tools. Rewrite the final answer using only the completed delegated evidence below.",
-    "The final must explicitly carry forward the orchestration evidence as multi-agent coordination, using the phrase multi-agent decomposition when supported by the evidence.",
-    "The final must explicitly carry forward any dashboard counters or rates as rendered browser evidence, not raw HTML, when those values appear in evidence.",
-    "Keep the product-bridge source visible as bridge/setup evidence. Preserve source-bounded residual risk, but do not mark rendered dashboard counters or browser/rendered evidence unverified when the completed evidence contains them.",
-    `Original task:\n${sliceUtf8(input.taskPrompt, 1400)}`,
-    `Previous final answer:\n${sliceUtf8(input.resultText, 1400)}`,
-    `Completed delegated evidence:\n${sliceUtf8(input.evidenceText, 4200)}`,
-  ].join("\n");
-}
-
-function hasUnsupportedSourceBoundedExtrapolation(
-  resultText: string,
-  evidenceText: string,
-): boolean {
-  const mentionsDnsOrIp =
-    /\b(?:dns|ip address|resolves? to|resolution|a record|93\.184\.215\.14)\b/i.test(
-      resultText,
-    ) || /(?:DNS|解析|污染|IP\s*地址|93\.184\.215\.14)/i.test(resultText);
-  if (
-    mentionsDnsOrIp &&
-    !/\b(?:dns|ip address|resolves? to|resolution|a record|93\.184\.215\.14)\b|(?:DNS|解析|污染|IP\s*地址|93\.184\.215\.14)/i.test(
-      evidenceText,
-    )
-  ) {
-    return true;
-  }
-  const strongOperationsRestriction =
-    /(?:不得|不能|禁止|不可|不应)[^。；;\n]{0,120}(?:生产|运营|实际运营|真实环境|测试环境|真实服务|正式业务|真实业务|联网业务|业务场景)/.test(
-      resultText,
-    ) ||
-    /\b(?:must not|cannot|prohibited|forbidden|not allowed)\b[\s\S]{0,120}\b(?:operations?|production|real service|real services|real environment|test environment|business use|networked business)\b/i.test(
-      resultText,
-    );
-  if (strongOperationsRestriction && !evidenceStatesStrictOperationsRestriction(evidenceText)) {
-    return true;
-  }
-  const unsupportedRiskMechanism =
-    /(?:路由冲突|安全风险|恶意(?:测试)?流量|abuse risk|security risk|routing conflict)/i.test(
-      resultText,
-    ) &&
-    !/(?:路由冲突|安全风险|恶意(?:测试)?流量|abuse risk|security risk|routing conflict)/i.test(
-      evidenceText,
-    );
-  return unsupportedRiskMechanism;
-}
-
-function evidenceStatesStrictOperationsRestriction(evidenceText: string): boolean {
-  return (
-    /(?:不得|不能|禁止|不可|不应)[^。；;\n]{0,120}(?:生产|运营|实际运营|真实环境|测试环境|真实服务|正式业务|真实业务|联网业务|业务场景)/.test(
-      evidenceText,
-    ) ||
-    /\b(?:must not|cannot|prohibited|forbidden|not allowed)\b[\s\S]{0,120}\b(?:operations?|production|real service|real services|real environment|test environment|business use|networked business)\b/i.test(
-      evidenceText,
-    )
-  );
-}
-
 function shouldRepairFalseEvidenceBlockedSynthesis(input: {
   resultText: string;
   messages: LLMMessage[];
@@ -7307,27 +6932,6 @@ function findMissingBrowserEvidenceDimensions(input: {
   );
 }
 
-function shouldRepairMissingRequestedRiskDimension(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-}): boolean {
-  if (
-    !/\brisks?\b/i.test(input.taskPrompt) ||
-    /\brisks?\b/i.test(input.resultText)
-  ) {
-    return false;
-  }
-  return input.messages.some((message) =>
-    /\brisks?\b/i.test(readMessageContentText(message.content)),
-  );
-}
-
-function taskRequestsEstimate(taskPrompt: string): boolean {
-  return matchesAny(taskPrompt, ESTIMATE_REQUEST_PATTERNS);
-}
-
 const MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS = [
   /\b(?:browser|rendered|DOM|page|snapshot|screenshot|popup|iframe|frame|shadow)\b[\s\S]{0,120}\b(?:tools?|tooling|worker|agent|session)\b[\s\S]{0,80}\b(?:unavailable|not available|disabled|missing|could not be called|cannot be called|failed)\b/i,
   /\b(?:tools?|tooling|worker|agent|session)\b[\s\S]{0,80}\b(?:unavailable|not available|disabled|missing|could not be called|cannot be called|failed)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|page|snapshot|screenshot|popup|iframe|frame|shadow)\b/i,
@@ -7335,16 +6939,6 @@ const MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS = [
   /\b(?:static|raw|server|HTTP)\s+(?:fetch|HTML|extraction|request)\b[\s\S]{0,180}\b(?:cannot|can't|could not|unable to)\b[\s\S]{0,160}\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b/i,
   /\blive browser session\b[\s\S]{0,120}\b(?:needed|required|necessary)\b/i,
   /\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b[\s\S]{0,160}\b(?:not verified|unverified|unable to verify|was not verified|could not verify)\b/i,
-];
-
-const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [
-  /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b/i,
-  /(?:^|[^A-Za-z0-9_])待确认(?![A-Za-z0-9_])/,
-];
-
-const WEAK_ESTIMATE_SYNTHESIS_PATTERNS = [
-  /\b(?:estimate|estimated)\b/i,
-  /(?:^|[^A-Za-z0-9_])估算(?![A-Za-z0-9_])/,
 ];
 
 const FALSE_EVIDENCE_BLOCKED_SYNTHESIS_PATTERNS = [
@@ -7358,11 +6952,6 @@ const ACTUAL_EVIDENCE_BLOCKED_PATTERNS = [
   /\b(?:verification status:\s*failed|content extraction\b[\s\S]{0,80}\b(?:failed|incomplete|truncated))\b/i,
   /\b(?:browser|rendered|DOM|page|dashboard|tab|target|screenshot|snapshot|CDP)\b[\s\S]{0,120}\b(?:failed|unavailable|inaccessible|incomplete|truncated)\b/i,
   /\b(?:failed|unavailable|inaccessible|incomplete|truncated)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|page|dashboard|tab|target|screenshot|snapshot|CDP)\b/i,
-];
-
-const ESTIMATE_REQUEST_PATTERNS = [
-  /\b(?:estimate|estimated|estimation|forecast|roughly|approx(?:imate|imately)?|ballpark|range)\b/i,
-  /(?:^|[^A-Za-z0-9_])(?:估算|预估|大概|大致|范围)(?![A-Za-z0-9_])/,
 ];
 
 function hasMissingBrowserEvidenceRepairPrompt(
@@ -7421,16 +7010,6 @@ function hasMissingRequiredFinalDeliverablesRepairPrompt(
       message.role === "user" &&
       readMessageContentText(message.content).includes(
         "Runtime correction: final answer omitted required deliverables",
-      ),
-  );
-}
-
-function hasWeakEvidenceSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: final answer weakens verified evidence",
       ),
   );
 }
@@ -7577,20 +7156,6 @@ function buildTimeoutFollowupFinalGuidanceRepairPrompt(input: {
   ].join("\n");
 }
 
-function buildWeakEvidenceSynthesisRepairPrompt(): string {
-  return [
-    "Runtime correction: final answer weakens verified evidence with placeholder uncertainty.",
-    "Do not call tools. Rewrite the final answer using only the delegated session evidence already present.",
-    "For facts directly present in the evidence, say observed or verified instead of maybe, probably, estimate, estimated, TBD, to be confirmed, pending confirmation, or similar placeholder wording.",
-    "For facts absent from the evidence, write not verified and name the missing dimension without guessing.",
-    "Remove source-external technical or policy extrapolations such as DNS/IP resolution details, production-environment bans, real-service claims, user-scale claims, or operational restrictions unless those exact facts appear in the gathered evidence.",
-    "If the evidence states a narrow scope limit or usage caveat, preserve its exact wording (or say wider use is outside the verified scope); do not convert a narrow caveat into a broader production-environment or real-service ban.",
-    "Preserve requested dimension labels from the user when evidence supports them, such as pricing, strength, risk, owner, and next action.",
-    "Do not rename a requested risk dimension into only generic weaknesses, open questions, or uncertainty when risk evidence is present.",
-    "Keep residual risk visible, but do not downgrade verified source facts into estimates.",
-  ].join("\n");
-}
-
 function buildFalseEvidenceBlockedSynthesisRepairPrompt(
   finalContents: string[],
 ): string {
@@ -7730,33 +7295,6 @@ function buildBrowserEvidenceRepairContext(
     buildContinuationDirectiveContext(taskPrompt, messages),
     ...messages.map((message) => readMessageContentText(message.content)),
   ].join("\n");
-}
-
-function collectCompletedSessionEvidenceText(
-  toolTrace: NativeToolRoundTrace[],
-): string {
-  const evidence: string[] = [];
-  for (const round of toolTrace) {
-    for (const result of round.results) {
-      if (
-        result.toolName !== "sessions_spawn" &&
-        result.toolName !== "sessions_send"
-      ) {
-        continue;
-      }
-      const parsed = result.content
-        ? parseSessionToolResult(result.content)
-        : null;
-      if (!parsed || parsed.status !== "completed") {
-        continue;
-      }
-      const completedEvidence = readCompletedSessionEvidence(parsed);
-      if (completedEvidence) {
-        evidence.push(completedEvidence);
-      }
-    }
-  }
-  return dedupeStrings(evidence).join("\n\n");
 }
 
 function taskRequestsProductSignalDashboardEvidence(text: string): boolean {
@@ -8938,16 +8476,6 @@ function readGenericToolEvidence(content: string): string | null {
     // Fall back to the textual content below.
   }
   return sliceUtf8(summarizeToolResultContent(trimmed), 4 * 1024);
-}
-
-function isControlPlaneToolResultName(toolName: string | undefined): boolean {
-  return (
-    toolName === "sessions_list" ||
-    toolName === "sessions_history" ||
-    toolName === "permission_query" ||
-    toolName === "permission_result" ||
-    toolName === "permission_applied"
-  );
 }
 
 function isControlPlaneToolResultRecord(

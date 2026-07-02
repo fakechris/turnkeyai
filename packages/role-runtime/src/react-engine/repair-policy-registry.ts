@@ -14,8 +14,12 @@ import {
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   buildPrematurePendingApprovalRepairPrompt,
+  buildSourceEvidenceCarryForwardRepairPrompt,
   buildStaleDeniedApprovalRepairPrompt,
   buildStalePendingApprovalRepairPrompt,
+  buildWeakEvidenceSynthesisRepairPrompt,
+  collectCompletedSessionEvidenceText,
+  collectSourceBoundedEvidenceText,
   shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
   shouldRepairApprovalWaitTimeoutCloseout,
   shouldRepairFinalRecoveryBudgetCloseout,
@@ -23,8 +27,10 @@ import {
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
+  shouldRepairSourceEvidenceCarryForward,
   shouldRepairStaleDeniedApproval,
   shouldRepairStalePendingApproval,
+  shouldRepairWeakEvidenceSynthesis,
   sliceUtf8,
 } from "../tool-loop-shared";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
@@ -54,6 +60,8 @@ export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "incomplete_approved_browser_action",
   "missing_requested_table_columns",
   "extraneous_provider_table_schema",
+  "source_evidence_carry_forward",
+  "weak_evidence_synthesis",
 ] as const;
 
 export type EngineNaturalFinishRepairPolicyId =
@@ -162,6 +170,22 @@ export type NaturalFinishRepairDecision =
       repairPrompt: string;
       forceToolChoice: "none";
       consumesRound?: false;
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "source_evidence_carry_forward";
+      evidenceFormula: "source_bounded_evidence";
+      repairPrompt: string;
+      forceToolChoice: "none";
+      consumesRound?: false;
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "weak_evidence_synthesis";
+      evidenceFormula: "source_bounded_evidence";
+      repairPrompt: string;
+      forceToolChoice: "none";
+      consumesRound?: false;
     };
 
 export interface RepairPolicyRegistry {
@@ -254,6 +278,20 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
         }
         case "extraneous_provider_table_schema": {
           const decision = evaluateExtraneousProviderTableSchemaRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "source_evidence_carry_forward": {
+          const decision = evaluateSourceEvidenceCarryForwardRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "weak_evidence_synthesis": {
+          const decision = evaluateWeakEvidenceSynthesisRepair(input);
           if (decision) {
             return decision;
           }
@@ -564,6 +602,84 @@ function evaluateExtraneousProviderTableSchemaRepair(
     }),
     forceToolChoice: "none",
   };
+}
+
+function evaluateSourceEvidenceCarryForwardRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  const evidenceText = collectNaturalFinishSourceBoundedEvidenceText(input);
+  if (!evidenceText) {
+    return null;
+  }
+  if (
+    !shouldRepairSourceEvidenceCarryForward({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      evidenceText,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "source_evidence_carry_forward",
+    evidenceFormula: "source_bounded_evidence",
+    repairPrompt: buildSourceEvidenceCarryForwardRepairPrompt({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      evidenceText,
+    }),
+    forceToolChoice: "none",
+  };
+}
+
+function evaluateWeakEvidenceSynthesisRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  const evidenceText = input.taskPrompt
+    ? collectNaturalFinishSourceBoundedEvidenceText(input)
+    : "";
+  if (
+    !shouldRepairWeakEvidenceSynthesis({
+      taskPrompt: input.taskPrompt ?? "",
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      evidenceText,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "weak_evidence_synthesis",
+    evidenceFormula: "source_bounded_evidence",
+    repairPrompt: buildWeakEvidenceSynthesisRepairPrompt(),
+    forceToolChoice: "none",
+  };
+}
+
+function collectNaturalFinishSourceBoundedEvidenceText(
+  input: NaturalFinishRepairInput,
+): string {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return "";
+  }
+  return [
+    collectSourceBoundedEvidenceText({
+      taskPrompt: input.taskPrompt,
+      messages: input.messages,
+      toolTrace: input.toolTrace,
+    }),
+    collectCompletedSessionEvidenceText(input.toolTrace),
+  ]
+    .filter((text) => text.trim().length > 0)
+    .join("\n\n");
 }
 
 function shouldRepairMissingRequestedTableColumns(input: {

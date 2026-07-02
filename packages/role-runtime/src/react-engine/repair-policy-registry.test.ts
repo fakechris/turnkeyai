@@ -52,6 +52,8 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
     "incomplete_approved_browser_action",
     "missing_requested_table_columns",
     "extraneous_provider_table_schema",
+    "source_evidence_carry_forward",
+    "weak_evidence_synthesis",
   ]);
 });
 
@@ -866,6 +868,147 @@ test("RepairPolicyRegistry skips extraneous provider table schema when requested
       ].join("\n"),
       taskPrompt:
         "Compare provider options for DeepSeek R1 search/web_search support, input price, and output price.",
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns source evidence carry-forward repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const evidence =
+    "Specialist agents produced a decision-ready brief with multi-agent decomposition.";
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "The release brief is ready.",
+    taskPrompt:
+      "Agent Workbench product-ready brief for the next release using independent evidence streams.",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [{ id: "toolu-source", name: "web_fetch", input: {} }],
+        results: [
+          {
+            toolCallId: "toolu-source",
+            toolName: "web_fetch",
+            content: evidence,
+            isError: false,
+            contentBytes: evidence.length,
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "source_evidence_carry_forward");
+  assert.equal(decision?.evidenceFormula, "source_bounded_evidence");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /dropped required source-backed workbench evidence/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /multi-agent decomposition/i);
+});
+
+test("RepairPolicyRegistry skips source evidence carry-forward after marker", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const evidence =
+    "Specialist agents produced a decision-ready brief with multi-agent decomposition.";
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "The release brief is ready.",
+    taskPrompt:
+      "Agent Workbench product-ready brief for the next release using independent evidence streams.",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [{ id: "toolu-source", name: "web_fetch", input: {} }],
+        results: [
+          {
+            toolCallId: "toolu-source",
+            toolName: "web_fetch",
+            content: evidence,
+            isError: false,
+            contentBytes: evidence.length,
+          },
+        ],
+      },
+    ],
+  });
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["source_evidence_carry_forward"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
+      resultText: "The release brief is ready.",
+      taskPrompt:
+        "Agent Workbench product-ready brief for the next release using independent evidence streams.",
+      toolTrace: [
+        {
+          round: 1,
+          calls: [{ id: "toolu-source", name: "web_fetch", input: {} }],
+          results: [
+            {
+              toolCallId: "toolu-source",
+              toolName: "web_fetch",
+              content: evidence,
+              isError: false,
+              contentBytes: evidence.length,
+            },
+          ],
+        },
+      ],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns weak evidence synthesis repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["weak_evidence_synthesis"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "The source probably verifies the owner.",
+    taskPrompt: "Summarize the verified source facts.",
+    toolTrace: [],
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "weak_evidence_synthesis");
+  assert.equal(decision?.evidenceFormula, "source_bounded_evidence");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /weakens verified evidence/i,
+  );
+});
+
+test("RepairPolicyRegistry skips weak evidence synthesis for exact final shapes", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["weak_evidence_synthesis"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText: JSON.stringify({ status: "probably ready" }),
+      taskPrompt: "Output only a valid JSON object.",
+      toolTrace: [],
     }),
     null,
   );
