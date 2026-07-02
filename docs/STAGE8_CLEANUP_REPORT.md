@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `92240782f9c428b94be1b7713212bb779865b1b0`
+**Code HEAD before this docs-only report:** `36deaba83a721eda96d62d1ae33ccbf06f9de32b`
 **Date:** 2026-07-02
 
 ## Summary
@@ -119,6 +119,9 @@ could not move the normalizer without making the inline parity reference import 
   tool-call counting now live in `native-tool-messages.ts`.
   Shared JSON object parsing and the stable `AbortError` guard now live in
   neutral `tool-loop-shared.ts`.
+  Runtime-derived mission terminal reports now live in
+  `runtime-derived-mission-report.ts`, and the supplemental browser-probe
+  capability check now lives in neutral `tool-loop-shared.ts`.
   Tool-result evidence collectors for completed sessions, timeout signals,
   session history evidence, tool-result text, tool-trace text, resumable partial
   sessions, and usable-evidence detection now live in neutral
@@ -186,6 +189,7 @@ of controller actions.
 | `7721010` | Move tool-result evidence collectors, completed-session/timeout readers, session-history evidence extraction, resumable partial-session detection, and usable-evidence checks into neutral `tool-result-evidence.ts`; add focused evidence tests. |
 | `d4eb8ca` | Move missing requested-table repair helpers, extraneous provider-schema repair helpers, awaiting-context no-tool suppression, and repair marker insertion into neutral TaskFacts shared code; remove duplicate adapter/registry/controller implementations. |
 | `9224078` | Move adapter utility helpers for session trace canonicalization, native tool-call counting, reduced prompt replacement, JSON object parsing, and abort guarding into neutral owners with focused tests. |
+| `36deaba` | Move runtime-derived mission report construction into a neutral module and move supplemental browser-probe availability checking into shared tool-loop helpers. |
 
 ## Current Extracted Implementation
 
@@ -293,6 +297,8 @@ Real implementation now exists in:
 - `native-tool-messages.ts` for native tool-message construction, session trace
   canonicalization from structured session results, and native tool-call
   counting.
+- `runtime-derived-mission-report.ts` for runtime-derived mission terminal
+  status mapping and report construction shared by the engine adapter.
 - `tool-result-evidence.ts` for completed-session evidence summaries,
   sub-agent timeout signal extraction, session-history evidence extraction,
   required-timeout continuation allowance, resumable partial-session detection,
@@ -323,7 +329,8 @@ Real implementation now exists in:
   carry-forward and URL extraction helpers, browser/product-signal missing
   evidence repair detectors and prompt builders, and the timeout continuation
   visibility appender, plus shared JSON object parsing and the stable abort
-  guard used by adapter/controller code.
+  guard used by adapter/controller code, plus supplemental browser-probe
+  availability checking.
 
 Still shell/deferred or partial:
 
@@ -338,6 +345,7 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
+| `npx tsx --test packages/role-runtime/src/runtime-derived-mission-report.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 11 / 11 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts packages/role-runtime/src/gateway-input-builder.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 15 / 15 |
 | `npx tsx --test packages/role-runtime/src/react-engine/task-facts.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 57 / 57 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 144 / 144 |
@@ -353,7 +361,7 @@ the engine chunks without individual recovery.
 ## Is The Adapter Thin?
 
 No. `runViaReActEngine` still begins at
-`packages/role-runtime/src/llm-response-generator.ts:2554` and remains the composition
+`packages/role-runtime/src/llm-response-generator.ts:2489` and remains the composition
 root plus several policy-heavy hook bodies. The main improvement is that more than sixty
 Stage 8 boundaries/slices are now real:
 
@@ -453,6 +461,12 @@ Stage 8 boundaries/slices are now real:
 - shared JSON object parsing and the stable abort guard now live in
   `tool-loop-shared.ts`; the adapter imports them instead of keeping local
   copies.
+- runtime-derived mission terminal report construction now lives in
+  `runtime-derived-mission-report.ts`; the adapter imports the typed closeout
+  metadata/report mapper instead of keeping the local status switch.
+- supplemental browser-probe availability checking now lives in
+  `tool-loop-shared.ts`; the adapter and shared tests use the neutral helper
+  instead of an adapter-local capability predicate.
 - tool-result evidence collectors, completed-session evidence summaries,
   sub-agent timeout signal extraction, session-history evidence extraction,
   required-timeout continuation allowance, resumable partial-session detection,
