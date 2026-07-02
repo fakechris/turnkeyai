@@ -5,6 +5,39 @@ import {
   createRepairPolicyRegistry,
   ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER,
 } from "./repair-policy-registry";
+import type { NativeToolRoundTrace } from "../native-tool-messages";
+import type { NaturalFinishRepairDecision } from "./repair-policy-registry";
+
+const APPROVAL_WAIT_TIMEOUT_TASK_PROMPT =
+  "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.";
+
+function makePermissionResultTrace(status: string): NativeToolRoundTrace[] {
+  const content = JSON.stringify({ status });
+  return [
+    {
+      round: 1,
+      calls: [
+        { id: "toolu-permission-result", name: "permission_result", input: {} },
+      ],
+      results: [
+        {
+          toolCallId: "toolu-permission-result",
+          toolName: "permission_result",
+          content,
+          isError: false,
+          contentBytes: content.length,
+        },
+      ],
+    },
+  ];
+}
+
+function readRepairPrompt(
+  decision: NaturalFinishRepairDecision | null,
+): string {
+  assert.ok(decision && "repairPrompt" in decision);
+  return decision.repairPrompt;
+}
 
 test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence", () => {
   assert.deepEqual([...ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER], [
@@ -14,6 +47,8 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
     "premature_pending_approval",
     "stale_pending_approval",
     "stale_denied_approval",
+    "approval_wait_timeout_closeout",
+    "approval_wait_timeout_local_closeout",
   ]);
 });
 
@@ -68,7 +103,7 @@ test("RepairPolicyRegistry does not repeat final-recovery repair after marker", 
     registry.evaluateNaturalFinish({
       finalRecoveryBudget: { maxToolCalls: 2, usedToolCalls: 2 },
       messages: [],
-      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
       resultText: "@{role-explore} continue",
     }),
     null,
@@ -155,7 +190,7 @@ test("RepairPolicyRegistry does not repeat missing-approval-gate repair after ma
       enabledPolicies: ["missing_approval_gate"],
       finalRecoveryBudget: null,
       messages: [],
-      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
       resultText: "The approved browser form submission is complete.",
       taskPrompt:
         "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
@@ -227,7 +262,7 @@ test("RepairPolicyRegistry does not repeat pending-approval wait-timeout check r
       enabledPolicies: ["pending_approval_wait_timeout_check"],
       finalRecoveryBudget: null,
       messages: [],
-      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
       resultText: "Approval is still pending.",
       taskPrompt:
         "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.",
@@ -310,7 +345,7 @@ test("RepairPolicyRegistry does not repeat premature pending-approval repair aft
       enabledPolicies: ["premature_pending_approval"],
       finalRecoveryBudget: null,
       messages: [],
-      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
       resultText: "Approval is still pending, so the browser worker cannot submit.",
       taskPrompt:
         "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
@@ -404,7 +439,7 @@ test("RepairPolicyRegistry does not repeat stale pending-approval repair after m
       enabledPolicies: ["stale_pending_approval"],
       finalRecoveryBudget: null,
       messages: [],
-      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
       resultText: "Approval is still pending, so the browser worker cannot submit.",
       taskPrompt:
         "Runtime permission cache already applied. Continue from the approved scoped action browser.form.submit dry-run by calling sessions_spawn with agent_id=browser.",
@@ -514,7 +549,7 @@ test("RepairPolicyRegistry does not repeat stale denied-approval repair after ma
       enabledPolicies: ["stale_denied_approval"],
       finalRecoveryBudget: null,
       messages: [],
-      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
       resultText: "Approval is still pending, so the browser worker cannot submit.",
       taskPrompt:
         "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
@@ -557,6 +592,81 @@ test("RepairPolicyRegistry skips stale denied-approval repair without denied res
       taskPrompt:
         "Approval required for browser.form.submit dry-run. Use the browser after native approval.",
       toolTrace: [],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns approval wait-timeout closeout repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["approval_wait_timeout_closeout"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "The thread remains open while approval is pending.",
+    taskPrompt: APPROVAL_WAIT_TIMEOUT_TASK_PROMPT,
+    toolTrace: makePermissionResultTrace("pending"),
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "approval_wait_timeout_closeout");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.equal(decision?.consumesRound, undefined);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /approval wait-timeout evidence is available/i,
+  );
+});
+
+test("RepairPolicyRegistry returns approval wait-timeout local closeout after failed repair", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["approval_wait_timeout_closeout"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "The thread remains open while approval is pending.",
+    taskPrompt: APPROVAL_WAIT_TIMEOUT_TASK_PROMPT,
+    toolTrace: makePermissionResultTrace("pending"),
+  });
+  assert.ok(first && "repairPrompt" in first);
+
+  const localCloseout = registry.evaluateNaturalFinish({
+    enabledPolicies: ["approval_wait_timeout_local_closeout"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [{ role: "user", content: first.repairPrompt }],
+    resultText: "The thread remains open while approval is pending.",
+    taskPrompt: APPROVAL_WAIT_TIMEOUT_TASK_PROMPT,
+    toolTrace: makePermissionResultTrace("pending"),
+  });
+
+  assert.equal(localCloseout?.kind, "closeout");
+  assert.equal(
+    localCloseout?.policyId,
+    "approval_wait_timeout_local_closeout",
+  );
+  assert.equal(localCloseout?.evidenceFormula, "candidate_final");
+  assert.equal(localCloseout?.closeoutReason, "tool_evidence_fallback");
+});
+
+test("RepairPolicyRegistry skips approval wait-timeout closeout repair when candidate is complete", () => {
+  const registry = createRepairPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["approval_wait_timeout_closeout"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText:
+        "Approval is still pending. No browser form submission was performed. The unexecuted result is unverified. Next action: ask the operator to approve a new request.",
+      taskPrompt: APPROVAL_WAIT_TIMEOUT_TASK_PROMPT,
+      toolTrace: makePermissionResultTrace("pending"),
     }),
     null,
   );

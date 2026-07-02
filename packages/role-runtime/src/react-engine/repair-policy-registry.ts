@@ -6,6 +6,7 @@
 // does not execute tools, record progress, synthesize answers, or perform final
 // visibility appenders.
 import {
+  buildApprovalWaitTimeoutCloseoutRepairPrompt,
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
@@ -18,6 +19,8 @@ import {
   shouldRepairPrematurePendingApprovalFinal,
   shouldRepairStaleDeniedApproval,
   shouldRepairStalePendingApproval,
+  shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
+  shouldRepairApprovalWaitTimeoutCloseout,
 } from "../tool-loop-shared";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { LLMMessage, ReActToolChoice } from "./types";
@@ -31,6 +34,8 @@ export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "premature_pending_approval",
   "stale_pending_approval",
   "stale_denied_approval",
+  "approval_wait_timeout_closeout",
+  "approval_wait_timeout_local_closeout",
 ] as const;
 
 export type EngineNaturalFinishRepairPolicyId =
@@ -100,6 +105,20 @@ export type NaturalFinishRepairDecision =
       repairPrompt: string;
       forceToolChoice: "none";
       consumesRound?: false;
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "approval_wait_timeout_closeout";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: "none";
+      consumesRound?: false;
+    }
+  | {
+      kind: "closeout";
+      policyId: "approval_wait_timeout_local_closeout";
+      evidenceFormula: "candidate_final";
+      closeoutReason: "tool_evidence_fallback";
     };
 
 export interface RepairPolicyRegistry {
@@ -155,6 +174,21 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
         }
         case "stale_denied_approval": {
           const decision = evaluateStaleDeniedApprovalRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "approval_wait_timeout_closeout": {
+          const decision = evaluateApprovalWaitTimeoutCloseoutRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "approval_wait_timeout_local_closeout": {
+          const decision =
+            evaluateApprovalWaitTimeoutLocalCloseout(input);
           if (decision) {
             return decision;
           }
@@ -332,6 +366,57 @@ function evaluateStaleDeniedApprovalRepair(
     evidenceFormula: "candidate_final",
     repairPrompt: buildStaleDeniedApprovalRepairPrompt(),
     forceToolChoice: "none",
+  };
+}
+
+function evaluateApprovalWaitTimeoutCloseoutRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    !shouldRepairApprovalWaitTimeoutCloseout({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      toolTrace: input.toolTrace,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "approval_wait_timeout_closeout",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildApprovalWaitTimeoutCloseoutRepairPrompt(),
+    forceToolChoice: "none",
+  };
+}
+
+function evaluateApprovalWaitTimeoutLocalCloseout(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    !shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      toolTrace: input.toolTrace,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "closeout",
+    policyId: "approval_wait_timeout_local_closeout",
+    evidenceFormula: "candidate_final",
+    closeoutReason: "tool_evidence_fallback",
   };
 }
 

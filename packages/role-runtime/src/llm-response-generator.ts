@@ -63,6 +63,7 @@ import {
   buildReadOnlyPermissionQuerySuppressionPrompt,
   buildContinuationDirectiveContext,
   buildCoverageTimeoutContinuationPrompt,
+  buildApprovalWaitTimeoutCloseoutRepairPrompt,
   buildFinalRecoveryBudgetCloseoutReasonLines,
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
@@ -141,9 +142,11 @@ import {
   shouldContinueTimedOutApprovedBrowserSession,
   shouldContinueTimedOutSiblingSession,
   shouldContinueIndependentEvidenceStreams,
+  shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
   shouldRunSupplementalLocalTimeoutProbe,
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
+  shouldRepairApprovalWaitTimeoutCloseout,
   shouldRepairFinalRecoveryBudgetCloseout,
   shouldRepairMissingApprovalGate,
   shouldRepairPendingApprovalWaitTimeoutCheck,
@@ -3659,14 +3662,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               forceToolChoice: staleDeniedApprovalRepair.forceToolChoice,
             };
           }
-          if (
-            shouldRepairApprovalWaitTimeoutCloseout({
+          const approvalWaitTimeoutCloseoutRepair =
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["approval_wait_timeout_closeout"],
+              finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            })
+            });
+          if (
+            approvalWaitTimeoutCloseoutRepair?.policyId ===
+            "approval_wait_timeout_closeout"
           ) {
             return {
               messages: [
@@ -3674,10 +3682,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildApprovalWaitTimeoutCloseoutRepairPrompt(),
+                  approvalWaitTimeoutCloseoutRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: "none",
+              forceToolChoice: approvalWaitTimeoutCloseoutRepair.forceToolChoice,
             };
           }
           // Stage 8B slice 1c: the hard approval-wait-timeout local closeout (inline
@@ -3687,16 +3695,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // than finalizing the incomplete answer. onRepairRound cannot finalize, so it
           // returns a { closeout } directive; onTerminate builds the local-evidence text
           // directly (no model synthesis) for that reason.
-          if (
-            shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
+          const approvalWaitTimeoutLocalCloseout =
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["approval_wait_timeout_local_closeout"],
+              finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            })
+            });
+          if (
+            approvalWaitTimeoutLocalCloseout?.policyId ===
+            "approval_wait_timeout_local_closeout"
           ) {
-            return { closeout: "tool_evidence_fallback" };
+            return {
+              closeout: approvalWaitTimeoutLocalCloseout.closeoutReason,
+            };
           }
           if (
             shouldRepairIncompleteApprovedBrowserAction({
@@ -6621,44 +6636,6 @@ function recordRepairPrompt(
   return message;
 }
 
-function shouldRepairApprovalWaitTimeoutCloseout(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  if (hasApprovalWaitTimeoutCloseoutRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
-    return false;
-  }
-  if (!hasApprovalWaitTimeoutEvidence(input.toolTrace)) {
-    return false;
-  }
-  return !looksLikeCompleteApprovalWaitTimeoutCloseout(input.resultText);
-}
-
-function shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
-    return false;
-  }
-  if (!hasApprovalWaitTimeoutCloseoutRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (!hasApprovalWaitTimeoutEvidence(input.toolTrace)) {
-    return false;
-  }
-  return !looksLikeCompleteApprovalWaitTimeoutCloseout(input.resultText);
-}
-
 function collectApprovalWaitTimeoutRuntimeEvidence(
   toolTrace: NativeToolRoundTrace[],
 ): string {
@@ -7491,57 +7468,6 @@ const ESTIMATE_REQUEST_PATTERNS = [
   /(?:^|[^A-Za-z0-9_])(?:估算|预估|大概|大致|范围)(?![A-Za-z0-9_])/,
 ];
 
-function hasApprovalWaitTimeoutEvidence(
-  toolTrace: NativeToolRoundTrace[],
-): boolean {
-  if (latestPermissionResultStatus(toolTrace) === "pending") {
-    return true;
-  }
-  return toolTrace.some((round) =>
-    round.results.some((result) => {
-      const parsed = parseJsonObject(result.content);
-      return parsed?.["status"] === "approval_wait_timeout";
-    }),
-  );
-}
-
-function looksLikeCompleteApprovalWaitTimeoutCloseout(text: string): boolean {
-  if (
-    /\b(?:thread|flow|mission|task)\b[\s\S]{0,80}\b(?:remains?|stays?)\s+open\b/i.test(
-      text,
-    )
-  ) {
-    return false;
-  }
-  return (
-    /\b(?:approval|permission|operator decision)\b[\s\S]{0,180}\b(?:pending|did not arrive|still pending|timed out|timeout|wait[- ]timeout)\b/i.test(
-      text,
-    ) &&
-    mentionsPendingApproval(text) &&
-    /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:browser form submission|form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno form (?:was )?submitted\b/i.test(
-      text,
-    ) &&
-    /\b(?:residual risk|risk|unverified|not verified|pending approval remains|pending decision remains)\b/i.test(
-      text,
-    ) &&
-    /\b(?:next action|safest next step|safe fallback|ask the operator|retry|continue|re-?run|re-?initiate|flow is complete|closeout confirmed)\b/i.test(
-      text,
-    )
-  );
-}
-
-function hasApprovalWaitTimeoutCloseoutRepairPrompt(
-  messages: LLMMessage[],
-): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: approval wait-timeout evidence is available",
-      ),
-  );
-}
-
 function hasIncompleteApprovedBrowserActionRepairPrompt(
   messages: LLMMessage[],
 ): boolean {
@@ -7646,16 +7572,6 @@ function hasMissingBrowserEvidenceDimensionsRepairPrompt(
         "Runtime correction: final answer omitted requested browser evidence dimensions",
       ),
   );
-}
-
-function buildApprovalWaitTimeoutCloseoutRepairPrompt(): string {
-  return [
-    "Runtime correction: approval wait-timeout evidence is available, but the final closeout is incomplete or leaves the thread open.",
-    "Do not call tools.",
-    "Rewrite the final answer as a terminal closeout for this attempt and include the exact word pending.",
-    "Name the source-backed runtime facts: permission_query requested approval for browser.form.submit, permission_result says the approval is still pending/approval_wait_timeout, no browser form submission or side effect ran, the unexecuted result is not verified, and the safe next action is to ask the operator to approve a new request or rerun the attempt when ready.",
-    "Do not say the thread, flow, mission, or task remains open.",
-  ].join("\n");
 }
 
 function buildIncompleteApprovedBrowserActionRepairPrompt(): string {

@@ -1374,6 +1374,105 @@ export function buildStaleDeniedApprovalRepairPrompt(): string {
   ].join("\n");
 }
 
+export function shouldRepairApprovalWaitTimeoutCloseout(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: readonly LLMMessage[];
+  repairMarkers: readonly LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasApprovalWaitTimeoutCloseoutRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+    return false;
+  }
+  if (!hasApprovalWaitTimeoutEvidence(input.toolTrace)) {
+    return false;
+  }
+  return !looksLikeCompleteApprovalWaitTimeoutCloseout(input.resultText);
+}
+
+export function shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: readonly LLMMessage[];
+  repairMarkers: readonly LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+    return false;
+  }
+  if (!hasApprovalWaitTimeoutCloseoutRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!hasApprovalWaitTimeoutEvidence(input.toolTrace)) {
+    return false;
+  }
+  return !looksLikeCompleteApprovalWaitTimeoutCloseout(input.resultText);
+}
+
+function hasApprovalWaitTimeoutEvidence(
+  toolTrace: NativeToolRoundTrace[],
+): boolean {
+  if (latestPermissionResultStatus(toolTrace) === "pending") {
+    return true;
+  }
+  return toolTrace.some((round) =>
+    round.results.some((result) => {
+      const parsed = parseJsonObject(result.content);
+      return parsed?.["status"] === "approval_wait_timeout";
+    }),
+  );
+}
+
+function looksLikeCompleteApprovalWaitTimeoutCloseout(text: string): boolean {
+  if (
+    /\b(?:thread|flow|mission|task)\b[\s\S]{0,80}\b(?:remains?|stays?)\s+open\b/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  return (
+    /\b(?:approval|permission|operator decision)\b[\s\S]{0,180}\b(?:pending|did not arrive|still pending|timed out|timeout|wait[- ]timeout)\b/i.test(
+      text,
+    ) &&
+    mentionsPendingApproval(text) &&
+    /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:browser form submission|form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno form (?:was )?submitted\b/i.test(
+      text,
+    ) &&
+    /\b(?:residual risk|risk|unverified|not verified|pending approval remains|pending decision remains)\b/i.test(
+      text,
+    ) &&
+    /\b(?:next action|safest next step|safe fallback|ask the operator|retry|continue|re-?run|re-?initiate|flow is complete|closeout confirmed)\b/i.test(
+      text,
+    )
+  );
+}
+
+function hasApprovalWaitTimeoutCloseoutRepairPrompt(
+  messages: readonly LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval wait-timeout evidence is available",
+      ),
+  );
+}
+
+export function buildApprovalWaitTimeoutCloseoutRepairPrompt(): string {
+  return [
+    "Runtime correction: approval wait-timeout evidence is available, but the final closeout is incomplete or leaves the thread open.",
+    "Do not call tools.",
+    "Rewrite the final answer as a terminal closeout for this attempt and include the exact word pending.",
+    "Name the source-backed runtime facts: permission_query requested approval for browser.form.submit, permission_result says the approval is still pending/approval_wait_timeout, no browser form submission or side effect ran, the unexecuted result is not verified, and the safe next action is to ask the operator to approve a new request or rerun the attempt when ready.",
+    "Do not say the thread, flow, mission, or task remains open.",
+  ].join("\n");
+}
+
 export function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input: {
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];
