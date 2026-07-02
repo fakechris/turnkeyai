@@ -2,12 +2,17 @@ import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
+  buildApprovedBrowserTimeoutContinuationPrompt,
   buildContinuationDirectiveContext,
+  buildCoverageTimeoutContinuationPrompt,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
+  hasExecutedSessionsSend,
   hasLatestSupplementalLocalTimeoutProbePrompt,
   isAppliedApprovalBrowserContinuation,
-  readStringInput,
+  shouldContinueTimedOutApprovedBrowserSession,
+  shouldContinueTimedOutSiblingSession,
+  type SubAgentToolTimeoutSignal,
 } from "../tool-loop-shared";
 import type { EngineContinueAction } from "./types";
 
@@ -33,6 +38,14 @@ export interface EmptyRoundContinuationInput {
   round: number;
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];
+  tools?: readonly ContinuationToolDefinition[];
+}
+
+export interface TimeoutContinuationInput {
+  messages: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  timeoutSignal: SubAgentToolTimeoutSignal | null;
   tools?: readonly ContinuationToolDefinition[];
 }
 
@@ -111,23 +124,80 @@ export class ContinuationController {
           : "empty_round_session_lookup",
     };
   }
+
+  onAfterExecuteTimeoutContinuation(
+    input: TimeoutContinuationInput,
+  ): EngineContinueAction {
+    const approvedBrowser = this.continueTimedOutApprovedBrowserSession(input);
+    if (approvedBrowser.kind !== "none") {
+      return approvedBrowser;
+    }
+    return this.continueTimedOutSiblingSession(input);
+  }
+
+  continueTimedOutApprovedBrowserSession(
+    input: TimeoutContinuationInput,
+  ): EngineContinueAction {
+    if (
+      !input.timeoutSignal ||
+      !shouldContinueTimedOutApprovedBrowserSession({
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        timeoutSignal: input.timeoutSignal,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      })
+    ) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "continue",
+      messages: [
+        ...input.messages,
+        {
+          role: "user",
+          content: buildApprovedBrowserTimeoutContinuationPrompt(
+            input.timeoutSignal,
+          ),
+        },
+      ],
+      forceToolChoice: { name: "sessions_send" },
+      reason: "approved_browser_timeout_continuation",
+    };
+  }
+
+  continueTimedOutSiblingSession(
+    input: TimeoutContinuationInput,
+  ): EngineContinueAction {
+    if (
+      !input.timeoutSignal ||
+      !shouldContinueTimedOutSiblingSession({
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        timeoutSignal: input.timeoutSignal,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      })
+    ) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "continue",
+      messages: [
+        ...input.messages,
+        {
+          role: "user",
+          content: buildCoverageTimeoutContinuationPrompt(input.timeoutSignal),
+        },
+      ],
+      forceToolChoice: { name: "sessions_send" },
+      reason: "coverage_timeout_continuation",
+    };
+  }
 }
 
 export function createContinuationController(): ContinuationController {
   return new ContinuationController();
-}
-
-function hasExecutedSessionsSend(
-  toolTrace: NativeToolRoundTrace[],
-  sessionKey: string,
-): boolean {
-  return toolTrace.some((round) =>
-    round.calls.some(
-      (call) =>
-        call.name === "sessions_send" &&
-        readStringInput(call.input, "session_key") === sessionKey,
-    ),
-  );
 }
 
 function hasToolDefinition(

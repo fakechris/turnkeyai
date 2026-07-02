@@ -37,7 +37,7 @@ function taskPromptWithoutSessionKey(): string {
   ].join("\n");
 }
 
-function sentTrace(): NativeToolRoundTrace[] {
+function sentTrace(sentSessionKey = sessionKey): NativeToolRoundTrace[] {
   return [
     {
       round: 1,
@@ -45,7 +45,7 @@ function sentTrace(): NativeToolRoundTrace[] {
         {
           id: "toolu-sent",
           name: "sessions_send",
-          input: { session_key: sessionKey, message: "already sent" },
+          input: { session_key: sentSessionKey, message: "already sent" },
         },
       ],
       results: [],
@@ -156,6 +156,122 @@ test("ContinuationController does not repeat an already-sent continuation or inj
       taskPrompt: taskPromptWithSession(),
       toolTrace: [],
       tools: [],
+    }),
+    { kind: "none" },
+  );
+});
+
+test("ContinuationController continues an approved browser timeout before coverage timeout", () => {
+  const controller = createContinuationController();
+  const timeoutSignal = {
+    toolName: "sessions_spawn",
+    sessionKey: "worker:browser:approved-submit:toolu-submit",
+    agentId: "browser",
+    timeoutSeconds: 45,
+    evidenceAvailable: true,
+  };
+
+  const action = controller.onAfterExecuteTimeoutContinuation({
+    messages: [{ role: "user", content: "tool result history" }],
+    taskPrompt: [
+      "Operator decision recorded for approval ap-1.",
+      "Action: browser.form.submit.",
+      "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied.",
+      "Do not call permission tools again. Continue from the approved point: perform only the approved scoped action now and verify the result before the final answer.",
+      "Compare provider web search pricing across https://a.example, https://b.example, and https://c.example; do not finalize until all three sources are checked.",
+    ].join("\n"),
+    toolTrace: [],
+    timeoutSignal,
+    tools: [{ name: "sessions_send" }],
+  });
+
+  assert.equal(action.kind, "continue");
+  assert.equal(action.kind === "continue" && action.reason, "approved_browser_timeout_continuation");
+  assert.deepEqual(
+    action.kind === "continue" && action.forceToolChoice,
+    { name: "sessions_send" },
+  );
+  assert.match(
+    String(action.kind === "continue" && action.messages.at(-1)?.content),
+    /approved browser action timed out before verification/,
+  );
+});
+
+test("ContinuationController continues a coverage-critical sibling timeout", () => {
+  const controller = createContinuationController();
+  const timeoutSignal = {
+    toolName: "sessions_spawn",
+    sessionKey: "worker:explore:source-b:toolu-timeout",
+    agentId: "explore",
+    timeoutSeconds: 45,
+    evidenceAvailable: true,
+  };
+
+  const action = controller.onAfterExecuteTimeoutContinuation({
+    messages: [{ role: "user", content: "tool result history" }],
+    taskPrompt: [
+      "Compare providers with web search pricing evidence.",
+      "Check all three sources before final: https://a.example, https://b.example, https://c.example.",
+      "Do not finalize until all three sources are verified.",
+    ].join("\n"),
+    toolTrace: [],
+    timeoutSignal,
+    tools: [{ name: "sessions_send" }],
+  });
+
+  assert.equal(action.kind, "continue");
+  assert.equal(action.kind === "continue" && action.reason, "coverage_timeout_continuation");
+  assert.deepEqual(
+    action.kind === "continue" && action.forceToolChoice,
+    { name: "sessions_send" },
+  );
+  assert.match(
+    String(action.kind === "continue" && action.messages.at(-1)?.content),
+    /required delegated evidence stream timed out/,
+  );
+});
+
+test("ContinuationController skips timeout continuation after marker or prior send", () => {
+  const controller = createContinuationController();
+  const timeoutSignal = {
+    toolName: "sessions_spawn",
+    sessionKey: "worker:explore:source-b:toolu-timeout",
+    agentId: "explore",
+    timeoutSeconds: 45,
+    evidenceAvailable: true,
+  };
+
+  assert.deepEqual(
+    controller.onAfterExecuteTimeoutContinuation({
+      messages: [
+        {
+          role: "user",
+          content:
+            "Runtime correction: a required delegated evidence stream timed out.",
+        },
+      ],
+      taskPrompt: [
+        "Compare providers with web search pricing evidence.",
+        "Check all three sources before final: https://a.example, https://b.example, https://c.example.",
+        "Do not finalize until all three sources are verified.",
+      ].join("\n"),
+      toolTrace: [],
+      timeoutSignal,
+      tools: [{ name: "sessions_send" }],
+    }),
+    { kind: "none" },
+  );
+  assert.deepEqual(
+    controller.onAfterExecuteTimeoutContinuation({
+      messages: [{ role: "user", content: "tool result history" }],
+      taskPrompt: [
+        "Compare providers with web search pricing evidence.",
+        "Check all three sources before final: https://a.example, https://b.example, https://c.example.",
+        "Do not finalize until all three sources are verified.",
+      ].join("\n"),
+      toolTrace: sentTrace(timeoutSignal.sessionKey),
+      timeoutSignal,
+      tools: [{ name: "sessions_send" }],
     }),
     { kind: "none" },
   );

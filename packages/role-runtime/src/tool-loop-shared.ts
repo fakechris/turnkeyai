@@ -28,6 +28,14 @@ export interface SessionContinuationLookupDirective {
   messageHint: string;
 }
 
+export interface SubAgentToolTimeoutSignal {
+  toolName: string;
+  sessionKey: string;
+  agentId: string;
+  timeoutSeconds?: number | null;
+  evidenceAvailable: boolean;
+}
+
 export const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
 
 export const SUPPLEMENTAL_LOCAL_TIMEOUT_PROBE_TIMEOUT_SECONDS = 45;
@@ -512,6 +520,162 @@ export function isAppliedApprovalBrowserContinuation(taskPrompt: string): boolea
     taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
     requestsApprovalGatedBrowserAction(taskPrompt)
   );
+}
+
+export function hasExecutedSessionsSend(
+  toolTrace: NativeToolRoundTrace[],
+  sessionKey: string,
+): boolean {
+  return toolTrace.some((round) =>
+    round.calls.some(
+      (call) =>
+        call.name === "sessions_send" &&
+        readStringInput(call.input, "session_key") === sessionKey,
+    ),
+  );
+}
+
+export function shouldContinueTimedOutApprovedBrowserSession(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  timeoutSignal: SubAgentToolTimeoutSignal;
+  tools?: readonly { name: string }[];
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_send")) {
+    return false;
+  }
+  if (input.timeoutSignal.agentId !== "browser") {
+    return false;
+  }
+  if (!input.timeoutSignal.sessionKey) {
+    return false;
+  }
+  if (
+    hasExecutedSessionsSend(input.toolTrace, input.timeoutSignal.sessionKey)
+  ) {
+    return false;
+  }
+  if (hasApprovedBrowserTimeoutContinuationPrompt(input.messages)) {
+    return false;
+  }
+  if (!isAppliedApprovalBrowserContinuation(input.taskPrompt)) {
+    return false;
+  }
+  return true;
+}
+
+export function shouldContinueTimedOutSiblingSession(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  timeoutSignal: SubAgentToolTimeoutSignal;
+  tools?: readonly { name: string }[];
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_send")) {
+    return false;
+  }
+  if (!input.timeoutSignal.sessionKey) {
+    return false;
+  }
+  if (
+    hasExecutedSessionsSend(input.toolTrace, input.timeoutSignal.sessionKey)
+  ) {
+    return false;
+  }
+  if (hasCoverageTimeoutContinuationPrompt(input.messages)) {
+    return false;
+  }
+  return isCoverageCriticalDelegationTask(input.taskPrompt);
+}
+
+export function hasApprovedBrowserTimeoutContinuationPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some((message) =>
+    readMessageContentText(message.content).includes(
+      "Runtime correction: approved browser action timed out before verification.",
+    ),
+  );
+}
+
+export function buildApprovedBrowserTimeoutContinuationPrompt(
+  timeoutSignal: SubAgentToolTimeoutSignal,
+): string {
+  return [
+    "Runtime correction: approved browser action timed out before verification.",
+    `The approved browser session is resumable with session_key ${timeoutSignal.sessionKey}.`,
+    "Do not finalize a browser.form.submit approval flow from the timeout alone.",
+    "Call sessions_send exactly once for that session_key.",
+    "Ask the browser sub-agent to continue from its current page state, perform the already-approved browser.form.submit if it has not been performed, and verify the post-submit page state.",
+    "The browser sub-agent should use browser_snapshot, browser_act with submit=true on the submit control when needed, then browser_snapshot/browser_screenshot for the result.",
+    "If the continued session still cannot verify the approved action, return the concrete blocker and any pre-submit/post-submit evidence instead of a generic timeout summary.",
+  ].join("\n");
+}
+
+export function hasCoverageTimeoutContinuationPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some((message) =>
+    readMessageContentText(message.content).includes(
+      "Runtime correction: a required delegated evidence stream timed out.",
+    ),
+  );
+}
+
+export function buildCoverageTimeoutContinuationPrompt(
+  timeoutSignal: SubAgentToolTimeoutSignal,
+): string {
+  return [
+    "Runtime correction: a required delegated evidence stream timed out.",
+    `The timed-out ${timeoutSignal.agentId} session is resumable with session_key ${timeoutSignal.sessionKey}.`,
+    "Do not finalize while the task requires all source coverage and one required stream is still missing.",
+    "Call sessions_send exactly once for that session_key to continue the missing source check.",
+    "Ask the child session to return only the missing source evidence needed for the final answer.",
+    "If the continued session still cannot verify the source, then close out as incomplete/resumable and keep the missing source unverified.",
+  ].join("\n");
+}
+
+export function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {
+  if (isProviderSearchPricingResearchTask(taskPrompt)) {
+    return true;
+  }
+  const text = taskPrompt.toLowerCase();
+  const sourceCount = [
+    (taskPrompt.match(/https?:\/\/\S+/g) ?? []).length,
+    (text.match(/\b(?:source|evidence stream|child session|marker)\b/g) ?? [])
+      .length,
+  ].filter((count) => count >= 3).length;
+  if (sourceCount === 0) {
+    return false;
+  }
+  return (
+    /\bdo not finalize until\b/i.test(taskPrompt) ||
+    /\ball (?:three|3|\d+) (?:child session tool results|sources|source checks|evidence streams|markers)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:three|3|\d+) independent evidence streams\b/i.test(taskPrompt) ||
+    /\bsource coverage\b/i.test(taskPrompt)
+  );
+}
+
+export function isProviderSearchPricingResearchTask(taskPrompt: string): boolean {
+  return (
+    /\bproviders?\b|\bvendors?\b|\bplatforms?\b|供应商|服务商|厂商|平台/iu.test(
+      taskPrompt,
+    ) &&
+    /\bweb\s*search\b|\bsearch\b|搜索|联网|检索/iu.test(taskPrompt) &&
+    /\bpric(?:e|ing)\b|\bcosts?\b|\bfees?\b|\btokens?\b|价格|价钱|费用|收费|计费|token/iu.test(
+      taskPrompt,
+    )
+  );
+}
+
+function hasToolDefinition(
+  tools: readonly { name: string }[] | undefined,
+  name: string,
+): boolean {
+  return (tools ?? []).some((tool) => tool.name === name);
 }
 
 export function findSessionContinuationDirective(
