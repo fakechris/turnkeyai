@@ -259,6 +259,7 @@ import {
   type EngineCloseoutReason,
 } from "./react-engine";
 import {
+  applyAwaitingContextSetupNoToolSuppression,
   buildAwaitingContextSetupNoToolRepairPrompt,
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
@@ -2870,38 +2871,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 state.messages,
               ),
             });
-          if (readOnlySuppression.kind === "suppress") {
-            return {
-              messages: [
-                ...state.messages,
-                { role: "assistant", content: state.lastText },
-                ...readOnlySuppression.messages,
-              ],
-              ...(readOnlySuppression.forceToolChoice
-                ? { forceToolChoice: readOnlySuppression.forceToolChoice }
-                : {}),
-            };
+          const readOnlySuppressionResult =
+            permissionPolicy.applySuppressDecision(readOnlySuppression, {
+              messages: state.messages,
+              lastText: state.lastText,
+            });
+          if (readOnlySuppressionResult) {
+            return readOnlySuppressionResult;
           }
           const repairMarkers = (ctx.repairMarkers ??= []);
-          if (
-            !shouldSuppressToolsForAwaitingContextSetup({
-              taskPrompt: packet.taskPrompt,
-              repairMarkers,
-            })
-          ) {
-            return null;
-          }
-          return {
-            messages: [
-              ...state.messages,
-              { role: "assistant", content: state.lastText },
-              recordRepairPrompt(
-                repairMarkers,
-                buildAwaitingContextSetupNoToolRepairPrompt(packet.taskPrompt),
-              ),
-            ],
-            forceToolChoice: "none",
-          };
+          return applyAwaitingContextSetupNoToolSuppression({
+            taskPrompt: packet.taskPrompt,
+            messages: state.messages,
+            lastText: state.lastText,
+            repairMarkers,
+          });
         },
         // Stage 5 PR2d pending-call closeouts: mirror the inline pre-execute
         // closeouts that fire on the round's pending (normalized) tool calls, in

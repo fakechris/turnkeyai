@@ -28,7 +28,31 @@ test("PermissionPolicy suppresses read-only permission_query with a consumed too
     assert.equal(decision.consumesRound, true);
     assert.equal(decision.forceToolChoice, "none");
     assert.match(decision.messages[0]?.content as string, /read-only browser inspection/);
+    assert.deepEqual(
+      policy.applySuppressDecision(decision, {
+        messages: [{ role: "user", content: "Research pricing." }],
+        lastText: "I need approval before continuing.",
+      }),
+      {
+        messages: [
+          { role: "user", content: "Research pricing." },
+          { role: "assistant", content: "I need approval before continuing." },
+          decision.messages[0],
+        ],
+        forceToolChoice: "none",
+      },
+    );
   }
+  assert.equal(
+    policy.applySuppressDecision(
+      { kind: "none" },
+      {
+        messages: [{ role: "user", content: "Research pricing." }],
+        lastText: "No suppression.",
+      },
+    ),
+    null,
+  );
 });
 
 test("PermissionPolicy does not suppress requested approval-gated browser actions", () => {

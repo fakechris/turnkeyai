@@ -157,6 +157,42 @@ export function shouldSuppressToolsForAwaitingContextSetup(input: {
   return taskPromptRequestsAwaitingContextSetup(input.taskPrompt);
 }
 
+export interface AwaitingContextSetupNoToolSuppressionInput {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  lastText: string;
+  repairMarkers: LLMMessage[];
+}
+
+export interface AwaitingContextSetupNoToolSuppressionResult {
+  messages: LLMMessage[];
+  forceToolChoice: "none";
+}
+
+export function applyAwaitingContextSetupNoToolSuppression(
+  input: AwaitingContextSetupNoToolSuppressionInput,
+): AwaitingContextSetupNoToolSuppressionResult | null {
+  if (
+    !shouldSuppressToolsForAwaitingContextSetup({
+      taskPrompt: input.taskPrompt,
+      repairMarkers: input.repairMarkers,
+    })
+  ) {
+    return null;
+  }
+  return {
+    messages: [
+      ...input.messages,
+      { role: "assistant", content: input.lastText },
+      recordRepairPrompt(
+        input.repairMarkers,
+        buildAwaitingContextSetupNoToolRepairPrompt(input.taskPrompt),
+      ),
+    ],
+    forceToolChoice: "none",
+  };
+}
+
 export function taskPromptRequestsAwaitingContextSetup(
   taskPrompt: string,
 ): boolean {

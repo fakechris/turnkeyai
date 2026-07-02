@@ -63,6 +63,9 @@ test("normalizeEngineToolCalls invokes PermissionPolicy at the two approval-gate
     suppressReadOnlyPermissionQuery() {
       return { kind: "none" };
     },
+    applySuppressDecision() {
+      return null;
+    },
     wouldSuppressReadOnlyPermissionQuery() {
       return false;
     },

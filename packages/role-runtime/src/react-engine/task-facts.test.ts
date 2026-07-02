@@ -5,6 +5,7 @@ import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 
 import {
   buildAwaitingContextSetupNoToolRepairPrompt,
+  applyAwaitingContextSetupNoToolSuppression,
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
   buildOriginalRequestTableColumnContext,
@@ -215,6 +216,7 @@ test("TaskFacts owns awaiting-context setup suppression and marker idempotency",
   const taskPrompt =
     "No research is needed. Briefly acknowledge and continue when context is provided.";
   const repairMarkers: LLMMessage[] = [];
+  const messages: LLMMessage[] = [{ role: "user", content: taskPrompt }];
 
   assert.equal(taskPromptRequestsAwaitingContextSetup(taskPrompt), true);
   assert.equal(
@@ -228,6 +230,40 @@ test("TaskFacts owns awaiting-context setup suppression and marker idempotency",
     true,
   );
 
+  const suppressed = applyAwaitingContextSetupNoToolSuppression({
+    taskPrompt,
+    messages,
+    lastText: "I'll start researching.",
+    repairMarkers,
+  });
+  assert.deepEqual(suppressed, {
+    messages: [
+      { role: "user", content: taskPrompt },
+      { role: "assistant", content: "I'll start researching." },
+      {
+        role: "user",
+        content: buildAwaitingContextSetupNoToolRepairPrompt(taskPrompt),
+      },
+    ],
+    forceToolChoice: "none",
+  });
+  assert.deepEqual(repairMarkers, [
+    {
+      role: "user",
+      content: buildAwaitingContextSetupNoToolRepairPrompt(taskPrompt),
+    },
+  ]);
+  assert.equal(
+    applyAwaitingContextSetupNoToolSuppression({
+      taskPrompt,
+      messages,
+      lastText: "I'll start researching.",
+      repairMarkers,
+    }),
+    null,
+  );
+
+  repairMarkers.length = 0;
   recordRepairPrompt(
     repairMarkers,
     buildAwaitingContextSetupNoToolRepairPrompt(taskPrompt),

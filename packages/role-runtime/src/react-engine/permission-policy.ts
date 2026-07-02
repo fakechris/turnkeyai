@@ -32,10 +32,29 @@ export interface PermissionSuppressInput {
   sessionContext: string;
 }
 
+type PermissionSuppressDecision = Extract<
+  EngineSuppressDecision,
+  { kind: "suppress" }
+>;
+
+export interface PermissionSuppressApplicationInput {
+  messages: LLMMessage[];
+  lastText: string;
+}
+
+export interface PermissionSuppressHookResult {
+  messages: LLMMessage[];
+  forceToolChoice?: NonNullable<PermissionSuppressDecision["forceToolChoice"]>;
+}
+
 export interface PermissionPolicy {
   normalizeMissingApprovalGateRepair(input: PermissionToolCallInput): LLMToolCall[];
   normalizeApprovalGatedBrowserSpawn(input: PermissionToolCallInput): LLMToolCall[];
   suppressReadOnlyPermissionQuery(input: PermissionSuppressInput): EngineSuppressDecision;
+  applySuppressDecision(
+    decision: EngineSuppressDecision,
+    input: PermissionSuppressApplicationInput,
+  ): PermissionSuppressHookResult | null;
   wouldSuppressReadOnlyPermissionQuery(input: PermissionSuppressInput): boolean;
 }
 
@@ -77,6 +96,22 @@ const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
       forceToolChoice: "none",
       consumesRound: true,
       reason: "read-only permission_query does not require approval",
+    };
+  },
+
+  applySuppressDecision(decision, input) {
+    if (decision.kind !== "suppress") {
+      return null;
+    }
+    return {
+      messages: [
+        ...input.messages,
+        { role: "assistant", content: input.lastText },
+        ...decision.messages,
+      ],
+      ...(decision.forceToolChoice === undefined
+        ? {}
+        : { forceToolChoice: decision.forceToolChoice }),
     };
   },
 
