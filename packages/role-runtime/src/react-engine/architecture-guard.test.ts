@@ -13,6 +13,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ENGINE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROLE_RUNTIME_DIR = path.dirname(ENGINE_DIR);
+const LLM_RESPONSE_GENERATOR = path.join(
+  ROLE_RUNTIME_DIR,
+  "llm-response-generator.ts",
+);
 
 /** Forbidden import specifiers: the composition root and any known re-exporter. */
 const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
@@ -53,4 +58,19 @@ test("architecture guard actually scans real react-engine files", () => {
   assert.ok(files.includes("types.ts"));
   assert.ok(files.includes("hook-policy-trace.ts"));
   assert.ok(files.includes("hook-orchestration-contract.ts"));
+});
+
+test("forced engine tool rounds do not record provider protocol rounds directly", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async executeRuntimeForcedToolRound");
+  const end = source.indexOf("\n  private async emitToolProgressSafely", start);
+  assert.notEqual(start, -1, "executeRuntimeForcedToolRound must exist");
+  assert.notEqual(end, -1, "executeRuntimeForcedToolRound boundary must be found");
+  const helperSource = source.slice(start, end);
+
+  assert.equal(
+    helperSource.includes("recordProviderToolProtocolRoundSafely"),
+    false,
+    "forced engine tool rounds must route provider protocol observability through EngineRunObserver",
+  );
 });

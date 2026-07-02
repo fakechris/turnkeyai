@@ -253,6 +253,7 @@ import {
   createRepairPolicyRegistry,
   createTerminalCloseoutController,
   type DefaultEngineRunStateValues,
+  type EngineRunObserver,
   finalizeEngineAnswer,
   normalizeEngineToolCalls,
   traceEngineHooks,
@@ -3113,6 +3114,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 packet,
                 messages: state.messages,
                 toolTrace,
+                observer,
                 toolCalls: forcedRoundAction.calls,
                 round: toolTrace.length + 1,
                 toolLoopStartedAtMs,
@@ -3456,6 +3458,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 packet,
                 messages: state.messages,
                 toolTrace,
+                observer,
                 toolCalls: modelErrorResult.calls,
                 round: toolTrace.length + 1,
                 toolLoopStartedAtMs,
@@ -4170,11 +4173,38 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     return results;
   }
 
+  private async recordRuntimeForcedToolRoundProviderProtocol(input: {
+    activation: RoleActivationInput;
+    observer?: EngineRunObserver;
+    round: number;
+    toolCalls: LLMToolCall[];
+    toolResults: RoleToolExecutionResult[];
+    messages: LLMMessage[];
+  }): Promise<void> {
+    if (input.observer) {
+      await input.observer.onProviderToolProtocolRound({
+        round: input.round,
+        toolCalls: input.toolCalls,
+        toolResults: input.toolResults,
+        messages: input.messages,
+      });
+      return;
+    }
+    await this.recordProviderToolProtocolRoundSafely({
+      activation: input.activation,
+      round: input.round,
+      toolCalls: input.toolCalls,
+      toolResults: input.toolResults,
+      messages: input.messages,
+    });
+  }
+
   private async executeRuntimeForcedToolRound(input: {
     activation: RoleActivationInput;
     packet: RolePromptPacket;
     messages: LLMMessage[];
     toolTrace: NativeToolRoundTrace[];
+    observer?: EngineRunObserver;
     toolCalls: LLMToolCall[];
     round: number;
     toolLoopStartedAtMs: number;
@@ -4216,8 +4246,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       toolCalls: input.toolCalls,
     });
     messages = appendToolResultMessages(messages, toolResults);
-    await this.recordProviderToolProtocolRoundSafely({
+    await this.recordRuntimeForcedToolRoundProviderProtocol({
       activation: input.activation,
+      ...(input.observer === undefined ? {} : { observer: input.observer }),
       round: input.round,
       toolCalls: input.toolCalls,
       toolResults,
