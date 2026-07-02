@@ -139,6 +139,11 @@ export interface RemainingPendingCallsCloseoutInput {
   buildRoundLimitCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
 }
 
+export interface PostExecuteCloseoutInput {
+  completedSession: unknown | null;
+  timeoutSignal: unknown | null;
+}
+
 export type RecoveryToolBudgetCloseoutDecision =
   | (CloseoutDecision<ExecutionBudgetCloseoutSnapshot["closeout"]> & {
       closeout: ExecutionBudgetCloseoutSnapshot["closeout"];
@@ -165,6 +170,18 @@ export type RemainingPendingCallsCloseoutDecision =
       closeout: ExcessiveSessionContinuationCloseoutMetadata;
     });
 
+export type PostExecuteCloseoutDecision =
+  | {
+      kind: "closeout";
+      policyId: "completed_sub_agent_final";
+      reason: "completed_sub_agent_final";
+    }
+  | {
+      kind: "closeout";
+      policyId: "sub_agent_timeout";
+      reason: "sub_agent_timeout";
+    };
+
 export interface CloseoutPolicyRegistry {
   evaluateRecoveryToolBudget(
     input: RecoveryToolBudgetCloseoutInput,
@@ -173,6 +190,10 @@ export interface CloseoutPolicyRegistry {
   evaluateRemainingPendingCalls(
     input: RemainingPendingCallsCloseoutInput,
   ): RemainingPendingCallsCloseoutDecision | null;
+
+  evaluatePostExecute(
+    input: PostExecuteCloseoutInput,
+  ): PostExecuteCloseoutDecision | null;
 }
 
 class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
@@ -364,6 +385,26 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
           roundCount: input.roundCount,
           evidenceAvailable: input.evidenceAvailable,
         },
+      };
+    }
+    return null;
+  }
+
+  evaluatePostExecute(
+    input: PostExecuteCloseoutInput,
+  ): PostExecuteCloseoutDecision | null {
+    if (input.completedSession) {
+      return {
+        kind: "closeout",
+        policyId: "completed_sub_agent_final",
+        reason: "completed_sub_agent_final",
+      };
+    }
+    if (input.timeoutSignal) {
+      return {
+        kind: "closeout",
+        policyId: "sub_agent_timeout",
+        reason: "sub_agent_timeout",
       };
     }
     return null;

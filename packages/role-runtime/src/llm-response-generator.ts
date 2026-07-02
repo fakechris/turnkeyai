@@ -3319,7 +3319,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // just-executed round terminates.
         onAfterExecute: (results) => {
           const completedSession = findCompletedSessionEvidence(results);
-          if (completedSession) {
+          const timeoutSignal = completedSession
+            ? null
+            : findSubAgentToolTimeout(results);
+          const postExecuteCloseout = closeoutPolicy.evaluatePostExecute({
+            completedSession,
+            timeoutSignal,
+          });
+          if (
+            postExecuteCloseout?.reason === "completed_sub_agent_final" &&
+            completedSession
+          ) {
             // Capture the completing round's results — the same array the inline
             // path passes to collectToolResultContentText when it builds
             // completedProductBriefEvidenceText (:1933-1938). onTerminate uses this
@@ -3328,12 +3338,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               session: completedSession,
               toolResults: results,
             });
-            return "completed_sub_agent_final";
+            return postExecuteCloseout.reason;
           }
-          const timeoutSignal = findSubAgentToolTimeout(results);
-          if (timeoutSignal) {
+          if (
+            postExecuteCloseout?.reason === "sub_agent_timeout" &&
+            timeoutSignal
+          ) {
             runState.recordTimeoutSignal(timeoutSignal);
-            return "sub_agent_timeout";
+            return postExecuteCloseout.reason;
           }
           return null;
         },

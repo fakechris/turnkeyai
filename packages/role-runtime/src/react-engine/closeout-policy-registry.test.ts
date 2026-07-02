@@ -506,3 +506,44 @@ test("CloseoutPolicyRegistry returns excessive session continuation closeout dec
     evidenceAvailable: true,
   });
 });
+
+test("CloseoutPolicyRegistry returns completed sub-agent post-execute closeout", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluatePostExecute({
+    completedSession: { toolName: "sessions_spawn" },
+    timeoutSignal: null,
+  });
+
+  assert.deepEqual(decision, {
+    kind: "closeout",
+    policyId: "completed_sub_agent_final",
+    reason: "completed_sub_agent_final",
+  });
+});
+
+test("CloseoutPolicyRegistry returns sub-agent timeout post-execute closeout", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluatePostExecute({
+    completedSession: null,
+    timeoutSignal: { toolName: "sessions_spawn" },
+  });
+
+  assert.deepEqual(decision, {
+    kind: "closeout",
+    policyId: "sub_agent_timeout",
+    reason: "sub_agent_timeout",
+  });
+});
+
+test("CloseoutPolicyRegistry gives completed session precedence over timeout", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluatePostExecute({
+    completedSession: { toolName: "sessions_history" },
+    timeoutSignal: { toolName: "sessions_spawn" },
+  });
+
+  assert.equal(decision?.reason, "completed_sub_agent_final");
+});
