@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `45297066a75be508d7900bdaf1cd29f91c3c6640`
+**Code HEAD before this docs-only report:** `7721010f505114a9fed24032c5c88f7aabea86cb`
 **Date:** 2026-07-02
 
 ## Summary
@@ -109,6 +109,10 @@ could not move the normalizer without making the inline parity reference import 
   Gateway input construction, final synthesis format-contract lines, no-tool
   gateway transforms, mention extraction, and requested three-line label
   normalization now live in neutral `gateway-input-builder.ts`.
+  Tool-result evidence collectors for completed sessions, timeout signals,
+  session history evidence, tool-result text, tool-trace text, resumable partial
+  sessions, and usable-evidence detection now live in neutral
+  `tool-result-evidence.ts`.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence behavior,
@@ -169,6 +173,7 @@ of controller actions.
 | `d76df2a` | Move tool-definition filtering and its prompt/message context builders into neutral `tool-definition-filter.ts`; add focused filtering tests. |
 | `3f33d7d` | Move model-call boundary trace construction and model-use summary aggregation into neutral `model-call-trace.ts`; add focused trace tests. |
 | `4529706` | Move gateway input construction, final synthesis format-contract helpers, no-tool transforms, mention extraction, and requested three-line label normalization into neutral `gateway-input-builder.ts`; add focused builder tests. |
+| `7721010` | Move tool-result evidence collectors, completed-session/timeout readers, session-history evidence extraction, resumable partial-session detection, and usable-evidence checks into neutral `tool-result-evidence.ts`; add focused evidence tests. |
 
 ## Current Extracted Implementation
 
@@ -270,6 +275,10 @@ Real implementation now exists in:
   continuation directive prompt injection, final synthesis format-contract
   lines, no-tool gateway transforms, mention extraction, tool-definition lookup,
   and requested three-line label normalization.
+- `tool-result-evidence.ts` for completed-session evidence summaries,
+  sub-agent timeout signal extraction, session-history evidence extraction,
+  required-timeout continuation allowance, resumable partial-session detection,
+  tool-result/tool-trace text collection, and usable-evidence checks.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
@@ -315,6 +324,7 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/tool-definition-filter.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/model-call-trace.test.ts` | 2 / 2 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 5 / 5 |
+| `npx tsx --test packages/role-runtime/src/tool-result-evidence.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 141 / 141 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
@@ -329,7 +339,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that sixty
+root plus several policy-heavy hook bodies. The main improvement is that sixty-one
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -419,6 +429,12 @@ Stage 8 boundaries/slices are now real:
   mention extraction, tool-definition lookup, and requested three-line label
   normalization now live in neutral `gateway-input-builder.ts`; the adapter
   calls the module instead of owning those context-construction helpers.
+- tool-result evidence collectors, completed-session evidence summaries,
+  sub-agent timeout signal extraction, session-history evidence extraction,
+  required-timeout continuation allowance, resumable partial-session detection,
+  tool-result/tool-trace text collection, and usable-evidence checks now live in
+  neutral `tool-result-evidence.ts`; the adapter calls the module instead of
+  owning that evidence helper closure.
 - incomplete approved-browser-action repair selection routes through
   `RepairPolicyRegistry`, using shared approval-applied evidence/prompt
   predicates and returning a typed forced `sessions_spawn` repair round.
