@@ -3,10 +3,14 @@ import test from "node:test";
 
 import {
   createRepairPolicyRegistry,
+  ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER,
   ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER,
 } from "./repair-policy-registry";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
-import type { NaturalFinishRepairDecision } from "./repair-policy-registry";
+import type {
+  CompletedSynthesisRepairDecision,
+  NaturalFinishRepairDecision,
+} from "./repair-policy-registry";
 
 const APPROVAL_WAIT_TIMEOUT_TASK_PROMPT =
   "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.";
@@ -33,7 +37,10 @@ function makePermissionResultTrace(status: string): NativeToolRoundTrace[] {
 }
 
 function readRepairPrompt(
-  decision: NaturalFinishRepairDecision | null,
+  decision:
+    | CompletedSynthesisRepairDecision
+    | NaturalFinishRepairDecision
+    | null,
 ): string {
   assert.ok(decision && "repairPrompt" in decision);
   return decision.repairPrompt;
@@ -54,6 +61,16 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
     "extraneous_provider_table_schema",
     "source_evidence_carry_forward",
     "weak_evidence_synthesis",
+  ]);
+});
+
+test("ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER pins completed-closeout repair precedence", () => {
+  assert.deepEqual([...ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER], [
+    "timeout_followup_final_guidance",
+    "missing_requested_next_action",
+    "missing_required_final_deliverables",
+    "missing_browser_evidence_dimensions",
+    "false_evidence_blocked_synthesis",
   ]);
 });
 
@@ -1012,4 +1029,183 @@ test("RepairPolicyRegistry skips weak evidence synthesis for exact final shapes"
     }),
     null,
   );
+});
+
+test("RepairPolicyRegistry returns timeout follow-up final guidance repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateCompletedSynthesis({
+    completedEvidenceText:
+      "The slow source recovered after an earlier timeout and returned owner Release Captain.",
+    completedSessionEvidenceText:
+      "The slow source recovered after an earlier timeout and returned owner Release Captain.",
+    completedSessionFinalContents: [],
+    enabledPolicies: ["timeout_followup_final_guidance"],
+    messages: [],
+    repairMarkers: [],
+    resultText: "Owner: Release Captain. Risk: delayed source response.",
+    taskPrompt: [
+      "Evaluate this slow source for a release-risk note.",
+      "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available.",
+      "A follow-up may ask you to resume that same source-check context after the earlier timeout; explain how the source-check can continue or retry.",
+    ].join("\n"),
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "timeout_followup_final_guidance");
+  assert.equal(decision?.evidenceFormula, "completed_product_brief_evidence");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /timeout follow-up final omitted recovery guidance/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /Release Captain/);
+});
+
+test("RepairPolicyRegistry does not repeat timeout follow-up final guidance repair after marker", () => {
+  const registry = createRepairPolicyRegistry();
+  const input = {
+    completedEvidenceText:
+      "The slow source recovered after an earlier timeout and returned owner Release Captain.",
+    completedSessionEvidenceText:
+      "The slow source recovered after an earlier timeout and returned owner Release Captain.",
+    completedSessionFinalContents: [],
+    enabledPolicies: ["timeout_followup_final_guidance"] as const,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Owner: Release Captain. Risk: delayed source response.",
+    taskPrompt: [
+      "Evaluate this slow source for a release-risk note.",
+      "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available.",
+      "A follow-up may ask you to resume that same source-check context after the earlier timeout; explain how the source-check can continue or retry.",
+    ].join("\n"),
+  };
+
+  const first = registry.evaluateCompletedSynthesis(input);
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateCompletedSynthesis({
+      ...input,
+      repairMarkers: [{ role: "user", content: readRepairPrompt(first) }],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns missing requested next action completed repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateCompletedSynthesis({
+    completedEvidenceText: "The delegated session verified the plan price.",
+    completedSessionEvidenceText:
+      "The delegated session verified the plan price.",
+    completedSessionFinalContents: [],
+    enabledPolicies: ["missing_requested_next_action"],
+    messages: [],
+    repairMarkers: [],
+    resultText: "The plan is verified at $10 per month.",
+    taskPrompt:
+      "Review the delegated session's pricing finding and tell me the next action the operator should take.",
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "missing_requested_next_action");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /requested next action is missing/i,
+  );
+});
+
+test("RepairPolicyRegistry returns missing required final deliverables completed repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateCompletedSynthesis({
+    completedEvidenceText: "Vendor A is cheaper; Vendor B has stronger risk controls.",
+    completedSessionEvidenceText:
+      "Vendor A is cheaper; Vendor B has stronger risk controls.",
+    completedSessionFinalContents: [],
+    enabledPolicies: ["missing_required_final_deliverables"],
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "Vendor A is cheaper, while Vendor B has stronger risk controls.",
+    taskPrompt:
+      "Compare Vendor A and Vendor B, then include a final one-sentence conclusion.",
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "missing_required_final_deliverables");
+  assert.equal(decision?.evidenceFormula, "completed_session_evidence");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /final answer omitted required deliverables/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /final one-sentence conclusion/i);
+});
+
+test("RepairPolicyRegistry returns missing browser evidence dimensions completed repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateCompletedSynthesis({
+    completedEvidenceText:
+      "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
+    completedSessionEvidenceText:
+      "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
+    completedSessionFinalContents: [
+      "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
+    ],
+    enabledPolicies: ["missing_browser_evidence_dimensions"],
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "The browser-visible page was checked, but the frame, shadow component, and popup details are not verified.",
+    taskPrompt:
+      "Inspect the page iframe, shadow review component, and popup state before writing the final answer.",
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "missing_browser_evidence_dimensions");
+  assert.equal(decision?.evidenceFormula, "completed_session_evidence");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /final answer omitted requested browser evidence dimensions/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /embedded frame source state/i);
+  assert.match(decision?.repairPrompt ?? "", /shadow review state/i);
+  assert.match(decision?.repairPrompt ?? "", /details popup state/i);
+});
+
+test("RepairPolicyRegistry returns false evidence blocked completed repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateCompletedSynthesis({
+    completedEvidenceText:
+      "Completed source evidence: owner Release Captain and plan price $10 were observed.",
+    completedSessionEvidenceText:
+      "Completed source evidence: owner Release Captain and plan price $10 were observed.",
+    completedSessionFinalContents: [
+      "Completed source evidence: owner Release Captain and plan price $10 were observed.",
+    ],
+    enabledPolicies: ["false_evidence_blocked_synthesis"],
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "The source content was unavailable, so extraction failed and the evidence is incomplete.",
+    taskPrompt: "Summarize the completed delegated evidence.",
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "false_evidence_blocked_synthesis");
+  assert.equal(decision?.evidenceFormula, "completed_session_evidence");
+  assert.equal(decision?.forceToolChoice, "none");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /falsely marks completed evidence/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /Release Captain/);
 });

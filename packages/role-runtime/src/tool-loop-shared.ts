@@ -863,6 +863,213 @@ export function buildWeakEvidenceSynthesisRepairPrompt(): string {
   ].join("\n");
 }
 
+export function shouldRepairTimeoutFollowupFinalGuidance(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  evidenceText: string;
+}): boolean {
+  if (hasTimeoutFollowupFinalGuidanceRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!taskRequestsTimeoutFollowupContinuation(input.taskPrompt)) {
+    return false;
+  }
+  if (!/\b(?:timeout|timed out|resumable|recovered|recovery)\b/i.test(input.evidenceText)) {
+    return false;
+  }
+  const hasUnverifiedScope = /\b(?:unverified|not verified|remaining scope|source-bounded|source bounded)\b/i.test(
+    input.resultText,
+  );
+  const hasContinuationGuidance = hasTimeoutContinuationGuidance(
+    input.resultText,
+  );
+  const hasTimeoutContext = /\b(?:timeout|timed out|recovered|recovery|resumed)\b/i.test(
+    input.resultText,
+  );
+  return !hasUnverifiedScope || !hasContinuationGuidance || !hasTimeoutContext;
+}
+
+export function buildTimeoutFollowupFinalGuidanceRepairPrompt(input: {
+  taskPrompt: string;
+  resultText: string;
+  evidenceText: string;
+}): string {
+  return [
+    "Runtime correction: timeout follow-up final omitted recovery guidance.",
+    "Do not call tools. Rewrite the final answer using only the completed continuation evidence below.",
+    "Keep the verified owner, risk, mitigation, source URL/title/status, and release-risk assessment.",
+    "Also include: (1) that this was recovered/resumed after an earlier timeout, (2) unverified scope that remains source-bounded, and (3) continuation guidance using words such as continue, retry, resumable, timeout recovery, or subsequent health check.",
+    "Do not claim the earlier timeout never happened, and do not imply more source facts were verified than the completed evidence supports.",
+    `Original task:\n${sliceUtf8(input.taskPrompt, 1400)}`,
+    `Previous final answer:\n${sliceUtf8(input.resultText, 1400)}`,
+    `Completed continuation evidence:\n${sliceUtf8(input.evidenceText, 4200)}`,
+  ].join("\n");
+}
+
+export function shouldRepairMissingRequestedNextAction(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+}): boolean {
+  if (hasMissingRequestedNextActionRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (
+    !/\b(?:next action|next step|operator should|should take|safe fallback|fallback action)\b/i.test(
+      input.taskPrompt,
+    )
+  ) {
+    return false;
+  }
+  return !/\b(?:next action|next step|recommended action|recommend(?:ed)?|operator should|should (?:retry|reopen|check|watch|escalate|preserve|request|continue|stop|avoid)|safe fallback|fallback action)\b/i.test(
+    input.resultText,
+  );
+}
+
+export function buildMissingRequestedNextActionRepairPrompt(): string {
+  return [
+    "Runtime correction: requested next action is missing from the final answer.",
+    "Do not call tools. Revise the final answer using only the delegated session evidence already present.",
+    "Include a concise next action or safe fallback for the operator, and keep any unverified scope explicit.",
+  ].join("\n");
+}
+
+export type RequiredFinalDeliverable = {
+  id: "final_conclusion" | "two_row_table";
+  label: string;
+  instruction: string;
+};
+
+export function inferRequiredFinalSynthesisDeliverables(
+  taskPrompt: string,
+): RequiredFinalDeliverable[] {
+  const deliverables: RequiredFinalDeliverable[] = [];
+  if (taskRequestsTwoRowTable(taskPrompt)) {
+    deliverables.push({
+      id: "two_row_table",
+      label: "two-row table",
+      instruction:
+        "Return the requested merged table with exactly two evidence rows after the header unless a source is explicitly incomplete.",
+    });
+  }
+  if (taskRequestsFinalConclusion(taskPrompt)) {
+    deliverables.push({
+      id: "final_conclusion",
+      label: "final one-sentence conclusion",
+      instruction:
+        "After the requested table or structured answer, include the requested final one-sentence conclusion with an explicit label such as `结论：` or `Conclusion:`.",
+    });
+  }
+  return deliverables;
+}
+
+export function findMissingRequiredFinalDeliverables(input: {
+  taskPrompt: string;
+  resultText: string;
+}): RequiredFinalDeliverable[] {
+  return inferRequiredFinalSynthesisDeliverables(input.taskPrompt).filter(
+    (deliverable) => !finalDeliverableIsPresent(deliverable, input.resultText),
+  );
+}
+
+export function hasMissingRequiredFinalDeliverablesRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: final answer omitted required deliverables",
+      ),
+  );
+}
+
+export function buildMissingRequiredFinalDeliverablesRepairPrompt(input: {
+  taskPrompt: string;
+  resultText: string;
+  missing: RequiredFinalDeliverable[];
+  evidenceText: string;
+}): string {
+  return [
+    "Runtime correction: final answer omitted required deliverables from the original task.",
+    `Missing deliverables: ${input.missing.map((item) => item.label).join(", ")}.`,
+    "Do not call tools. Rewrite the final answer using only the completed delegated evidence below.",
+    "Preserve the user's requested final shape, order, source labels, and evidence boundaries.",
+    "Add only the missing required deliverable(s); do not invent facts beyond the completed evidence.",
+    `Original task:\n${sliceUtf8(input.taskPrompt, 1400)}`,
+    `Previous final answer:\n${sliceUtf8(input.resultText, 1400)}`,
+    `Completed delegated evidence:\n${sliceUtf8(input.evidenceText, 3600)}`,
+  ].join("\n");
+}
+
+export function shouldRepairMissingBrowserEvidenceDimensions(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  evidenceText: string;
+}): boolean {
+  if (hasMissingBrowserEvidenceDimensionsRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  return findMissingBrowserEvidenceDimensions(input).length > 0;
+}
+
+export function buildMissingBrowserEvidenceDimensionsRepairPrompt(input: {
+  taskPrompt: string;
+  resultText: string;
+  evidenceText: string;
+}): string {
+  const missing = findMissingBrowserEvidenceDimensions(input);
+  return [
+    "Runtime correction: final answer omitted requested browser evidence dimensions.",
+    `Missing dimensions: ${missing.join(", ")}.`,
+    "Do not call tools. Rewrite the final answer using only the completed browser evidence below.",
+    "Carry each missing requested browser dimension into the final answer when the evidence supports it.",
+    "For unavailable dimensions, write not verified only if the completed browser evidence actually lacks that dimension.",
+    "Keep residual risk visible, but do not mark frame, shadow, popup, or rendered page state unverified when the completed browser evidence contains it.",
+    `Original task:\n${sliceUtf8(input.taskPrompt, 1400)}`,
+    `Previous final answer:\n${sliceUtf8(input.resultText, 1400)}`,
+    `Completed browser evidence:\n${sliceUtf8(input.evidenceText, 3600)}`,
+  ].join("\n");
+}
+
+export function shouldRepairFalseEvidenceBlockedSynthesis(input: {
+  resultText: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  evidenceText: string;
+}): boolean {
+  if (hasFalseEvidenceBlockedSynthesisRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (
+    !matchesAny(input.resultText, FALSE_EVIDENCE_BLOCKED_SYNTHESIS_PATTERNS)
+  ) {
+    return false;
+  }
+  return !matchesAny(input.evidenceText, ACTUAL_EVIDENCE_BLOCKED_PATTERNS);
+}
+
+export function buildFalseEvidenceBlockedSynthesisRepairPrompt(
+  finalContents: readonly string[],
+): string {
+  return [
+    "Runtime correction: final answer falsely marks completed evidence as blocked, inaccessible, failed, incomplete, or truncated.",
+    "Do not call tools. Rewrite the final answer using only the delegated session evidence already present.",
+    "The completed source evidence below is usable. Do not describe source content, browser evidence, rendered DOM, page content, or extraction as inaccessible, failed, incomplete, blocked, or truncated unless that exact blocker appears in the source evidence.",
+    "Preserve the original requested final answer shape, section labels, bullet labels, no-link rules, and residual-risk requirement.",
+    "It is okay to say the evidence is source-bounded to local fixtures or that real-world validation remains; do not turn that scope limitation into a tool/browser/content failure.",
+    ...finalContents.map(
+      (content, index) =>
+        `Source ${index + 1} completed evidence:\n${sliceUtf8(content, 2400)}`,
+    ),
+  ].join("\n");
+}
+
 function extractSourceBoundedEvidenceSnippets(text: string): string {
   const lines = text
     .split(/\r?\n/)
@@ -1153,6 +1360,167 @@ function hasWeakEvidenceSynthesisRepairPrompt(
   );
 }
 
+function hasMissingRequestedNextActionRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: requested next action is missing",
+      ),
+  );
+}
+
+function hasTimeoutFollowupFinalGuidanceRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: timeout follow-up final omitted recovery guidance",
+      ),
+  );
+}
+
+function hasFalseEvidenceBlockedSynthesisRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: final answer falsely marks completed evidence",
+      ),
+  );
+}
+
+function hasMissingBrowserEvidenceDimensionsRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: final answer omitted requested browser evidence dimensions",
+      ),
+  );
+}
+
+function taskRequestsFinalConclusion(taskPrompt: string): boolean {
+  return (
+    /(?:最后|最终|末尾|结尾|再给|补充)[^\n。.!?]{0,80}(?:一句话|一[个段]?简短|简短)?[^\n。.!?]{0,60}(?:结论|总结)/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:final|last|closing)\b[\s\S]{0,120}\b(?:one[- ]sentence|single[- ]sentence|brief)\b[\s\S]{0,80}\b(?:conclusion|summary)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:one[- ]sentence|single[- ]sentence|brief)\b[\s\S]{0,80}\b(?:final|closing)?\s*(?:conclusion|summary)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function taskRequestsTwoRowTable(taskPrompt: string): boolean {
+  return (
+    /(?:两行|2\s*行|两条|2\s*条)[^\n。.!?]{0,80}(?:表格|表)/.test(
+      taskPrompt,
+    ) ||
+    /\b(?:two[- ]row|2[- ]row|two rows|2 rows)\b[\s\S]{0,80}\btable\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function finalDeliverableIsPresent(
+  deliverable: RequiredFinalDeliverable,
+  resultText: string,
+): boolean {
+  if (deliverable.id === "final_conclusion") {
+    return /(?:^|\n)\s*(?:#{1,4}\s*)?(?:[*_]{1,3}\s*)?(?:结论|一句话结论|最终结论|总结|Conclusion|Summary)\s*[:：]\s*(?:[*_]{1,3})?/i.test(
+      resultText,
+    );
+  }
+  if (deliverable.id === "two_row_table") {
+    return markdownTableDataRowCount(resultText) >= 2;
+  }
+  return true;
+}
+
+function markdownTableDataRowCount(resultText: string): number {
+  const rows = resultText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("|") && line.endsWith("|"));
+  if (rows.length < 3) return 0;
+  const separatorIndex = rows.findIndex((line) =>
+    /^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/.test(line),
+  );
+  if (separatorIndex < 1) return 0;
+  return rows.slice(separatorIndex + 1).filter((line) => {
+    const cells = line
+      .split("|")
+      .map((cell) => cell.trim())
+      .filter(Boolean);
+    return cells.length > 0;
+  }).length;
+}
+
+function findMissingBrowserEvidenceDimensions(input: {
+  taskPrompt: string;
+  resultText: string;
+  evidenceText: string;
+}): string[] {
+  const dimensions = [
+    {
+      label: "embedded frame source state",
+      requested: /\b(?:iframe|frame|embedded source)\b/i,
+      evidence:
+        /\b(?:Frame panel|embedded source frame|embedded backlog source)\b[\s\S]{0,180}\b(?:backlog\s*7|Frame Captain)\b|\b(?:backlog\s*7|Frame Captain)\b[\s\S]{0,180}\b(?:Frame panel|embedded source frame|embedded backlog source)\b/i,
+      result:
+        /\b(?:frame|iframe|embedded source)\b[\s\S]{0,220}\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b|\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b[\s\S]{0,220}\b(?:frame|iframe|embedded source)\b/i,
+      negated:
+        /\bnot verified\b[\s\S]{0,120}\b(?:frame|iframe|embedded source)\b|\b(?:frame|iframe|embedded source)\b[\s\S]{0,120}\bnot verified\b/i,
+    },
+    {
+      label: "shadow review state",
+      requested: /\b(?:shadow|review component)\b/i,
+      evidence:
+        /\b(?:Shadow review|shadow component|review component)\b[\s\S]{0,180}\b(?:risk desk|approval required|approval requirement)\b|\b(?:risk desk|approval required|approval requirement)\b[\s\S]{0,180}\b(?:Shadow review|shadow component|review component)\b/i,
+      result:
+        /\b(?:shadow|review component)\b[\s\S]{0,220}\b(?:risk desk|approval required|approval requirement|approval is required)\b|\b(?:risk desk|approval required|approval requirement|approval is required)\b[\s\S]{0,220}\b(?:shadow|review component)\b/i,
+      negated:
+        /\bnot verified\b[\s\S]{0,120}\b(?:shadow|review component)\b|\b(?:shadow|review component)\b[\s\S]{0,120}\bnot verified\b/i,
+    },
+    {
+      label: "details popup state",
+      requested: /\bpopup\b/i,
+      evidence:
+        /\bpopup\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\bpopup\b/i,
+      result:
+        /\bpopup\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\bpopup\b/i,
+    },
+    {
+      label: "product signal dashboard counters",
+      requested:
+        /\b(?:product-signals|live signal dashboard|product signal dashboard)\b/i,
+      evidence: PRODUCT_SIGNAL_DASHBOARD_COUNTERS_PATTERN,
+      result: PRODUCT_SIGNAL_DASHBOARD_RENDERED_RESULT_PATTERN,
+      negated: PRODUCT_SIGNAL_DASHBOARD_COUNTERS_UNVERIFIED_PATTERN,
+    },
+  ] as const;
+
+  return dimensions.flatMap((dimension) =>
+    dimension.requested.test(input.taskPrompt) &&
+    dimension.evidence.test(input.evidenceText) &&
+    (!dimension.result.test(input.resultText) ||
+      ("negated" in dimension && dimension.negated.test(input.resultText)))
+      ? [dimension.label]
+      : [],
+  );
+}
+
 const PRODUCT_SIGNAL_NUMERIC_METRIC_PATTERN =
   "\\b[A-Za-z][A-Za-z0-9 _/-]{1,48}\\b\\s*(?:[:=\\-]|\\bis\\b)\\s*(?:\\*\\*)?\\d+(?:\\.\\d+)?(?:\\*\\*)?\\b";
 const PRODUCT_SIGNAL_RATE_METRIC_PATTERN =
@@ -1196,6 +1564,19 @@ const WEAK_ESTIMATE_SYNTHESIS_PATTERNS = [
 const ESTIMATE_REQUEST_PATTERNS = [
   /\b(?:estimate|estimated|estimation|forecast|roughly|approx(?:imate|imately)?|ballpark|range)\b/i,
   /(?:^|[^A-Za-z0-9_])(?:估算|预估|大概|大致|范围)(?![A-Za-z0-9_])/,
+];
+
+const FALSE_EVIDENCE_BLOCKED_SYNTHESIS_PATTERNS = [
+  /\b(?:not accessible|not fully accessible|inaccessible)\b/i,
+  /\b(?:source|content|evidence|page|dashboard|browser|rendered|DOM|extraction)\b[\s\S]{0,120}\b(?:failed|unavailable|inaccessible|incomplete|truncated|blocked)\b/i,
+  /\b(?:failed|unavailable|inaccessible|incomplete|truncated|blocked)\b[\s\S]{0,120}\b(?:source|content|evidence|page|dashboard|browser|rendered|DOM|extraction)\b/i,
+];
+
+const ACTUAL_EVIDENCE_BLOCKED_PATTERNS = [
+  /\b(?:could not|unable to|failed to)\s+(?:access|extract|capture|read|load|verify)\b/i,
+  /\b(?:verification status:\s*failed|content extraction\b[\s\S]{0,80}\b(?:failed|incomplete|truncated))\b/i,
+  /\b(?:browser|rendered|DOM|page|dashboard|tab|target|screenshot|snapshot|CDP)\b[\s\S]{0,120}\b(?:failed|unavailable|inaccessible|incomplete|truncated)\b/i,
+  /\b(?:failed|unavailable|inaccessible|incomplete|truncated)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|page|dashboard|tab|target|screenshot|snapshot|CDP)\b/i,
 ];
 
 export function hasLatestSupplementalLocalTimeoutProbePrompt(

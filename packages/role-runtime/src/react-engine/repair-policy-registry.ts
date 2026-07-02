@@ -9,27 +9,38 @@ import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 
 import {
   buildApprovalWaitTimeoutCloseoutRepairPrompt,
+  buildFalseEvidenceBlockedSynthesisRepairPrompt,
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
   buildIncompleteApprovedBrowserActionRepairPrompt,
+  buildMissingBrowserEvidenceDimensionsRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
+  buildMissingRequestedNextActionRepairPrompt,
+  buildMissingRequiredFinalDeliverablesRepairPrompt,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   buildPrematurePendingApprovalRepairPrompt,
   buildSourceEvidenceCarryForwardRepairPrompt,
   buildStaleDeniedApprovalRepairPrompt,
   buildStalePendingApprovalRepairPrompt,
+  buildTimeoutFollowupFinalGuidanceRepairPrompt,
   buildWeakEvidenceSynthesisRepairPrompt,
   collectCompletedSessionEvidenceText,
   collectSourceBoundedEvidenceText,
+  findMissingRequiredFinalDeliverables,
+  hasMissingRequiredFinalDeliverablesRepairPrompt,
   shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
   shouldRepairApprovalWaitTimeoutCloseout,
+  shouldRepairFalseEvidenceBlockedSynthesis,
   shouldRepairFinalRecoveryBudgetCloseout,
   shouldRepairIncompleteApprovedBrowserAction,
+  shouldRepairMissingBrowserEvidenceDimensions,
   shouldRepairMissingApprovalGate,
+  shouldRepairMissingRequestedNextAction,
   shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldRepairPrematurePendingApprovalFinal,
   shouldRepairSourceEvidenceCarryForward,
   shouldRepairStaleDeniedApproval,
   shouldRepairStalePendingApproval,
+  shouldRepairTimeoutFollowupFinalGuidance,
   shouldRepairWeakEvidenceSynthesis,
   sliceUtf8,
 } from "../tool-loop-shared";
@@ -67,6 +78,17 @@ export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
 export type EngineNaturalFinishRepairPolicyId =
   (typeof ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER)[number];
 
+export const ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER = [
+  "timeout_followup_final_guidance",
+  "missing_requested_next_action",
+  "missing_required_final_deliverables",
+  "missing_browser_evidence_dimensions",
+  "false_evidence_blocked_synthesis",
+] as const;
+
+export type EngineCompletedSynthesisRepairPolicyId =
+  (typeof ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER)[number];
+
 export interface FinalRecoveryBudgetRepairSignal {
   maxToolCalls: number;
   usedToolCalls: number;
@@ -82,6 +104,17 @@ export interface NaturalFinishRepairInput {
   taskPrompt?: string;
   toolTrace?: NativeToolRoundTrace[];
   tools?: readonly { name: string }[];
+}
+
+export interface CompletedSynthesisRepairInput {
+  completedEvidenceText: string;
+  completedSessionEvidenceText: string;
+  completedSessionFinalContents: readonly string[];
+  enabledPolicies?: readonly EngineCompletedSynthesisRepairPolicyId[];
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  resultText: string;
+  taskPrompt: string;
 }
 
 export type NaturalFinishRepairDecision =
@@ -188,10 +221,50 @@ export type NaturalFinishRepairDecision =
       consumesRound?: false;
     };
 
+export type CompletedSynthesisRepairDecision =
+  | {
+      kind: "resynthesize";
+      policyId: "timeout_followup_final_guidance";
+      evidenceFormula: "completed_product_brief_evidence";
+      repairPrompt: string;
+      forceToolChoice: "none";
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "missing_requested_next_action";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: "none";
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "missing_required_final_deliverables";
+      evidenceFormula: "completed_session_evidence";
+      repairPrompt: string;
+      forceToolChoice: "none";
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "missing_browser_evidence_dimensions";
+      evidenceFormula: "completed_session_evidence";
+      repairPrompt: string;
+      forceToolChoice: "none";
+    }
+  | {
+      kind: "resynthesize";
+      policyId: "false_evidence_blocked_synthesis";
+      evidenceFormula: "completed_session_evidence";
+      repairPrompt: string;
+      forceToolChoice: "none";
+    };
+
 export interface RepairPolicyRegistry {
   evaluateNaturalFinish(
     input: NaturalFinishRepairInput,
   ): NaturalFinishRepairDecision | null;
+  evaluateCompletedSynthesis(
+    input: CompletedSynthesisRepairInput,
+  ): CompletedSynthesisRepairDecision | null;
 }
 
 class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
@@ -301,11 +374,67 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
     }
     return null;
   }
+
+  evaluateCompletedSynthesis(
+    input: CompletedSynthesisRepairInput,
+  ): CompletedSynthesisRepairDecision | null {
+    for (const policyId of ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER) {
+      if (!isCompletedPolicyEnabled(input, policyId)) {
+        continue;
+      }
+      switch (policyId) {
+        case "timeout_followup_final_guidance": {
+          const decision = evaluateTimeoutFollowupFinalGuidanceRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "missing_requested_next_action": {
+          const decision = evaluateMissingRequestedNextActionRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "missing_required_final_deliverables": {
+          const decision = evaluateMissingRequiredFinalDeliverablesRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "missing_browser_evidence_dimensions": {
+          const decision =
+            evaluateMissingBrowserEvidenceDimensionsRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "false_evidence_blocked_synthesis": {
+          const decision = evaluateFalseEvidenceBlockedSynthesisRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+      }
+    }
+    return null;
+  }
 }
 
 function isPolicyEnabled(
   input: NaturalFinishRepairInput,
   policyId: EngineNaturalFinishRepairPolicyId,
+): boolean {
+  return !input.enabledPolicies || input.enabledPolicies.includes(policyId);
+}
+
+function isCompletedPolicyEnabled(
+  input: CompletedSynthesisRepairInput,
+  policyId: EngineCompletedSynthesisRepairPolicyId,
 ): boolean {
   return !input.enabledPolicies || input.enabledPolicies.includes(policyId);
 }
@@ -680,6 +809,139 @@ function collectNaturalFinishSourceBoundedEvidenceText(
   ]
     .filter((text) => text.trim().length > 0)
     .join("\n\n");
+}
+
+function evaluateTimeoutFollowupFinalGuidanceRepair(
+  input: CompletedSynthesisRepairInput,
+): CompletedSynthesisRepairDecision | null {
+  if (
+    !shouldRepairTimeoutFollowupFinalGuidance({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      evidenceText: input.completedEvidenceText,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "timeout_followup_final_guidance",
+    evidenceFormula: "completed_product_brief_evidence",
+    repairPrompt: buildTimeoutFollowupFinalGuidanceRepairPrompt({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      evidenceText: input.completedEvidenceText,
+    }),
+    forceToolChoice: "none",
+  };
+}
+
+function evaluateMissingRequestedNextActionRepair(
+  input: CompletedSynthesisRepairInput,
+): CompletedSynthesisRepairDecision | null {
+  if (
+    !shouldRepairMissingRequestedNextAction({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "missing_requested_next_action",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildMissingRequestedNextActionRepairPrompt(),
+    forceToolChoice: "none",
+  };
+}
+
+function evaluateMissingRequiredFinalDeliverablesRepair(
+  input: CompletedSynthesisRepairInput,
+): CompletedSynthesisRepairDecision | null {
+  const missingRequiredDeliverables = findMissingRequiredFinalDeliverables({
+    taskPrompt: input.taskPrompt,
+    resultText: input.resultText,
+  });
+  if (
+    missingRequiredDeliverables.length === 0 ||
+    hasMissingRequiredFinalDeliverablesRepairPrompt(input.repairMarkers)
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "missing_required_final_deliverables",
+    evidenceFormula: "completed_session_evidence",
+    repairPrompt: buildMissingRequiredFinalDeliverablesRepairPrompt({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      missing: missingRequiredDeliverables,
+      evidenceText: input.completedSessionEvidenceText,
+    }),
+    forceToolChoice: "none",
+  };
+}
+
+function evaluateMissingBrowserEvidenceDimensionsRepair(
+  input: CompletedSynthesisRepairInput,
+): CompletedSynthesisRepairDecision | null {
+  if (input.completedSessionFinalContents.length === 0) {
+    return null;
+  }
+  if (
+    !shouldRepairMissingBrowserEvidenceDimensions({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      evidenceText: input.completedSessionEvidenceText,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "missing_browser_evidence_dimensions",
+    evidenceFormula: "completed_session_evidence",
+    repairPrompt: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      evidenceText: input.completedSessionEvidenceText,
+    }),
+    forceToolChoice: "none",
+  };
+}
+
+function evaluateFalseEvidenceBlockedSynthesisRepair(
+  input: CompletedSynthesisRepairInput,
+): CompletedSynthesisRepairDecision | null {
+  if (input.completedSessionFinalContents.length === 0) {
+    return null;
+  }
+  if (
+    !shouldRepairFalseEvidenceBlockedSynthesis({
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      evidenceText: input.completedSessionEvidenceText,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "resynthesize",
+    policyId: "false_evidence_blocked_synthesis",
+    evidenceFormula: "completed_session_evidence",
+    repairPrompt: buildFalseEvidenceBlockedSynthesisRepairPrompt(
+      input.completedSessionFinalContents,
+    ),
+    forceToolChoice: "none",
+  };
 }
 
 function shouldRepairMissingRequestedTableColumns(input: {
