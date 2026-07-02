@@ -60,6 +60,31 @@ test("TerminalCloseoutController builds approval wait-timeout fallback closeout 
   );
 });
 
+test("TerminalCloseoutController builds generic tool-evidence fallback closeout", () => {
+  const controller = createTerminalCloseoutController();
+
+  const fallback = controller.buildToolEvidenceFallback({
+    packet: packet("", "No links in the final answer."),
+    maxRounds: 6,
+    toolCallCount: 4,
+    roundCount: 7,
+    result: {
+      text: "Local source: http://127.0.0.1:5173/result",
+      stopReason: "stop",
+    } as GenerateTextResult,
+  });
+
+  assert.deepEqual(fallback.closeout, {
+    reason: "tool_evidence_fallback",
+    maxRounds: 6,
+    toolCallCount: 4,
+    roundCount: 7,
+    evidenceAvailable: true,
+  });
+  assert.equal(fallback.result.stopReason, "stop");
+  assert.equal(fallback.result.text, "Local source: local fixture source");
+});
+
 test("TerminalCloseoutController appends current assistant text for pseudo tool-call synthesis only", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];

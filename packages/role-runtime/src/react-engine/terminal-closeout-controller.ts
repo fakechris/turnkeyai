@@ -33,10 +33,20 @@ export interface ApprovalWaitTimeoutFallbackInput {
   error: unknown;
 }
 
-export interface ApprovalWaitTimeoutFallback {
+export interface ToolEvidenceFallbackInput {
+  packet: RolePromptPacket;
+  maxRounds: number;
+  toolCallCount: number;
+  roundCount: number;
+  result: GenerateTextResult;
+}
+
+export interface TerminalEvidenceFallback {
   closeout: ToolLoopCloseoutMetadata;
   result: GenerateTextResult;
 }
+
+export type ApprovalWaitTimeoutFallback = TerminalEvidenceFallback;
 
 export interface TerminalSynthesisMessagesInput {
   reason: EngineCloseoutReason;
@@ -53,6 +63,22 @@ export class TerminalCloseoutController {
   buildApprovalWaitTimeoutFallback(
     input: ApprovalWaitTimeoutFallbackInput,
   ): ApprovalWaitTimeoutFallback {
+    return this.buildToolEvidenceFallback({
+      packet: input.packet,
+      maxRounds: input.maxRounds,
+      toolCallCount: input.toolCallCount,
+      roundCount: input.roundCount,
+      result: buildApprovalWaitTimeoutLocalEvidenceCloseout({
+        selection: input.selection,
+        evidenceText: input.evidenceText,
+        error: input.error,
+      }),
+    });
+  }
+
+  buildToolEvidenceFallback(
+    input: ToolEvidenceFallbackInput,
+  ): TerminalEvidenceFallback {
     return {
       closeout: {
         reason: "tool_evidence_fallback",
@@ -62,11 +88,7 @@ export class TerminalCloseoutController {
         evidenceAvailable: true,
       },
       result: maybeRedactForbiddenLocalUrls({
-        result: buildApprovalWaitTimeoutLocalEvidenceCloseout({
-          selection: input.selection,
-          evidenceText: input.evidenceText,
-          error: input.error,
-        }),
+        result: input.result,
         packet: input.packet,
       }),
     };

@@ -4104,23 +4104,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!localResult) {
             return "rethrow";
           }
-          const fallbackCloseout: ToolLoopCloseoutMetadata = {
-            reason: "tool_evidence_fallback",
+          const fallback = terminalCloseout.buildToolEvidenceFallback({
+            packet,
             maxRounds,
             toolCallCount: countNativeToolCalls(toolTrace),
             roundCount: toolTrace.length,
-            evidenceAvailable: true,
-          };
-          const fallbackResult = maybeRedactForbiddenLocalUrls({
             result: localResult,
-            packet,
           });
-          runState.recordToolLoopCloseout(fallbackCloseout);
-          runState.recordCloseoutResult(fallbackResult);
+          runState.recordToolLoopCloseout(fallback.closeout);
+          runState.recordCloseoutResult(fallback.result);
           return {
-            text: fallbackResult.text,
-            ...(fallbackResult.stopReason
-              ? { stopReason: fallbackResult.stopReason }
+            text: fallback.result.text,
+            ...(fallback.result.stopReason
+              ? { stopReason: fallback.result.stopReason }
               : {}),
           };
         },
