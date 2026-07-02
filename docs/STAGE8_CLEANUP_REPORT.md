@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `929d5d98c88b6ee20b6d033f91d567a87cba3d86`
+**Code HEAD before this docs-only report:** `75ed47eaaf1a47fb258fcdb837ed50da04244a2e`
 **Date:** 2026-07-02
 
 ## Summary
@@ -111,6 +111,9 @@ could not move the normalizer without making the inline parity reference import 
   Read-only permission-query suppression context construction now lives in
   `react-engine/permission-policy.ts`; the adapter passes calls/task/messages
   for both the suppression decision and the pending-closeout pre-emption guard.
+  Remaining pending-call closeout session context construction now lives in
+  `react-engine/closeout-policy-registry.ts`; the adapter passes task/messages
+  instead of concatenating the closeout session context locally.
   `react-engine/terminal-closeout-controller.ts` now owns the engine's
   tool-evidence fallback closeout metadata/redaction assembly for hard approval
   wait-timeout fallback, plus model-call-error local evidence fallback gating,
@@ -332,6 +335,7 @@ application outside the terminal completion path.
 | `6e0a4cc` | Move forced runtime tool-round native trace persistence, message append, and provider handoff into `EngineRunObserver`; adapter supplies only the executor callback on engine paths. |
 | `027961f` | Move engine tool-call normalizer context construction into `ToolCallNormalizer`; adapter passes only task/message/trace/repair/capability inputs. |
 | `929d5d9` | Move read-only permission suppression context construction into `PermissionPolicy`; adapter passes calls/task/messages. |
+| `75ed47e` | Move remaining pending-call closeout session context construction into `CloseoutPolicyRegistry`; adapter passes task/messages. |
 
 ## Current Extracted Implementation
 
@@ -378,8 +382,9 @@ Real implementation now exists in:
   closeout fallback, plus pending closeout and post-execute closeout
   state-effect application through injected targets, including the
   recovery-budget and remaining pending-call evaluate/apply entrypoints used by
-  `onToolCallsClose`, plus the post-execute closeout application entrypoint used
-  by `onAfterExecute`.
+  `onToolCallsClose`, plus remaining pending-call closeout session context
+  construction, plus the post-execute closeout application entrypoint used by
+  `onAfterExecute`.
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
   repair policies: `final_recovery_budget_closeout_repair`,
@@ -538,9 +543,10 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 32 / 32 |
 | `npx tsx --test packages/role-runtime/src/react-engine/permission-policy.test.ts` | 3 / 3 |
 | `npx tsx --test packages/role-runtime/src/react-engine/tool-call-normalizer.test.ts` | 4 / 4 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 187 / 187 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 188 / 188 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -605,7 +611,9 @@ Stage 8 boundaries/slices are now real:
   needed.
 - pending-call closeout application for recovery-budget and remaining pending
   calls routes through `CloseoutPolicyRegistry`; the adapter keeps only the
-  cross-module ordering around empty-round continuation preview.
+  cross-module ordering around empty-round continuation preview. Remaining
+  pending-call closeout session context construction now also lives in the
+  registry owner.
 - post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
   selection and state-effect application route through `CloseoutPolicyRegistry`;
   the adapter passes the hook input and run-state target through a single
