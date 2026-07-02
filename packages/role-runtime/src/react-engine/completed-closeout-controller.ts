@@ -8,8 +8,6 @@ import type {
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
 import {
-  buildSourceEvidenceCarryForwardRepairPrompt,
-  buildWeakEvidenceSynthesisRepairPrompt,
   collectBrowserRecoverySummariesFromToolTrace,
   dedupeStrings,
   maybeAppendBrowserFailureBucketVisibility,
@@ -19,8 +17,6 @@ import {
   maybeRedactForbiddenLocalUrls,
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
-  shouldRepairSourceEvidenceCarryForward,
-  shouldRepairWeakEvidenceSynthesis,
   shouldPreserveRecoveredTimeoutCloseout,
 } from "../tool-loop-shared";
 import {
@@ -231,6 +227,7 @@ export class CompletedCloseoutController {
       if (!repairPrompt && naturalFinishEvidenceText) {
         repairPrompt = evaluateSourceEvidenceRepair({
           input,
+          repairPolicy,
           repairMessages,
           resultText: synthesisResult.text,
           evidenceText: naturalFinishEvidenceText,
@@ -253,6 +250,7 @@ export class CompletedCloseoutController {
       if (!repairPrompt) {
         repairPrompt = evaluateWeakEvidenceRepair({
           input,
+          repairPolicy,
           repairMessages,
           resultText: synthesisResult.text,
           evidenceText: naturalFinishEvidenceText,
@@ -331,46 +329,42 @@ function evaluateTableOrSchemaRepair(input: {
 
 function evaluateSourceEvidenceRepair(input: {
   input: CompletedCloseoutRepairLoopInput;
+  repairPolicy: RepairPolicyRegistry;
   repairMessages: LLMMessage[];
   resultText: string;
   evidenceText: string;
 }): string | null {
-  if (
-    !shouldRepairSourceEvidenceCarryForward({
-      taskPrompt: input.input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.repairMessages,
-      repairMarkers: input.input.repairMarkers,
-      evidenceText: input.evidenceText,
-    })
-  ) {
-    return null;
-  }
-  return buildSourceEvidenceCarryForwardRepairPrompt({
+  const decision = input.repairPolicy.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
     taskPrompt: input.input.taskPrompt,
     resultText: input.resultText,
+    messages: input.repairMessages,
+    repairMarkers: input.input.repairMarkers,
+    toolTrace: input.input.toolTrace,
     evidenceText: input.evidenceText,
   });
+  return decision?.kind === "resynthesize" ? decision.repairPrompt : null;
 }
 
 function evaluateWeakEvidenceRepair(input: {
   input: CompletedCloseoutRepairLoopInput;
+  repairPolicy: RepairPolicyRegistry;
   repairMessages: LLMMessage[];
   resultText: string;
   evidenceText: string;
 }): string | null {
-  if (
-    !shouldRepairWeakEvidenceSynthesis({
-      taskPrompt: input.input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.repairMessages,
-      repairMarkers: input.input.repairMarkers,
-      evidenceText: input.evidenceText,
-    })
-  ) {
-    return null;
-  }
-  return buildWeakEvidenceSynthesisRepairPrompt();
+  const decision = input.repairPolicy.evaluateNaturalFinish({
+    enabledPolicies: ["weak_evidence_synthesis"],
+    finalRecoveryBudget: null,
+    taskPrompt: input.input.taskPrompt,
+    resultText: input.resultText,
+    messages: input.repairMessages,
+    repairMarkers: input.input.repairMarkers,
+    toolTrace: input.input.toolTrace,
+    evidenceText: input.evidenceText,
+  });
+  return decision?.kind === "resynthesize" ? decision.repairPrompt : null;
 }
 
 function buildReArmIfNeeded(input: {

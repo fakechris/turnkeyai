@@ -835,9 +835,12 @@ function evaluateSourceEvidenceCarryForwardRepair(
   input: NaturalFinishRepairInput,
 ): NaturalFinishRepairDecision | null {
   if (!input.taskPrompt || !input.toolTrace) {
-    return null;
+    if (!input.taskPrompt || !input.evidenceText) {
+      return null;
+    }
   }
-  const evidenceText = collectNaturalFinishSourceBoundedEvidenceText(input);
+  const evidenceText =
+    input.evidenceText ?? collectNaturalFinishSourceBoundedEvidenceText(input);
   if (!evidenceText) {
     return null;
   }
@@ -868,9 +871,9 @@ function evaluateSourceEvidenceCarryForwardRepair(
 function evaluateWeakEvidenceSynthesisRepair(
   input: NaturalFinishRepairInput,
 ): NaturalFinishRepairDecision | null {
-  const evidenceText = input.taskPrompt
-    ? collectNaturalFinishSourceBoundedEvidenceText(input)
-    : "";
+  const evidenceText =
+    input.evidenceText ??
+    (input.taskPrompt ? collectNaturalFinishSourceBoundedEvidenceText(input) : "");
   if (
     !shouldRepairWeakEvidenceSynthesis({
       taskPrompt: input.taskPrompt ?? "",

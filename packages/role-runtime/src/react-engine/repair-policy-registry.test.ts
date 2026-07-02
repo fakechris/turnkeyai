@@ -990,6 +990,27 @@ test("RepairPolicyRegistry returns source evidence carry-forward repair decision
   assert.match(decision?.repairPrompt ?? "", /multi-agent decomposition/i);
 });
 
+test("RepairPolicyRegistry uses provided evidence text for source evidence carry-forward", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const evidence =
+    "Specialist agents produced a decision-ready brief with multi-agent decomposition.";
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "The release brief is ready.",
+    taskPrompt:
+      "Agent Workbench product-ready brief for the next release using independent evidence streams.",
+    evidenceText: evidence,
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "source_evidence_carry_forward");
+  assert.match(decision?.repairPrompt ?? "", /multi-agent decomposition/i);
+});
+
 test("RepairPolicyRegistry skips source evidence carry-forward after marker", () => {
   const registry = createRepairPolicyRegistry();
 
