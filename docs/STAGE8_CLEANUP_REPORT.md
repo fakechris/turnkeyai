@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `09a6dc232b1ce57669e2f63caf0bfad4e404f0f9`
+**Code HEAD before this docs-only report:** `7a11fa5e5259deb25e062ce4db253331870b9947`
 **Date:** 2026-07-02
 
 ## Summary
@@ -53,6 +53,10 @@ could not move the normalizer without making the inline parity reference import 
   The completed-closeout post-synthesis visibility chain now routes through that
   controller too, while shared browser recovery/failure-bucket and timeout
   continuation helpers remain neutral for inline + engine parity.
+  `react-engine/evidence-ledger.ts` now has a behavior-neutral snapshot facade
+  over the existing source-bounded and completed-session evidence collectors,
+  and the extracted completed-closeout controller / repair registry read that
+  natural-finish evidence formula through the facade.
   Requested table-column and provider-support-schema task facts now live in
   `react-engine/task-facts.ts` and are shared by the adapter and repair
   registry.
@@ -118,6 +122,7 @@ controller actions.
 | `966082a` | Extract completed synthesis repair selections into `RepairPolicyRegistry`; move completed-only timeout guidance, next-action, deliverable, browser-dimension, and false-blocked predicates/prompts into neutral shared code. |
 | `a92c668` | Extract the completed-session repair loop into `CompletedCloseoutController`; keep model calls and forced browser/product-signal re-arm predicates injected from the adapter. |
 | `09a6dc2` | Extract completed-closeout post-synthesis visibility into `CompletedCloseoutController`; move browser recovery visibility and timeout continuation appender helpers into neutral shared code. |
+| `7a11fa5` | Add the first behavior-neutral `EvidenceLedger` snapshot facade and route extracted natural-finish evidence formula users through it. |
 
 ## Current Extracted Implementation
 
@@ -179,6 +184,10 @@ Real implementation now exists in:
   closeout post-synthesis visibility chain for browser recovery visibility,
   browser failure-bucket visibility, recovered-timeout/continuation visibility,
   and final forbidden local URL redaction.
+- `react-engine/evidence-ledger.ts` for the first behavior-neutral
+  `EvidenceSnapshot` facade over source-bounded evidence, completed-session
+  evidence, and the natural-finish evidence formula consumed by extracted
+  repair policies/controllers.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -214,7 +223,7 @@ Real implementation now exists in:
 
 Still shell/deferred or partial:
 
-- `evidence-ledger.ts`
+- `evidence-ledger.ts` producer rewrite beyond the current facade
 - `task-facts.ts` facts beyond requested table/provider schema extraction
 - `legacy-text-detectors.ts`
 
@@ -224,10 +233,11 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
+| `npx tsx --test packages/role-runtime/src/react-engine/evidence-ledger.test.ts` | 3 / 3 |
 | `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 4 / 4 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 41 / 41 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 129 / 129 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 132 / 132 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -241,7 +251,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that forty-six
+root plus several policy-heavy hook bodies. The main improvement is that forty-seven
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -342,6 +352,8 @@ Stage 8 boundaries/slices are now real:
   `CompletedCloseoutController`, preserving the original browser recovery,
   browser failure-bucket, recovered-timeout/continuation, and forbidden local
   URL redaction order.
+- natural-finish evidence formula construction for extracted repair
+  policies/controllers routes through `EvidenceLedger` snapshots.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -374,7 +386,8 @@ Stage 8 boundaries/slices are now real:
 
 Continue with the remaining high-risk pieces:
 
-- continue extracting the evidence ledger, remaining task facts, terminal
-  closeout synthesis/application, and final adapter thinning.
+- continue expanding the evidence ledger beyond the current facade, extracting
+  remaining task facts, terminal closeout synthesis/application, and final
+  adapter thinning.
 
 The branch is **not pushed**.
