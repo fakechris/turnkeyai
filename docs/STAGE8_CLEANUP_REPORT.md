@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `4e7c4e8fa8123b2773dc7375b65e400d44ed07bc`
+**Code HEAD before this docs-only report:** `d76df2a2cda73e41d0a18c01eceea844c49ec639`
 **Date:** 2026-07-02
 
 ## Summary
@@ -102,6 +102,8 @@ could not move the normalizer without making the inline parity reference import 
   Tool-result pruning, tool-result envelope accounting, older tool-history
   compaction, and pruning trace snapshots now live in neutral
   `tool-history-pruning.ts`.
+  Tool-definition filtering for permission tools, task-tracking tools, and
+  focused durable-memory recall now lives in neutral `tool-definition-filter.ts`.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence behavior,
@@ -159,6 +161,7 @@ of controller actions.
 | `09f67bb` | Move approval wait-timeout local closeout evidence collection and deterministic answer construction into neutral shared helpers; add focused shared-helper tests. |
 | `cc24757` | Move generic local evidence fallback and requested-table fallback construction into neutral shared helpers; move TaskFacts implementation to `task-facts-shared.ts` with a react-engine wrapper. |
 | `4e7c4e8` | Move tool-result pruning, tool-history compaction, and pruning trace snapshot helpers into neutral `tool-history-pruning.ts`; add focused pruning tests. |
+| `d76df2a` | Move tool-definition filtering and its prompt/message context builders into neutral `tool-definition-filter.ts`; add focused filtering tests. |
 
 ## Current Extracted Implementation
 
@@ -250,6 +253,9 @@ Real implementation now exists in:
 - `tool-history-pruning.ts` for request-envelope tool-result pruning, older
   tool-history compaction, tool-result envelope accounting, pruning trace
   snapshots, and assistant/tool block indexing helpers.
+- `tool-definition-filter.ts` for permission-tool suppression, source-check
+  task-tracking suppression, focused durable-memory recall narrowing, and
+  tool-definition filter prompt/message context construction.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
@@ -292,6 +298,7 @@ All gates below passed on the current code before the report update:
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/tool-loop-shared.test.ts packages/role-runtime/src/react-engine/task-facts.test.ts` | 9 / 9 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 4 / 4 |
+| `npx tsx --test packages/role-runtime/src/tool-definition-filter.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 141 / 141 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
@@ -306,7 +313,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifty-seven
+root plus several policy-heavy hook bodies. The main improvement is that fifty-eight
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -384,6 +391,10 @@ Stage 8 boundaries/slices are now real:
   tool-result envelope accounting, pruning trace snapshots, and assistant/tool
   block indexing now live in neutral `tool-history-pruning.ts`; the adapter
   calls the module instead of owning that pruning closure.
+- tool-definition filtering for permission tools, task-tracking tools, and
+  focused durable-memory recall now lives in neutral
+  `tool-definition-filter.ts`; the adapter calls the module instead of owning
+  that filter closure.
 - incomplete approved-browser-action repair selection routes through
   `RepairPolicyRegistry`, using shared approval-applied evidence/prompt
   predicates and returning a typed forced `sessions_spawn` repair round.
