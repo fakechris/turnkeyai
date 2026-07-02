@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `00e148235ffe580a5ad282a38bfdfc989148f87d`
+**Code HEAD before this docs-only report:** `09f67bb1c9df0eb44b409cfbc200cd20924ff2bf`
 **Date:** 2026-07-02
 
 ## Summary
@@ -94,8 +94,9 @@ could not move the normalizer without making the inline parity reference import 
   detector, missing approval-gate repair detector/prompt, and continuation
   prompts/calls, plus completed product-signal dashboard carry-forward and URL
   extraction helpers, plus browser/product-signal missing evidence repair
-  detectors and repair prompt builders, are shared by inline and engine through
-  neutral role-runtime helper code.
+  detectors and repair prompt builders, plus approval wait-timeout runtime
+  evidence collection and deterministic local closeout answer construction, are
+  shared by inline and engine through neutral role-runtime helper code.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence/task-fact behavior,
@@ -150,6 +151,7 @@ of controller actions.
 | `acb9db9` | Move completed-closeout browser/product-signal re-arm ownership into `CompletedCloseoutController`; remove the adapter-injected predicate closure. |
 | `d2be68d` | Route completed-closeout source-evidence and weak-evidence repair decisions through `RepairPolicyRegistry`; add controller-provided evidence-text coverage. |
 | `00e1482` | Move completed terminal synthesis orchestration into `CompletedCloseoutController`; add direct terminal-entry coverage. |
+| `09f67bb` | Move approval wait-timeout local closeout evidence collection and deterministic answer construction into neutral shared helpers; add focused shared-helper tests. |
 
 ## Current Extracted Implementation
 
@@ -247,8 +249,10 @@ Real implementation now exists in:
   and prompt construction, premature/stale pending-approval repair predicates
   and prompt construction, denied approval repair predicate and prompt
   construction, approval wait-timeout closeout repair predicates and prompt
-  construction, incomplete approved-browser-action repair predicate and prompt
-  construction, source-bounded evidence collection, completed-session evidence
+  construction, approval wait-timeout runtime evidence collection and
+  deterministic local closeout answer construction,
+  incomplete approved-browser-action repair predicate and prompt construction,
+  source-bounded evidence collection, completed-session evidence
   collection, source-evidence carry-forward predicates/prompts, weak-evidence
   synthesis predicates/prompts, completed-only timeout follow-up guidance,
   requested next-action, required final deliverable, browser-dimension, and
@@ -273,6 +277,7 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
+| `npx tsx --test packages/role-runtime/src/tool-loop-shared.test.ts` | 2 / 2 |
 | `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 49 / 49 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 141 / 141 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
@@ -288,7 +293,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifty-four
+root plus several policy-heavy hook bodies. The main improvement is that fifty-five
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -353,7 +358,11 @@ Stage 8 boundaries/slices are now real:
   predicates and repair prompt construction.
 - failed approval wait-timeout repair local closeout selection routes through
   `RepairPolicyRegistry`, returning a typed `tool_evidence_fallback` closeout
-  directive while the adapter still builds the deterministic local-evidence text.
+  directive while the deterministic local-evidence text now lives in neutral
+  shared helper code.
+- approval wait-timeout local closeout runtime evidence collection and
+  deterministic answer construction are shared by inline and engine through
+  `tool-loop-shared.ts`, with focused unit coverage.
 - incomplete approved-browser-action repair selection routes through
   `RepairPolicyRegistry`, using shared approval-applied evidence/prompt
   predicates and returning a typed forced `sessions_spawn` repair round.
