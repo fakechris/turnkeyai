@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `36deaba83a721eda96d62d1ae33ccbf06f9de32b`
+**Code HEAD before this docs-only report:** `da476f98806936b63c912b5581bb36be05429f89`
 **Date:** 2026-07-02
 
 ## Summary
@@ -122,6 +122,10 @@ could not move the normalizer without making the inline parity reference import 
   Runtime-derived mission terminal reports now live in
   `runtime-derived-mission-report.ts`, and the supplemental browser-probe
   capability check now lives in neutral `tool-loop-shared.ts`.
+  Wall-clock closeout signal construction now lives in
+  `react-engine/execution-budget-controller.ts`, leaving the adapter to pass
+  hook state into the controller instead of carrying a local budget-signal
+  closure.
   Tool-result evidence collectors for completed sessions, timeout signals,
   session history evidence, tool-result text, tool-trace text, resumable partial
   sessions, and usable-evidence detection now live in neutral
@@ -190,6 +194,7 @@ of controller actions.
 | `d4eb8ca` | Move missing requested-table repair helpers, extraneous provider-schema repair helpers, awaiting-context no-tool suppression, and repair marker insertion into neutral TaskFacts shared code; remove duplicate adapter/registry/controller implementations. |
 | `9224078` | Move adapter utility helpers for session trace canonicalization, native tool-call counting, reduced prompt replacement, JSON object parsing, and abort guarding into neutral owners with focused tests. |
 | `36deaba` | Move runtime-derived mission report construction into a neutral module and move supplemental browser-probe availability checking into shared tool-loop helpers. |
+| `da476f9` | Move wall-clock closeout signal construction into `ExecutionBudgetController`; `CloseoutPolicyRegistry` consumes the controller-owned signal type. |
 
 ## Current Extracted Implementation
 
@@ -208,7 +213,8 @@ Real implementation now exists in:
 - `react-engine/execution-budget-controller.ts` for final tool-round warning,
   final-recovery truncation, per-round tool-call admission, and engine tool-batch
   execution, plus budget closeout snapshot construction for recovery-budget,
-  wall-clock, and round-limit terminal synthesis.
+  wall-clock, and round-limit terminal synthesis, plus wall-clock closeout
+  signal construction for `onToolCallsClose`.
 - `react-engine/closeout-policy-registry.ts` for `ENGINE_CLOSEOUT_POLICY_ORDER`
   and the first pending-call closeout policies, `recovery_tool_budget`,
   `operator_cancelled`, `pseudo_tool_call`, `wall_clock_budget`, and
@@ -346,9 +352,10 @@ All gates below passed on the current code before the report update:
 | --- | --- |
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/runtime-derived-mission-report.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 11 / 11 |
+| `npx tsx --test packages/role-runtime/src/react-engine/execution-budget-controller.test.ts packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 39 / 39 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts packages/role-runtime/src/gateway-input-builder.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 15 / 15 |
 | `npx tsx --test packages/role-runtime/src/react-engine/task-facts.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 57 / 57 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 144 / 144 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 145 / 145 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -382,6 +389,9 @@ Stage 8 boundaries/slices are now real:
   and non-abort tool-error shaping.
 - recovery-budget, wall-clock, and round-limit closeout snapshot construction
   routes through `ExecutionBudgetController`.
+- wall-clock closeout signal construction for `onToolCallsClose` routes through
+  `ExecutionBudgetController`, while `CloseoutPolicyRegistry` consumes the
+  controller-owned signal type.
 - `recovery_tool_budget` pending-call closeout/defer selection routes through
   `CloseoutPolicyRegistry`, including the repair-round defer handoff before
   terminal closeout.
