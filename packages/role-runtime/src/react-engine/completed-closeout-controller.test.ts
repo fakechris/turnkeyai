@@ -193,6 +193,63 @@ test("CompletedCloseoutController re-arms through registry before round>0 table 
   assert.equal(repairMarkers.length, 2);
 });
 
+test("CompletedCloseoutController terminal synthesis records initial flush and finalized repair", async () => {
+  const controller = createCompletedCloseoutController();
+  const repairMarkers: LLMMessage[] = [];
+  const repairMessagesSeen: LLMMessage[][] = [];
+  let cleanupCalls = 0;
+
+  const result = await controller.synthesizeTerminalCloseout({
+    packet: packet(
+      "Review the delegated pricing finding and tell me the next action the operator should take.",
+    ),
+    toolTrace: [],
+    messages: [],
+    repairMarkers,
+    completedSession: {
+      finalContents: ["The delegated session verified the plan is $10 per month."],
+      browserRecoverySummaries: [],
+    },
+    completedSessionToolResultText: "",
+    initialSynthesis: {
+      result: textResult("The plan is verified at $10 per month."),
+      reduction: { level: "initial" },
+      reductionSnapshot: { level: "initial", artifactIds: ["r1"] },
+      memoryFlush: "initial-flush",
+    },
+    repairPolicy: createRepairPolicyRegistry(),
+    synthesizeRepair: async ({ messages }) => {
+      repairMessagesSeen.push(messages);
+      return {
+        result: textResult(
+          "The plan is verified at $10 per month. Next action: monitor the pricing page for changes.",
+        ),
+        memoryFlush: "repair-flush",
+      };
+    },
+    synthesizeToolCallArtifactCleanup: async () => {
+      cleanupCalls += 1;
+      return { result: textResult("cleanup should not run") };
+    },
+  });
+
+  assert.equal(result.kind, "final");
+  assert.match(result.result.text, /Next action/i);
+  assert.deepEqual(result.memoryFlushes, ["initial-flush", "repair-flush"]);
+  assert.deepEqual(result.reduction, { level: "initial" });
+  assert.deepEqual(result.reductionSnapshot, {
+    level: "initial",
+    artifactIds: ["r1"],
+  });
+  assert.equal(cleanupCalls, 0);
+  assert.equal(repairMessagesSeen.length, 1);
+  assert.equal(repairMarkers.length, 1);
+  assert.match(
+    messageText(repairMessagesSeen[0]?.at(-1)),
+    /requested next action is missing/i,
+  );
+});
+
 test("CompletedCloseoutController finalizes completed browser visibility in order", () => {
   const controller = createCompletedCloseoutController();
 

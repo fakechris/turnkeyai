@@ -4012,162 +4012,85 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // below; the unconditional inline finalization epilogue runs after the
           // agent finishes. Keep those transforms outside the repair predicate loop:
           // repairs may re-synthesize, appenders only decorate the accepted final.
-          let synthesisResult = generated.result;
           let synthesisReduction = generated.reduction;
           let synthesisReductionSnapshot = generated.reductionSnapshot;
-          // Push each synthesis's pre-compaction memory flush as it happens (a list,
-          // not a single latest) so completed-repair re-syntheses that also overflow
-          // don't drop earlier flush records — matching the inline append.
-          if (generated.memoryFlush) {
-            runState.recordMemoryFlush(generated.memoryFlush);
-          }
-          // Completed-closeout repair pass: the inline completed block re-synthesizes
-          // when a completed-repair predicate fires on the synthesis against the
-          // delegated session evidence (inline ~:2128). The engine completed path
-          // terminates (it cannot re-enter onRepairRound), so mirror it here with a
-          // forced tool-free re-synthesis — the plain model call the inline loop uses,
-          // NOT the format-contract generateFinalAfterToolRoundLimit. Idempotent via
-          // ctx.repairMarkers; the round cap is the hard backstop.
-          //
-          // Scope: cutting over the completed cascade predicate-by-predicate, in the
-          // inline order (post-synthesis cascade at :1826+). Checked here so far, in
-          // inline cascade order: missing-requested-table-columns (:1826), extraneous-
-          // provider-table-schema (:1854), source-evidence-carry-forward (:1941),
-          // timeout-followup-final-guidance (:1968), missing-requested-next-action
-          // (:1995), required-deliverables (:2016), missing-browser-evidence-dimensions
-          // (:2100), false-evidence-blocked (:2129), weak-evidence-synthesis (:2153).
-          // That is the complete completed cascade: the tool-free repairs re-synthesize
-          // in place, while :1880/:1907 re-arm a real sessions_spawn tool round. Their
-          // relative order matches the inline first-match-wins cascade.
-          // The every-round members now cover
-          // the FULL inline tool-free natural-finish cascade (:1110-1272 = table-columns,
-          // extraneous, source-evidence, weak-evidence). Compound completed inputs are
-          // handled too: inline runs the
-          // completed cascade exactly once (the round the session completes), then every
-          // subsequent repaired answer flows through the narrower tool-free natural-
-          // finish cascade (:1110-1272 = table-columns, extraneous, source-evidence,
-          // weak-evidence). The loop below mirrors that by gating the completed-ONLY
-          // predicates (timeout-followup/missing-next-action/deliverables/false-evidence)
-          // to repairRound 0, leaving source-evidence (the one cross-cascade member) to
-          // run every round — so a repaired answer can no longer re-trip a completed-only
-          // predicate inline would never re-check (the prior over-repair).
-          //
-          // The every-round natural-finish branch now has ALL four inline members
-          // (table-columns, extraneous, source-evidence, weak-evidence), AND uses the
-          // round-correct evidence formula: round 0 (the inline completed block) uses
-          // completedProductBriefEvidenceText; round >0 (inline's tool-free natural-finish
-          // cascade) uses sourceBoundedEvidenceText, recomputed per round — see
-          // naturalFinishEvidenceText in the loop. So the post-round-0 evidence-formula
-          // residual is closed: a label from an earlier tool round (visible to the full-
-          // toolTrace sourceBoundedEvidenceText but NOT to the completing-round-only
-          // completedProductBriefEvidenceText) is now seen on re-synthesis, exactly as
-          // inline's natural-finish does.
+          let closeoutResult: GenerateTextResult;
           const completedSessionForRepair = runState.completedSession();
           if (reason === "completed_sub_agent_final" && completedSessionForRepair) {
-            const completedSession = completedSessionForRepair;
             const repairMarkers = (ctx.repairMarkers ??= []);
-            // Two evidence texts, matching the inline asymmetry: deliverables (:2038)
-            // and false-evidence (:2134) use the bare finalContents join, while
-            // source-evidence (:1946) and timeout-followup (:1973) use
-            // completedProductBriefEvidenceText — finalContents PLUS the completing
-            // round's raw tool-result text (so labels/keywords that live only in the
-            // tool result, not finalContents, are visible). Built byte-for-byte like
-            // inline :1933-1938. Execution caps are enforced before runToolBatch, so
-            // over-cap calls feed the same synthetic "tool_call_limit_exceeded" skipped
-            // results the inline executor would produce.
-            const evidenceText = completedSession.finalContents.join("\n\n");
-            const completedProductBriefEvidenceText = [
-              completedSession.finalContents.join("\n\n"),
-              collectToolResultContentText(
-                runState.completedSessionToolResults() ?? [],
-              ),
-            ]
-              .filter((text) => text.trim().length > 0)
-              .join("\n\n");
-            const repairLoopResult = await completedCloseout.runRepairLoop({
-              activation,
-              taskPrompt: packet.taskPrompt,
-              toolTrace,
-              repairMessages: state.messages,
-              repairMarkers,
-              completedSessionFinalContents: completedSession.finalContents,
-              completedEvidenceText: completedProductBriefEvidenceText,
-              completedSessionEvidenceText: evidenceText,
-              initialResult: synthesisResult,
-              ...(synthesisReduction
-                ? { initialReduction: synthesisReduction }
-                : {}),
-              ...(synthesisReductionSnapshot
-                ? { initialReductionSnapshot: synthesisReductionSnapshot }
-                : {}),
-              ...(initialGatewayInput.tools === undefined
-                ? {}
-                : { tools: initialGatewayInput.tools }),
-              repairPolicy,
-              synthesizeRepair: async ({ messages }) => {
-                const repairGatewayMessages = prepareToolHistoryForGateway(messages);
-                return this.generateWithEnvelopeRetry({
-                  activation,
-                  packet,
-                  selection,
-                  gatewayInput: {
-                    ...withoutToolUse(initialGatewayInput),
-                    messages: repairGatewayMessages,
-                    envelope: {
-                      ...(initialGatewayInput.envelope ?? {}),
-                      toolCount: 0,
-                      toolSchemaBytes: 0,
-                      ...deriveToolResultEnvelope(repairGatewayMessages),
+            const completedTerminal =
+              await completedCloseout.synthesizeTerminalCloseout({
+                packet,
+                messages: state.messages,
+                repairMarkers,
+                completedSession: completedSessionForRepair,
+                completedSessionToolResultText: collectToolResultContentText(
+                  runState.completedSessionToolResults() ?? [],
+                ),
+                initialSynthesis: generated,
+                ...(activation ? { activation } : {}),
+                ...(initialGatewayInput.tools === undefined
+                  ? {}
+                  : { tools: initialGatewayInput.tools }),
+                repairPolicy,
+                synthesizeRepair: async ({ messages }) => {
+                  const repairGatewayMessages =
+                    prepareToolHistoryForGateway(messages);
+                  return this.generateWithEnvelopeRetry({
+                    activation,
+                    packet,
+                    selection,
+                    gatewayInput: {
+                      ...withoutToolUse(initialGatewayInput),
+                      messages: repairGatewayMessages,
+                      envelope: {
+                        ...(initialGatewayInput.envelope ?? {}),
+                        toolCount: 0,
+                        toolSchemaBytes: 0,
+                        ...deriveToolResultEnvelope(repairGatewayMessages),
+                      },
                     },
-                  },
-                  modelCallTrace,
-                  tracePhase: "final_synthesis_repair",
-                });
-              },
-              synthesizeToolCallArtifactCleanup: async ({ messages }) =>
-                this.generateFinalAfterToolRoundLimit({
-                  activation,
-                  packet,
-                  selection,
-                  baseGatewayInput: initialGatewayInput,
-                  messages,
-                  maxRounds,
-                  modelCallTrace,
-                }),
-            });
-            for (const memoryFlush of repairLoopResult.memoryFlushes) {
+                    modelCallTrace,
+                    tracePhase: "final_synthesis_repair",
+                  });
+                },
+                synthesizeToolCallArtifactCleanup: async ({ messages }) =>
+                  this.generateFinalAfterToolRoundLimit({
+                    activation,
+                    packet,
+                    selection,
+                    baseGatewayInput: initialGatewayInput,
+                    messages,
+                    maxRounds,
+                    modelCallTrace,
+                  }),
+                toolTrace,
+              });
+            for (const memoryFlush of completedTerminal.memoryFlushes) {
               runState.recordMemoryFlush(memoryFlush);
             }
-            if (repairLoopResult.kind === "rearm") {
-              if (repairLoopResult.reduction) {
+            if (completedTerminal.kind === "rearm") {
+              if (completedTerminal.reduction) {
                 runState.recordReduction({
-                  reduction: repairLoopResult.reduction,
-                  reductionSnapshot: repairLoopResult.reductionSnapshot,
+                  reduction: completedTerminal.reduction,
+                  reductionSnapshot: completedTerminal.reductionSnapshot,
                 });
               }
-              return repairLoopResult.reArm;
+              return completedTerminal.reArm;
             }
-            synthesisResult = repairLoopResult.result;
-            if (repairLoopResult.reduction) {
-              synthesisReduction = repairLoopResult.reduction;
-              synthesisReductionSnapshot = repairLoopResult.reductionSnapshot;
+            closeoutResult = completedTerminal.result;
+            synthesisReduction = completedTerminal.reduction;
+            synthesisReductionSnapshot = completedTerminal.reductionSnapshot;
+          } else {
+            // Push each synthesis's pre-compaction memory flush as it happens.
+            if (generated.memoryFlush) {
+              runState.recordMemoryFlush(generated.memoryFlush);
             }
+            closeoutResult =
+              reason === "sub_agent_timeout"
+                ? maybeAppendTimeoutContinuationVisibility(generated.result)
+                : generated.result;
           }
-          const closeoutResult =
-            reason === "completed_sub_agent_final"
-              ? completedCloseout.finalizeCompletedVisibility({
-                  packet,
-                  result: synthesisResult,
-                  messages: state.messages,
-                  toolTrace,
-                  completedSession: runState.completedSession() ?? null,
-                  completedSessionToolResultText: collectToolResultContentText(
-                    runState.completedSessionToolResults() ?? [],
-                  ),
-                })
-              : reason === "sub_agent_timeout"
-                ? maybeAppendTimeoutContinuationVisibility(synthesisResult)
-                : synthesisResult;
           // Reason-gated, matching inline: ONLY completed_sub_agent_final is sticky
           // (`??=`, inline :1729) — the completed branch set it early so an S10 re-armed
           // round keeps the first-completion metadata. Every OTHER reason OVERWRITES

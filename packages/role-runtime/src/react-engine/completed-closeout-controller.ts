@@ -114,12 +114,146 @@ export interface CompletedCloseoutVisibilityInput {
   completedSessionToolResultText: string;
 }
 
+export interface CompletedCloseoutTerminalInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  activation?: RoleActivationInput;
+  packet: RolePromptPacket;
+  toolTrace: NativeToolRoundTrace[];
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  completedSession: CompletedCloseoutVisibilitySession;
+  completedSessionToolResultText: string;
+  initialSynthesis: CompletedCloseoutSynthesis<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+  tools?: readonly { name: string }[];
+  repairPolicy?: RepairPolicyRegistry;
+  synthesizeRepair(input: {
+    messages: LLMMessage[];
+  }): Promise<CompletedCloseoutSynthesis<TReduction, TReductionSnapshot, TMemoryFlush>>;
+  synthesizeToolCallArtifactCleanup(input: {
+    messages: LLMMessage[];
+  }): Promise<CompletedCloseoutSynthesis<TReduction, TReductionSnapshot, TMemoryFlush>>;
+}
+
+export type CompletedCloseoutTerminalResult<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> =
+  | ({
+      kind: "final";
+      result: GenerateTextResult;
+      memoryFlushes: TMemoryFlush[];
+    } & OptionalReduction<TReduction, TReductionSnapshot>)
+  | ({
+      kind: "rearm";
+      reArm: ReActReArm;
+      memoryFlushes: TMemoryFlush[];
+    } & OptionalReduction<TReduction, TReductionSnapshot>);
+
 type OptionalReduction<TReduction, TReductionSnapshot> = {
   reduction?: TReduction;
   reductionSnapshot?: TReductionSnapshot;
 };
 
 export class CompletedCloseoutController {
+  async synthesizeTerminalCloseout<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: CompletedCloseoutTerminalInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<
+    CompletedCloseoutTerminalResult<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  > {
+    const memoryFlushes: TMemoryFlush[] = [];
+    appendMemoryFlush(memoryFlushes, input.initialSynthesis.memoryFlush);
+
+    const completedSessionEvidenceText =
+      input.completedSession.finalContents.join("\n\n");
+    // Inline completed closeout used the delegated final text alone for some
+    // predicates, and final text plus raw completing-round tool text for source
+    // carry-forward and timeout guidance. Keep that asymmetry in this owner.
+    const completedEvidenceText = [
+      completedSessionEvidenceText,
+      input.completedSessionToolResultText,
+    ]
+      .filter((text) => text.trim().length > 0)
+      .join("\n\n");
+
+    const repairLoopResult = await this.runRepairLoop({
+      ...(input.activation ? { activation: input.activation } : {}),
+      taskPrompt: input.packet.taskPrompt,
+      toolTrace: input.toolTrace,
+      repairMessages: input.messages,
+      repairMarkers: input.repairMarkers,
+      completedSessionFinalContents: input.completedSession.finalContents,
+      completedEvidenceText,
+      completedSessionEvidenceText,
+      initialResult: input.initialSynthesis.result,
+      ...(input.initialSynthesis.reduction !== undefined
+        ? { initialReduction: input.initialSynthesis.reduction }
+        : {}),
+      ...(input.initialSynthesis.reductionSnapshot !== undefined
+        ? { initialReductionSnapshot: input.initialSynthesis.reductionSnapshot }
+        : {}),
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
+      ...(input.repairPolicy === undefined
+        ? {}
+        : { repairPolicy: input.repairPolicy }),
+      synthesizeRepair: input.synthesizeRepair,
+      synthesizeToolCallArtifactCleanup: input.synthesizeToolCallArtifactCleanup,
+    });
+
+    memoryFlushes.push(...repairLoopResult.memoryFlushes);
+    if (repairLoopResult.kind === "rearm") {
+      return {
+        kind: "rearm",
+        reArm: repairLoopResult.reArm,
+        memoryFlushes,
+        ...(repairLoopResult.reduction !== undefined
+          ? { reduction: repairLoopResult.reduction }
+          : {}),
+        ...(repairLoopResult.reductionSnapshot !== undefined
+          ? { reductionSnapshot: repairLoopResult.reductionSnapshot }
+          : {}),
+      };
+    }
+
+    return {
+      kind: "final",
+      result: this.finalizeCompletedVisibility({
+        packet: input.packet,
+        result: repairLoopResult.result,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        completedSession: input.completedSession,
+        completedSessionToolResultText: input.completedSessionToolResultText,
+      }),
+      memoryFlushes,
+      ...(repairLoopResult.reduction !== undefined
+        ? { reduction: repairLoopResult.reduction }
+        : {}),
+      ...(repairLoopResult.reductionSnapshot !== undefined
+        ? { reductionSnapshot: repairLoopResult.reductionSnapshot }
+        : {}),
+    };
+  }
+
   finalizeCompletedVisibility(
     input: CompletedCloseoutVisibilityInput,
   ): GenerateTextResult {
