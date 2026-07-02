@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `7a11fa5e5259deb25e062ce4db253331870b9947`
+**Code HEAD before this docs-only report:** `85a3c44ef380aecc1043220c9893665d0f821466`
 **Date:** 2026-07-02
 
 ## Summary
@@ -57,6 +57,12 @@ could not move the normalizer without making the inline parity reference import 
   over the existing source-bounded and completed-session evidence collectors,
   and the extracted completed-closeout controller / repair registry read that
   natural-finish evidence formula through the facade.
+  Terminal closeout reasonLines and metadata construction now routes through
+  `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
+  `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
+  closeout fallback decisions. The adapter still owns the terminal model
+  synthesis, repair loop application, result recording, and final appender
+  application.
   Requested table-column and provider-support-schema task facts now live in
   `react-engine/task-facts.ts` and are shared by the adapter and repair
   registry.
@@ -79,8 +85,8 @@ could not move the normalizer without making the inline parity reference import 
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence/task-fact behavior,
-terminal closeout synthesis application, and adapter-side application of
-controller actions.
+terminal closeout model synthesis/result application, and adapter-side application
+of controller actions.
 
 ## Commits Added After The Blocked Report
 
@@ -123,6 +129,7 @@ controller actions.
 | `a92c668` | Extract the completed-session repair loop into `CompletedCloseoutController`; keep model calls and forced browser/product-signal re-arm predicates injected from the adapter. |
 | `09a6dc2` | Extract completed-closeout post-synthesis visibility into `CompletedCloseoutController`; move browser recovery visibility and timeout continuation appender helpers into neutral shared code. |
 | `7a11fa5` | Add the first behavior-neutral `EvidenceLedger` snapshot facade and route extracted natural-finish evidence formula users through it. |
+| `85a3c44` | Extract terminal closeout reasonLines/metadata decisions into `CloseoutPolicyRegistry.evaluateTerminate`; move completed product-signal carry-forward helpers into neutral shared code. |
 
 ## Current Extracted Implementation
 
@@ -151,7 +158,10 @@ Real implementation now exists in:
   recovery-budget repair-round defer decision, pseudo tool-call empty-round
   gates, wall-clock continuation exceptions, limit-round pending-call gate,
   repeated pending-call/session anti-loop metadata, and post-execute
-  completed-over-timeout precedence.
+  completed-over-timeout precedence, plus terminal `onTerminate` reasonLines and
+  metadata decisions for pending closeout passthrough, completed session
+  closeout, sub-agent timeout closeout, round-limit closeout, and generic
+  closeout fallback.
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
   repair policies: `final_recovery_budget_closeout_repair`,
@@ -218,8 +228,8 @@ Real implementation now exists in:
   false blocked-evidence synthesis predicates/prompts, cancelled-session closeout detection, pseudo
   tool-call markup detection, repeated session inspection/continuation
   detectors, completed browser-session evidence checks, browser recovery
-  summary collection/visibility helpers, and the timeout continuation visibility
-  appender.
+  summary collection/visibility helpers, completed product-signal dashboard
+  carry-forward helpers, and the timeout continuation visibility appender.
 
 Still shell/deferred or partial:
 
@@ -233,11 +243,9 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/evidence-ledger.test.ts` | 3 / 3 |
-| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 4 / 4 |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 41 / 41 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 132 / 132 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 26 / 26 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 137 / 137 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -251,7 +259,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that forty-seven
+root plus several policy-heavy hook bodies. The main improvement is that forty-eight
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -287,8 +295,12 @@ Stage 8 boundaries/slices are now real:
   `CloseoutPolicyRegistry`, using shared session anti-loop detectors where
   needed.
 - post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
-  selection routes through `CloseoutPolicyRegistry`; terminal reasonLines and
-  synthesis metadata still live in the adapter's `onTerminate`.
+  selection routes through `CloseoutPolicyRegistry`.
+- terminal closeout reasonLines and metadata construction routes through
+  `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
+  passthrough, completed session closeout, sub-agent timeout closeout,
+  round-limit closeout, and generic closeout fallback; terminal model synthesis
+  and result application still live in the adapter's `onTerminate`.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -387,7 +399,7 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue expanding the evidence ledger beyond the current facade, extracting
-  remaining task facts, terminal closeout synthesis/application, and final
-  adapter thinning.
+  remaining task facts, terminal closeout model synthesis/result application,
+  and final adapter thinning.
 
 The branch is **not pushed**.
