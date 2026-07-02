@@ -228,6 +228,50 @@ test("CloseoutPolicyRegistry returns exhausted recovery budget closeout decision
   });
 });
 
+test("CloseoutPolicyRegistry applies pending closeout decisions through a target", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const writes: unknown[] = [];
+  const target = {
+    recordPendingCloseout(input: unknown) {
+      writes.push(input);
+    },
+  };
+
+  const decision = registry.evaluateRecoveryToolBudget({
+    recoveryToolBudget: { maxToolCalls: 2 },
+    usedToolCalls: 2,
+    pendingToolCallCount: 1,
+    messages: [],
+    repairMarkers: [],
+    resultText: "blocked: source remains unverified",
+    buildCloseoutSnapshot: recoverySnapshot,
+  });
+
+  assert.equal(
+    registry.applyPendingCloseoutDecision(decision, target),
+    "recovery_tool_budget",
+  );
+  assert.deepEqual(writes, [
+    {
+      reasonLines: ["Final recovery tool budget reached (2 tool calls)."],
+      closeout: recoverySnapshot().closeout,
+    },
+  ]);
+
+  const deferred = registry.evaluateRecoveryToolBudget({
+    recoveryToolBudget: { maxToolCalls: 2 },
+    usedToolCalls: 2,
+    pendingToolCallCount: 0,
+    messages: [],
+    repairMarkers: [],
+    resultText: "@{role-explore} continue the recovery",
+    buildCloseoutSnapshot: recoverySnapshot,
+  });
+  assert.equal(registry.applyPendingCloseoutDecision(deferred, target), null);
+  assert.equal(registry.applyPendingCloseoutDecision(null, target), null);
+  assert.equal(writes.length, 1);
+});
+
 test("CloseoutPolicyRegistry returns operator-cancelled closeout decision", () => {
   const registry = createCloseoutPolicyRegistry();
 
@@ -569,6 +613,71 @@ test("CloseoutPolicyRegistry gives completed session precedence over timeout", (
   });
 
   assert.equal(decision?.reason, "completed_sub_agent_final");
+});
+
+test("CloseoutPolicyRegistry applies post-execute closeouts through a target", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const completedSession = {
+    toolName: "sessions_spawn",
+    finalContents: ["done"],
+    browserRecoverySummaries: [],
+  };
+  const timeoutSignal = {
+    toolName: "sessions_spawn",
+    evidenceAvailable: false,
+  };
+  const toolResults = [{ toolCallId: "call-1" }];
+  const writes: unknown[] = [];
+  const target = {
+    recordCompletedSession(input: unknown) {
+      writes.push({ kind: "completed", input });
+    },
+    recordTimeoutSignal(input: unknown) {
+      writes.push({ kind: "timeout", input });
+    },
+  };
+
+  const completedDecision = registry.evaluatePostExecute({
+    completedSession,
+    timeoutSignal,
+  });
+  assert.equal(
+    registry.applyPostExecuteCloseoutDecision(
+      completedDecision,
+      { completedSession, timeoutSignal, toolResults },
+      target,
+    ),
+    "completed_sub_agent_final",
+  );
+  assert.deepEqual(writes, [
+    {
+      kind: "completed",
+      input: { session: completedSession, toolResults },
+    },
+  ]);
+
+  const timeoutDecision = registry.evaluatePostExecute({
+    completedSession: null,
+    timeoutSignal,
+  });
+  assert.equal(
+    registry.applyPostExecuteCloseoutDecision(
+      timeoutDecision,
+      { completedSession: null, timeoutSignal, toolResults },
+      target,
+    ),
+    "sub_agent_timeout",
+  );
+  assert.deepEqual(writes[1], { kind: "timeout", input: timeoutSignal });
+  assert.equal(
+    registry.applyPostExecuteCloseoutDecision(null, {
+      completedSession: null,
+      timeoutSignal: null,
+      toolResults,
+    }, target),
+    null,
+  );
+  assert.equal(writes.length, 2);
 });
 
 test("CloseoutPolicyRegistry passes through pending terminate closeout", () => {

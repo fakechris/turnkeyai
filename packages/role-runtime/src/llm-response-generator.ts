@@ -2964,12 +2964,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             // defer decision so onRepairRound can inject the tool-free correction.
             return null;
           }
-          if (recoveryBudgetCloseout?.kind === "closeout") {
-            runState.recordPendingCloseout({
-              reasonLines: recoveryBudgetCloseout.reasonLines,
-              closeout: recoveryBudgetCloseout.closeout,
-            });
-            return recoveryBudgetCloseout.reason;
+          const recoveryBudgetCloseoutReason =
+            closeoutPolicy.applyPendingCloseoutDecision(
+              recoveryBudgetCloseout,
+              runState,
+            );
+          if (recoveryBudgetCloseoutReason) {
+            return recoveryBudgetCloseoutReason;
           }
           // Now that recovery_tool_budget (the only closeout inline checks BEFORE the
           // empty-round injection) has run, resolve the pending continuation: every
@@ -3042,12 +3043,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   evidenceAvailable: stateEvidence.usableEvidence,
                 }),
             });
-          if (remainingPendingCloseout?.kind === "closeout") {
-            runState.recordPendingCloseout({
-              reasonLines: remainingPendingCloseout.reasonLines,
-              closeout: remainingPendingCloseout.closeout,
-            });
-            return remainingPendingCloseout.reason;
+          const remainingPendingCloseoutReason =
+            closeoutPolicy.applyPendingCloseoutDecision(
+              remainingPendingCloseout,
+              runState,
+            );
+          if (remainingPendingCloseoutReason) {
+            return remainingPendingCloseoutReason;
           }
           // The registry preserves wall-clock empty-round continuation gates
           // and the repeated-call/session anti-loop precedence.
@@ -3278,28 +3280,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             completedSession,
             timeoutSignal,
           });
-          if (
-            postExecuteCloseout?.reason === "completed_sub_agent_final" &&
-            completedSession
-          ) {
-            // Capture the completing round's results — the same array the inline
-            // path passes to collectToolResultContentText when it builds
-            // completedProductBriefEvidenceText (:1933-1938). onTerminate uses this
-            // for the source-evidence / timeout-followup completed repairs.
-            runState.recordCompletedSession({
-              session: completedSession,
+          return closeoutPolicy.applyPostExecuteCloseoutDecision(
+            postExecuteCloseout,
+            {
+              completedSession,
+              timeoutSignal,
               toolResults: results,
-            });
-            return postExecuteCloseout.reason;
-          }
-          if (
-            postExecuteCloseout?.reason === "sub_agent_timeout" &&
-            timeoutSignal
-          ) {
-            runState.recordTimeoutSignal(timeoutSignal);
-            return postExecuteCloseout.reason;
-          }
-          return null;
+            },
+            runState,
+          );
         },
         // Stage 7 S4: empty-round session-continuation injection. When the model
         // returns no tool calls but a pending continuation directive names an unsent

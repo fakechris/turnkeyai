@@ -3,8 +3,9 @@
 // Authority: own terminal closeout decisions and their precedence. The
 // precedence is declared by ENGINE_CLOSEOUT_POLICY_ORDER (defined here in
 // Batch 3). recovery_tool_budget stays first in the order. It does NOT own model
-// synthesis, repair prompt construction, or tool execution. Policy functions
-// return a decision object, they do not write into run state directly.
+// synthesis, repair prompt construction, or tool execution. Policy evaluation
+// functions return decision objects; explicit application helpers write those
+// decisions into injected state targets.
 //
 // The exported order array below is the source of truth for closeout
 // precedence; it is defined in Batch 0 so the contract is pinnable, and the
@@ -224,6 +225,44 @@ export type PostExecuteCloseoutDecision =
       reason: "sub_agent_timeout";
     };
 
+export type PendingCloseoutApplicationDecision =
+  | RecoveryToolBudgetCloseoutDecision
+  | RemainingPendingCallsCloseoutDecision;
+
+type AppliedPendingCloseoutDecision = Extract<
+  PendingCloseoutApplicationDecision,
+  { kind: "closeout" }
+>;
+
+export interface PendingCloseoutApplicationTarget {
+  recordPendingCloseout(input: {
+    reasonLines: string[];
+    closeout: AppliedPendingCloseoutDecision["closeout"];
+  }): void;
+}
+
+export interface PostExecuteCloseoutApplicationInput<
+  TCompletedSession = unknown,
+  TTimeoutSignal = unknown,
+  TToolResult = unknown,
+> {
+  completedSession: TCompletedSession | null;
+  timeoutSignal: TTimeoutSignal | null;
+  toolResults: TToolResult[];
+}
+
+export interface PostExecuteCloseoutApplicationTarget<
+  TCompletedSession = unknown,
+  TTimeoutSignal = unknown,
+  TToolResult = unknown,
+> {
+  recordCompletedSession(input: {
+    session: TCompletedSession;
+    toolResults: TToolResult[];
+  }): void;
+  recordTimeoutSignal(input: TTimeoutSignal): void;
+}
+
 export interface CloseoutPolicyRegistry {
   evaluateRecoveryToolBudget(
     input: RecoveryToolBudgetCloseoutInput,
@@ -236,6 +275,29 @@ export interface CloseoutPolicyRegistry {
   evaluatePostExecute(
     input: PostExecuteCloseoutInput,
   ): PostExecuteCloseoutDecision | null;
+
+  applyPendingCloseoutDecision(
+    decision: PendingCloseoutApplicationDecision | null,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null;
+
+  applyPostExecuteCloseoutDecision<
+    TCompletedSession,
+    TTimeoutSignal,
+    TToolResult,
+  >(
+    decision: PostExecuteCloseoutDecision | null,
+    input: PostExecuteCloseoutApplicationInput<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+    target: PostExecuteCloseoutApplicationTarget<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+  ): EngineCloseoutReason | null;
 
   evaluateTerminate(input: TerminateCloseoutInput): TerminateCloseoutDecision;
 }
@@ -450,6 +512,57 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         policyId: "sub_agent_timeout",
         reason: "sub_agent_timeout",
       };
+    }
+    return null;
+  }
+
+  applyPendingCloseoutDecision(
+    decision: PendingCloseoutApplicationDecision | null,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null {
+    if (!decision || decision.kind !== "closeout") {
+      return null;
+    }
+    target.recordPendingCloseout({
+      reasonLines: decision.reasonLines,
+      closeout: decision.closeout,
+    });
+    return decision.reason;
+  }
+
+  applyPostExecuteCloseoutDecision<
+    TCompletedSession,
+    TTimeoutSignal,
+    TToolResult,
+  >(
+    decision: PostExecuteCloseoutDecision | null,
+    input: PostExecuteCloseoutApplicationInput<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+    target: PostExecuteCloseoutApplicationTarget<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+  ): EngineCloseoutReason | null {
+    if (!decision) {
+      return null;
+    }
+    if (
+      decision.reason === "completed_sub_agent_final" &&
+      input.completedSession
+    ) {
+      target.recordCompletedSession({
+        session: input.completedSession,
+        toolResults: input.toolResults,
+      });
+      return decision.reason;
+    }
+    if (decision.reason === "sub_agent_timeout" && input.timeoutSignal) {
+      target.recordTimeoutSignal(input.timeoutSignal);
+      return decision.reason;
     }
     return null;
   }
