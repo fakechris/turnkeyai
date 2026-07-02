@@ -257,6 +257,32 @@ test("RepairPolicyRegistry applies natural-finish repair decisions to repair hoo
   );
 });
 
+test("RepairPolicyRegistry applies the first natural-finish repair from the cascade", () => {
+  const registry = createRepairPolicyRegistry();
+  const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];
+  const repairMarkers: LLMMessage[] = [];
+
+  const repair = registry.applyNaturalFinishRepair({
+    finalRecoveryBudget: { maxToolCalls: 2, usedToolCalls: 2 },
+    messages,
+    repairMarkers,
+    resultText: "@{role-explore} continue",
+  });
+
+  assert.ok(repair && "messages" in repair);
+  assert.equal(repair.forceToolChoice, "none");
+  assert.deepEqual(repair.messages.slice(0, 2), [
+    { role: "user", content: "Do the task." },
+    { role: "assistant", content: "@{role-explore} continue" },
+  ]);
+  const promptContent = repair.messages.at(-1)?.content;
+  if (typeof promptContent !== "string") {
+    assert.fail("expected repair prompt content to be a string");
+  }
+  assert.match(promptContent, /final recovery tool budget is exhausted/i);
+  assert.deepEqual(repairMarkers, [repair.messages.at(-1)]);
+});
+
 test("RepairPolicyRegistry returns missing browser evidence repair decision", () => {
   const registry = createRepairPolicyRegistry();
 

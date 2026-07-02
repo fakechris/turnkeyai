@@ -293,6 +293,9 @@ export type CompletedSynthesisRepairDecision =
     };
 
 export interface RepairPolicyRegistry {
+  applyNaturalFinishRepair(
+    input: NaturalFinishRepairInput,
+  ): NaturalFinishRepairApplication | null;
   evaluateNaturalFinish(
     input: NaturalFinishRepairInput,
   ): NaturalFinishRepairDecision | null;
@@ -306,6 +309,15 @@ export interface RepairPolicyRegistry {
 }
 
 class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
+  applyNaturalFinishRepair(
+    input: NaturalFinishRepairInput,
+  ): NaturalFinishRepairApplication | null {
+    return this.applyNaturalFinishRepairDecision(
+      this.evaluateNaturalFinish(input),
+      input,
+    );
+  }
+
   applyNaturalFinishRepairDecision(
     decision: NaturalFinishRepairDecision | null,
     input: NaturalFinishRepairApplicationInput,
