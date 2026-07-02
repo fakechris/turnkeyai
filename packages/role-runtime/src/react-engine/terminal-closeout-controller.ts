@@ -200,6 +200,29 @@ export class TerminalCloseoutController {
     });
   }
 
+  applyApprovalWaitTimeoutFallback<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: ApprovalWaitTimeoutFallbackInput,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): TerminalFinalResponse {
+    const fallback = this.buildApprovalWaitTimeoutFallback(input);
+    return this.applyCloseoutApplication(
+      {
+        reason: "tool_evidence_fallback",
+        closeout: fallback.closeout,
+        result: fallback.result,
+      },
+      target,
+    );
+  }
+
   buildToolEvidenceFallback(
     input: ToolEvidenceFallbackInput,
   ): TerminalEvidenceFallback {
@@ -241,6 +264,32 @@ export class TerminalCloseoutController {
       roundCount: input.roundCount,
       result: localResult,
     });
+  }
+
+  applyModelCallErrorFallback<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: ModelCallErrorFallbackInput,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): TerminalFinalResponse | null {
+    const fallback = this.buildModelCallErrorFallback(input);
+    if (!fallback) {
+      return null;
+    }
+    return this.applyCloseoutApplication(
+      {
+        reason: "tool_evidence_fallback",
+        closeout: fallback.closeout,
+        result: fallback.result,
+      },
+      target,
+    );
   }
 
   buildSynthesisMessages(input: TerminalSynthesisMessagesInput): LLMMessage[] {

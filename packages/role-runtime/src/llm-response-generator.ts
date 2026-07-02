@@ -3844,23 +3844,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // is built DETERMINISTICALLY (no model synthesis), so this short-circuits the
           // standard reasonLines + generateFinalAfterToolRoundLimit path below.
           if (reason === "tool_evidence_fallback") {
-            const fallback = terminalCloseout.buildApprovalWaitTimeoutFallback({
-              selection,
-              packet,
-              maxRounds,
-              toolCallCount: countNativeToolCalls(toolTrace),
-              roundCount: toolTrace.length,
-              evidenceText: snapshotEvidence(state.messages)
-                .approvalWaitTimeoutRuntimeEvidence,
-              error: new Error(
-                "approval wait-timeout repair omitted required pending evidence",
-              ),
-            });
-            return terminalCloseout.applyCloseoutApplication(
+            return terminalCloseout.applyApprovalWaitTimeoutFallback(
               {
-                reason: "tool_evidence_fallback",
-                closeout: fallback.closeout,
-                result: fallback.result,
+                selection,
+                packet,
+                maxRounds,
+                toolCallCount: countNativeToolCalls(toolTrace),
+                roundCount: toolTrace.length,
+                evidenceText: snapshotEvidence(state.messages)
+                  .approvalWaitTimeoutRuntimeEvidence,
+                error: new Error(
+                  "approval wait-timeout repair omitted required pending evidence",
+                ),
               },
               runState,
             );
@@ -4110,29 +4105,25 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             });
             return { messages: forcedRound.messages };
           }
-          const fallback = terminalCloseout.buildModelCallErrorFallback({
-            active: Boolean(activeToolLoop),
-            usableEvidence: errorEvidence.usableEvidence,
-            activation,
-            messages: state.messages,
-            packet,
-            selection,
-            error,
-            maxRounds,
-            toolCallCount: countNativeToolCalls(toolTrace),
-            roundCount: toolTrace.length,
-          });
-          if (!fallback) {
-            return "rethrow";
-          }
-          return terminalCloseout.applyCloseoutApplication(
+          const fallbackResponse = terminalCloseout.applyModelCallErrorFallback(
             {
-              reason: "tool_evidence_fallback",
-              closeout: fallback.closeout,
-              result: fallback.result,
+              active: Boolean(activeToolLoop),
+              usableEvidence: errorEvidence.usableEvidence,
+              activation,
+              messages: state.messages,
+              packet,
+              selection,
+              error,
+              maxRounds,
+              toolCallCount: countNativeToolCalls(toolTrace),
+              roundCount: toolTrace.length,
             },
             runState,
           );
+          if (!fallbackResponse) {
+            return "rethrow";
+          }
+          return fallbackResponse;
         },
         // Capture the live message history for the post-loop finalization epilogue.
         // onTerminate / onModelCallError stash runState finalMessages on the closeout and

@@ -29,6 +29,30 @@ function result(text: string): GenerateTextResult {
   return { text } as GenerateTextResult;
 }
 
+function recordingTarget() {
+  const events: unknown[] = [];
+  return {
+    events,
+    target: {
+      recordToolLoopCloseout: (input: unknown) => {
+        events.push(["overwrite", input]);
+      },
+      recordToolLoopCloseoutIfAbsent: (input: unknown) => {
+        events.push(["if_absent", input]);
+      },
+      recordCloseoutResult: (input: unknown) => {
+        events.push(["result", input]);
+      },
+      recordReduction: (input: unknown) => {
+        events.push(["reduction", input]);
+      },
+      recordMemoryFlush: (input: unknown) => {
+        events.push(["memory_flush", input]);
+      },
+    },
+  };
+}
+
 test("TerminalCloseoutController builds approval wait-timeout fallback closeout and redacts forbidden local URLs", () => {
   const controller = createTerminalCloseoutController();
 
@@ -59,6 +83,40 @@ test("TerminalCloseoutController builds approval wait-timeout fallback closeout 
     (fallback.result.raw as { message?: string } | null)?.message,
     "synthesis unavailable",
   );
+});
+
+test("TerminalCloseoutController applies approval wait-timeout fallback through a target", () => {
+  const controller = createTerminalCloseoutController();
+  const { events, target } = recordingTarget();
+
+  const response = controller.applyApprovalWaitTimeoutFallback(
+    {
+      selection: { modelId: "model-a", modelChainId: "chain-a" },
+      packet: packet("Do not include URLs in the final answer."),
+      maxRounds: 4,
+      toolCallCount: 3,
+      roundCount: 5,
+      evidenceText:
+        "permission_result: pending approval_wait_timeout at http://localhost:3000/form",
+      error: new Error("synthesis unavailable"),
+    },
+    target,
+  );
+
+  assert.match(response.text, /Approval wait-timeout closeout confirmed/);
+  assert.deepEqual(events[0], [
+    "overwrite",
+    {
+      reason: "tool_evidence_fallback",
+      maxRounds: 4,
+      toolCallCount: 3,
+      roundCount: 5,
+      evidenceAvailable: true,
+    },
+  ]);
+  const resultEvent = events[1];
+  assert.ok(Array.isArray(resultEvent));
+  assert.equal(resultEvent[0], "result");
 });
 
 test("TerminalCloseoutController builds generic tool-evidence fallback closeout", () => {
@@ -143,6 +201,65 @@ test("TerminalCloseoutController gates and builds model-call-error local evidenc
     (fallback.result.raw as { message?: string } | null)?.message,
     "gateway unavailable",
   );
+});
+
+test("TerminalCloseoutController applies model-call-error fallback through a target", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      name: "web_fetch",
+      content: "ACME pricing was verified at http://127.0.0.1:5173/pricing.",
+    } as LLMMessage,
+  ];
+  const common = {
+    messages,
+    packet: packet("Summarize the verified source fact.", "No links."),
+    selection: { modelId: "model-b" },
+    error: new Error("gateway unavailable"),
+    maxRounds: 5,
+    toolCallCount: 1,
+    roundCount: 1,
+  };
+  const { events, target } = recordingTarget();
+
+  assert.equal(
+    controller.applyModelCallErrorFallback(
+      {
+        ...common,
+        active: false,
+        usableEvidence: true,
+      },
+      target,
+    ),
+    null,
+  );
+  assert.deepEqual(events, []);
+
+  const response = controller.applyModelCallErrorFallback(
+    {
+      ...common,
+      active: true,
+      usableEvidence: true,
+    },
+    target,
+  );
+
+  assert.ok(response);
+  assert.match(response.text, /Verified:/);
+  assert.deepEqual(events[0], [
+    "overwrite",
+    {
+      reason: "tool_evidence_fallback",
+      maxRounds: 5,
+      toolCallCount: 1,
+      roundCount: 1,
+      evidenceAvailable: true,
+    },
+  ]);
+  const resultEvent = events[1];
+  assert.ok(Array.isArray(resultEvent));
+  assert.equal(resultEvent[0], "result");
 });
 
 test("TerminalCloseoutController appends current assistant text for pseudo tool-call synthesis only", () => {
@@ -290,24 +407,7 @@ test("TerminalCloseoutController owns terminal closeout write mode and final res
 
 test("TerminalCloseoutController applies terminal closeout effects through a target", () => {
   const controller = createTerminalCloseoutController();
-  const events: unknown[] = [];
-  const target = {
-    recordToolLoopCloseout: (input: unknown) => {
-      events.push(["overwrite", input]);
-    },
-    recordToolLoopCloseoutIfAbsent: (input: unknown) => {
-      events.push(["if_absent", input]);
-    },
-    recordCloseoutResult: (input: unknown) => {
-      events.push(["result", input]);
-    },
-    recordReduction: (input: unknown) => {
-      events.push(["reduction", input]);
-    },
-    recordMemoryFlush: (input: unknown) => {
-      events.push(["memory_flush", input]);
-    },
-  };
+  const { events, target } = recordingTarget();
   const closeout: ToolLoopCloseoutMetadata = {
     reason: "sub_agent_timeout",
     maxRounds: 4,
