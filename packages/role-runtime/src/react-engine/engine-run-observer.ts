@@ -6,6 +6,10 @@ import {
   toNativeToolProgressTrace,
   toNativeToolResultTrace,
 } from "../tool-loop-shared";
+import {
+  appendAssistantToolCallMessage,
+  appendToolResultMessages,
+} from "../tool-use";
 
 // Stage 8 engine cleanup — EngineRunObserver.
 //
@@ -46,6 +50,21 @@ export interface EngineObservedProviderToolProtocolRound {
   toolCalls: LLMToolCall[];
   toolResults: ToolResult[];
   messages: LLMMessage[];
+}
+
+export interface EngineRuntimeForcedToolRoundHandlers {
+  onProgress(call: LLMToolCall, progress: ToolProgressEvent): Promise<void>;
+  onResult(result: ToolResult): Promise<void>;
+}
+
+export interface EngineObservedRuntimeForcedToolRound {
+  round: number;
+  messages: LLMMessage[];
+  assistantText: string;
+  toolCalls: LLMToolCall[];
+  executeToolCalls(
+    handlers: EngineRuntimeForcedToolRoundHandlers,
+  ): Promise<ToolResult[]>;
 }
 
 export class EngineRunObserver {
@@ -142,6 +161,51 @@ export class EngineRunObserver {
     input: EngineObservedProviderToolProtocolRound,
   ): Promise<void> {
     await this.deps.recordProviderToolProtocolRound(input);
+  }
+
+  async observeRuntimeForcedToolRound(
+    input: EngineObservedRuntimeForcedToolRound,
+  ): Promise<{ messages: LLMMessage[]; toolResults: ToolResult[] }> {
+    const roundTrace: NativeToolRoundTrace = {
+      round: input.round,
+      calls: input.toolCalls.map((call) => ({
+        id: call.id,
+        name: call.name,
+        input: call.input,
+      })),
+      results: [],
+      progress: [],
+    };
+    this.currentRound = roundTrace;
+    this.toolTrace.push(roundTrace);
+
+    const toolResults = await input.executeToolCalls({
+      onProgress: async (call, progress) => {
+        roundTrace.progress?.push(
+          toNativeToolProgressTrace(call, progress, this.deps.now()),
+        );
+        await this.deps.persistNativeToolTrace({
+          forceBlocking: progress.phase === "started",
+        });
+      },
+      onResult: async (toolResult) => {
+        roundTrace.results.push(toNativeToolResultTrace(toolResult));
+        await this.deps.persistNativeToolTrace();
+      },
+    });
+
+    let messages = appendAssistantToolCallMessage(input.messages, {
+      text: input.assistantText,
+      toolCalls: input.toolCalls,
+    });
+    messages = appendToolResultMessages(messages, toolResults);
+    await this.onProviderToolProtocolRound({
+      round: input.round,
+      toolCalls: input.toolCalls,
+      toolResults,
+      messages,
+    });
+    return { messages, toolResults };
   }
 
   snapshot(): {

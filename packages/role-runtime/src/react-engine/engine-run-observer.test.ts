@@ -174,3 +174,84 @@ test("EngineRunObserver records provider tool protocol rounds through the inject
     },
   ]);
 });
+
+test("EngineRunObserver observes runtime-forced tool rounds", async () => {
+  const { observer, toolTrace, providerRounds, persists } = createHarness();
+  const baseMessages: LLMMessage[] = [{ role: "user", content: "continue" }];
+  const toolCall = call({ id: "forced-1", name: "permission_result" });
+  const toolResult = result({
+    toolCallId: "forced-1",
+    toolName: "permission_result",
+    content: "approved",
+    progress: [
+      {
+        phase: "progress",
+        toolName: "permission_result",
+        summary: "checking approval",
+      },
+    ],
+  });
+
+  const observed = await observer.observeRuntimeForcedToolRound({
+    round: 3,
+    messages: baseMessages,
+    assistantText: "Checking permission state.",
+    toolCalls: [toolCall],
+    executeToolCalls: async ({ onProgress, onResult }) => {
+      await onProgress(toolCall, {
+        phase: "started",
+        toolName: toolCall.name,
+        summary: `Tool call started: ${toolCall.name}`,
+      });
+      for (const progress of toolResult.progress ?? []) {
+        await onProgress(toolCall, progress);
+      }
+      await onResult(toolResult);
+      return [toolResult];
+    },
+  });
+
+  assert.equal(toolTrace.length, 1);
+  assert.equal(toolTrace[0]?.round, 3);
+  assert.deepEqual(toolTrace[0]?.calls, [
+    { id: "forced-1", name: "permission_result", input: toolCall.input },
+  ]);
+  assert.deepEqual(
+    toolTrace[0]?.progress?.map((progress) => ({
+      phase: progress.phase,
+      toolCallId: progress.toolCallId,
+      ts: progress.ts,
+    })),
+    [
+      { phase: "started", toolCallId: "forced-1", ts: 100 },
+      { phase: "progress", toolCallId: "forced-1", ts: 101 },
+    ],
+  );
+  assert.deepEqual(toolTrace[0]?.results, [
+    {
+      toolCallId: "forced-1",
+      toolName: "permission_result",
+      isError: false,
+      contentBytes: 8,
+      content: "approved",
+    },
+  ]);
+  assert.deepEqual(observed.toolResults, [toolResult]);
+  assert.deepEqual(
+    observed.messages.map((message) => message.role),
+    ["user", "assistant", "tool"],
+  );
+  assert.deepEqual(persists, [
+    { forceBlocking: true },
+    { forceBlocking: false },
+    undefined,
+  ]);
+  assert.deepEqual(providerRounds, [
+    {
+      round: 3,
+      toolCalls: [toolCall],
+      toolResults: [toolResult],
+      messages: observed.messages,
+    },
+  ]);
+});

@@ -74,3 +74,18 @@ test("forced engine tool rounds do not record provider protocol rounds directly"
     "forced engine tool rounds must route provider protocol observability through EngineRunObserver",
   );
 });
+
+test("forced engine tool rounds delegate observer-owned trace persistence when available", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async executeRuntimeForcedToolRound");
+  const end = source.indexOf("\n  private async emitToolProgressSafely", start);
+  assert.notEqual(start, -1, "executeRuntimeForcedToolRound must exist");
+  assert.notEqual(end, -1, "executeRuntimeForcedToolRound boundary must be found");
+  const helperSource = source.slice(start, end);
+
+  assert.equal(
+    helperSource.includes("input.observer.observeRuntimeForcedToolRound"),
+    true,
+    "engine forced tool rounds must delegate trace/progress/persistence to EngineRunObserver when present",
+  );
+});

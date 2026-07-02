@@ -4211,6 +4211,25 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     signal?: AbortSignal;
     assistantText: string;
   }): Promise<{ messages: LLMMessage[]; toolResults: RoleToolExecutionResult[] }> {
+    if (input.observer) {
+      return input.observer.observeRuntimeForcedToolRound({
+        round: input.round,
+        messages: input.messages,
+        assistantText: input.assistantText,
+        toolCalls: input.toolCalls,
+        executeToolCalls: ({ onProgress, onResult }) =>
+          this.executeToolCalls({
+            activation: input.activation,
+            packet: input.packet,
+            toolCalls: input.toolCalls,
+            toolLoopStartedAtMs: input.toolLoopStartedAtMs,
+            ...(input.signal ? { signal: input.signal } : {}),
+            onProgress,
+            onResult,
+          }),
+      });
+    }
+
     const roundTrace: NativeToolRoundTrace = {
       round: input.round,
       calls: input.toolCalls.map((call) => ({
