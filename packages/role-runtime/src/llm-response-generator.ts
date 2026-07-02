@@ -4091,26 +4091,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             });
             return { messages: forcedRound.messages };
           }
-          const localResult =
-            activeToolLoop && errorEvidence.usableEvidence
-              ? buildLocalEvidenceCloseout({
-                  activation,
-                  messages: state.messages,
-                  packet,
-                  selection,
-                  error,
-                })
-              : null;
-          if (!localResult) {
-            return "rethrow";
-          }
-          const fallback = terminalCloseout.buildToolEvidenceFallback({
+          const fallback = terminalCloseout.buildModelCallErrorFallback({
+            active: Boolean(activeToolLoop),
+            usableEvidence: errorEvidence.usableEvidence,
+            activation,
+            messages: state.messages,
             packet,
+            selection,
+            error,
             maxRounds,
             toolCallCount: countNativeToolCalls(toolTrace),
             roundCount: toolTrace.length,
-            result: localResult,
           });
+          if (!fallback) {
+            return "rethrow";
+          }
           runState.recordToolLoopCloseout(fallback.closeout);
           runState.recordCloseoutResult(fallback.result);
           return {

@@ -85,6 +85,65 @@ test("TerminalCloseoutController builds generic tool-evidence fallback closeout"
   assert.equal(fallback.result.text, "Local source: local fixture source");
 });
 
+test("TerminalCloseoutController gates and builds model-call-error local evidence fallback", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      name: "web_fetch",
+      content: "ACME pricing was verified at http://127.0.0.1:5173/pricing.",
+    } as LLMMessage,
+  ];
+  const common = {
+    messages,
+    packet: packet("Summarize the verified source fact.", "No links."),
+    selection: { modelId: "model-b" },
+    error: new Error("gateway unavailable"),
+    maxRounds: 5,
+    toolCallCount: 1,
+    roundCount: 1,
+  };
+
+  assert.equal(
+    controller.buildModelCallErrorFallback({
+      ...common,
+      active: false,
+      usableEvidence: true,
+    }),
+    null,
+  );
+  assert.equal(
+    controller.buildModelCallErrorFallback({
+      ...common,
+      active: true,
+      usableEvidence: false,
+    }),
+    null,
+  );
+
+  const fallback = controller.buildModelCallErrorFallback({
+    ...common,
+    active: true,
+    usableEvidence: true,
+  });
+  assert.ok(fallback);
+  assert.deepEqual(fallback.closeout, {
+    reason: "tool_evidence_fallback",
+    maxRounds: 5,
+    toolCallCount: 1,
+    roundCount: 1,
+    evidenceAvailable: true,
+  });
+  assert.equal(fallback.result.modelId, "model-b");
+  assert.match(fallback.result.text, /Verified:/);
+  assert.doesNotMatch(fallback.result.text, /127\.0\.0\.1/);
+  assert.match(fallback.result.text, /local fixture source/);
+  assert.equal(
+    (fallback.result.raw as { message?: string } | null)?.message,
+    "gateway unavailable",
+  );
+});
+
 test("TerminalCloseoutController appends current assistant text for pseudo tool-call synthesis only", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];

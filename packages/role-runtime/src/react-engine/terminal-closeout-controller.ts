@@ -2,11 +2,13 @@ import type {
   GenerateTextResult,
   LLMMessage,
 } from "@turnkeyai/llm-adapter/index";
+import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 
 import type { RolePromptPacket } from "../prompt-policy";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
 import {
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
+  buildLocalEvidenceCloseout,
   maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
 } from "../tool-loop-shared";
@@ -39,6 +41,22 @@ export interface ToolEvidenceFallbackInput {
   toolCallCount: number;
   roundCount: number;
   result: GenerateTextResult;
+}
+
+export interface ModelCallErrorFallbackInput {
+  active: boolean;
+  usableEvidence: boolean;
+  activation?: RoleActivationInput;
+  messages: LLMMessage[];
+  packet: RolePromptPacket;
+  selection: {
+    modelId?: string;
+    modelChainId?: string;
+  };
+  error: unknown;
+  maxRounds: number;
+  toolCallCount: number;
+  roundCount: number;
 }
 
 export interface TerminalEvidenceFallback {
@@ -92,6 +110,31 @@ export class TerminalCloseoutController {
         packet: input.packet,
       }),
     };
+  }
+
+  buildModelCallErrorFallback(
+    input: ModelCallErrorFallbackInput,
+  ): TerminalEvidenceFallback | null {
+    if (!input.active || !input.usableEvidence) {
+      return null;
+    }
+    const localResult = buildLocalEvidenceCloseout({
+      ...(input.activation ? { activation: input.activation } : {}),
+      messages: input.messages,
+      packet: input.packet,
+      selection: input.selection,
+      error: input.error,
+    });
+    if (!localResult) {
+      return null;
+    }
+    return this.buildToolEvidenceFallback({
+      packet: input.packet,
+      maxRounds: input.maxRounds,
+      toolCallCount: input.toolCallCount,
+      roundCount: input.roundCount,
+      result: localResult,
+    });
   }
 
   buildSynthesisMessages(input: TerminalSynthesisMessagesInput): LLMMessage[] {
