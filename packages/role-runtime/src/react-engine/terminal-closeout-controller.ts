@@ -112,6 +112,31 @@ export interface NonCompletedTerminalSynthesisResult<
   reductionSnapshot?: TReductionSnapshot;
 }
 
+export interface TerminalSynthesisRequest {
+  messages: LLMMessage[];
+  reasonLines?: string[];
+}
+
+export interface TerminalSynthesisInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  reason: EngineCloseoutReason;
+  messages: LLMMessage[];
+  lastText: string;
+  reasonLines?: string[];
+  synthesize(
+    input: TerminalSynthesisRequest,
+  ): Promise<
+    NonCompletedTerminalSynthesis<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  >;
+}
+
 export interface TerminalFinalResponse {
   text: string;
   stopReason?: string;
@@ -226,6 +251,59 @@ export class TerminalCloseoutController {
       ...input.messages,
       { role: "assistant", content: input.lastText },
     ];
+  }
+
+  async synthesizeInitialCloseout<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalSynthesisInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<
+    NonCompletedTerminalSynthesis<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  > {
+    return input.synthesize({
+      messages: this.buildSynthesisMessages({
+        reason: input.reason,
+        messages: input.messages,
+        lastText: input.lastText,
+      }),
+      ...(input.reasonLines === undefined
+        ? {}
+        : { reasonLines: input.reasonLines }),
+    });
+  }
+
+  async synthesizeNonCompletedCloseout<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalSynthesisInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<
+    NonCompletedTerminalSynthesisResult<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  > {
+    const generated = await this.synthesizeInitialCloseout(input);
+    return this.applyNonCompletedGeneratedSynthesis({
+      reason: input.reason,
+      generated,
+    });
   }
 
   finalizeGeneratedResult(input: TerminalGeneratedResultInput): GenerateTextResult {

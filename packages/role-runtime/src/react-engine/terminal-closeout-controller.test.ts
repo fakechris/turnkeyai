@@ -215,6 +215,57 @@ test("TerminalCloseoutController applies non-completed synthesis effects", () =>
   assert.equal(plain.reductionSnapshot, undefined);
 });
 
+test("TerminalCloseoutController owns terminal synthesis invocation boundaries", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];
+  let seenRequest:
+    | {
+        messages: LLMMessage[];
+        reasonLines?: string[];
+      }
+    | undefined;
+
+  const initial = await controller.synthesizeInitialCloseout({
+    reason: "pseudo_tool_call",
+    messages,
+    lastText: "malformed tool call",
+    reasonLines: ["Reason line."],
+    synthesize: async (request) => {
+      seenRequest = request;
+      return { result: result("Initial.") };
+    },
+  });
+
+  assert.deepEqual(initial.result, result("Initial."));
+  assert.deepEqual(seenRequest, {
+    messages: [
+      { role: "user", content: "Do the task." },
+      { role: "assistant", content: "malformed tool call" },
+    ],
+    reasonLines: ["Reason line."],
+  });
+
+  const nonCompleted = await controller.synthesizeNonCompletedCloseout({
+    reason: "sub_agent_timeout",
+    messages,
+    lastText: "unused",
+    synthesize: async () => ({
+      result: result("The delegated source timed out before enough evidence arrived."),
+      reduction: { level: "compact" },
+      reductionSnapshot: { level: "compact", omittedSections: ["history"] },
+      memoryFlush: "flush-1",
+    }),
+  });
+
+  assert.match(nonCompleted.result.text, /Continuation: this source check is resumable/);
+  assert.deepEqual(nonCompleted.memoryFlushes, ["flush-1"]);
+  assert.deepEqual(nonCompleted.reduction, { level: "compact" });
+  assert.deepEqual(nonCompleted.reductionSnapshot, {
+    level: "compact",
+    omittedSections: ["history"],
+  });
+});
+
 test("TerminalCloseoutController owns terminal closeout write mode and final response shape", () => {
   const controller = createTerminalCloseoutController();
 

@@ -3915,25 +3915,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             // synthesis (runState.closeoutResult below).
             runState.recordToolLoopCloseoutIfAbsent(closeout);
           }
+          // TerminalCloseoutController owns terminal synthesis context selection:
           // pseudo_tool_call synthesizes from the malformed assistant text it must
-          // recover from, so append it to the synthesis context (mirrors inline
-          // :1032-1038). agent-core has not yet appended the current assistant
-          // message to state.messages when this pre-execute closeout fires.
-          const synthesisMessages = terminalCloseout.buildSynthesisMessages({
+          // recover from, so the controller appends it to the synthesis context
+          // (mirrors inline :1032-1038). agent-core has not yet appended the
+          // current assistant message to state.messages when this pre-execute
+          // closeout fires.
+          const terminalSynthesisInput = {
             reason: reason as EngineCloseoutReason,
             messages: state.messages,
             lastText: state.lastText,
-          });
-          const generated = await this.generateFinalAfterToolRoundLimit({
-            activation,
-            packet,
-            selection,
-            baseGatewayInput: initialGatewayInput,
-            messages: synthesisMessages,
-            maxRounds,
-            modelCallTrace,
             ...(reasonLines ? { reasonLines } : {}),
-          });
+            synthesize: async ({
+              messages,
+              reasonLines: terminalReasonLines,
+            }: {
+              messages: LLMMessage[];
+              reasonLines?: string[];
+            }) =>
+              this.generateFinalAfterToolRoundLimit({
+                activation,
+                packet,
+                selection,
+                baseGatewayInput: initialGatewayInput,
+                messages,
+                maxRounds,
+                modelCallTrace,
+                ...(terminalReasonLines
+                  ? { reasonLines: terminalReasonLines }
+                  : {}),
+              }),
+          };
           // Mirror the inline per-reason trailing transforms. completed: redact
           // forbidden local URLs from the delegated evidence (inline :1784).
           // timeout: append the resumable-continuation sentence (inline :2197).
@@ -3943,12 +3955,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // below; the unconditional inline finalization epilogue runs after the
           // agent finishes. Keep those transforms outside the repair predicate loop:
           // repairs may re-synthesize, appenders only decorate the accepted final.
-          let synthesisReduction = generated.reduction;
-          let synthesisReductionSnapshot = generated.reductionSnapshot;
+          let synthesisReduction:
+            | RoleEngineRunStateValues["Reduction"]
+            | undefined;
+          let synthesisReductionSnapshot:
+            | RoleEngineRunStateValues["ReductionSnapshot"]
+            | undefined;
           let closeoutResult: GenerateTextResult;
           let terminalMemoryFlushes: PreCompactionMemoryFlushResult[] = [];
           const completedSessionForRepair = runState.completedSession();
           if (reason === "completed_sub_agent_final" && completedSessionForRepair) {
+            const generated =
+              await terminalCloseout.synthesizeInitialCloseout(
+                terminalSynthesisInput,
+              );
+            synthesisReduction = generated.reduction;
+            synthesisReductionSnapshot = generated.reductionSnapshot;
             const repairMarkers = (ctx.repairMarkers ??= []);
             const completedTerminal =
               await completedCloseout.synthesizeTerminalCloseout({
@@ -4012,10 +4034,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             terminalMemoryFlushes = completedTerminal.memoryFlushes;
           } else {
             const nonCompletedTerminal =
-              terminalCloseout.applyNonCompletedGeneratedSynthesis({
-                reason: reason as EngineCloseoutReason,
-                generated,
-              });
+              await terminalCloseout.synthesizeNonCompletedCloseout(
+                terminalSynthesisInput,
+              );
             closeoutResult = nonCompletedTerminal.result;
             synthesisReduction = nonCompletedTerminal.reduction;
             synthesisReductionSnapshot =
