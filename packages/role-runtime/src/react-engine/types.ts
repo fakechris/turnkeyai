@@ -55,6 +55,7 @@ export type EngineContinueAction =
       kind: "continue";
       messages: LLMMessage[];
       forceToolChoice?: ReActToolChoice;
+      repairMarker?: LLMMessage;
       reason: string;
     }
   | { kind: "closeout"; reason: EngineCloseoutReason; reasonLines: string[] };

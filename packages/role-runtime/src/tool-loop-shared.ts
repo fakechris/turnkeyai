@@ -403,6 +403,29 @@ export function hasPermissionGateEvidence(toolTrace: NativeToolRoundTrace[]): bo
   );
 }
 
+export function shouldRepairMissingApprovalGate(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: readonly LLMMessage[];
+  repairMarkers: readonly LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly { name: string }[];
+}): boolean {
+  if (hasMissingApprovalGateRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!hasToolDefinition(input.tools, "permission_query")) {
+    return false;
+  }
+  if (taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
+    return false;
+  }
+  if (hasPermissionGateEvidence(input.toolTrace)) {
+    return false;
+  }
+  return requestsApprovalGatedBrowserAction(input.taskPrompt);
+}
+
 export function shouldSuppressReadOnlyPermissionQueryToolCalls(
   toolCalls: LLMToolCall[],
   context: { taskPrompt: string; sessionContext: string },
@@ -476,7 +499,7 @@ export function taskAllowsPermissionTools(taskPrompt: string): boolean {
   );
 }
 
-export function hasMissingApprovalGateRepairPrompt(messages: LLMMessage[]): boolean {
+export function hasMissingApprovalGateRepairPrompt(messages: readonly LLMMessage[]): boolean {
   return messages.some(
     (message) =>
       message.role === "user" &&
@@ -490,6 +513,17 @@ export function taskPromptSaysApprovalAlreadyApplied(taskPrompt: string): boolea
   return /\b(?:runtime\s+)?permission cache\b[\s\S]{0,120}\balready applied\b|\bpermission\.applied\b|\bpermission_applied\b/i.test(
     taskPrompt,
   );
+}
+
+export function buildMissingApprovalGateRepairPrompt(): string {
+  return [
+    "Runtime correction: approval-gated browser action was finalized or described without native approval/tool evidence.",
+    "Do not finalize an approval-gated browser side effect unless a native permission or browser-session tool result created that evidence.",
+    "Use permission_query now with action=browser.form.submit, level=approval, scope=mutate, worker_kind=browser, the concrete risk, and a redacted payload for the intended dry-run form submission.",
+    "After the operator decision is available, use permission_result and permission_applied before delegating the approved browser action.",
+    "Only after permission_applied succeeds, call sessions_spawn with agent_id=browser and include the exact URL, approved action, and verification requirement in the task.",
+    "After the browser tool result returns, synthesize only from that permission and browser evidence.",
+  ].join("\n");
 }
 
 export function requestsApprovalGatedBrowserAction(taskPrompt: string): boolean {

@@ -194,6 +194,14 @@ function independentEvidenceTrace(): NativeToolRoundTrace[] {
   ];
 }
 
+function missingApprovalGateTaskPrompt(): string {
+  return [
+    "Use the browser to submit the enrollment form.",
+    "This is an approval-gated browser.form.submit action.",
+    "Request operator approval before the browser mutation, then verify the submitted page state.",
+  ].join("\n");
+}
+
 function pendingApprovalTrace(
   includePermissionResult = false,
 ): NativeToolRoundTrace[] {
@@ -631,6 +639,75 @@ test("ContinuationController does not repeat an independent evidence stream prom
       taskPrompt: independentEvidenceTaskPrompt(),
       toolTrace: independentEvidenceTrace(),
       tools: [{ name: "sessions_spawn" }],
+    }),
+    { kind: "none" },
+  );
+});
+
+test("ContinuationController continues missing approval-gate repair", () => {
+  const controller = createContinuationController();
+
+  const action = controller.continueMissingApprovalGateRepair({
+    messages: [{ role: "user", content: "tool result history" }],
+    taskPrompt: missingApprovalGateTaskPrompt(),
+    resultText: "The browser form submission completed.",
+    repairMarkers: [],
+    toolTrace: [],
+    tools: [{ name: "permission_query" }],
+  });
+
+  assert.equal(action.kind, "continue");
+  assert.equal(
+    action.kind === "continue" && action.reason,
+    "missing_approval_gate_repair_continuation",
+  );
+  assert.deepEqual(
+    action.kind === "continue" && action.forceToolChoice,
+    { name: "permission_query" },
+  );
+  assert.match(
+    String(action.kind === "continue" && action.repairMarker?.content),
+    /approval-gated browser action/,
+  );
+  assert.deepEqual(
+    action.kind === "continue" && action.messages.at(-1),
+    action.kind === "continue" && action.repairMarker,
+  );
+});
+
+test("ContinuationController does not repeat missing approval-gate repair after marker", () => {
+  const controller = createContinuationController();
+
+  assert.deepEqual(
+    controller.continueMissingApprovalGateRepair({
+      messages: [{ role: "user", content: "tool result history" }],
+      taskPrompt: missingApprovalGateTaskPrompt(),
+      resultText: "The browser form submission completed.",
+      repairMarkers: [
+        {
+          role: "user",
+          content:
+            "Runtime correction: approval-gated browser action was finalized or described without native approval/tool evidence.",
+        },
+      ],
+      toolTrace: [],
+      tools: [{ name: "permission_query" }],
+    }),
+    { kind: "none" },
+  );
+});
+
+test("ContinuationController skips missing approval-gate repair after permission evidence", () => {
+  const controller = createContinuationController();
+
+  assert.deepEqual(
+    controller.continueMissingApprovalGateRepair({
+      messages: [{ role: "user", content: "tool result history" }],
+      taskPrompt: missingApprovalGateTaskPrompt(),
+      resultText: "The browser form submission completed.",
+      repairMarkers: [],
+      toolTrace: pendingApprovalTrace(),
+      tools: [{ name: "permission_query" }],
     }),
     { kind: "none" },
   );

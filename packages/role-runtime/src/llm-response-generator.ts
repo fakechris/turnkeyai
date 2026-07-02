@@ -65,6 +65,7 @@ import {
   buildCoverageTimeoutContinuationPrompt,
   buildFinalRecoveryBudgetCloseoutReasonLines,
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
+  buildMissingApprovalGateRepairPrompt,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
   createToolExecutionSignal,
@@ -90,9 +91,7 @@ import {
   hasSessionTimeoutEvidence,
   hasTimeoutCloseoutGuidance,
   hasTimeoutContinuationGuidance,
-  hasMissingApprovalGateRepairPrompt,
   hasPermissionAppliedEvidence,
-  hasPermissionGateEvidence,
   hasLatestSupplementalLocalTimeoutProbePrompt,
   isAbortError,
   isAppliedApprovalBrowserContinuation,
@@ -137,6 +136,7 @@ import {
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
   shouldRepairFinalRecoveryBudgetCloseout,
+  shouldRepairMissingApprovalGate,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
@@ -875,7 +875,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           messages,
           repairMarkers,
           toolTrace,
-          tools: initialGatewayInput.tools,
+          ...(initialGatewayInput.tools === undefined
+            ? {}
+            : { tools: initialGatewayInput.tools }),
         })
       ) {
         messages = [
@@ -903,7 +905,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           messages,
           repairMarkers,
           toolTrace,
-          tools: initialGatewayInput.tools,
+          ...(initialGatewayInput.tools === undefined
+            ? {}
+            : { tools: initialGatewayInput.tools }),
         })
       ) {
         messages = [
@@ -931,7 +935,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           messages,
           repairMarkers,
           toolTrace,
-          tools: initialGatewayInput.tools,
+          ...(initialGatewayInput.tools === undefined
+            ? {}
+            : { tools: initialGatewayInput.tools }),
         })
       ) {
         messages = [
@@ -1806,7 +1812,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             messages,
             repairMarkers,
             toolTrace,
-            tools: initialGatewayInput.tools,
+            ...(initialGatewayInput.tools === undefined
+              ? {}
+              : { tools: initialGatewayInput.tools }),
           })
         ) {
           messages = [
@@ -3430,25 +3438,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // assistant tool-call message is already in the trace). The recorded marker is
           // the idempotency AND the key the onToolCalls enforce-gate normalizer reads.
           const s9RepairMarkers = (hookCtx.repairMarkers ??= []);
-          if (
-            shouldRepairMissingApprovalGate({
+          const missingApprovalGateRepair =
+            continuation.continueMissingApprovalGateRepair({
               taskPrompt: packet.taskPrompt,
               resultText: completedSession.finalContents.join("\n\n"),
               messages: state.messages,
               repairMarkers: s9RepairMarkers,
               toolTrace,
-              tools: initialGatewayInput.tools,
-            })
-          ) {
+              ...(initialGatewayInput.tools === undefined
+                ? {}
+                : { tools: initialGatewayInput.tools }),
+            });
+          if (missingApprovalGateRepair.kind === "continue") {
+            if (missingApprovalGateRepair.repairMarker) {
+              s9RepairMarkers.push(missingApprovalGateRepair.repairMarker);
+            }
             return {
-              messages: [
-                ...state.messages,
-                recordRepairPrompt(
-                  s9RepairMarkers,
-                  buildMissingApprovalGateRepairPrompt(),
-                ),
-              ],
-              forceToolChoice: { name: "permission_query" },
+              messages: missingApprovalGateRepair.messages,
+              ...(missingApprovalGateRepair.forceToolChoice
+                ? { forceToolChoice: missingApprovalGateRepair.forceToolChoice }
+                : {}),
             };
           }
           // S5: forced permission_result round (host-authored, no model call). The
@@ -3613,7 +3622,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               messages: state.messages,
               repairMarkers,
               toolTrace,
-              tools: initialGatewayInput.tools,
+              ...(initialGatewayInput.tools === undefined
+                ? {}
+                : { tools: initialGatewayInput.tools }),
             })
           ) {
             return {
@@ -3636,7 +3647,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               messages: state.messages,
               repairMarkers,
               toolTrace,
-              tools: initialGatewayInput.tools,
+              ...(initialGatewayInput.tools === undefined
+                ? {}
+                : { tools: initialGatewayInput.tools }),
             })
           ) {
             return {
@@ -3666,7 +3679,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               messages: state.messages,
               repairMarkers,
               toolTrace,
-              tools: initialGatewayInput.tools,
+              ...(initialGatewayInput.tools === undefined
+                ? {}
+                : { tools: initialGatewayInput.tools }),
             })
           ) {
             return {
@@ -6840,29 +6855,6 @@ function recordRepairPrompt(
   return message;
 }
 
-function shouldRepairMissingApprovalGate(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-  tools?: GenerateTextInput["tools"];
-}): boolean {
-  if (hasMissingApprovalGateRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (!hasToolDefinition(input.tools, "permission_query")) {
-    return false;
-  }
-  if (taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
-    return false;
-  }
-  if (hasPermissionGateEvidence(input.toolTrace)) {
-    return false;
-  }
-  return requestsApprovalGatedBrowserAction(input.taskPrompt);
-}
-
 function shouldRepairStalePendingApproval(input: {
   taskPrompt: string;
   resultText: string;
@@ -8050,17 +8042,6 @@ function taskPromptAllowsStoppingAtPendingApproval(taskPrompt: string): boolean 
   return /\bstop\b[\s\S]{0,80}\b(?:approval request|permission request)\b[\s\S]{0,120}\b(?:wait|operator decision|approval|decision)\b|\bwait for (?:the )?operator decision\b[\s\S]{0,160}\bdo not (?:apply|submit|execute|proceed)/i.test(
     taskPrompt,
   );
-}
-
-function buildMissingApprovalGateRepairPrompt(): string {
-  return [
-    "Runtime correction: approval-gated browser action was finalized or described without native approval/tool evidence.",
-    "Do not finalize an approval-gated browser side effect unless a native permission or browser-session tool result created that evidence.",
-    "Use permission_query now with action=browser.form.submit, level=approval, scope=mutate, worker_kind=browser, the concrete risk, and a redacted payload for the intended dry-run form submission.",
-    "After the operator decision is available, use permission_result and permission_applied before delegating the approved browser action.",
-    "Only after permission_applied succeeds, call sessions_spawn with agent_id=browser and include the exact URL, approved action, and verification requirement in the task.",
-    "After the browser tool result returns, synthesize only from that permission and browser evidence.",
-  ].join("\n");
 }
 
 function buildStalePendingApprovalRepairPrompt(): string {

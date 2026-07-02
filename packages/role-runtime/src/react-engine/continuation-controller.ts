@@ -7,6 +7,7 @@ import {
   buildCoverageTimeoutContinuationPrompt,
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildIndependentEvidenceStreamContinuationPrompt,
+  buildMissingApprovalGateRepairPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   countCompletedSessionEvidenceResults,
@@ -22,6 +23,7 @@ import {
   shouldContinueTimedOutSiblingSession,
   shouldContinueIndependentEvidenceStreams,
   shouldRunSupplementalLocalTimeoutProbe,
+  shouldRepairMissingApprovalGate,
   type SubAgentToolTimeoutSignal,
 } from "../tool-loop-shared";
 import type { EngineContinueAction } from "./types";
@@ -81,6 +83,15 @@ export interface IncompleteApprovedBrowserSessionInput {
 export interface IndependentEvidenceStreamsInput {
   messages: LLMMessage[];
   taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly ContinuationToolDefinition[];
+}
+
+export interface MissingApprovalGateRepairInput {
+  messages: LLMMessage[];
+  taskPrompt: string;
+  resultText: string;
+  repairMarkers: readonly LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
   tools?: readonly ContinuationToolDefinition[];
 }
@@ -332,6 +343,34 @@ export class ContinuationController {
       ],
       forceToolChoice: { name: "sessions_spawn" },
       reason: "independent_evidence_stream_continuation",
+    };
+  }
+
+  continueMissingApprovalGateRepair(
+    input: MissingApprovalGateRepairInput,
+  ): EngineContinueAction {
+    if (
+      !shouldRepairMissingApprovalGate({
+        taskPrompt: input.taskPrompt,
+        resultText: input.resultText,
+        messages: input.messages,
+        repairMarkers: input.repairMarkers,
+        toolTrace: input.toolTrace,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      })
+    ) {
+      return { kind: "none" };
+    }
+    const repairMarker: LLMMessage = {
+      role: "user",
+      content: buildMissingApprovalGateRepairPrompt(),
+    };
+    return {
+      kind: "continue",
+      messages: [...input.messages, repairMarker],
+      forceToolChoice: { name: "permission_query" },
+      repairMarker,
+      reason: "missing_approval_gate_repair_continuation",
     };
   }
 
