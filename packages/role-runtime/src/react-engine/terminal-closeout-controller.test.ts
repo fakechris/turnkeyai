@@ -322,6 +322,95 @@ test("TerminalCloseoutController owns model-call-error fallback and rethrow boun
   assert.equal(resultEvent[0], "result");
 });
 
+test("TerminalCloseoutController owns model-call-error flow selection before fallback", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      name: "web_fetch",
+      content: "ACME pricing was verified at http://127.0.0.1:5173/pricing.",
+    } as LLMMessage,
+  ];
+  const forcedRound = {
+    kind: "forced_tool_round" as const,
+    calls: [
+      {
+        id: "call-1",
+        name: "permission_result",
+        input: { status: "pending" },
+      },
+    ],
+    assistantText: "Checking approval result.",
+    reason: "forced_pending_approval_wait_timeout_permission_result",
+  };
+  const common = {
+    messages,
+    packet: packet("Summarize the verified source fact.", "No links."),
+    selection: { modelId: "model-b" },
+    error: new Error("gateway unavailable"),
+    maxRounds: 5,
+    toolCallCount: 1,
+    roundCount: 1,
+  };
+  const aborted = recordingTarget();
+
+  assert.deepEqual(
+    controller.handleModelCallError(
+      {
+        ...common,
+        aborted: true,
+        active: true,
+        usableEvidence: true,
+        forcedPermissionResult: forcedRound,
+      },
+      aborted.target,
+    ),
+    { kind: "rethrow" },
+  );
+  assert.deepEqual(aborted.events, []);
+
+  const forced = recordingTarget();
+  assert.deepEqual(
+    controller.handleModelCallError(
+      {
+        ...common,
+        aborted: false,
+        active: true,
+        usableEvidence: true,
+        forcedPermissionResult: forcedRound,
+      },
+      forced.target,
+    ),
+    forcedRound,
+  );
+  assert.deepEqual(forced.events, []);
+
+  const fallback = recordingTarget();
+  const handled = controller.handleModelCallError(
+    {
+      ...common,
+      aborted: false,
+      active: true,
+      usableEvidence: true,
+      forcedPermissionResult: { kind: "none" },
+    },
+    fallback.target,
+  );
+
+  assert.equal(handled.kind, "final");
+  assert.match(handled.kind === "final" ? handled.response.text : "", /Verified:/);
+  assert.deepEqual(fallback.events[0], [
+    "overwrite",
+    {
+      reason: "tool_evidence_fallback",
+      maxRounds: 5,
+      toolCallCount: 1,
+      roundCount: 1,
+      evidenceAvailable: true,
+    },
+  ]);
+});
+
 test("TerminalCloseoutController appends current assistant text for pseudo tool-call synthesis only", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];

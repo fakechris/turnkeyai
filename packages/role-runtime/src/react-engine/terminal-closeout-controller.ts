@@ -14,7 +14,7 @@ import {
   maybeRedactForbiddenLocalUrls,
 } from "../tool-loop-shared";
 import type { CompletedCloseoutTerminalResult } from "./completed-closeout-controller";
-import type { EngineCloseoutReason } from "./types";
+import type { EngineCloseoutReason, EngineContinueAction } from "./types";
 
 // Stage 8 engine cleanup — TerminalCloseoutController.
 //
@@ -59,6 +59,21 @@ export interface ModelCallErrorFallbackInput {
   maxRounds: number;
   toolCallCount: number;
   roundCount: number;
+}
+
+type ForcedModelCallErrorContinuation = Extract<
+  EngineContinueAction,
+  { kind: "forced_tool_round" }
+>;
+
+export interface ModelCallErrorHandlingInput
+  extends ModelCallErrorFallbackInput {
+  aborted: boolean;
+  forcedPermissionResult:
+    | ForcedModelCallErrorContinuation
+    | {
+        kind: "none";
+      };
 }
 
 export interface TerminalEvidenceFallback {
@@ -240,6 +255,10 @@ export type TerminalModelCallErrorFallbackResult =
       kind: "rethrow";
     };
 
+export type TerminalModelCallErrorResult =
+  | TerminalModelCallErrorFallbackResult
+  | ForcedModelCallErrorContinuation;
+
 export type TerminalCloseoutRecordMode = "if_absent" | "overwrite";
 
 export interface TerminalCloseoutApplicationTarget<
@@ -412,6 +431,27 @@ export class TerminalCloseoutController {
       return { kind: "rethrow" };
     }
     return { kind: "final", response };
+  }
+
+  handleModelCallError<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: ModelCallErrorHandlingInput,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): TerminalModelCallErrorResult {
+    if (input.aborted) {
+      return { kind: "rethrow" };
+    }
+    if (input.forcedPermissionResult.kind === "forced_tool_round") {
+      return input.forcedPermissionResult;
+    }
+    return this.handleModelCallErrorFallback(input, target);
   }
 
   buildSynthesisMessages(input: TerminalSynthesisMessagesInput): LLMMessage[] {

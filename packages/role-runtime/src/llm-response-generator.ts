@@ -4032,13 +4032,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // no longer "permission_query" and the builder returns null on a repeat error
         // (idempotent — no loop). Aborts must rethrow.
         onModelCallError: async (error, state, _ctx) => {
-          if (isAbortError(error)) {
-            return "rethrow";
+          const aborted = isAbortError(error);
+          if (!aborted) {
+            runState.captureFinalMessages(state.messages);
           }
-          runState.captureFinalMessages(state.messages);
-          const errorEvidence = snapshotEvidence(state.messages);
+          const errorEvidence = aborted
+            ? { usableEvidence: false }
+            : snapshotEvidence(state.messages);
           const forcedPermissionResult =
-            activeToolLoop && errorEvidence.usableEvidence
+            !aborted && activeToolLoop && errorEvidence.usableEvidence
               ? continuation.forcePendingApprovalWaitTimeoutPermissionResult({
                   taskPrompt: packet.taskPrompt,
                   toolTrace,
@@ -4047,22 +4049,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     : { tools: initialGatewayInput.tools }),
                 })
               : { kind: "none" as const };
-          if (forcedPermissionResult.kind === "forced_tool_round") {
-            const forcedRound = await this.executeRuntimeForcedToolRound({
-              activation,
-              packet,
-              messages: state.messages,
-              toolTrace,
-              toolCalls: forcedPermissionResult.calls,
-              round: toolTrace.length + 1,
-              toolLoopStartedAtMs,
-              ...(signal ? { signal } : {}),
-              assistantText: forcedPermissionResult.assistantText,
-            });
-            return { messages: forcedRound.messages };
-          }
-          const fallbackResult = terminalCloseout.handleModelCallErrorFallback(
+          const modelErrorResult = terminalCloseout.handleModelCallError(
             {
+              aborted,
               active: Boolean(activeToolLoop),
               usableEvidence: errorEvidence.usableEvidence,
               activation,
@@ -4073,13 +4062,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               maxRounds,
               toolCallCount: countNativeToolCalls(toolTrace),
               roundCount: toolTrace.length,
+              forcedPermissionResult:
+                forcedPermissionResult.kind === "forced_tool_round"
+                  ? forcedPermissionResult
+                  : { kind: "none" },
             },
             runState,
           );
-          if (fallbackResult.kind === "rethrow") {
+          if (modelErrorResult.kind === "forced_tool_round") {
+            const forcedRound = await this.executeRuntimeForcedToolRound({
+              activation,
+              packet,
+              messages: state.messages,
+              toolTrace,
+              toolCalls: modelErrorResult.calls,
+              round: toolTrace.length + 1,
+              toolLoopStartedAtMs,
+              ...(signal ? { signal } : {}),
+              assistantText: modelErrorResult.assistantText,
+            });
+            return { messages: forcedRound.messages };
+          }
+          if (modelErrorResult.kind === "rethrow") {
             return "rethrow";
           }
-          return fallbackResult.response;
+          return modelErrorResult.response;
         },
         // Capture the live message history for the post-loop finalization epilogue.
         // onTerminate / onModelCallError stash runState finalMessages on the closeout and
