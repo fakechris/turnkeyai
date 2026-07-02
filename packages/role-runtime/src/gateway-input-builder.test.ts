@@ -11,6 +11,7 @@ import {
   extractMentions,
   finalSynthesisFormatContract,
   hasToolDefinition,
+  replaceInitialPromptMessages,
   withoutToolUse,
 } from "./gateway-input-builder";
 
@@ -106,6 +107,24 @@ test("withoutToolUse strips tool definitions and forces no tool choice", () => {
   assert.equal(stripped.toolChoice, "none");
   assert.equal("tools" in stripped, false);
   assert.deepEqual(stripped.messages, gatewayInput.messages);
+});
+
+test("replaceInitialPromptMessages swaps prompt messages and preserves tool-loop history", () => {
+  const messages: LLMMessage[] = [
+    { role: "system", content: "old system" },
+    { role: "user", content: "old task" },
+    { role: "assistant", content: "used a tool" },
+    { role: "tool", content: "tool result", toolCallId: "toolu-1", name: "web_fetch" },
+  ];
+  const reducedPromptMessages: LLMMessage[] = [
+    { role: "system", content: "new system" },
+    { role: "user", content: "new task" },
+  ];
+
+  assert.deepEqual(
+    replaceInitialPromptMessages(messages, reducedPromptMessages),
+    [...reducedPromptMessages, messages[2], messages[3]],
+  );
 });
 
 test("finalSynthesisFormatContract preserves requested table columns", () => {

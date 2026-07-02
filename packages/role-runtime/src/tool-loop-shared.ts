@@ -3256,7 +3256,7 @@ function readApprovalId(value: Record<string, unknown> | undefined): string | nu
     : null;
 }
 
-function parseJsonObject(value: unknown): Record<string, unknown> | null {
+export function parseJsonObject(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "string" || value.trim().length === 0) return null;
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -3266,6 +3266,15 @@ function parseJsonObject(value: unknown): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+export function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  const error = new Error("operation aborted");
+  error.name = "AbortError";
+  throw error;
 }
 
 export function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {

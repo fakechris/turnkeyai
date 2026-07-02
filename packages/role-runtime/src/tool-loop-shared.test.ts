@@ -9,6 +9,8 @@ import {
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
   collectApprovalWaitTimeoutRuntimeEvidence,
+  parseJsonObject,
+  throwIfAborted,
 } from "./tool-loop-shared";
 
 function packet(taskPrompt: string, outputContract = ""): RolePromptPacket {
@@ -166,4 +168,22 @@ test("buildLocalEvidenceCloseout preserves requested table columns from generic 
   assert.match(result.text, /是（页面含模型与价格）/);
   assert.match(result.text, /\$0\.10\/1M/);
   assert.match(result.text, /\$0\.40\/1M/);
+});
+
+test("parseJsonObject parses objects only", () => {
+  assert.deepEqual(parseJsonObject('{"status":"ok"}'), { status: "ok" });
+  assert.equal(parseJsonObject("[]"), null);
+  assert.equal(parseJsonObject("not json"), null);
+  assert.equal(parseJsonObject(""), null);
+});
+
+test("throwIfAborted rethrows a stable AbortError", () => {
+  const controller = new AbortController();
+  assert.doesNotThrow(() => throwIfAborted(controller.signal));
+
+  controller.abort("stop");
+  assert.throws(
+    () => throwIfAborted(controller.signal),
+    (error) => error instanceof Error && error.name === "AbortError",
+  );
 });

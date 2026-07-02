@@ -1,4 +1,6 @@
 import type { RoleActivationInput, TeamMessage } from "@turnkeyai/core-types/team";
+import type { RoleToolExecutionResult } from "./tool-use";
+import { parseSessionToolResult } from "./session-tool-result-protocol";
 
 export interface NativeToolTrace {
   rounds: NativeToolRoundTrace[];
@@ -29,6 +31,39 @@ export interface NativeToolProgressTrace {
   summary: string;
   detail?: Record<string, unknown>;
   ts: number;
+}
+
+export function canonicalizeSessionToolTraceCalls(
+  roundTrace: NativeToolRoundTrace,
+  toolResults: RoleToolExecutionResult[],
+): boolean {
+  let changed = false;
+  for (const result of toolResults) {
+    if (
+      result.toolName !== "sessions_send" &&
+      result.toolName !== "sessions_history"
+    ) {
+      continue;
+    }
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed?.session_key) {
+      continue;
+    }
+    const call = roundTrace.calls.find((item) => item.id === result.toolCallId);
+    if (!call || call.input.session_key === parsed.session_key) {
+      continue;
+    }
+    call.input = {
+      ...call.input,
+      session_key: parsed.session_key,
+    };
+    changed = true;
+  }
+  return changed;
+}
+
+export function countNativeToolCalls(rounds: NativeToolRoundTrace[]): number {
+  return rounds.reduce((sum, round) => sum + round.calls.length, 0);
 }
 
 export function buildNativeToolMessages(

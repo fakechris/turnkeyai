@@ -176,6 +176,14 @@ export function withoutToolUse(input: GenerateTextInput): GenerateTextInput {
   };
 }
 
+export function replaceInitialPromptMessages(
+  messages: LLMMessage[],
+  reducedPromptMessages: LLMMessage[],
+): LLMMessage[] {
+  const toolLoopHistory = messages.slice(2);
+  return [...reducedPromptMessages, ...toolLoopHistory];
+}
+
 export function extractMentions(content: string): RoleId[] {
   return [...content.matchAll(/@\{(?<roleId>[^}]+)\}/g)]
     .map((match) => match.groups?.roleId)

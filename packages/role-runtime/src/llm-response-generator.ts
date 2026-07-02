@@ -24,6 +24,7 @@ import {
   extractMentions,
   finalSynthesisFormatContract,
   hasToolDefinition,
+  replaceInitialPromptMessages,
   withoutToolUse,
 } from "./gateway-input-builder";
 import {
@@ -41,7 +42,9 @@ import {
   type ModelCallBoundaryTrace,
 } from "./model-call-trace";
 import {
+  canonicalizeSessionToolTraceCalls,
   buildNativeToolMessages,
+  countNativeToolCalls,
   type NativeToolRoundTrace,
 } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
@@ -178,7 +181,7 @@ import {
   maybeRedactForbiddenLocalUrls,
   mentionsPendingApproval,
   mentionsTimeout,
-  readMessageContentText,
+  parseJsonObject,
   readSessionKeyFromToolInput,
   readStringField,
   readStringInput,
@@ -222,6 +225,7 @@ import {
   toNativeToolProgressTrace,
   toNativeToolResultTrace,
   toolTraceHasCall,
+  throwIfAborted,
   withFinalToolRoundWarning,
   expectsExactFinalAnswerShape,
 } from "./tool-loop-shared";
@@ -261,7 +265,6 @@ import type {
   PreCompactionMemoryFlusher,
   PreCompactionMemoryFlushResult,
 } from "./pre-compaction-memory-flusher";
-import { parseSessionToolResult } from "./session-tool-result-protocol";
 
 type ToolLoopCloseoutReason =
   | "pseudo_tool_call"
@@ -600,7 +603,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolLoopCloseout = {
           reason: "tool_evidence_fallback",
           maxRounds,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: true,
         };
@@ -715,7 +718,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         activeToolLoop &&
         recoveryToolBudget &&
         toolCalls.length === 0 &&
-        recoveryToolCallsBeforeActivation + countToolCalls(toolTrace) >=
+        recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace) >=
           recoveryToolBudget.maxToolCalls &&
         shouldRepairFinalRecoveryBudgetCloseout({
           messages,
@@ -780,7 +783,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
       if (activeToolLoop && recoveryToolBudget) {
         const usedToolCalls =
-          recoveryToolCallsBeforeActivation + countToolCalls(toolTrace);
+          recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace);
         const remainingToolCalls = recoveryToolBudget.maxToolCalls - usedToolCalls;
         if (remainingToolCalls <= 0) {
           toolLoopCloseout = {
@@ -860,7 +863,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolLoopCloseout = {
           reason: "operator_cancelled",
           maxRounds,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
@@ -1147,7 +1150,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolLoopCloseout = {
           reason: "tool_evidence_fallback",
           maxRounds,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: true,
         };
@@ -1222,7 +1225,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolLoopCloseout = {
           reason: "pseudo_tool_call",
           maxRounds,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
@@ -1291,7 +1294,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         if (activeToolLoop) {
           if (
             recoveryToolBudget &&
-            recoveryToolCallsBeforeActivation + countToolCalls(toolTrace) >=
+            recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace) >=
               recoveryToolBudget.maxToolCalls &&
             shouldRepairFinalRecoveryBudgetCloseout({
               messages,
@@ -1473,7 +1476,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           maxRounds,
           maxWallClockMs,
           pendingToolCallCount: toolCalls.length,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
@@ -1537,7 +1540,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           reason: "round_limit",
           maxRounds,
           pendingToolCallCount: toolCalls.length,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
@@ -1574,7 +1577,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           maxRounds,
           pendingToolCallCount: toolCalls.length,
           toolName: repeatedFailure.toolName,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
@@ -1616,7 +1619,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           maxRounds,
           pendingToolCallCount: toolCalls.length,
           toolName: repeatedSessionInspection.toolName,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
@@ -1656,7 +1659,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           maxRounds,
           pendingToolCallCount: toolCalls.length,
           toolName: excessiveSessionContinuation.toolName,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
@@ -1915,7 +1918,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           maxRounds,
           toolName: completedSession.toolName,
           finalContentCount: completedSession.finalContents.length,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: true,
         };
@@ -2409,7 +2412,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ? {}
             : { timeoutSeconds: timeoutSignal.timeoutSeconds }),
           evidenceAvailable: timeoutSignal.evidenceAvailable,
-          toolCallCount: countToolCalls(toolTrace),
+          toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
         };
         throwIfAborted(input.signal);
@@ -2852,7 +2855,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             calls: normalized,
             recoveryToolBudget,
             usedToolCalls:
-              recoveryToolCallsBeforeActivation + countToolCalls(toolTrace),
+              recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace),
           });
         },
         // Stage 8B (Batch E — T7 execution budget plane): the per-turn tool-call
@@ -3017,7 +3020,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // 1. recovery_tool_budget — the final recovery attempt's tool budget is
           //    exhausted (fires regardless of pending-call count).
           const usedToolCalls =
-            recoveryToolCallsBeforeActivation + countToolCalls(toolTrace);
+            recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace);
           const recoveryBudgetCloseout =
             closeoutPolicy.evaluateRecoveryToolBudget({
               recoveryToolBudget,
@@ -3085,7 +3088,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   maxRounds,
                   maxWallClockMs: activeMaxWallClockMs,
                   pendingToolCallCount,
-                  usedToolCalls: countToolCalls(toolTrace),
+                  usedToolCalls: countNativeToolCalls(toolTrace),
                   roundCount,
                   evidenceAvailable: hasUsableEvidence(toolTrace),
                 }),
@@ -3111,14 +3114,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               sessionContext: `${packet.taskPrompt}\n${buildContinuationDirectiveContext(packet.taskPrompt, state.messages)}`,
               toolTrace,
               maxRounds,
-              usedToolCalls: countToolCalls(toolTrace),
+              usedToolCalls: countNativeToolCalls(toolTrace),
               roundCount,
               evidenceAvailable: hasUsableEvidence(toolTrace),
               buildRoundLimitCloseoutSnapshot: () =>
                 executionBudget.buildRoundLimitCloseoutSnapshot({
                   maxRounds,
                   pendingToolCallCount: calls.length,
-                  usedToolCalls: countToolCalls(toolTrace),
+                  usedToolCalls: countNativeToolCalls(toolTrace),
                   roundCount,
                   evidenceAvailable: hasUsableEvidence(toolTrace),
                 }),
@@ -3466,7 +3469,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ? {
                   maxToolCalls: recoveryToolBudget.maxToolCalls,
                   usedToolCalls:
-                    recoveryToolCallsBeforeActivation + countToolCalls(toolTrace),
+                    recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace),
                 }
               : null,
             messages: state.messages,
@@ -3910,7 +3913,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             const fallbackCloseout: ToolLoopCloseoutMetadata = {
               reason: "tool_evidence_fallback",
               maxRounds,
-              toolCallCount: countToolCalls(toolTrace),
+              toolCallCount: countNativeToolCalls(toolTrace),
               roundCount: toolTrace.length,
               evidenceAvailable: true,
             };
@@ -3937,7 +3940,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // metadata it produced inline; the round_limit defaults remain the
           // fallback for any reason without a bespoke branch. completed/timeout
           // read the signal onAfterExecute stashed on `run`.
-          const usedToolCalls = countToolCalls(toolTrace);
+          const usedToolCalls = countNativeToolCalls(toolTrace);
           const roundCount = toolTrace.length;
           const evidenceAvailable = hasUsableEvidence(toolTrace);
           const pendingCloseout = runState.pendingCloseout();
@@ -4171,7 +4174,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           const fallbackCloseout: ToolLoopCloseoutMetadata = {
             reason: "tool_evidence_fallback",
             maxRounds,
-            toolCallCount: countToolCalls(toolTrace),
+            toolCallCount: countNativeToolCalls(toolTrace),
             roundCount: toolTrace.length,
             evidenceAvailable: true,
           };
@@ -5415,70 +5418,8 @@ interface ReductionEnvelopeSnapshot {
   };
 }
 
-function canonicalizeSessionToolTraceCalls(
-  roundTrace: NativeToolRoundTrace,
-  toolResults: RoleToolExecutionResult[],
-): boolean {
-  let changed = false;
-  for (const result of toolResults) {
-    if (
-      result.toolName !== "sessions_send" &&
-      result.toolName !== "sessions_history"
-    ) {
-      continue;
-    }
-    const parsed = parseSessionToolResult(result.content);
-    if (!parsed?.session_key) {
-      continue;
-    }
-    const call = roundTrace.calls.find((item) => item.id === result.toolCallId);
-    if (!call || call.input.session_key === parsed.session_key) {
-      continue;
-    }
-    call.input = {
-      ...call.input,
-      session_key: parsed.session_key,
-    };
-    changed = true;
-  }
-  return changed;
-}
-
 function allowsSupplementalBrowserProbe(packet: RolePromptPacket): boolean {
   const unavailable =
     packet.capabilityInspection?.unavailableCapabilities ?? [];
   return !unavailable.some((capability) => /\bbrowser\b/i.test(capability));
-}
-
-function parseJsonObject(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "string" || value.trim().length === 0) return null;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) {
-    return;
-  }
-  const error = new Error("operation aborted");
-  error.name = "AbortError";
-  throw error;
-}
-
-function countToolCalls(rounds: NativeToolRoundTrace[]): number {
-  return rounds.reduce((sum, round) => sum + round.calls.length, 0);
-}
-
-function replaceInitialPromptMessages(
-  messages: LLMMessage[],
-  reducedPromptMessages: LLMMessage[],
-): LLMMessage[] {
-  const toolLoopHistory = messages.slice(2);
-  return [...reducedPromptMessages, ...toolLoopHistory];
 }
