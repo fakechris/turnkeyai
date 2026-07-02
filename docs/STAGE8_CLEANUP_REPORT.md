@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `7721010f505114a9fed24032c5c88f7aabea86cb`
+**Code HEAD before this docs-only report:** `d4eb8ca4b28f549598d33a206b98fb950db8aef0`
 **Date:** 2026-07-02
 
 ## Summary
@@ -78,6 +78,11 @@ could not move the normalizer without making the inline parity reference import 
   Requested table-column and provider-support-schema task facts now live in
   neutral `task-facts-shared.ts`; `react-engine/task-facts.ts` is now a
   compatibility wrapper for engine imports.
+  Missing requested-column repair, extraneous provider-schema repair,
+  awaiting-context setup-only suppression, and repair marker insertion now also
+  live in that neutral TaskFacts owner. The adapter, `RepairPolicyRegistry`, and
+  `CompletedCloseoutController` all call the same implementation instead of
+  carrying duplicate helper copies.
   The final allowed tool-round warning now routes through that controller while
   the warning text itself lives in neutral shared code used by inline and engine.
   Final-recovery budget parsing, prior-call counting, closeout reason lines, and
@@ -174,6 +179,7 @@ of controller actions.
 | `3f33d7d` | Move model-call boundary trace construction and model-use summary aggregation into neutral `model-call-trace.ts`; add focused trace tests. |
 | `4529706` | Move gateway input construction, final synthesis format-contract helpers, no-tool transforms, mention extraction, and requested three-line label normalization into neutral `gateway-input-builder.ts`; add focused builder tests. |
 | `7721010` | Move tool-result evidence collectors, completed-session/timeout readers, session-history evidence extraction, resumable partial-session detection, and usable-evidence checks into neutral `tool-result-evidence.ts`; add focused evidence tests. |
+| `d4eb8ca` | Move missing requested-table repair helpers, extraneous provider-schema repair helpers, awaiting-context no-tool suppression, and repair marker insertion into neutral TaskFacts shared code; remove duplicate adapter/registry/controller implementations. |
 
 ## Current Extracted Implementation
 
@@ -257,9 +263,11 @@ Real implementation now exists in:
   approval `permission_result` continuation, plus post-execute missing
   approval-gate repair continuation.
 - `task-facts-shared.ts` for requested table-column inference, markdown table
-  header matching, provider search/pricing evidence-column inference, and
-  provider-support-schema request/result detection used by the adapter and
-  repair registry.
+  header matching, provider search/pricing evidence-column inference,
+  provider-support-schema request/result detection, missing requested-column
+  repair helpers, extraneous provider-schema repair helpers, awaiting-context
+  setup-only no-tool suppression, and repair marker insertion used by the
+  adapter, repair registry, and completed-closeout controller.
 - `react-engine/task-facts.ts` as a compatibility wrapper around the neutral
   TaskFacts implementation for engine import sites.
 - `tool-history-pruning.ts` for request-envelope tool-result pruning, older
@@ -319,13 +327,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/tool-loop-shared.test.ts packages/role-runtime/src/react-engine/task-facts.test.ts` | 9 / 9 |
-| `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 4 / 4 |
-| `npx tsx --test packages/role-runtime/src/tool-definition-filter.test.ts` | 5 / 5 |
-| `npx tsx --test packages/role-runtime/src/model-call-trace.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 5 / 5 |
-| `npx tsx --test packages/role-runtime/src/tool-result-evidence.test.ts` | 5 / 5 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 141 / 141 |
+| `npx tsx --test packages/role-runtime/src/react-engine/task-facts.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 57 / 57 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 144 / 144 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -339,7 +342,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that sixty-one
+root plus several policy-heavy hook bodies. The main improvement is that sixty-two
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -441,6 +444,11 @@ Stage 8 boundaries/slices are now real:
 - requested table-column and provider-support-schema facts route through
   neutral `TaskFacts`, including prompt/message/activation context extraction
   and markdown table header matching.
+- missing requested-column repair helpers, extraneous provider-schema repair
+  helpers, awaiting-context setup-only no-tool suppression, and repair marker
+  insertion route through neutral `TaskFacts`; the adapter, repair registry, and
+  completed-closeout controller no longer carry duplicate helper
+  implementations.
 - missing requested table-column repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
