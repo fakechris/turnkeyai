@@ -106,3 +106,104 @@ test("ExecutionBudgetController treats invalid per-round caps as no cap", () => 
   assert.equal(decision.executable, calls);
   assert.deepEqual(decision.rejected, []);
 });
+
+test("ExecutionBudgetController serializes order-dependent tool batches", async () => {
+  const controller = createExecutionBudgetController();
+  const calls = [
+    { ...call("a"), name: "permission_query" },
+    call("b"),
+  ];
+  let active = 0;
+  let maxActive = 0;
+
+  await controller.runToolBatch({
+    calls,
+    ctx: {},
+    now: () => 0,
+    toolLoopStartedAtMs: 0,
+    maxParallelToolCalls: 2,
+    execute: async (toolCall) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active -= 1;
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "ok",
+      };
+    },
+  });
+
+  assert.equal(maxActive, 1);
+});
+
+test("ExecutionBudgetController runs concurrency-safe chunks concurrently", async () => {
+  const controller = createExecutionBudgetController();
+  const calls = [call("a"), call("b"), call("c")];
+  let active = 0;
+  let maxActive = 0;
+
+  await controller.runToolBatch({
+    calls,
+    ctx: {},
+    now: () => 0,
+    toolLoopStartedAtMs: 0,
+    maxParallelToolCalls: 2,
+    execute: async (toolCall) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active -= 1;
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "ok",
+      };
+    },
+  });
+
+  assert.equal(maxActive, 2);
+});
+
+test("ExecutionBudgetController converts non-abort tool failures to error results", async () => {
+  const controller = createExecutionBudgetController();
+
+  const results = await controller.runToolBatch({
+    calls: [call("a")],
+    ctx: {},
+    now: () => 0,
+    toolLoopStartedAtMs: 0,
+    execute: async () => {
+      throw new Error("tool exploded");
+    },
+  });
+
+  assert.deepEqual(results, [
+    {
+      toolCallId: "a",
+      toolName: "tool_a",
+      isError: true,
+      content: "tool exploded",
+    },
+  ]);
+});
+
+test("ExecutionBudgetController rethrows abort tool failures", async () => {
+  const controller = createExecutionBudgetController();
+  const abort = new Error("aborted");
+  abort.name = "AbortError";
+
+  await assert.rejects(
+    controller.runToolBatch({
+      calls: [call("a")],
+      ctx: {},
+      now: () => 0,
+      toolLoopStartedAtMs: 0,
+      execute: async () => {
+        throw abort;
+      },
+    }),
+    (error) => error === abort,
+  );
+});

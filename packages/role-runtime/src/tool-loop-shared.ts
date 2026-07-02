@@ -4,6 +4,7 @@ import type {
   LLMToolCall,
 } from "@turnkeyai/llm-adapter/index";
 import type { ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
+import { MAX_BROWSER_OPEN_TIMEOUT_MS } from "@turnkeyai/core-types/team";
 import type {
   NativeToolProgressTrace,
   NativeToolResultTrace,
@@ -3370,6 +3371,169 @@ export function buildToolCallLimitExceededResult(
       },
     ],
   };
+}
+
+export function resolveEffectiveToolLoopWallClockMs(input: {
+  maxWallClockMs?: number;
+  toolCalls: LLMToolCall[];
+}): number | undefined {
+  const maxWallClockMs = input.maxWallClockMs;
+  const configured =
+    typeof maxWallClockMs === "number" &&
+    Number.isFinite(maxWallClockMs) &&
+    maxWallClockMs > 0
+      ? Math.floor(maxWallClockMs)
+      : undefined;
+  if (input.toolCalls.some(isBrowserSessionToolCall)) {
+    return Math.max(
+      configured ?? 0,
+      DEFAULT_BROWSER_SESSION_TOOL_LOOP_WALL_CLOCK_MS,
+    );
+  }
+  if (!input.toolCalls.some(isSlowLoopbackBrowserSessionToolCall)) {
+    return configured;
+  }
+  return Math.max(configured ?? 0, MAX_BROWSER_OPEN_TIMEOUT_MS);
+}
+
+export function createToolExecutionSignal(input: {
+  parentSignal?: AbortSignal;
+  maxWallClockMs?: number;
+  elapsedMs: number;
+}): { signal?: AbortSignal; dispose(): void } {
+  const maxWallClockMs = input.maxWallClockMs;
+  const hasWallClockBudget =
+    typeof maxWallClockMs === "number" &&
+    Number.isFinite(maxWallClockMs) &&
+    maxWallClockMs > 0;
+  if (!hasWallClockBudget) {
+    return {
+      ...(input.parentSignal ? { signal: input.parentSignal } : {}),
+      dispose() {},
+    };
+  }
+
+  const controller = new AbortController();
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let parentAbortHandler: (() => void) | null = null;
+  const abort = (reason: unknown) => {
+    if (!controller.signal.aborted) {
+      controller.abort(reason);
+    }
+  };
+
+  if (input.parentSignal?.aborted) {
+    abort(input.parentSignal.reason ?? "operation aborted");
+  } else if (input.parentSignal) {
+    parentAbortHandler = () =>
+      abort(input.parentSignal?.reason ?? "operation aborted");
+    input.parentSignal.addEventListener("abort", parentAbortHandler, {
+      once: true,
+    });
+  }
+
+  const remainingMs = Math.max(0, Math.ceil(maxWallClockMs - input.elapsedMs));
+  timeoutHandle = setTimeout(
+    () =>
+      abort(
+        `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
+      ),
+    remainingMs,
+  );
+
+  return {
+    signal: controller.signal,
+    dispose() {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      if (parentAbortHandler && input.parentSignal) {
+        input.parentSignal.removeEventListener("abort", parentAbortHandler);
+      }
+    },
+  };
+}
+
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+export function formatDurationMs(ms: number): string {
+  const seconds = ms / 1_000;
+  if (seconds < 60) {
+    return `${Number(seconds.toFixed(3))}s`;
+  }
+  const minutes = seconds / 60;
+  if (minutes < 60) {
+    return `${Number(minutes.toFixed(2))}m`;
+  }
+  const hours = minutes / 60;
+  return `${Number(hours.toFixed(2))}h`;
+}
+
+const DEFAULT_BROWSER_SESSION_TOOL_LOOP_WALL_CLOCK_MS = 18 * 60 * 1000;
+
+function isBrowserSessionToolCall(call: LLMToolCall): boolean {
+  if (call.name !== "sessions_spawn" && call.name !== "sessions_send") {
+    return false;
+  }
+  const record = readRecord(call.input);
+  if (!record) {
+    return false;
+  }
+  if (call.name === "sessions_spawn") {
+    return record.agent_id === "browser";
+  }
+  const sessionKey = readTrimmedString(record.session_key);
+  return Boolean(sessionKey && /\bworker:browser\b/i.test(sessionKey));
+}
+
+function isSlowLoopbackBrowserSessionToolCall(call: LLMToolCall): boolean {
+  if (call.name !== "sessions_spawn" && call.name !== "sessions_send") {
+    return false;
+  }
+  const record = readRecord(call.input);
+  if (!record) {
+    return false;
+  }
+  const agentId = typeof record.agent_id === "string" ? record.agent_id : null;
+  if (call.name === "sessions_spawn" && agentId !== "browser") {
+    return false;
+  }
+  const text =
+    call.name === "sessions_spawn"
+      ? readTrimmedString(record.task)
+      : readTrimmedString(record.message);
+  if (!text || !isSlowDiagnosticText(text)) {
+    return false;
+  }
+  const urls = text.match(/https?:\/\/[^\s)]+/gi) ?? [];
+  return urls.some(isLoopbackUrl);
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readTrimmedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isSlowDiagnosticText(value: string): boolean {
+  return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(
+    value,
+  );
+}
+
+function isLoopbackUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw.replace(/["'`,;:.!?。，“”‘’！？：]+$/g, ""));
+    return isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function readStringField(value: unknown): string | null {

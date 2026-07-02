@@ -6,7 +6,6 @@ import type {
   RuntimeProgressRecorder,
   TeamMessageStore,
 } from "@turnkeyai/core-types/team";
-import { MAX_BROWSER_OPEN_TIMEOUT_MS } from "@turnkeyai/core-types/team";
 import type {
   GenerateTextInput,
   GenerateTextResult,
@@ -58,6 +57,7 @@ import {
   buildContinuationDirectiveContext,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
+  createToolExecutionSignal,
   countCompletedSessionEvidenceResults,
   dedupeStrings,
   disclaimsApprovalGatedBrowserAction,
@@ -70,11 +70,13 @@ import {
   extractSessionToolResultRecords,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
+  formatDurationMs,
   hasSessionTimeoutEvidence,
   hasTimeoutCloseoutGuidance,
   hasTimeoutContinuationGuidance,
   hasMissingApprovalGateRepairPrompt,
   hasPermissionGateEvidence,
+  isAbortError,
   inferIndependentEvidenceStreamCount,
   isBrowserSessionSpawn,
   isExplicitSessionContinuationRequest,
@@ -102,6 +104,7 @@ import {
   readStringInput,
   requestsApprovalGatedBrowserAction,
   requestsStatusVisibleTextEvidenceUrlLines,
+  resolveEffectiveToolLoopWallClockMs,
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
   shouldPreserveRecoveredTimeoutCloseout,
@@ -2823,77 +2826,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // uses, rather than refactoring that heavily-tested method. `calls` here is
         // already the executable subset (onBeforeExecute applied the per-turn cap).
         runToolBatch: async (calls, _runOne, hookCtx) => {
-          if (!activeToolLoop) {
-            return calls.map((call) => ({
-              toolCallId: call.id,
-              toolName: call.name,
-              isError: true,
-              content: `Unknown tool: ${call.name}`,
-            }));
-          }
-          const maxParallel =
-            typeof activeToolLoop.maxParallelToolCalls === "number" &&
-            Number.isFinite(activeToolLoop.maxParallelToolCalls) &&
-            activeToolLoop.maxParallelToolCalls > 0
-              ? Math.floor(activeToolLoop.maxParallelToolCalls)
-              : calls.length;
-          const step = Math.max(
-            1,
-            shouldSerializeToolBatch(calls) ? 1 : maxParallel,
-          );
-          const results: RoleToolExecutionResult[] = [];
-          for (let i = 0; i < calls.length; i += step) {
-            const chunk = calls.slice(i, i + step);
-            const wallClockMs = resolveEffectiveToolLoopWallClockMs({
-              ...(activeToolLoop.maxWallClockMs !== undefined
-                ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
-                : {}),
-              toolCalls: chunk,
-            });
-            const execSignal = createToolExecutionSignal({
-              elapsedMs: this.clock.now() - toolLoopStartedAtMs,
-              ...(hookCtx.signal ? { parentSignal: hookCtx.signal } : {}),
-              ...(wallClockMs !== undefined ? { maxWallClockMs: wallClockMs } : {}),
-            });
-            try {
-              const chunkResults = await Promise.all(
-                chunk.map(async (call) => {
-                  try {
-                    return await activeToolLoop.executor.execute({
-                      call,
-                      activation: hookCtx.activation,
-                      packet: hookCtx.packet,
-                      ...(execSignal.signal ? { signal: execSignal.signal } : {}),
-                    });
-                  } catch (error) {
-                    // Aborts (operator cancellation or a per-chunk wall-clock
-                    // timeout) MUST propagate, exactly like the inline
-                    // executeToolCalls catch (isAbortError → rethrow). Swallowing
-                    // an abort into an isError result would let the loop keep
-                    // making model/tool rounds past a cancellation or budget that
-                    // should have stopped it.
-                    if (isAbortError(error)) {
-                      throw error;
-                    }
-                    // A non-abort tool failure becomes an isError result the model
-                    // can observe, not a rejected (failed) response.
-                    return {
-                      toolCallId: call.id,
-                      toolName: call.name,
-                      isError: true,
-                      content: error instanceof Error ? error.message : String(error),
-                    };
-                  }
-                }),
-              );
-              results.push(...chunkResults);
-            } finally {
-              execSignal.dispose();
-            }
-          }
           // The over-cap skipped results are produced by onBeforeExecute (above) and
           // ordered by agent-core AFTER these executed results, matching inline.
-          return results;
+          return executionBudget.runToolBatch<RoleToolContext>({
+            calls,
+            ctx: hookCtx,
+            now: () => this.clock.now(),
+            toolLoopStartedAtMs,
+            ...(activeToolLoop?.maxParallelToolCalls === undefined
+              ? {}
+              : { maxParallelToolCalls: activeToolLoop.maxParallelToolCalls }),
+            ...(activeToolLoop?.maxWallClockMs === undefined
+              ? {}
+              : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
+            ...(activeToolLoop
+              ? {
+                  execute: (call, ctx, signal) =>
+                    activeToolLoop.executor.execute({
+                      call,
+                      activation: ctx.activation,
+                      packet: ctx.packet,
+                      ...(signal ? { signal } : {}),
+                    }),
+                }
+              : {}),
+          });
         },
         // Stage 7 S1: pre-execute tool suppression. When the model returns tool
         // calls on a setup-only "awaiting context" turn, the inline loop drops
@@ -9590,10 +9547,6 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   throw error;
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
 function deriveToolResultEnvelope(messages: LLMMessage[]): {
   toolResultCount: number;
   toolResultBytes: number;
@@ -9605,151 +9558,6 @@ function deriveToolResultEnvelope(messages: LLMMessage[]): {
       JSON.stringify(toolMessages.map((message) => message.content)),
       "utf8",
     ),
-  };
-}
-
-function resolveEffectiveToolLoopWallClockMs(input: {
-  maxWallClockMs?: number;
-  toolCalls: LLMToolCall[];
-}): number | undefined {
-  const maxWallClockMs = input.maxWallClockMs;
-  const configured =
-    typeof maxWallClockMs === "number" &&
-    Number.isFinite(maxWallClockMs) &&
-    maxWallClockMs > 0
-      ? Math.floor(maxWallClockMs)
-      : undefined;
-  if (input.toolCalls.some(isBrowserSessionToolCall)) {
-    return Math.max(configured ?? 0, DEFAULT_BROWSER_SESSION_TOOL_LOOP_WALL_CLOCK_MS);
-  }
-  if (!input.toolCalls.some(isSlowLoopbackBrowserSessionToolCall)) {
-    return configured;
-  }
-  return Math.max(configured ?? 0, MAX_BROWSER_OPEN_TIMEOUT_MS);
-}
-
-const DEFAULT_BROWSER_SESSION_TOOL_LOOP_WALL_CLOCK_MS = 18 * 60 * 1000;
-
-function isBrowserSessionToolCall(call: LLMToolCall): boolean {
-  if (call.name !== "sessions_spawn" && call.name !== "sessions_send") {
-    return false;
-  }
-  const record = isRecord(call.input) ? call.input : null;
-  if (!record) {
-    return false;
-  }
-  if (call.name === "sessions_spawn") {
-    return record.agent_id === "browser";
-  }
-  const sessionKey = readString(record.session_key);
-  return Boolean(sessionKey && /\bworker:browser\b/i.test(sessionKey));
-}
-
-function isSlowLoopbackBrowserSessionToolCall(call: LLMToolCall): boolean {
-  if (call.name !== "sessions_spawn" && call.name !== "sessions_send") {
-    return false;
-  }
-  const record = isRecord(call.input) ? call.input : null;
-  if (!record) {
-    return false;
-  }
-  const agentId = typeof record.agent_id === "string" ? record.agent_id : null;
-  if (call.name === "sessions_spawn" && agentId !== "browser") {
-    return false;
-  }
-  const text =
-    call.name === "sessions_spawn"
-      ? readString(record.task)
-      : readString(record.message);
-  if (!text || !isSlowDiagnosticText(text)) {
-    return false;
-  }
-  const urls = text.match(/https?:\/\/[^\s)]+/gi) ?? [];
-  return urls.some(isLoopbackUrl);
-}
-
-function readString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isSlowDiagnosticText(value: string): boolean {
-  return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(
-    value,
-  );
-}
-
-function isLoopbackUrl(raw: string): boolean {
-  try {
-    const parsed = new URL(raw.replace(/["'`,;:.!?。，“”‘’！？：]+$/g, ""));
-    return (
-      parsed.hostname === "127.0.0.1" ||
-      parsed.hostname === "localhost" ||
-      parsed.hostname === "::1"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function createToolExecutionSignal(input: {
-  parentSignal?: AbortSignal;
-  maxWallClockMs?: number;
-  elapsedMs: number;
-}): { signal?: AbortSignal; dispose(): void } {
-  const maxWallClockMs = input.maxWallClockMs;
-  const hasWallClockBudget =
-    typeof maxWallClockMs === "number" &&
-    Number.isFinite(maxWallClockMs) &&
-    maxWallClockMs > 0;
-  if (!hasWallClockBudget) {
-    return {
-      ...(input.parentSignal ? { signal: input.parentSignal } : {}),
-      dispose() {},
-    };
-  }
-
-  const controller = new AbortController();
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  let parentAbortHandler: (() => void) | null = null;
-  const abort = (reason: unknown) => {
-    if (!controller.signal.aborted) {
-      controller.abort(reason);
-    }
-  };
-
-  if (input.parentSignal?.aborted) {
-    abort(input.parentSignal.reason ?? "operation aborted");
-  } else if (input.parentSignal) {
-    parentAbortHandler = () =>
-      abort(input.parentSignal?.reason ?? "operation aborted");
-    input.parentSignal.addEventListener("abort", parentAbortHandler, {
-      once: true,
-    });
-  }
-
-  const remainingMs = Math.max(0, Math.ceil(maxWallClockMs - input.elapsedMs));
-  timeoutHandle = setTimeout(
-    () =>
-      abort(
-        `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
-      ),
-    remainingMs,
-  );
-
-  return {
-    signal: controller.signal,
-    dispose() {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-      if (parentAbortHandler && input.parentSignal) {
-        input.parentSignal.removeEventListener("abort", parentAbortHandler);
-      }
-    },
   };
 }
 
@@ -10797,19 +10605,6 @@ function isLikelyFailedToolContent(content: string): boolean {
       content,
     ) || /^tool_call_.*(?:skipp|error|fail)/i.test(content.trim())
   );
-}
-
-function formatDurationMs(ms: number): string {
-  const seconds = ms / 1_000;
-  if (seconds < 60) {
-    return `${Number(seconds.toFixed(3))}s`;
-  }
-  const minutes = seconds / 60;
-  if (minutes < 60) {
-    return `${Number(minutes.toFixed(2))}m`;
-  }
-  const hours = minutes / 60;
-  return `${Number(hours.toFixed(2))}h`;
 }
 
 function replaceInitialPromptMessages(

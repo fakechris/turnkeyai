@@ -1,7 +1,13 @@
 import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
-import { buildToolCallLimitExceededResult } from "../tool-loop-shared";
+import { shouldSerializeToolBatch } from "../react/predicates";
+import {
+  buildToolCallLimitExceededResult,
+  createToolExecutionSignal,
+  isAbortError,
+  resolveEffectiveToolLoopWallClockMs,
+} from "../tool-loop-shared";
 
 // Stage 8 engine cleanup — ExecutionBudgetController.
 //
@@ -33,6 +39,26 @@ export interface LimitToolCallsPerRoundInput {
 export interface ToolCallAdmissionDecision {
   executable: LLMToolCall[];
   rejected: ToolResult[];
+}
+
+export interface RunToolBatchContext {
+  signal?: AbortSignal;
+}
+
+export interface RunToolBatchInput<
+  Ctx extends RunToolBatchContext = RunToolBatchContext,
+> {
+  calls: LLMToolCall[];
+  ctx: Ctx;
+  now(): number;
+  toolLoopStartedAtMs: number;
+  maxParallelToolCalls?: number;
+  maxWallClockMs?: number;
+  execute?: (
+    call: LLMToolCall,
+    ctx: Ctx,
+    signal: AbortSignal | undefined,
+  ) => Promise<ToolResult>;
 }
 
 export class ExecutionBudgetController {
@@ -71,8 +97,67 @@ export class ExecutionBudgetController {
             maxToolCallsPerRound,
             requestedToolCalls,
           ),
-        ),
+      ),
     };
+  }
+
+  async runToolBatch<Ctx extends RunToolBatchContext>(
+    input: RunToolBatchInput<Ctx>,
+  ): Promise<ToolResult[]> {
+    const execute =
+      input.execute ??
+      (async (call: LLMToolCall): Promise<ToolResult> => ({
+        toolCallId: call.id,
+        toolName: call.name,
+        isError: true,
+        content: `Unknown tool: ${call.name}`,
+      }));
+    const maxParallel = resolvePositiveIntegerLimit(
+      input.maxParallelToolCalls,
+      input.calls.length,
+    );
+    const step = Math.max(
+      1,
+      shouldSerializeToolBatch(input.calls) ? 1 : maxParallel,
+    );
+    const results: ToolResult[] = [];
+    for (let index = 0; index < input.calls.length; index += step) {
+      const chunk = input.calls.slice(index, index + step);
+      const wallClockMs = resolveEffectiveToolLoopWallClockMs({
+        ...(input.maxWallClockMs === undefined
+          ? {}
+          : { maxWallClockMs: input.maxWallClockMs }),
+        toolCalls: chunk,
+      });
+      const execSignal = createToolExecutionSignal({
+        elapsedMs: input.now() - input.toolLoopStartedAtMs,
+        ...(input.ctx.signal ? { parentSignal: input.ctx.signal } : {}),
+        ...(wallClockMs === undefined ? {} : { maxWallClockMs: wallClockMs }),
+      });
+      try {
+        const chunkResults = await Promise.all(
+          chunk.map(async (call) => {
+            try {
+              return await execute(call, input.ctx, execSignal.signal);
+            } catch (error) {
+              if (isAbortError(error)) {
+                throw error;
+              }
+              return {
+                toolCallId: call.id,
+                toolName: call.name,
+                isError: true,
+                content: error instanceof Error ? error.message : String(error),
+              };
+            }
+          }),
+        );
+        results.push(...chunkResults);
+      } finally {
+        execSignal.dispose();
+      }
+    }
+    return results;
   }
 }
 
