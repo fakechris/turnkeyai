@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `a92c668a390322ee30769ad562255d18981e08ad`
+**Code HEAD before this docs-only report:** `09a6dc232b1ce57669e2f63caf0bfad4e404f0f9`
 **Date:** 2026-07-02
 
 ## Summary
@@ -50,6 +50,9 @@ could not move the normalizer without making the inline parity reference import 
   `false_evidence_blocked_synthesis`. The completed-session repair loop now
   routes through `react-engine/completed-closeout-controller.ts`, with model
   calls and browser/product-signal re-arm predicates injected by the adapter.
+  The completed-closeout post-synthesis visibility chain now routes through that
+  controller too, while shared browser recovery/failure-bucket and timeout
+  continuation helpers remain neutral for inline + engine parity.
   Requested table-column and provider-support-schema task facts now live in
   `react-engine/task-facts.ts` and are shared by the adapter and repair
   registry.
@@ -71,9 +74,9 @@ could not move the normalizer without making the inline parity reference import 
   helper code.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
-still an adapter-heavy bridge and still owns completed-closeout visibility
-appenders, remaining evidence/task-fact behavior, terminal closeout synthesis
-application, and adapter-side application of controller actions.
+still an adapter-heavy bridge and still owns remaining evidence/task-fact behavior,
+terminal closeout synthesis application, and adapter-side application of
+controller actions.
 
 ## Commits Added After The Blocked Report
 
@@ -114,6 +117,7 @@ application, and adapter-side application of controller actions.
 | `cda764e` | Extract source-evidence carry-forward and weak-evidence synthesis repair selections into `RepairPolicyRegistry`; move their evidence collectors, detectors, and prompts into neutral shared code. |
 | `966082a` | Extract completed synthesis repair selections into `RepairPolicyRegistry`; move completed-only timeout guidance, next-action, deliverable, browser-dimension, and false-blocked predicates/prompts into neutral shared code. |
 | `a92c668` | Extract the completed-session repair loop into `CompletedCloseoutController`; keep model calls and forced browser/product-signal re-arm predicates injected from the adapter. |
+| `09a6dc2` | Extract completed-closeout post-synthesis visibility into `CompletedCloseoutController`; move browser recovery visibility and timeout continuation appender helpers into neutral shared code. |
 
 ## Current Extracted Implementation
 
@@ -171,7 +175,10 @@ Real implementation now exists in:
   completed-session repair loop, completed-only round-0 gating, round>0
   browser/product-signal re-arm precedence, repair marker insertion, memory
   flush/reduction carry-forward, and one clean tool-free cleanup synthesis when
-  a completed repair produces tool-call artifact text.
+  a completed repair produces tool-call artifact text, plus the completed
+  closeout post-synthesis visibility chain for browser recovery visibility,
+  browser failure-bucket visibility, recovered-timeout/continuation visibility,
+  and final forbidden local URL redaction.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -201,7 +208,9 @@ Real implementation now exists in:
   requested next-action, required final deliverable, browser-dimension, and
   false blocked-evidence synthesis predicates/prompts, cancelled-session closeout detection, pseudo
   tool-call markup detection, repeated session inspection/continuation
-  detectors, and completed browser-session evidence checks.
+  detectors, completed browser-session evidence checks, browser recovery
+  summary collection/visibility helpers, and the timeout continuation visibility
+  appender.
 
 Still shell/deferred or partial:
 
@@ -215,10 +224,10 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 2 / 2 |
+| `npx tsx --test packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 4 / 4 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 41 / 41 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 127 / 127 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 129 / 129 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -232,7 +241,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that forty-five
+root plus several policy-heavy hook bodies. The main improvement is that forty-six
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -329,6 +338,10 @@ Stage 8 boundaries/slices are now real:
   `CompletedCloseoutController`, including bounded repair rounds, repair marker
   insertion, forced real-tool re-arm message construction, and clean synthesis
   cleanup when a repair returns tool-call artifact text.
+- completed-closeout post-synthesis visibility routes through
+  `CompletedCloseoutController`, preserving the original browser recovery,
+  browser failure-bucket, recovered-timeout/continuation, and forbidden local
+  URL redaction order.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -361,8 +374,7 @@ Stage 8 boundaries/slices are now real:
 
 Continue with the remaining high-risk pieces:
 
-- continue extracting completed-closeout visibility appenders, evidence ledger,
-  remaining task facts, terminal closeout synthesis/application, and final
-  adapter thinning.
+- continue extracting the evidence ledger, remaining task facts, terminal
+  closeout synthesis/application, and final adapter thinning.
 
 The branch is **not pushed**.
