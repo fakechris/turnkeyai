@@ -74,6 +74,7 @@ import {
   buildMissingBrowserEvidenceDimensionsRepairPrompt,
   buildMissingRequestedNextActionRepairPrompt,
   buildMissingRequiredFinalDeliverablesRepairPrompt,
+  buildLocalEvidenceCloseout,
   buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   buildPrematurePendingApprovalRepairPrompt,
   buildSourceEvidenceCarryForwardRepairPrompt,
@@ -219,20 +220,22 @@ import {
   createPermissionPolicy,
   createRepairPolicyRegistry,
   type DefaultEngineRunStateValues,
+  finalizeEngineAnswer,
+  normalizeEngineToolCalls,
+  traceEngineHooks,
+  type EngineCloseoutReason,
+} from "./react-engine";
+import {
   buildOriginalRequestTableColumnContext,
   buildRequestedTableColumnActivationContext,
   explicitlyRequestsProviderSupportSchema,
-  finalizeEngineAnswer,
   markdownTableHasExactRequestedColumns,
-  normalizeEngineToolCalls,
   normalizeColumnDetectionText,
   requestedColumnsLookLikeProviderSearchPricing,
   requestedTableColumnMessageContext,
   resolveRequestedTableColumns,
   resultIntroducesProviderSupportSchema,
-  traceEngineHooks,
-  type EngineCloseoutReason,
-} from "./react-engine";
+} from "./task-facts-shared";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type {
   PreCompactionMemoryFlusher,
@@ -6737,394 +6740,9 @@ function countToolCalls(rounds: NativeToolRoundTrace[]): number {
   return rounds.reduce((sum, round) => sum + round.calls.length, 0);
 }
 
-function buildLocalEvidenceCloseout(input: {
-  activation?: RoleActivationInput;
-  messages: LLMMessage[];
-  packet: RolePromptPacket;
-  selection: {
-    modelId?: string;
-    modelChainId?: string;
-  };
-  error: unknown;
-}): GenerateTextResult | null {
-  if (
-    expectsExactFinalAnswerShape(
-      input.packet.taskPrompt,
-      input.packet.outputContract,
-    )
-  ) {
-    return null;
-  }
-  const toolResults = input.messages
-    .filter((message) => message.role === "tool")
-    .map((message) =>
-      parseSessionToolResult(readToolResultContentText(message.content)),
-    )
-    .filter(
-      (
-        result,
-      ): result is NonNullable<ReturnType<typeof parseSessionToolResult>> =>
-        Boolean(result),
-    );
-  const completedEvidence = toolResults
-    .filter((result) => result.status === "completed")
-    .map((result) => readCompletedSessionEvidence(result))
-    .filter((evidence): evidence is string => Boolean(evidence));
-  const sessionToolResultMessages = new Set(
-    input.messages
-      .filter((message) => message.role === "tool")
-      .filter(
-        (message) =>
-          parseSessionToolResult(readToolResultContentText(message.content)) !=
-          null,
-      ),
-  );
-  const genericToolEvidence = input.messages
-    .filter(
-      (message) =>
-        message.role === "tool" && !sessionToolResultMessages.has(message),
-    )
-    .map((message) => ({
-      content: readToolResultContentText(message.content),
-      toolName: message.name,
-    }))
-    .filter((item) => !isControlPlaneToolResultName(item.toolName))
-    .map((item) => item.content)
-    .filter((content) => !isLikelyFailedToolContent(content))
-    .map((content) => readGenericToolEvidence(content))
-    .filter((evidence): evidence is string => Boolean(evidence));
-  const allEvidence = [...completedEvidence, ...genericToolEvidence];
-  if (allEvidence.length === 0) {
-    return null;
-  }
-  const combinedEvidence = allEvidence.join("\n\n");
-  if (
-    taskPromptRequestsApprovalWaitTimeoutCloseout(input.packet.taskPrompt) &&
-    messagesHaveApprovalWaitTimeoutEvidence(input.messages)
-  ) {
-    return buildApprovalWaitTimeoutLocalEvidenceCloseout({
-      selection: input.selection,
-      evidenceText: combinedEvidence,
-      error: input.error,
-    });
-  }
-  const cancellationSeen =
-    toolResults.some((result) => result.status === "cancelled") ||
-    /\bcancel(?:led|ed|lation)\b/i.test(
-      [
-        input.packet.taskPrompt,
-        ...input.messages.map((message) =>
-          readToolResultContentText(message.content),
-        ),
-      ].join("\n"),
-    );
-  const evidence = allEvidence
-    .map((item, index) => `Source ${index + 1}: ${sliceUtf8(item, 4 * 1024)}`)
-    .join("\n");
-  let requestedTableColumns = resolveRequestedTableColumns([
-    input.packet.taskPrompt,
-    ...buildOriginalRequestTableColumnContext(input.activation),
-  ]);
-  if (
-    requestedColumnsLookLikeProviderSearchPricing(requestedTableColumns) &&
-    !isProviderSearchPricingResearchTask(
-      [
-        input.packet.taskPrompt,
-        ...buildOriginalRequestTableColumnContext(input.activation),
-      ].join("\n"),
-    )
-  ) {
-    requestedTableColumns = [];
-  }
-  if (requestedTableColumns.length) {
-    return {
-      text: [
-        "**Mission 状态：blocked / partial**",
-        "",
-        "Final synthesis unavailable; this local evidence fallback preserves the requested table columns and marks unsupported cells as 未验证.",
-        "",
-        buildLocalEvidenceTable(requestedTableColumns, allEvidence),
-        "",
-        "未验证：任何未由上表摘录直接证明的 provider support、search/web_search 支持、价格、结论或业务建议均未验证。",
-        cancellationSeen
-          ? "Risk: The earlier cancellation means the cancelled attempt should not be treated as verification; confidence comes only from completed source results visible in this mission."
-          : "Risk: Confidence is limited to completed source results visible in this mission.",
-        "Next action: Continue the mission with browser/rendered evidence or corrected official source URLs for the missing cells.",
-      ].join("\n"),
-      modelId: input.selection.modelId ?? "local-evidence-closeout",
-      ...(input.selection.modelChainId
-        ? { modelChainId: input.selection.modelChainId }
-        : {}),
-      providerId: "local",
-      protocol: "openai-compatible",
-      adapterName: "local-evidence-closeout",
-      raw: {
-        reason: "final_synthesis_unavailable",
-        message: errorMessage(input.error),
-      },
-    };
-  }
-  return {
-    text: [
-      `Verified: ${evidence}`,
-      "Unverified: Any release claim not present in the resumed source result remains unverified.",
-      cancellationSeen
-        ? "Risk: The earlier cancellation means the cancelled attempt should not be treated as verification; confidence comes from the resumed source result."
-        : "Risk: Confidence is limited to the completed source result visible in this mission.",
-      "Next action: Use the verified source facts for the requested task, and continue the same session if broader verification is needed.",
-    ].join("\n"),
-    modelId: input.selection.modelId ?? "local-evidence-closeout",
-    ...(input.selection.modelChainId
-      ? { modelChainId: input.selection.modelChainId }
-      : {}),
-    providerId: "local",
-    protocol: "openai-compatible",
-    adapterName: "local-evidence-closeout",
-    raw: {
-      reason: "final_synthesis_unavailable",
-      message: errorMessage(input.error),
-    },
-  };
-}
-
-function messagesHaveApprovalWaitTimeoutEvidence(messages: LLMMessage[]): boolean {
-  return messages
-    .filter((message) => message.role === "tool")
-    .filter((message) => message.name === "permission_result")
-    .some((message) => {
-      const parsed = parseJsonObject(readToolResultContentText(message.content));
-      const status = parsed?.["status"];
-      return status === "pending" || status === "approval_wait_timeout";
-    });
-}
-
-function buildLocalEvidenceTable(columns: string[], evidence: string[]): string {
-  const header = `| ${columns.map(markdownTableCell).join(" | ")} |`;
-  const separator = `| ${columns.map(() => "---").join(" | ")} |`;
-  const rows = evidence.slice(0, 8).map((item, index) => {
-    const url = extractFirstUrl(item);
-    const source = inferEvidenceSourceLabel(item, index);
-    return `| ${columns
-      .map((column) =>
-        markdownTableCell(localEvidenceCellForColumn(column, {
-          evidence: item,
-          source,
-          url,
-        })),
-      )
-      .join(" | ")} |`;
-  });
-  return [header, separator, ...rows].join("\n");
-}
-
-function localEvidenceCellForColumn(
-  column: string,
-  input: { evidence: string; source: string; url: string | undefined },
-): string {
-  const normalized = column.toLowerCase();
-  const searchableEvidence = localEvidenceSearchableText(input.evidence);
-  if (normalized === "provider" || column.includes("provider") || column.includes("来源")) {
-    return input.source;
-  }
-  if (/deepseek\s*v4\s*flash|目标模型/i.test(column)) {
-    if (
-      /deepseek\s*v4\s*flash/i.test(searchableEvidence) &&
-      extractInputOutputPrice(searchableEvidence)
-    ) {
-      return "是（页面含模型与价格）";
-    }
-    return "未验证";
-  }
-  if (/(?:search|web_search|搜索)/i.test(column)) {
-    if (/\b(?:supports?|supported|支持)\b[^.。；;\n]{0,80}\b(?:search|web_search|web search)\b/i.test(searchableEvidence)) {
-      return "是";
-    }
-    return "未验证";
-  }
-  if (/(?:输入|input)[^|]{0,20}(?:价格|price|pricing)/i.test(column)) {
-    return extractInputOutputPrice(searchableEvidence)?.input ?? "未验证";
-  }
-  if (/(?:输出|output)[^|]{0,20}(?:价格|price|pricing)/i.test(column)) {
-    return extractInputOutputPrice(searchableEvidence)?.output ?? "未验证";
-  }
-  if (normalized.includes("url") || column.includes("证据")) {
-    return input.url ?? "未验证";
-  }
-  if (
-    column.includes("摘录") ||
-    column.includes("原文") ||
-    normalized.includes("quote") ||
-    normalized.includes("excerpt")
-  ) {
-    return extractLocalEvidenceQuote(searchableEvidence);
-  }
-  return "未验证";
-}
-
-function localEvidenceSearchableText(evidence: string): string {
-  try {
-    const parsed = JSON.parse(evidence) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const record = parsed as Record<string, unknown>;
-      return [
-        record.title,
-        record.text_excerpt,
-        record.final_url,
-        record.requested_url,
-      ]
-        .filter((item): item is string => typeof item === "string")
-        .join("\n");
-    }
-  } catch {
-    // Evidence may already be a plain excerpt.
-  }
-  return evidence;
-}
-
-function extractInputOutputPrice(
-  evidence: string,
-): { input: string; output: string } | null {
-  const compact = evidence.replace(/\s+/g, " ");
-  const slash = compact.match(
-    /\$(\d+(?:\.\d+)?)\s*\/\s*(?:\$(\d+(?:\.\d+)?)\s*\/\s*)?\$(\d+(?:\.\d+)?)\s*(?:per\s*)?1\s*m/i,
-  );
-  if (slash) {
-    return {
-      input: `$${slash[1]}/1M`,
-      output: `$${slash[3]}/1M`,
-    };
-  }
-  const input = compact.match(
-    /(?:input|输入)[^$]{0,60}\$(\d+(?:\.\d+)?)(?:\s*\/?\s*(?:m|1m|million))?/i,
-  );
-  const output = compact.match(
-    /(?:output|输出)[^$]{0,60}\$(\d+(?:\.\d+)?)(?:\s*\/?\s*(?:m|1m|million))?/i,
-  );
-  if (input && output) {
-    return {
-      input: `$${input[1]}/1M`,
-      output: `$${output[1]}/1M`,
-    };
-  }
-  const inputAfterPrice = compact.match(
-    /\$(\d+(?:\.\d+)?)\s*\/?\s*(?:m|1m|million)?[^.。；;\n]{0,40}(?:input|输入)/i,
-  );
-  const outputAfterPrice = compact.match(
-    /\$(\d+(?:\.\d+)?)\s*\/?\s*(?:m|1m|million)?[^.。；;\n]{0,40}(?:output|输出)/i,
-  );
-  if (inputAfterPrice && outputAfterPrice) {
-    return {
-      input: `$${inputAfterPrice[1]}/1M`,
-      output: `$${outputAfterPrice[1]}/1M`,
-    };
-  }
-  return null;
-}
-
-function extractLocalEvidenceQuote(evidence: string): string {
-  const compact = evidence.replace(/\s+/g, " ").trim();
-  const price = compact.match(
-    /(?:In\s*\/\s*Out Price|pricing|price|input|output|输入|输出)[^.。；;\n]{0,220}(?:\$\d+(?:\.\d+)?)[^.。；;\n]{0,220}(?:1\s*M|tokens?|output|per|输入|输出)/i,
-  );
-  if (price) {
-    return sliceUtf8(price[0], 240);
-  }
-  return sliceUtf8(compact, 240);
-}
-
-function extractFirstUrl(text: string): string | undefined {
-  return text.match(/https?:\/\/[^\s"')，。；;]+/)?.[0];
-}
-
-function inferEvidenceSourceLabel(evidence: string, index: number): string {
-  const url = extractFirstUrl(evidence);
-  if (url) {
-    try {
-      return new URL(url).hostname.replace(/^www\./, "");
-    } catch {
-      return url;
-    }
-  }
-  const title = evidence.match(/"title"\s*:\s*"([^"]+)"/)?.[1];
-  if (title) return title;
-  return `Source ${index + 1}`;
-}
-
-function markdownTableCell(value: string): string {
-  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim() || "未验证";
-}
-
 function hasUsableEvidence(rounds: NativeToolRoundTrace[]): boolean {
   return rounds.some((round) =>
     round.results.some((result) => !result.isError && result.skipped !== true),
-  );
-}
-
-function readGenericToolEvidence(content: string): string | null {
-  const trimmed = content.trim();
-  if (!trimmed || isLikelyFailedToolContent(trimmed)) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const record = parsed as Record<string, unknown>;
-      if (isControlPlaneToolResultRecord(record)) {
-        return null;
-      }
-      const payload =
-        record.payload &&
-        typeof record.payload === "object" &&
-        !Array.isArray(record.payload)
-          ? (record.payload as Record<string, unknown>)
-          : null;
-      const payloadPage =
-        payload?.page &&
-        typeof payload.page === "object" &&
-        !Array.isArray(payload.page)
-          ? (payload.page as Record<string, unknown>)
-          : null;
-      const parts = [
-        readStringField(record.summary),
-        readStringField(payload?.content),
-        readStringField(payloadPage?.title),
-        readStringField(payloadPage?.textExcerpt),
-      ]
-        .filter((part): part is string => Boolean(part))
-        .map((part) => part.trim());
-      const joined = dedupeStrings(parts).join("\n");
-      if (joined) {
-        return sliceUtf8(joined, 4 * 1024);
-      }
-    }
-  } catch {
-    // Fall back to the textual content below.
-  }
-  return sliceUtf8(summarizeToolResultContent(trimmed), 4 * 1024);
-}
-
-function isControlPlaneToolResultRecord(
-  record: Record<string, unknown>,
-): boolean {
-  if (
-    Array.isArray(record["sessions"]) ||
-    Array.isArray(record["messages"]) ||
-    Array.isArray(record["transcript"])
-  ) {
-    return true;
-  }
-  return (
-    typeof record["inspection_guidance"] === "string" ||
-    typeof record["session_key"] === "string" ||
-    typeof record["task_id"] === "string"
-  );
-}
-
-function isLikelyFailedToolContent(content: string): boolean {
-  return (
-    /\b(status"\s*:\s*"failed|isError"\s*:\s*true|missing required|timed out|timeout|failed:|error:|skipped)\b/i.test(
-      content,
-    ) || /^tool_call_.*(?:skipp|error|fail)/i.test(content.trim())
   );
 }
 
@@ -7134,8 +6752,4 @@ function replaceInitialPromptMessages(
 ): LLMMessage[] {
   const toolLoopHistory = messages.slice(2);
   return [...reducedPromptMessages, ...toolLoopHistory];
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
