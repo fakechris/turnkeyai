@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `78cae84ed1acc4e14d38d9f6d0ed12bbebae9852`
+**Code HEAD before this docs-only report:** `bdd5a13201c88e29206c19a26b4a17dc3678c5e0`
 **Date:** 2026-07-02
 
 ## Summary
@@ -150,8 +150,9 @@ could not move the normalizer without making the inline parity reference import 
   continuation, independent evidence-stream continuation, and forced pending
   approval `permission_result` continuation and its forced tool-round
   application boundary, plus post-execute missing approval-gate repair handoff,
-  plus typed hook-result application for generic `continue` actions and
-  repair-marker recording callbacks.
+  plus typed hook-result application for generic `continue` actions,
+  repair-marker recording callbacks, and empty-round action hook-result
+  application for injected calls versus terminate decisions.
   The timeout predicates, session detectors,
   permission-applied detector, permission-result detector, evidence-stream
   detector, missing approval-gate repair detector/prompt, and continuation
@@ -281,6 +282,7 @@ application outside the terminal completion path.
 | `fa0b83e` | Move natural-finish repair hook-result application into `RepairPolicyRegistry`; adapter keeps precedence selection but no longer assembles repair messages/markers. |
 | `6c79d6f` | Move read-only permission-query and awaiting-context no-tool suppression hook-result application into `PermissionPolicy` / neutral TaskFacts owners. |
 | `78cae84` | Move pending closeout and post-execute closeout state-effect application into `CloseoutPolicyRegistry`; adapter passes the run-state target. |
+| `bdd5a13` | Move round-empty continuation hook-result application into `ContinuationController`; adapter consumes the controller-applied hook decision. |
 
 ## Current Extracted Implementation
 
@@ -395,7 +397,8 @@ Real implementation now exists in:
   into hook `{ messages }` continuations through an injected executor, plus
   post-execute missing approval-gate repair continuation, plus typed
   `continue` action hook-result application with repair-marker recording
-  callback support.
+  callback support, and empty-round action hook-result application for
+  injected-call and terminate decisions.
 - `task-facts-shared.ts` for requested table-column inference, markdown table
   header matching, provider search/pricing evidence-column inference,
   provider-support-schema request/result detection, missing requested-column
@@ -470,8 +473,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 28 / 28 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 173 / 173 |
+| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 22 / 22 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 174 / 174 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -704,9 +707,10 @@ Stage 8 boundaries/slices are now real:
   message transform.
 - final-recovery budget parsing/counting and repair prompt text now live in
   neutral shared code instead of adapter-local helper functions.
-- empty-round continuation preview and injection route through
+- empty-round continuation preview, injection, and hook-result application route through
   `ContinuationController`, covering direct `sessions_send` and lookup
-  `sessions_list` precedence.
+  `sessions_list` precedence, plus injected-call versus terminate ReAct
+  decisions.
 - post-execute timeout continuation routes through `ContinuationController`,
   covering `approved_browser_timeout_continuation` precedence over
   `coverage_timeout_continuation`.
