@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `e610f1494bb34017930b08afb9b6fbf5803a6453`
+**Code HEAD before this docs-only report:** `fa0b83e9b6532618b36f402e0220950ef7b1c5a7`
 **Date:** 2026-07-02
 
 ## Summary
@@ -41,8 +41,11 @@ could not move the normalizer without making the inline parity reference import 
   `extraneous_provider_table_schema`, plus
   `source_evidence_carry_forward` and `weak_evidence_synthesis`, now return
   typed decisions from
-  `react-engine/repair-policy-registry.ts`; the adapter still applies the
-  repair marker and appended messages at the original precedence points.
+  `react-engine/repair-policy-registry.ts`; the registry now also applies
+  natural-finish repair decisions into ReAct hook results, including assistant
+  candidate carry-forward, repair-marker recording, force-tool-choice,
+  consumes-round, and local closeout shapes. The adapter keeps the original
+  precedence checkpoints.
   The forced `sessions_spawn` natural-finish repairs for missing
   browser-visible evidence and product-signal dashboard evidence now return
   typed decisions from the same registry, preserving their precedence before
@@ -269,6 +272,7 @@ application outside the terminal completion path.
 | `b17d155` | Move post-execute forced continuation application into `ContinuationController`; adapter supplies only the forced-round executor callback. |
 | `c6e555b` | Move generic continuation action hook-result application into `ContinuationController`; adapter consumes typed hook results and supplies only marker recording callbacks. |
 | `e610f14` | Move model-call-error forced-round result trimming into `TerminalCloseoutController`; adapter returns the raw forced-round execution result. |
+| `fa0b83e` | Move natural-finish repair hook-result application into `RepairPolicyRegistry`; adapter keeps precedence selection but no longer assembles repair messages/markers. |
 
 ## Current Extracted Implementation
 
@@ -323,7 +327,10 @@ Real implementation now exists in:
   action repair gating, requested table-column repair gating, extraneous
   provider-support-schema repair gating, source-evidence carry-forward repair
   gating, weak-evidence synthesis repair gating, controller-provided evidence
-  formula text for completed-closeout source/weak repairs, plus
+  formula text for completed-closeout source/weak repairs, natural-finish
+  ReAct repair hook application for assistant candidate carry-forward,
+  repair-marker recording, force-tool-choice, consumes-round, and local closeout
+  shapes, plus
   `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER` and the completed-only
   repair policies `timeout_followup_final_guidance`,
   `missing_requested_next_action`, `missing_required_final_deliverables`,
@@ -453,7 +460,7 @@ All gates below passed on the current code before the report update:
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 18 / 18 |
 | `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 21 / 21 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 170 / 170 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 171 / 171 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -536,15 +543,15 @@ Stage 8 boundaries/slices are now real:
   controller-owned entrypoint that consumes the terminate decision and applies
   sticky pre-recording plus final/re-arm effects. Model-call-error local
   evidence fallback now returns a controller-owned typed final/rethrow result.
-- final-recovery budget natural-finish repair selection routes through
-  `RepairPolicyRegistry`, while the adapter still appends the prior assistant
-  candidate and records the repair marker.
+- final-recovery budget natural-finish repair selection and ReAct hook-result
+  application route through `RepairPolicyRegistry`; the adapter keeps only the
+  precedence checkpoint.
 - missing approval-gate natural-finish repair selection routes through
   `RepairPolicyRegistry`, with a transitional enabled-policy window preserving
   the still-adapter-owned browser-evidence precedence.
-- pending approval wait-timeout check repair selection routes through
-  `RepairPolicyRegistry`, using neutral shared predicate and prompt helpers while
-  the adapter still appends the repair marker.
+- pending approval wait-timeout check repair selection and hook-result
+  application route through `RepairPolicyRegistry`, using neutral shared
+  predicate and prompt helpers.
 - premature pending-approval repair selection routes through
   `RepairPolicyRegistry`, with pending-approval text/session-evidence detectors
   now shared by inline and engine.
@@ -615,19 +622,21 @@ Stage 8 boundaries/slices are now real:
   insertion route through neutral `TaskFacts`; the adapter, repair registry, and
   completed-closeout controller no longer carry duplicate helper
   implementations.
-- missing requested table-column repair selection routes through
-  `RepairPolicyRegistry`, while the adapter still appends the prior assistant
-  candidate and records the repair marker.
+- missing requested table-column repair selection and hook-result application
+  route through `RepairPolicyRegistry`.
 - extraneous provider-support-schema repair selection routes through
   `RepairPolicyRegistry`, preserving the original-task requested-schema skip.
 - source-bounded and completed-session evidence collection now live in neutral
   shared code and feed the natural-finish source/weak repair evidence formula.
-- source-evidence carry-forward repair selection routes through
-  `RepairPolicyRegistry`, while the adapter still appends the prior assistant
-  candidate and records the repair marker.
+- source-evidence carry-forward repair selection and hook-result application
+  route through `RepairPolicyRegistry`.
 - weak-evidence synthesis repair selection routes through
   `RepairPolicyRegistry`, preserving exact final-shape and estimate-request
   skips.
+- natural-finish repair application for extracted repair decisions now routes
+  through `RepairPolicyRegistry`, including repair marker recording, assistant
+  candidate carry-forward, `forceToolChoice`, `consumesRound`, and
+  `tool_evidence_fallback` closeout hook shapes.
 - completed synthesis repair precedence is pinned in
   `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER`.
 - completed-closeout timeout follow-up final-guidance repair selection routes
@@ -714,12 +723,12 @@ Stage 8 boundaries/slices are now real:
 - completed product-signal dashboard URL extraction now lives in neutral shared
   code, removing the adapter-local duplicate dashboard regex tail.
 - browser/product-signal missing evidence repair detectors and repair prompt
-  builders now live in neutral shared code; the adapter still applies the
-  force-tool-choice and repair-marker re-arm behavior at the original
+  builders now live in neutral shared code; their natural-finish hook-result
+  application now routes through `RepairPolicyRegistry` at the original
   precedence points.
 - missing browser/product-signal evidence natural-finish repair decisions now
-  route through `RepairPolicyRegistry`; the engine adapter applies the returned
-  prompt, `sessions_spawn` force choice, and consumed-round flag.
+  route through `RepairPolicyRegistry`; the registry applies the returned prompt,
+  `sessions_spawn` force choice, and consumed-round flag.
 - completed-closeout browser/product-signal re-arm decisions now run inside
   `CompletedCloseoutController` through `RepairPolicyRegistry`; the adapter
   passes tools/evidence and no longer injects a predicate closure.
