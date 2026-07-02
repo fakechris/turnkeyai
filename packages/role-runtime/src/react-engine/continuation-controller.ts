@@ -1,4 +1,5 @@
 import type { ReActEmptyDecision } from "@turnkeyai/agent-core/react-loop";
+import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
@@ -114,6 +115,37 @@ export interface AfterExecuteContinuationInput {
   repairMarkers: LLMMessage[];
   tools?: readonly ContinuationToolDefinition[];
   browserAvailable: boolean;
+}
+
+export interface AfterExecuteContinuationEvidenceSnapshot {
+  timeoutSignal: SubAgentToolTimeoutSignal | null;
+  completedSessionFinalContents: readonly string[] | null;
+  toolResultContentText: string;
+}
+
+export interface AfterExecuteContinuationEvidenceProvider {
+  currentRound(results: ToolResult[]): AfterExecuteContinuationEvidenceSnapshot;
+}
+
+export interface AfterExecuteContinuationObserver {
+  onProviderToolProtocolRound(input: {
+    round: number;
+    toolCalls: LLMToolCall[];
+    toolResults: ToolResult[];
+    messages: LLMMessage[];
+  }): Promise<void>;
+}
+
+export interface AfterExecuteContinuationHookInput {
+  messages: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  results: ToolResult[];
+  repairMarkers: LLMMessage[];
+  tools?: readonly ContinuationToolDefinition[];
+  browserAvailable: boolean;
+  observer: AfterExecuteContinuationObserver;
+  evidence: AfterExecuteContinuationEvidenceProvider;
 }
 
 type ContinueAction = Extract<EngineContinueAction, { kind: "continue" }>;
@@ -568,6 +600,39 @@ export class ContinuationController {
         toolTrace: input.toolTrace,
         ...(input.tools === undefined ? {} : { tools: input.tools }),
       }),
+      executeForcedRound,
+    );
+  }
+
+  async applyAfterExecuteContinuationHook(
+    input: AfterExecuteContinuationHookInput,
+    executeForcedRound: ForcedToolRoundExecutor,
+  ): Promise<ContinuationHookResult | null> {
+    await input.observer.onProviderToolProtocolRound({
+      round: input.toolTrace.length,
+      toolCalls: input.results.map((result) => ({
+        id: result.toolCallId,
+        name: result.toolName,
+        input: {},
+      })),
+      toolResults: input.results,
+      messages: input.messages,
+    });
+    const roundEvidence = input.evidence.currentRound(input.results);
+    return this.applyAfterExecuteContinuation(
+      {
+        messages: input.messages,
+        taskPrompt: input.taskPrompt,
+        toolTrace: input.toolTrace,
+        timeoutSignal: roundEvidence.timeoutSignal,
+        completedSessionFinalContents:
+          roundEvidence.completedSessionFinalContents,
+        currentRoundEvidenceText: roundEvidence.toolResultContentText,
+        results: input.results,
+        repairMarkers: input.repairMarkers,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+        browserAvailable: input.browserAvailable,
+      },
       executeForcedRound,
     );
   }

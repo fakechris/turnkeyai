@@ -529,6 +529,68 @@ test("ContinuationController applies the post-execute continuation cascade", asy
   );
 });
 
+test("ContinuationController owns after-execute continuation hook flow", async () => {
+  const controller = createContinuationController();
+  const messages: LLMMessage[] = [
+    { role: "user", content: "Collect all independent streams." },
+  ];
+  const toolTrace = independentEvidenceTrace();
+  const results = [
+    {
+      toolCallId: "toolu-source-a",
+      toolName: "sessions_spawn",
+      content: "Source A evidence.",
+      isError: false,
+      contentBytes: 18,
+    },
+  ];
+  const events: string[] = [];
+
+  const hookResult = await controller.applyAfterExecuteContinuationHook(
+    {
+      messages,
+      taskPrompt: independentEvidenceTaskPrompt(),
+      toolTrace,
+      results,
+      repairMarkers: [],
+      tools: [{ name: "sessions_spawn" }],
+      browserAvailable: true,
+      observer: {
+        onProviderToolProtocolRound: async (input) => {
+          events.push("observer");
+          assert.equal(input.round, 1);
+          assert.deepEqual(input.toolCalls, [
+            { id: "toolu-source-a", name: "sessions_spawn", input: {} },
+          ]);
+          assert.equal(input.toolResults, results);
+          assert.equal(input.messages, messages);
+        },
+      },
+      evidence: {
+        currentRound: (roundResults) => {
+          events.push("evidence");
+          assert.equal(roundResults, results);
+          return {
+            timeoutSignal: null,
+            completedSessionFinalContents: ["Source A evidence."],
+            toolResultContentText: "Source A evidence.",
+          };
+        },
+      },
+    },
+    async () => {
+      throw new Error("forced round should not execute");
+    },
+  );
+
+  assert.deepEqual(events, ["observer", "evidence"]);
+  assert.deepEqual(hookResult?.forceToolChoice, { name: "sessions_spawn" });
+  assert.match(
+    String(hookResult?.messages.at(-1)?.content),
+    /multiple independent evidence streams/,
+  );
+});
+
 test("ContinuationController skips timeout continuation after marker or prior send", () => {
   const controller = createContinuationController();
   const timeoutSignal = {

@@ -95,19 +95,7 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     hook: "onAfterExecuteContinue",
     phase: "after_execute_continue",
     installed: true,
-    moduleOps: [
-      "EngineRunObserver.onProviderToolProtocolRound",
-      "ContinuationController.continueApprovedBrowserTimeout",
-      "ContinuationController.continueSiblingTimeout",
-      // Branch: no completed session -> general supplemental timeout probe.
-      "ContinuationController.runGeneralSupplementalTimeoutProbe",
-      // Branch: completed session -> the completed-session block, in order.
-      "ContinuationController.runSupplementalCompletedProbe",
-      "ContinuationController.continueIncompleteApprovedBrowser",
-      "ContinuationController.continueIndependentEvidenceStreams",
-      "RepairPolicyRegistry.repairPostExecuteMissingApprovalGate",
-      "ContinuationController.runForcedPermissionResultRound",
-    ],
+    moduleOps: ["ContinuationController.applyAfterExecuteContinuationHook"],
   },
   {
     hook: "onAfterExecute",

@@ -81,29 +81,23 @@ test("wiring guard: spy modules recorded in the contract order pass", () => {
 });
 
 test("wiring guard: wrong cross-module order inside a hook FAILS", () => {
-  // onAfterExecuteContinue's first boundary must be observability before the
-  // ordered continuation cascade. Swapping it after the first continuation
-  // operation is a behavior change because provider protocol recording belongs
-  // before continuation/closeout decisions consume the just-finished round.
-  const contract = engineHookContract("onAfterExecuteContinue");
+  // onTerminate must capture final messages, evaluate the closeout decision, then
+  // hand that decision to the terminal controller. Swapping those boundaries is
+  // a behavior change because the terminal controller consumes the evaluated
+  // reasonLines/metadata and records effects against the captured terminal state.
+  const contract = engineHookContract("onTerminate");
   assert.ok(contract);
   const wrong = [
-    "ContinuationController.continueApprovedBrowserTimeout",
-    "EngineRunObserver.onProviderToolProtocolRound",
-    "ContinuationController.continueSiblingTimeout",
-    "ContinuationController.runGeneralSupplementalTimeoutProbe",
-    "ContinuationController.runSupplementalCompletedProbe",
-    "ContinuationController.continueIncompleteApprovedBrowser",
-    "ContinuationController.continueIndependentEvidenceStreams",
-    "RepairPolicyRegistry.repairPostExecuteMissingApprovalGate",
-    "ContinuationController.runForcedPermissionResultRound",
+    "TerminalCloseoutController.handleTerminalCloseoutHook",
+    "CloseoutPolicyRegistry.evaluateTerminate",
+    "EngineRunState.captureFinalMessages",
   ];
   // Sanity: the wrong order is genuinely a reordering of the real contract ops.
   assert.notDeepEqual(wrong, contract!.moduleOps);
   assert.deepEqual([...wrong].sort(), [...contract!.moduleOps].sort());
 
   const trace = createEnginePolicyTrace();
-  driveOrchestration(trace, { hook: "onAfterExecuteContinue", moduleOps: wrong });
+  driveOrchestration(trace, { hook: "onTerminate", moduleOps: wrong });
   const recorded = trace.snapshot().map((e) => e.policyId);
   assert.notDeepEqual(
     recorded,
@@ -112,26 +106,12 @@ test("wiring guard: wrong cross-module order inside a hook FAILS", () => {
   );
 });
 
-test("wiring guard: onAfterExecuteContinue completed-session branch order is pinned", () => {
+test("wiring guard: onAfterExecuteContinue delegates to one continuation entrypoint", () => {
   const contract = engineHookContract("onAfterExecuteContinue");
   assert.ok(contract);
-  // The observer boundary must be first; the forced permission-result round last.
-  assert.equal(
-    contract!.moduleOps[0],
-    "EngineRunObserver.onProviderToolProtocolRound",
-  );
-  assert.equal(
-    contract!.moduleOps[contract!.moduleOps.length - 1],
-    "ContinuationController.runForcedPermissionResultRound",
-  );
-  // Missing-approval-gate repair must precede the forced permission-result round.
-  const repairIdx = contract!.moduleOps.indexOf(
-    "RepairPolicyRegistry.repairPostExecuteMissingApprovalGate",
-  );
-  const forcedIdx = contract!.moduleOps.indexOf(
-    "ContinuationController.runForcedPermissionResultRound",
-  );
-  assert.ok(repairIdx >= 0 && forcedIdx >= 0 && repairIdx < forcedIdx);
+  assert.deepEqual(contract!.moduleOps, [
+    "ContinuationController.applyAfterExecuteContinuationHook",
+  ]);
 });
 
 test("wiring guard: onToolCallsClose delegates to one pending-call closeout entrypoint", () => {

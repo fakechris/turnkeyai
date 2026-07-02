@@ -2937,42 +2937,20 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           if (!activeToolLoop) {
             return null;
           }
-          // Observability bridge (inline :1704): emit the provider-tool-protocol round
-          // boundary. agent-core has already appended the assistant tool-call message +
-          // the tool-result messages to state.messages before this hook, exactly like
-          // inline's appendToolResultMessages precedes its recordProviderToolProtocolRound
-          // Safely. This is the one place with BOTH the round's results and the live
-          // messages, so the protocol round (assistant/tool-result block accounting)
-          // lands here per round, awaited. round = toolTrace.length (the round just
-          // executed, 1-indexed = inline's round+1). toolCalls are reconstructed from the
-          // results (id/name), matching inline's toolCallIds/toolNames/count.
           const roundToolResults = results as RoleToolExecutionResult[];
-          await observer.onProviderToolProtocolRound({
-            round: toolTrace.length,
-            toolCalls: roundToolResults.map((result) => ({
-              id: result.toolCallId,
-              name: result.toolName,
-              input: {},
-            })),
-            toolResults: roundToolResults,
-            messages: state.messages,
-          });
-          const roundEvidence = evidenceLedger.currentRound(roundToolResults);
-          return continuation.applyAfterExecuteContinuation(
+          return continuation.applyAfterExecuteContinuationHook(
             {
               messages: state.messages,
               taskPrompt: packet.taskPrompt,
               toolTrace,
-              timeoutSignal: roundEvidence.timeoutSignal,
-              completedSessionFinalContents:
-                roundEvidence.completedSessionFinalContents,
-              currentRoundEvidenceText: roundEvidence.toolResultContentText,
               results: roundToolResults,
               repairMarkers: (hookCtx.repairMarkers ??= []),
               ...(initialGatewayInput.tools === undefined
                 ? {}
                 : { tools: initialGatewayInput.tools }),
               browserAvailable: allowsSupplementalBrowserProbe(packet),
+              observer,
+              evidence: evidenceLedger,
             },
             async (forcedRoundAction) => {
               const forcedRound = await this.executeRuntimeForcedToolRound({
