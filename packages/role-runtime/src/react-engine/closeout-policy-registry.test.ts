@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { ExecutionBudgetCloseoutSnapshot } from "./execution-budget-controller";
 import type { RemainingPendingCallsCloseoutInput } from "./closeout-policy-registry";
+import type { LLMToolCall } from "./types";
 import {
   createCloseoutPolicyRegistry,
   ENGINE_CLOSEOUT_POLICY_ORDER,
@@ -74,12 +76,15 @@ function remainingPendingInput(
   overrides: Partial<RemainingPendingCallsCloseoutInput> = {},
 ): RemainingPendingCallsCloseoutInput {
   return {
+    pendingCalls: [],
     pendingToolCallCount: 1,
     pendingContinuation: false,
     lastText: "running sessions",
     wallClockBudget: null,
     taskPrompt: "Summarize the gathered evidence.",
     messages: [],
+    sessionContext: "",
+    toolTrace: [],
     maxRounds: 3,
     usedToolCalls: 2,
     roundCount: 2,
@@ -87,6 +92,22 @@ function remainingPendingInput(
     buildRoundLimitCloseoutSnapshot: roundLimitSnapshot,
     ...overrides,
   };
+}
+
+function toolCall(
+  id: string,
+  name: string,
+  input: Record<string, unknown> = {},
+): LLMToolCall {
+  return { id, name, input };
+}
+
+function traceRound(
+  round: number,
+  calls: LLMToolCall[],
+  results: NativeToolRoundTrace["results"],
+): NativeToolRoundTrace {
+  return { round, calls, results };
 }
 
 test("ENGINE_CLOSEOUT_POLICY_ORDER pins terminal closeout precedence", () => {
@@ -357,4 +378,131 @@ test("CloseoutPolicyRegistry skips round-limit for a tool-free final candidate",
     })),
     null,
   );
+});
+
+test("CloseoutPolicyRegistry returns repeated tool failure closeout decision", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const first = toolCall("c1", "web_fetch", { url: "https://example.test" });
+  const second = toolCall("c2", "web_fetch", { url: "https://example.test" });
+  const pending = toolCall("c3", "web_fetch", { url: "https://example.test" });
+
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
+    pendingCalls: [pending],
+    toolTrace: [
+      traceRound(1, [first], [
+        {
+          toolCallId: "c1",
+          toolName: "web_fetch",
+          isError: true,
+          contentBytes: 0,
+        },
+      ]),
+      traceRound(2, [second], [
+        {
+          toolCallId: "c2",
+          toolName: "web_fetch",
+          isError: true,
+          contentBytes: 0,
+        },
+      ]),
+    ],
+  }));
+
+  assert.equal(decision?.kind, "closeout");
+  assert.equal(decision?.reason, "repeated_tool_failure");
+  assert.match(decision?.reasonLines[0] ?? "", /web_fetch failed 2 times/);
+  assert.deepEqual(decision?.closeout, {
+    reason: "repeated_tool_failure",
+    maxRounds: 3,
+    pendingToolCallCount: 1,
+    toolName: "web_fetch",
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+});
+
+test("CloseoutPolicyRegistry returns repeated session inspection closeout decision", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const inspected = toolCall("h1", "sessions_history", {
+    session_key: "worker:explore:1",
+  });
+  const pending = toolCall("h2", "sessions_history", {
+    session_key: "worker:explore:1",
+  });
+
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
+    pendingCalls: [pending],
+    toolTrace: [
+      traceRound(1, [inspected], [
+        {
+          toolCallId: "h1",
+          toolName: "sessions_history",
+          isError: false,
+          contentBytes: 12,
+        },
+      ]),
+    ],
+  }));
+
+  assert.equal(decision?.kind, "closeout");
+  assert.equal(decision?.reason, "repeated_session_inspection");
+  assert.match(decision?.reasonLines[0] ?? "", /already inspected/);
+  assert.deepEqual(decision?.closeout, {
+    reason: "repeated_session_inspection",
+    maxRounds: 3,
+    pendingToolCallCount: 1,
+    toolName: "sessions_history",
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+});
+
+test("CloseoutPolicyRegistry returns excessive session continuation closeout decision", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const first = toolCall("s1", "sessions_send", {
+    session_key: "worker:explore:1",
+  });
+  const second = toolCall("s2", "sessions_send", {
+    session_key: "worker:explore:1",
+  });
+  const pending = toolCall("s3", "sessions_send", {
+    session_key: "worker:explore:1",
+  });
+
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
+    pendingCalls: [pending],
+    toolTrace: [
+      traceRound(1, [first], [
+        {
+          toolCallId: "s1",
+          toolName: "sessions_send",
+          isError: false,
+          contentBytes: 12,
+        },
+      ]),
+      traceRound(2, [second], [
+        {
+          toolCallId: "s2",
+          toolName: "sessions_send",
+          isError: false,
+          contentBytes: 12,
+        },
+      ]),
+    ],
+  }));
+
+  assert.equal(decision?.kind, "closeout");
+  assert.equal(decision?.reason, "excessive_session_continuation");
+  assert.match(decision?.reasonLines[0] ?? "", /already continued 2 times/);
+  assert.deepEqual(decision?.closeout, {
+    reason: "excessive_session_continuation",
+    maxRounds: 3,
+    pendingToolCallCount: 1,
+    toolName: "sessions_send",
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
 });

@@ -80,6 +80,8 @@ import {
   extractHttpUrls,
   extractLatestUserContinuationText,
   extractSessionToolResultRecords,
+  findExcessiveSessionContinuationCall,
+  findRepeatedSessionInspectionCall,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   findIncompleteApprovedBrowserSession,
@@ -3046,16 +3048,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               : pendingContinuation
                 ? buildWallClockBudgetCloseoutSignal([pendingContinuation], 1)
                 : null;
-          // 2-5. pending-call closeouts — operator_cancelled,
-          // pseudo_tool_call, wall_clock_budget, then round_limit.
+          // 2-8. pending-call closeouts — operator_cancelled through the
+          // repeated-call/session anti-loop policies.
           const remainingPendingCloseout =
             closeoutPolicy.evaluateRemainingPendingCalls({
+              pendingCalls: calls,
               pendingToolCallCount: calls.length,
               pendingContinuation: pendingContinuation !== null,
               lastText: state.lastText,
               wallClockBudget: wallClockBudgetCloseoutSignal,
               taskPrompt: packet.taskPrompt,
               messages: state.messages,
+              sessionContext: `${packet.taskPrompt}\n${buildContinuationDirectiveContext(packet.taskPrompt, state.messages)}`,
+              toolTrace,
               maxRounds,
               usedToolCalls: countToolCalls(toolTrace),
               roundCount,
@@ -3076,83 +3081,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             });
             return remainingPendingCloseout.reason;
           }
-          // wall_clock_budget and round_limit are handled by
-          // CloseoutPolicyRegistry. The wall-clock signal preserves both native
-          // pending-call and empty-round continuation gates.
-          // 5. repeated_tool_failure — a pending call's signature already failed
-          //    twice in the trace.
-          const repeatedFailure = findRepeatedFailedToolCall(calls, toolTrace);
-          if (repeatedFailure) {
-            runState.recordPendingCloseout({
-              reasonLines: [
-                `Repeated failing tool call detected: ${repeatedFailure.toolName} failed ${repeatedFailure.failureCount} times with the same arguments.`,
-                "Do not call the same tool again with those arguments, and do not spawn a fallback session for the same target.",
-                "Produce the best final answer from evidence already gathered. If no usable evidence exists, say verification did not complete and name the next operator/user input needed.",
-              ],
-              closeout: {
-                reason: "repeated_tool_failure",
-                maxRounds,
-                pendingToolCallCount: calls.length,
-                toolName: repeatedFailure.toolName,
-                toolCallCount: countToolCalls(toolTrace),
-                roundCount,
-                evidenceAvailable: hasUsableEvidence(toolTrace),
-              },
-            });
-            return "repeated_tool_failure";
-          }
-          // 6. repeated_session_inspection — a pending sessions_history re-inspects
-          //    an already-inspected session.
-          const repeatedSessionInspection = findRepeatedSessionInspectionCall(
-            calls,
-            toolTrace,
-            packet.taskPrompt,
-            `${packet.taskPrompt}\n${buildContinuationDirectiveContext(packet.taskPrompt, state.messages)}`,
-          );
-          if (repeatedSessionInspection) {
-            runState.recordPendingCloseout({
-              reasonLines: [
-                `Repeated session inspection detected: ${repeatedSessionInspection.toolName} already inspected ${repeatedSessionInspection.sessionKey}.`,
-                "Do not call sessions_history or sessions_list again for the same session.",
-                "Produce the final answer from the session evidence already gathered. If the gathered evidence is insufficient, state exactly what remains unverified and what follow-up is needed.",
-              ],
-              closeout: {
-                reason: "repeated_session_inspection",
-                maxRounds,
-                pendingToolCallCount: calls.length,
-                toolName: repeatedSessionInspection.toolName,
-                toolCallCount: countToolCalls(toolTrace),
-                roundCount,
-                evidenceAvailable: hasUsableEvidence(toolTrace),
-              },
-            });
-            return "repeated_session_inspection";
-          }
-          // 7. excessive_session_continuation — a pending sessions_send continues a
-          //    session already continued the max number of times.
-          const excessiveSessionContinuation = findExcessiveSessionContinuationCall(
-            calls,
-            toolTrace,
-          );
-          if (excessiveSessionContinuation) {
-            runState.recordPendingCloseout({
-              reasonLines: [
-                `Repeated session continuation detected: ${excessiveSessionContinuation.sessionKey} was already continued ${excessiveSessionContinuation.continuationCount} times.`,
-                "Do not call sessions_send again for the same session.",
-                "Produce the final answer from the gathered session evidence now. If the evidence is incomplete, state the exact unverified scope and the bounded follow-up needed.",
-              ],
-              closeout: {
-                reason: "excessive_session_continuation",
-                maxRounds,
-                pendingToolCallCount: calls.length,
-                toolName: excessiveSessionContinuation.toolName,
-                toolCallCount: countToolCalls(toolTrace),
-                roundCount,
-                evidenceAvailable: hasUsableEvidence(toolTrace),
-              },
-            });
-            return "excessive_session_continuation";
-          }
+          // The registry preserves wall-clock empty-round continuation gates
+          // and the repeated-call/session anti-loop precedence.
           return null;
         },
         // Stage 7 S7 + S5: post-execute continuation branches. After a tool round, the
@@ -6001,99 +5931,6 @@ function taskPromptExplicitlyRequestsTaskTracking(taskPrompt: string): boolean {
 
 // ORDER_DEPENDENT_TOOL_NAMES, shouldSerializeToolBatch, findRepeatedFailedToolCall
 // extracted to ./react/predicates (Phase 1 cutover, behavior-preserving).
-
-function findRepeatedSessionInspectionCall(
-  pendingCalls: LLMToolCall[],
-  toolTrace: NativeToolRoundTrace[],
-  taskPrompt: string,
-  sessionContext = "",
-): { toolName: string; sessionKey: string } | null {
-  if (pendingCalls.length === 0 || toolTrace.length === 0) {
-    return null;
-  }
-  if (taskRequestsSessionTranscript(taskPrompt)) {
-    return null;
-  }
-  const inspected = new Set<string>();
-  for (const round of toolTrace) {
-    for (const call of round.calls) {
-      if (call.name !== "sessions_history") continue;
-      const sessionKey = readSessionKeyFromToolInput(call.input);
-      if (!sessionKey) continue;
-      const result = round.results.find(
-        (candidate) => candidate.toolCallId === call.id,
-      );
-      if (!result || result.isError || result.cancelled || result.skipped) {
-        continue;
-      }
-      inspected.add(sessionKey);
-    }
-  }
-  for (const call of pendingCalls) {
-    if (call.name !== "sessions_history") continue;
-    const sessionKey = readSessionKeyFromToolInput(call.input);
-    if (sessionKey && inspected.has(sessionKey)) {
-      return { toolName: call.name, sessionKey };
-    }
-    if (sessionKey && contextAlreadyContainsSessionHistory(sessionContext, sessionKey)) {
-      return { toolName: call.name, sessionKey };
-    }
-  }
-  return null;
-}
-
-function contextAlreadyContainsSessionHistory(context: string, sessionKey: string): boolean {
-  if (!context || !sessionKey || !context.includes(sessionKey)) {
-    return false;
-  }
-  return /\b(?:sessions_history|total_messages|has_more_after|previous_cursor)\b/i.test(context);
-}
-
-function findExcessiveSessionContinuationCall(
-  pendingCalls: LLMToolCall[],
-  toolTrace: NativeToolRoundTrace[],
-  maxContinuations = 2,
-): { toolName: string; sessionKey: string; continuationCount: number } | null {
-  if (pendingCalls.length === 0 || toolTrace.length === 0) {
-    return null;
-  }
-  const continuedCounts = countSuccessfulSessionContinuations(toolTrace);
-  for (const call of pendingCalls) {
-    if (call.name !== "sessions_send") continue;
-    const sessionKey = readSessionKeyFromToolInput(call.input);
-    if (!sessionKey) continue;
-    const continuationCount = continuedCounts.get(sessionKey) ?? 0;
-    if (continuationCount >= maxContinuations) {
-      return {
-        toolName: call.name,
-        sessionKey,
-        continuationCount,
-      };
-    }
-  }
-  return null;
-}
-
-function countSuccessfulSessionContinuations(
-  toolTrace: NativeToolRoundTrace[],
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const round of toolTrace) {
-    for (const call of round.calls) {
-      if (call.name !== "sessions_send") continue;
-      const sessionKey = readSessionKeyFromToolInput(call.input);
-      if (!sessionKey) continue;
-      const result = round.results.find(
-        (candidate) => candidate.toolCallId === call.id,
-      );
-      if (!result || result.isError || result.cancelled || result.skipped) {
-        continue;
-      }
-      counts.set(sessionKey, (counts.get(sessionKey) ?? 0) + 1);
-    }
-  }
-  return counts;
-}
 
 // toolCallSignature, normalizeToolInputForSignature, stableJson
 // extracted to ./react/predicates (Phase 1 cutover, behavior-preserving).

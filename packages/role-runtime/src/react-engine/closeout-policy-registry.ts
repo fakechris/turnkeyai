@@ -11,14 +11,19 @@
 // evaluating registry methods are added in Batch 3.
 import {
   containsAnyToolCallForm,
+  findExcessiveSessionContinuationCall,
+  findRepeatedSessionInspectionCall,
   shouldCloseoutCancelledSessionWithoutContinuation,
   shouldRepairFinalRecoveryBudgetCloseout,
 } from "../tool-loop-shared";
+import { findRepeatedFailedToolCall } from "../react/predicates";
+import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { ExecutionBudgetCloseoutSnapshot } from "./execution-budget-controller";
 import type {
   CloseoutDecision,
   CloseoutDeferDecision,
   LLMMessage,
+  LLMToolCall,
 } from "./types";
 
 export const ENGINE_CLOSEOUT_POLICY_ORDER = [
@@ -87,13 +92,46 @@ export interface WallClockBudgetCloseoutSignal {
   buildCloseoutSnapshot(maxWallClockMs: number): ExecutionBudgetCloseoutSnapshot;
 }
 
+export interface RepeatedToolFailureCloseoutMetadata {
+  reason: "repeated_tool_failure";
+  maxRounds: number;
+  pendingToolCallCount: number;
+  toolName: string;
+  toolCallCount: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+}
+
+export interface RepeatedSessionInspectionCloseoutMetadata {
+  reason: "repeated_session_inspection";
+  maxRounds: number;
+  pendingToolCallCount: number;
+  toolName: string;
+  toolCallCount: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+}
+
+export interface ExcessiveSessionContinuationCloseoutMetadata {
+  reason: "excessive_session_continuation";
+  maxRounds: number;
+  pendingToolCallCount: number;
+  toolName: string;
+  toolCallCount: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+}
+
 export interface RemainingPendingCallsCloseoutInput {
+  pendingCalls: LLMToolCall[];
   pendingToolCallCount: number;
   pendingContinuation: boolean;
   lastText: string;
   wallClockBudget: WallClockBudgetCloseoutSignal | null;
   taskPrompt: string;
   messages: LLMMessage[];
+  sessionContext: string;
+  toolTrace: NativeToolRoundTrace[];
   maxRounds: number;
   usedToolCalls: number;
   roundCount: number;
@@ -116,6 +154,15 @@ export type RemainingPendingCallsCloseoutDecision =
     })
   | (CloseoutDecision<ExecutionBudgetCloseoutSnapshot["closeout"]> & {
       closeout: ExecutionBudgetCloseoutSnapshot["closeout"];
+    })
+  | (CloseoutDecision<RepeatedToolFailureCloseoutMetadata> & {
+      closeout: RepeatedToolFailureCloseoutMetadata;
+    })
+  | (CloseoutDecision<RepeatedSessionInspectionCloseoutMetadata> & {
+      closeout: RepeatedSessionInspectionCloseoutMetadata;
+    })
+  | (CloseoutDecision<ExcessiveSessionContinuationCloseoutMetadata> & {
+      closeout: ExcessiveSessionContinuationCloseoutMetadata;
     });
 
 export interface CloseoutPolicyRegistry {
@@ -240,6 +287,83 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         reason: "round_limit",
         reasonLines: snapshot.reasonLines,
         closeout: snapshot.closeout,
+      };
+    }
+    const repeatedFailure = findRepeatedFailedToolCall(
+      input.pendingCalls,
+      input.toolTrace,
+    );
+    if (repeatedFailure) {
+      return {
+        kind: "closeout",
+        policyId: "repeated_tool_failure",
+        reason: "repeated_tool_failure",
+        reasonLines: [
+          `Repeated failing tool call detected: ${repeatedFailure.toolName} failed ${repeatedFailure.failureCount} times with the same arguments.`,
+          "Do not call the same tool again with those arguments, and do not spawn a fallback session for the same target.",
+          "Produce the best final answer from evidence already gathered. If no usable evidence exists, say verification did not complete and name the next operator/user input needed.",
+        ],
+        closeout: {
+          reason: "repeated_tool_failure",
+          maxRounds: input.maxRounds,
+          pendingToolCallCount: input.pendingToolCallCount,
+          toolName: repeatedFailure.toolName,
+          toolCallCount: input.usedToolCalls,
+          roundCount: input.roundCount,
+          evidenceAvailable: input.evidenceAvailable,
+        },
+      };
+    }
+    const repeatedSessionInspection = findRepeatedSessionInspectionCall(
+      input.pendingCalls,
+      input.toolTrace,
+      input.taskPrompt,
+      input.sessionContext,
+    );
+    if (repeatedSessionInspection) {
+      return {
+        kind: "closeout",
+        policyId: "repeated_session_inspection",
+        reason: "repeated_session_inspection",
+        reasonLines: [
+          `Repeated session inspection detected: ${repeatedSessionInspection.toolName} already inspected ${repeatedSessionInspection.sessionKey}.`,
+          "Do not call sessions_history or sessions_list again for the same session.",
+          "Produce the final answer from the session evidence already gathered. If the gathered evidence is insufficient, state exactly what remains unverified and what follow-up is needed.",
+        ],
+        closeout: {
+          reason: "repeated_session_inspection",
+          maxRounds: input.maxRounds,
+          pendingToolCallCount: input.pendingToolCallCount,
+          toolName: repeatedSessionInspection.toolName,
+          toolCallCount: input.usedToolCalls,
+          roundCount: input.roundCount,
+          evidenceAvailable: input.evidenceAvailable,
+        },
+      };
+    }
+    const excessiveSessionContinuation = findExcessiveSessionContinuationCall(
+      input.pendingCalls,
+      input.toolTrace,
+    );
+    if (excessiveSessionContinuation) {
+      return {
+        kind: "closeout",
+        policyId: "excessive_session_continuation",
+        reason: "excessive_session_continuation",
+        reasonLines: [
+          `Repeated session continuation detected: ${excessiveSessionContinuation.sessionKey} was already continued ${excessiveSessionContinuation.continuationCount} times.`,
+          "Do not call sessions_send again for the same session.",
+          "Produce the final answer from the gathered session evidence now. If the evidence is incomplete, state the exact unverified scope and the bounded follow-up needed.",
+        ],
+        closeout: {
+          reason: "excessive_session_continuation",
+          maxRounds: input.maxRounds,
+          pendingToolCallCount: input.pendingToolCallCount,
+          toolName: excessiveSessionContinuation.toolName,
+          toolCallCount: input.usedToolCalls,
+          roundCount: input.roundCount,
+          evidenceAvailable: input.evidenceAvailable,
+        },
       };
     }
     return null;

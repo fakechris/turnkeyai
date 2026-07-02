@@ -90,6 +90,104 @@ export function taskRequestsSessionTranscript(taskPrompt: string): boolean {
   );
 }
 
+export function findRepeatedSessionInspectionCall(
+  pendingCalls: readonly LLMToolCall[],
+  toolTrace: readonly NativeToolRoundTrace[],
+  taskPrompt: string,
+  sessionContext = "",
+): { toolName: string; sessionKey: string } | null {
+  if (pendingCalls.length === 0 || toolTrace.length === 0) {
+    return null;
+  }
+  if (taskRequestsSessionTranscript(taskPrompt)) {
+    return null;
+  }
+  const inspected = new Set<string>();
+  for (const round of toolTrace) {
+    for (const call of round.calls) {
+      if (call.name !== "sessions_history") continue;
+      const sessionKey = readSessionKeyFromToolInput(call.input);
+      if (!sessionKey) continue;
+      const result = round.results.find(
+        (candidate) => candidate.toolCallId === call.id,
+      );
+      if (!result || result.isError || result.cancelled || result.skipped) {
+        continue;
+      }
+      inspected.add(sessionKey);
+    }
+  }
+  for (const call of pendingCalls) {
+    if (call.name !== "sessions_history") continue;
+    const sessionKey = readSessionKeyFromToolInput(call.input);
+    if (sessionKey && inspected.has(sessionKey)) {
+      return { toolName: call.name, sessionKey };
+    }
+    if (sessionKey && contextAlreadyContainsSessionHistory(sessionContext, sessionKey)) {
+      return { toolName: call.name, sessionKey };
+    }
+  }
+  return null;
+}
+
+export function findExcessiveSessionContinuationCall(
+  pendingCalls: readonly LLMToolCall[],
+  toolTrace: readonly NativeToolRoundTrace[],
+  maxContinuations = 2,
+): { toolName: string; sessionKey: string; continuationCount: number } | null {
+  if (pendingCalls.length === 0 || toolTrace.length === 0) {
+    return null;
+  }
+  const continuedCounts = countSuccessfulSessionContinuations(toolTrace);
+  for (const call of pendingCalls) {
+    if (call.name !== "sessions_send") continue;
+    const sessionKey = readSessionKeyFromToolInput(call.input);
+    if (!sessionKey) continue;
+    const continuationCount = continuedCounts.get(sessionKey) ?? 0;
+    if (continuationCount >= maxContinuations) {
+      return {
+        toolName: call.name,
+        sessionKey,
+        continuationCount,
+      };
+    }
+  }
+  return null;
+}
+
+function contextAlreadyContainsSessionHistory(
+  context: string,
+  sessionKey: string,
+): boolean {
+  if (!context || !sessionKey || !context.includes(sessionKey)) {
+    return false;
+  }
+  return /\b(?:sessions_history|total_messages|has_more_after|previous_cursor)\b/i.test(
+    context,
+  );
+}
+
+function countSuccessfulSessionContinuations(
+  toolTrace: readonly NativeToolRoundTrace[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const round of toolTrace) {
+    for (const call of round.calls) {
+      if (call.name !== "sessions_send") continue;
+      const sessionKey = readSessionKeyFromToolInput(call.input);
+      if (!sessionKey) continue;
+      const result = round.results.find(
+        (candidate) => candidate.toolCallId === call.id,
+      );
+      if (!result || result.isError || result.cancelled || result.skipped) {
+        continue;
+      }
+      counts.set(sessionKey, (counts.get(sessionKey) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 export function sliceUtf8(value: string, maxBytes: number): string {
   // gemini + coderabbit K3.6: keep the persisted slice strictly
   // <= maxBytes. The earlier version appended an "…[truncated]"
