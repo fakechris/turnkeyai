@@ -76,6 +76,13 @@ export interface ModelCallErrorHandlingInput
       };
 }
 
+export interface ModelCallErrorFlowInput extends ModelCallErrorFallbackInput {
+  aborted: boolean;
+  buildForcedPermissionResult(): ForcedModelCallErrorContinuation | {
+    kind: "none";
+  };
+}
+
 export interface TerminalEvidenceFallback {
   closeout: ToolLoopCloseoutMetadata;
   result: GenerateTextResult;
@@ -502,6 +509,33 @@ export class TerminalCloseoutController {
       return "rethrow";
     }
     return result.response;
+  }
+
+  async completeModelCallErrorFlow<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: ModelCallErrorFlowInput,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+    executeForcedRound: ModelCallErrorForcedRoundExecutor,
+  ): Promise<TerminalModelCallErrorHookResult> {
+    const forcedPermissionResult =
+      !input.aborted && input.active && input.usableEvidence
+        ? input.buildForcedPermissionResult()
+        : { kind: "none" as const };
+    return this.completeModelCallError(
+      {
+        ...input,
+        forcedPermissionResult,
+      },
+      target,
+      executeForcedRound,
+    );
   }
 
   buildSynthesisMessages(input: TerminalSynthesisMessagesInput): LLMMessage[] {

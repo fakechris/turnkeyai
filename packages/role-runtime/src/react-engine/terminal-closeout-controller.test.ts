@@ -579,6 +579,136 @@ test("TerminalCloseoutController applies model-call-error hook recovery results"
   ]);
 });
 
+test("TerminalCloseoutController selects model-error forced permission result internally", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      name: "web_fetch",
+      content: "Verified source evidence.",
+    } as LLMMessage,
+  ];
+  const forcedRound = {
+    kind: "forced_tool_round" as const,
+    calls: [
+      {
+        id: "call-1",
+        name: "permission_result",
+        input: { status: "pending" },
+      },
+    ],
+    assistantText: "Checking approval result.",
+    reason: "forced_pending_approval_wait_timeout_permission_result",
+  };
+  const forcedMessages = [
+    ...messages,
+    {
+      role: "tool",
+      name: "permission_result",
+      content: "pending",
+    } as LLMMessage,
+  ];
+  const common = {
+    active: true,
+    usableEvidence: true,
+    messages,
+    packet: packet("Summarize the verified source fact."),
+    selection: { modelId: "model-b" },
+    error: new Error("gateway unavailable"),
+    maxRounds: 5,
+    toolCallCount: 1,
+    roundCount: 1,
+  };
+
+  let builtForced = 0;
+  const forced = recordingTarget();
+  assert.deepEqual(
+    await controller.completeModelCallErrorFlow(
+      {
+        ...common,
+        aborted: false,
+        buildForcedPermissionResult: () => {
+          builtForced += 1;
+          return forcedRound;
+        },
+      },
+      forced.target,
+      async (round) => {
+        assert.equal(round, forcedRound);
+        return { messages: forcedMessages };
+      },
+    ),
+    { messages: forcedMessages },
+  );
+  assert.equal(builtForced, 1);
+  assert.deepEqual(forced.events, []);
+
+  builtForced = 0;
+  const aborted = recordingTarget();
+  assert.equal(
+    await controller.completeModelCallErrorFlow(
+      {
+        ...common,
+        aborted: true,
+        buildForcedPermissionResult: () => {
+          builtForced += 1;
+          return forcedRound;
+        },
+      },
+      aborted.target,
+      async () => {
+        throw new Error("should not execute");
+      },
+    ),
+    "rethrow",
+  );
+  assert.equal(builtForced, 0);
+
+  builtForced = 0;
+  const inactive = recordingTarget();
+  assert.equal(
+    await controller.completeModelCallErrorFlow(
+      {
+        ...common,
+        active: false,
+        aborted: false,
+        buildForcedPermissionResult: () => {
+          builtForced += 1;
+          return forcedRound;
+        },
+      },
+      inactive.target,
+      async () => {
+        throw new Error("should not execute");
+      },
+    ),
+    "rethrow",
+  );
+  assert.equal(builtForced, 0);
+
+  builtForced = 0;
+  const unusable = recordingTarget();
+  assert.equal(
+    await controller.completeModelCallErrorFlow(
+      {
+        ...common,
+        usableEvidence: false,
+        aborted: false,
+        buildForcedPermissionResult: () => {
+          builtForced += 1;
+          return forcedRound;
+        },
+      },
+      unusable.target,
+      async () => {
+        throw new Error("should not execute");
+      },
+    ),
+    "rethrow",
+  );
+  assert.equal(builtForced, 0);
+});
+
 test("TerminalCloseoutController appends current assistant text for pseudo tool-call synthesis only", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];

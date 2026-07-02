@@ -38,8 +38,7 @@
     "CloseoutPolicyRegistry.evaluateTerminate",
     "TerminalCloseoutController.handleTerminalCloseoutHook",
     "EngineRunState.captureFinalMessages",
-    "ContinuationController.runForcedPermissionResultRound",
-    "CloseoutPolicyRegistry.evaluateModelErrorFallback",
+    "TerminalCloseoutController.completeModelCallErrorFlow",
     "EngineRunState.captureFinalMessagesIfAbsent"
   ],
   "decisionVocabulary": [

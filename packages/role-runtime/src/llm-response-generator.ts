@@ -3314,18 +3314,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }
           const errorEvidence = aborted
             ? { usableEvidence: false }
-            : snapshotEvidence(state.messages);
-          const forcedPermissionResult =
-            !aborted && activeToolLoop && errorEvidence.usableEvidence
-              ? continuation.forcePendingApprovalWaitTimeoutPermissionResult({
-                  taskPrompt: packet.taskPrompt,
-                  toolTrace,
-                  ...(initialGatewayInput.tools === undefined
-                    ? {}
-                    : { tools: initialGatewayInput.tools }),
-                })
-              : { kind: "none" as const };
-          return terminalCloseout.completeModelCallError(
+            : evidenceLedger.snapshot({
+                taskPrompt: packet.taskPrompt,
+                messages: state.messages,
+                toolTrace,
+              });
+          return terminalCloseout.completeModelCallErrorFlow(
             {
               aborted,
               active: Boolean(activeToolLoop),
@@ -3338,10 +3332,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               maxRounds,
               toolCallCount: countNativeToolCalls(toolTrace),
               roundCount: toolTrace.length,
-              forcedPermissionResult:
-                forcedPermissionResult.kind === "forced_tool_round"
-                  ? forcedPermissionResult
-                  : { kind: "none" },
+              buildForcedPermissionResult: () => {
+                const result =
+                  continuation.forcePendingApprovalWaitTimeoutPermissionResult({
+                    taskPrompt: packet.taskPrompt,
+                    toolTrace,
+                    ...(initialGatewayInput.tools === undefined
+                      ? {}
+                      : { tools: initialGatewayInput.tools }),
+                  });
+                return result.kind === "forced_tool_round"
+                  ? result
+                  : { kind: "none" };
+              },
             },
             runState,
             async (modelErrorResult) => {

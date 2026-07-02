@@ -146,8 +146,7 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     installed: true,
     moduleOps: [
       "EngineRunState.captureFinalMessages",
-      "ContinuationController.runForcedPermissionResultRound",
-      "CloseoutPolicyRegistry.evaluateModelErrorFallback",
+      "TerminalCloseoutController.completeModelCallErrorFlow",
     ],
   },
   {
