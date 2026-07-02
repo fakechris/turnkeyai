@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `da476f98806936b63c912b5581bb36be05429f89`
+**Code HEAD before this docs-only report:** `e3c4e8e17754a13cb31a8a449bd2ed2364460ecd`
 **Date:** 2026-07-02
 
 ## Summary
@@ -126,6 +126,8 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/execution-budget-controller.ts`, leaving the adapter to pass
   hook state into the controller instead of carrying a local budget-signal
   closure.
+  The engine policy-trace debug env gate now lives with the policy-trace owner
+  in `react-engine/policy-trace.ts` instead of as an adapter-local helper.
   Tool-result evidence collectors for completed sessions, timeout signals,
   session history evidence, tool-result text, tool-trace text, resumable partial
   sessions, and usable-evidence detection now live in neutral
@@ -195,6 +197,7 @@ of controller actions.
 | `9224078` | Move adapter utility helpers for session trace canonicalization, native tool-call counting, reduced prompt replacement, JSON object parsing, and abort guarding into neutral owners with focused tests. |
 | `36deaba` | Move runtime-derived mission report construction into a neutral module and move supplemental browser-probe availability checking into shared tool-loop helpers. |
 | `da476f9` | Move wall-clock closeout signal construction into `ExecutionBudgetController`; `CloseoutPolicyRegistry` consumes the controller-owned signal type. |
+| `e3c4e8e` | Move the policy-trace debug env gate into `react-engine/policy-trace.ts`; add focused env-gate coverage. |
 
 ## Current Extracted Implementation
 
@@ -202,7 +205,8 @@ Real implementation now exists in:
 
 - `react-engine/types.ts`
 - `react-engine/engine-run-state.ts`
-- `react-engine/policy-trace.ts`
+- `react-engine/policy-trace.ts` for trace recording, the no-op trace, and the
+  engine policy-trace debug env gate.
 - `react-engine/hook-policy-trace.ts`
 - `react-engine/hook-orchestration-contract.ts`
 - `react-engine/policy-trace-characterization.ts`
@@ -353,9 +357,10 @@ All gates below passed on the current code before the report update:
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/runtime-derived-mission-report.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 11 / 11 |
 | `npx tsx --test packages/role-runtime/src/react-engine/execution-budget-controller.test.ts packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 39 / 39 |
+| `npx tsx --test packages/role-runtime/src/react-engine/policy-trace.test.ts` | 1 / 1 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts packages/role-runtime/src/gateway-input-builder.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 15 / 15 |
 | `npx tsx --test packages/role-runtime/src/react-engine/task-facts.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 57 / 57 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 145 / 145 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 146 / 146 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -373,6 +378,8 @@ root plus several policy-heavy hook bodies. The main improvement is that more th
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
+- engine policy-trace debug gating routes through `policy-trace.ts`; the adapter
+  imports the owner-owned helper instead of carrying the env check locally.
 - approval-gate normalizer steps and read-only suppression route through
   `PermissionPolicy` in the engine path.
 - the unconditional engine finalization epilogue routes through
