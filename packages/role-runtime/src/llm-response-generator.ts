@@ -55,6 +55,7 @@ import {
   SUPPLEMENTAL_BROWSER_OPEN_TIMEOUT_MS,
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
+  buildReadOnlyPermissionQuerySuppressionPrompt,
   buildContinuationDirectiveContext,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
@@ -91,7 +92,9 @@ import {
   readSessionKeyFromToolInput,
   readStringInput,
   requestsApprovalGatedBrowserAction,
+  shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
+  taskAllowsPermissionTools,
   taskPromptLooksLikeSourceCheckContinuation,
   taskPromptSaysApprovalAlreadyApplied,
   taskRequestsSessionTranscript,
@@ -110,6 +113,8 @@ import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
   createEnginePolicyTrace,
+  createPermissionPolicy,
+  normalizeEngineToolCalls,
   traceEngineHooks,
 } from "./react-engine";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
@@ -220,152 +225,6 @@ interface SubAgentToolTimeoutSignal {
   agentId: string;
   timeoutSeconds?: number | null;
   evidenceAvailable: boolean;
-}
-
-/**
- * Context a tool-call normalization step may read. Built ONCE per round by the
- * engine's `onToolCalls` hook (the shared context builder) so each step reads the
- * same pre-resolved values instead of reassembling session context itself. The
- * directive fields are computed from the live `messages` exactly as the inline
- * loop does (llm-response-generator inline :449-472).
- */
-interface ToolCallNormalizationContext {
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-  repairMarkers: LLMMessage[];
-  /** buildContinuationDirectiveContext(taskPrompt, messages) — shared by the
-   *  session-key and approval-gate steps (inline uses `sessionContinuationContext`). */
-  sessionContinuationContext: string;
-  sessionContinuationDirective: SessionContinuationDirective | null;
-  sessionContinuationLookupDirective: SessionContinuationLookupDirective | null;
-  browserAvailable: boolean;
-  exploreAvailable: boolean;
-}
-
-interface ToolCallNormalizationStep {
-  name: string;
-  apply(calls: LLMToolCall[], ctx: ToolCallNormalizationContext): LLMToolCall[];
-}
-
-/**
- * The engine's slice of the inline tool-call normalization pipeline, declared as
- * DATA so the order is explicit and table-test-assertable. Order is the single
- * most bug-prone surface in this cutover, so each step is annotated with the
- * inline call site it mirrors. This is engine-only (used inside `runViaReActEngine`);
- * the inline loop keeps its own flattened sequence (inline :473-516) until 8C+.
- *
- * Mirrors inline EXACTLY, in order:
- *   1. normalizeSessionToolAliasCalls                (inline :475)
- *   2. enforceMissingApprovalGateRepairToolCalls     (inline :474)
- *   3. enforceSupplementalLocalTimeoutProbeToolCall  (inline :473)
- *   4. applySessionContinuationDirective             (inline :489)
- *   5. applySessionContinuationLookupDirective       (inline :490)
- *   6. normalizeExplicitContinuationHistoryCalls     (inline :491)
- *   7. normalizeSessionToolCalls                     (inline :492)
- *   8. normalizePrivateUrlResearchSpawnCalls         (inline :493)
- *   9. normalizeLocalUrlWebFetchCalls                (inline :498)
- *  10. normalizeBoundedTimeoutSourceSpawnAgents      (inline :499)
- *  11. normalizeBoundedTimeoutDuplicateSourceSpawns  (inline :504)
- *  12. applySessionContinuationDirective (repeat)    (inline :507)
- *  13. normalizeApprovalGatedBrowserSpawnCalls       (inline :508)
- *  14. limitIndependentEvidenceSpawnCalls            (inline :513)
- */
-const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
-  { name: "sessionToolAlias", apply: (c) => normalizeSessionToolAliasCalls(c) },
-  {
-    name: "enforceMissingApprovalGateRepair",
-    apply: (c, x) =>
-      enforceMissingApprovalGateRepairToolCalls(c, {
-        messages: x.messages,
-        repairMarkers: x.repairMarkers,
-        taskPrompt: x.taskPrompt,
-        toolTrace: x.toolTrace,
-      }),
-  },
-  {
-    name: "supplementalLocalTimeoutProbe",
-    apply: (c, x) => enforceSupplementalLocalTimeoutProbeToolCall(c, x.messages),
-  },
-  {
-    name: "sessionContinuationDirective",
-    apply: (c, x) => applySessionContinuationDirective(c, x.sessionContinuationDirective),
-  },
-  {
-    name: "sessionContinuationLookupDirective",
-    apply: (c, x) =>
-      applySessionContinuationLookupDirective(c, x.sessionContinuationLookupDirective),
-  },
-  {
-    name: "explicitContinuationHistory",
-    apply: (c, x) => normalizeExplicitContinuationHistoryCalls(c, x.taskPrompt),
-  },
-  {
-    name: "sessionToolCalls",
-    apply: (c, x) => normalizeSessionToolCalls(c, x.sessionContinuationContext),
-  },
-  {
-    name: "privateUrlResearchSpawn",
-    apply: (c, x) =>
-      normalizePrivateUrlResearchSpawnCalls(c, {
-        browserAvailable: x.browserAvailable,
-        taskPrompt: x.taskPrompt,
-      }),
-  },
-  {
-    name: "localUrlWebFetch",
-    apply: (c, x) => normalizeLocalUrlWebFetchCalls(c, { taskPrompt: x.taskPrompt }),
-  },
-  {
-    name: "boundedTimeoutSourceSpawn",
-    apply: (c, x) =>
-      normalizeBoundedTimeoutSourceSpawnAgents(c, {
-        exploreAvailable: x.exploreAvailable,
-        taskPrompt: x.taskPrompt,
-      }),
-  },
-  {
-    name: "boundedTimeoutDuplicateSourceSpawn",
-    apply: (c, x) =>
-      normalizeBoundedTimeoutDuplicateSourceSpawns(c, { taskPrompt: x.taskPrompt }),
-  },
-  {
-    name: "sessionContinuationDirectiveRepeat",
-    apply: (c, x) => applySessionContinuationDirective(c, x.sessionContinuationDirective),
-  },
-  {
-    name: "approvalGatedBrowserSpawn",
-    apply: (c, x) =>
-      normalizeApprovalGatedBrowserSpawnCalls(c, {
-        taskPrompt: x.taskPrompt,
-        sessionContext: x.sessionContinuationContext,
-        toolTrace: x.toolTrace,
-      }),
-  },
-  {
-    name: "limitIndependentEvidenceSpawn",
-    apply: (c, x) =>
-      limitIndependentEvidenceSpawnCalls(c, {
-        taskPrompt: x.taskPrompt,
-        toolTrace: x.toolTrace,
-      }),
-  },
-];
-
-/** Canonical step order, exported so a table-driven test can pin it (a reorder
- *  must be deliberate). Mirrors the inline sequence above. */
-export const ENGINE_TOOL_CALL_NORMALIZATION_ORDER: readonly string[] =
-  ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE.map((step) => step.name);
-
-/** Run the engine normalization pipeline left-to-right over the pending calls. */
-function runEngineToolCallNormalizationPipeline(
-  calls: LLMToolCall[],
-  ctx: ToolCallNormalizationContext,
-): LLMToolCall[] {
-  return ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE.reduce(
-    (acc, step) => step.apply(acc, ctx),
-    calls,
-  );
 }
 
 /**
@@ -2708,6 +2567,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     };
 
     const ctx: RoleToolContext = { activation, packet, repairMarkers: [], ...(signal ? { signal } : {}) };
+    const permissionPolicy = createPermissionPolicy();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     // Per-run closeout state: hooks fire across different engine callbacks, so a
@@ -2888,7 +2748,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   sessionContinuationContext,
                 )
               : null;
-          const normalized = runEngineToolCallNormalizationPipeline(calls, {
+          const normalized = normalizeEngineToolCalls(calls, {
             taskPrompt: packet.taskPrompt,
             messages,
             toolTrace,
@@ -2902,6 +2762,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             exploreAvailable:
               packet.capabilityInspection?.availableWorkers?.includes("explore") ??
               false,
+            permissionPolicy,
           });
           // Stage 8B (Batch E — T7 execution budget plane): the final-recovery
           // tool-budget truncation (inline :817-819). When a final recovery
@@ -3059,25 +2920,25 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // converges (no calls → no re-suppress). Checked BEFORE the awaiting-context
           // suppression (inline :518 precedes :1013). sessionContext is the inline
           // continuation-directive context over state.messages.
-          if (
-            shouldSuppressReadOnlyPermissionQueryToolCalls(calls, {
+          const readOnlySuppression =
+            permissionPolicy.suppressReadOnlyPermissionQuery({
+              calls,
               taskPrompt: packet.taskPrompt,
               sessionContext: buildContinuationDirectiveContext(
                 packet.taskPrompt,
                 state.messages,
               ),
-            })
-          ) {
+            });
+          if (readOnlySuppression.kind === "suppress") {
             return {
               messages: [
                 ...state.messages,
                 { role: "assistant", content: state.lastText },
-                {
-                  role: "user",
-                  content: buildReadOnlyPermissionQuerySuppressionPrompt(),
-                },
+                ...readOnlySuppression.messages,
               ],
-              forceToolChoice: "none",
+              ...(readOnlySuppression.forceToolChoice
+                ? { forceToolChoice: readOnlySuppression.forceToolChoice }
+                : {}),
             };
           }
           const repairMarkers = (ctx.repairMarkers ??= []);
@@ -3129,7 +2990,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // round) and let onSuppressToolCalls perform the drop + tool-free re-prompt —
           // preserving the inline ordering for the read-only + closeout compound case.
           if (
-            shouldSuppressReadOnlyPermissionQueryToolCalls(calls, {
+            permissionPolicy.wouldSuppressReadOnlyPermissionQuery({
+              calls,
               taskPrompt: packet.taskPrompt,
               sessionContext: buildContinuationDirectiveContext(
                 packet.taskPrompt,
@@ -6391,23 +6253,6 @@ function taskRequestsFocusedDurableMemoryRecall(taskPrompt: string): boolean {
     return false;
   }
   return true;
-}
-
-function taskAllowsPermissionTools(taskPrompt: string): boolean {
-  if (disclaimsApprovalGatedBrowserAction(taskPrompt)) {
-    return false;
-  }
-  return (
-    /\b(?:permission_(?:query|result|applied)|permission\.(?:query|result|applied)|approval_id|approval id|pending approval|operator approval|operator decision|approval (?:gate|request|decision|granted|approved|denied|applied)|approved action|denied action)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\b(?:approve|approved|approval|permission|operator review)\b[\s\S]{0,180}\b(?:submit|submission|form|click|mutat(?:e|ion)|side[- ]effects?|browser\.form\.submit|apply|execute|dry[- ]run)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\b(?:submit|submission|form|click|mutat(?:e|ion)|side[- ]effects?|browser\.form\.submit|apply|execute|dry[- ]run)\b[\s\S]{0,180}\b(?:approve|approved|approval|permission|operator review)\b/i.test(
-      taskPrompt,
-    )
-  );
 }
 
 function taskAllowsTaskTrackingTools(taskPrompt: string): boolean {
@@ -9979,62 +9824,6 @@ function shouldAppendTimeoutContinuationVisibility(input: {
     toolTraceHasTimeoutResult(input.toolTrace) ||
     contextHasTimeoutSessionResult(context)
   );
-}
-
-function shouldSuppressReadOnlyPermissionQueryToolCalls(
-  toolCalls: LLMToolCall[],
-  context: { taskPrompt: string; sessionContext: string },
-): boolean {
-  return toolCalls.some((call) => {
-    if (call.name !== "permission_query") {
-      return false;
-    }
-    const callText = stableJson(normalizeToolInputForSignature(call.input));
-    return (
-      isSourceBackedReadOnlyTask(context.taskPrompt) ||
-      isClearlyUnrequestedReadOnlyPermissionQuery(callText, context.taskPrompt) ||
-      disclaimsIntendedBrowserMutation(callText) ||
-      (disclaimsIntendedBrowserMutation(context.taskPrompt) &&
-        !requestsApprovalGatedBrowserAction(context.taskPrompt))
-    );
-  });
-}
-
-function isSourceBackedReadOnlyTask(taskPrompt: string): boolean {
-  const sourceReadOnlyTask =
-    /\b(?:read[- ]only|source-backed|source backed|provider|pricing|price|search\/web_search|web_search|extract|evidence source|listed sources?|research note|api provider)\b/i.test(
-      taskPrompt,
-    );
-  if (!sourceReadOnlyTask) {
-    return false;
-  }
-  return !/\b(?:submit|submission|form|click|press|type|fill|select|upload|download|delete|save|apply|confirm|purchase|checkout|sign\s*in|log\s*in|mutat(?:e|ion)|side[- ]effect|dry[- ]run)\b/i.test(
-    taskPrompt,
-  );
-}
-
-function isClearlyUnrequestedReadOnlyPermissionQuery(
-  callText: string,
-  taskPrompt: string,
-): boolean {
-  if (taskAllowsPermissionTools(taskPrompt)) {
-    return false;
-  }
-  if (!/\b(?:browser\.form\.submit|form submission|approval-gated browser form submission)\b/i.test(callText)) {
-    return false;
-  }
-  const sourceReadOnlyTask =
-    isSourceBackedReadOnlyTask(taskPrompt);
-  return sourceReadOnlyTask;
-}
-
-function buildReadOnlyPermissionQuerySuppressionPrompt(): string {
-  return [
-    "Runtime correction: read-only browser inspection does not require approval.",
-    "The previous permission_query describes no intended form submission, mutation, or side effect, so it must not enter the native approval flow.",
-    "Do not call permission_query, permission_result, permission_applied, or browser mutation tools.",
-    "Produce the final answer from completed evidence. If any requested item remains unverified, state it explicitly and give the safe next action.",
-  ].join("\n");
 }
 
 function hasCompletedBrowserSessionEvidence(

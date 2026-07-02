@@ -16,8 +16,8 @@ import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
 import {
   LLMRoleResponseGenerator,
-  ENGINE_TOOL_CALL_NORMALIZATION_ORDER,
 } from "./llm-response-generator";
+import { ENGINE_TOOL_CALL_NORMALIZATION_ORDER } from "./react-engine/tool-call-normalizer";
 import type { PreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
 import type {

@@ -325,6 +325,79 @@ export function hasPermissionGateEvidence(toolTrace: NativeToolRoundTrace[]): bo
   );
 }
 
+export function shouldSuppressReadOnlyPermissionQueryToolCalls(
+  toolCalls: LLMToolCall[],
+  context: { taskPrompt: string; sessionContext: string },
+): boolean {
+  return toolCalls.some((call) => {
+    if (call.name !== "permission_query") {
+      return false;
+    }
+    const callText = stableJson(normalizeToolInputForSignature(call.input));
+    return (
+      isSourceBackedReadOnlyTask(context.taskPrompt) ||
+      isClearlyUnrequestedReadOnlyPermissionQuery(callText, context.taskPrompt) ||
+      disclaimsIntendedBrowserMutation(callText) ||
+      (disclaimsIntendedBrowserMutation(context.taskPrompt) &&
+        !requestsApprovalGatedBrowserAction(context.taskPrompt))
+    );
+  });
+}
+
+function isSourceBackedReadOnlyTask(taskPrompt: string): boolean {
+  const sourceReadOnlyTask =
+    /\b(?:read[- ]only|source-backed|source backed|provider|pricing|price|search\/web_search|web_search|extract|evidence source|listed sources?|research note|api provider)\b/i.test(
+      taskPrompt,
+    );
+  if (!sourceReadOnlyTask) {
+    return false;
+  }
+  return !/\b(?:submit|submission|form|click|press|type|fill|select|upload|download|delete|save|apply|confirm|purchase|checkout|sign\s*in|log\s*in|mutat(?:e|ion)|side[- ]effect|dry[- ]run)\b/i.test(
+    taskPrompt,
+  );
+}
+
+function isClearlyUnrequestedReadOnlyPermissionQuery(
+  callText: string,
+  taskPrompt: string,
+): boolean {
+  if (taskAllowsPermissionTools(taskPrompt)) {
+    return false;
+  }
+  if (!/\b(?:browser\.form\.submit|form submission|approval-gated browser form submission)\b/i.test(callText)) {
+    return false;
+  }
+  const sourceReadOnlyTask =
+    isSourceBackedReadOnlyTask(taskPrompt);
+  return sourceReadOnlyTask;
+}
+
+export function buildReadOnlyPermissionQuerySuppressionPrompt(): string {
+  return [
+    "Runtime correction: read-only browser inspection does not require approval.",
+    "The previous permission_query describes no intended form submission, mutation, or side effect, so it must not enter the native approval flow.",
+    "Do not call permission_query, permission_result, permission_applied, or browser mutation tools.",
+    "Produce the final answer from completed evidence. If any requested item remains unverified, state it explicitly and give the safe next action.",
+  ].join("\n");
+}
+
+export function taskAllowsPermissionTools(taskPrompt: string): boolean {
+  if (disclaimsApprovalGatedBrowserAction(taskPrompt)) {
+    return false;
+  }
+  return (
+    /\b(?:permission_(?:query|result|applied)|permission\.(?:query|result|applied)|approval_id|approval id|pending approval|operator approval|operator decision|approval (?:gate|request|decision|granted|approved|denied|applied)|approved action|denied action)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:approve|approved|approval|permission|operator review)\b[\s\S]{0,180}\b(?:submit|submission|form|click|mutat(?:e|ion)|side[- ]effects?|browser\.form\.submit|apply|execute|dry[- ]run)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:submit|submission|form|click|mutat(?:e|ion)|side[- ]effects?|browser\.form\.submit|apply|execute|dry[- ]run)\b[\s\S]{0,180}\b(?:approve|approved|approval|permission|operator review)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
 export function hasMissingApprovalGateRepairPrompt(messages: LLMMessage[]): boolean {
   return messages.some(
     (message) =>

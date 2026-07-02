@@ -1,14 +1,86 @@
-// Stage 8 engine cleanup — PermissionPolicy (module shell).
+import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
+
+import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  buildReadOnlyPermissionQuerySuppressionPrompt,
+  enforceMissingApprovalGateRepairToolCalls,
+  normalizeApprovalGatedBrowserSpawnCalls,
+  shouldSuppressReadOnlyPermissionQueryToolCalls,
+} from "../tool-loop-shared";
+import type { EngineSuppressDecision } from "./types";
+
+// Stage 8 engine cleanup — PermissionPolicy.
 //
 // Authority: own permission-query suppression and approval-gate compatibility
-// decisions (read-only permission-query suppression; approval-gated browser
-// rewrite / forced permission-query decisions that currently depend on
-// compatibility detectors; future tool filtering if the engine adopts
-// filterTools).
-//
-// It does NOT execute tools, repair final-answer quality unrelated to
-// permission, or synthesize completed closeout. It must not add new raw regexes
-// outside legacy-text-detectors.ts.
-//
-// Implementation lands in Batch 1. This shell reserves the module.
+// decisions for the engine path. The text detectors remain in neutral shared
+// helpers while inline is still the parity reference; this module is the engine
+// policy boundary that calls them.
 export const PERMISSION_POLICY_MODULE = "permission-policy" as const;
+
+export interface PermissionToolCallInput {
+  calls: LLMToolCall[];
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  sessionContext: string;
+}
+
+export interface PermissionSuppressInput {
+  calls: LLMToolCall[];
+  taskPrompt: string;
+  sessionContext: string;
+}
+
+export interface PermissionPolicy {
+  normalizeMissingApprovalGateRepair(input: PermissionToolCallInput): LLMToolCall[];
+  normalizeApprovalGatedBrowserSpawn(input: PermissionToolCallInput): LLMToolCall[];
+  suppressReadOnlyPermissionQuery(input: PermissionSuppressInput): EngineSuppressDecision;
+  wouldSuppressReadOnlyPermissionQuery(input: PermissionSuppressInput): boolean;
+}
+
+export function createPermissionPolicy(): PermissionPolicy {
+  return DEFAULT_PERMISSION_POLICY;
+}
+
+const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
+  normalizeMissingApprovalGateRepair(input) {
+    return enforceMissingApprovalGateRepairToolCalls(input.calls, {
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      taskPrompt: input.taskPrompt,
+      toolTrace: input.toolTrace,
+    });
+  },
+
+  normalizeApprovalGatedBrowserSpawn(input) {
+    return normalizeApprovalGatedBrowserSpawnCalls(input.calls, {
+      taskPrompt: input.taskPrompt,
+      sessionContext: input.sessionContext,
+      toolTrace: input.toolTrace,
+    });
+  },
+
+  suppressReadOnlyPermissionQuery(input) {
+    if (!shouldSuppressReadOnlyPermissionQueryToolCalls(input.calls, input)) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "suppress",
+      policyId: "read_only_permission_query",
+      messages: [
+        {
+          role: "user",
+          content: buildReadOnlyPermissionQuerySuppressionPrompt(),
+        },
+      ],
+      forceToolChoice: "none",
+      consumesRound: true,
+      reason: "read-only permission_query does not require approval",
+    };
+  },
+
+  wouldSuppressReadOnlyPermissionQuery(input) {
+    return shouldSuppressReadOnlyPermissionQueryToolCalls(input.calls, input);
+  },
+};

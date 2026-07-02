@@ -3,8 +3,9 @@
 // HARD INVARIANT (plan "Dependency Rules" / "Non-Negotiable Cleanup Invariants"):
 // no packages/role-runtime/src/react-engine/* module may import
 // ../llm-response-generator (or re-export its helpers). If a helper is needed it
-// must MOVE into the owning react-engine module. This test fails the build if any
-// react-engine source file reaches back into the composition root.
+// must move into the owning react-engine module or a neutral shared role-runtime
+// module. This test fails the build if any react-engine source file reaches back
+// into the composition root.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
