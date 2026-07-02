@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `2122b9e26de80a6c173f17777d7e160b46a08cca`
+**Code HEAD before this docs-only report:** `477245b887dc769d3f04ca1133b2b9ccfd42e823`
 **Date:** 2026-07-02
 
 ## Summary
@@ -21,10 +21,13 @@ could not move the normalizer without making the inline parity reference import 
   `run` object. A narrow execution-budget admission slice now lives in
   `react-engine/execution-budget-controller.ts`, and the engine tool-batch runner
   now owns its wall-clock signal, serial/concurrent chunking, and per-tool error
-  shaping. The final allowed tool-round warning now routes through that controller
-  while the warning text itself lives in neutral shared code used by inline and
-  engine. Final-recovery budget parsing, prior-call counting, closeout reason
-  lines, and repair prompt helpers also moved into neutral shared code. The first
+  shaping. Budget closeout snapshots for final-recovery exhaustion, wall-clock
+  exhaustion, and round-limit synthesis now route through that controller after
+  the adapter-selected policy fires. The final allowed tool-round warning now
+  routes through that controller while the warning text itself lives in neutral
+  shared code used by inline and engine. Final-recovery budget parsing, prior-call
+  counting, closeout reason lines, and repair prompt helpers also moved into
+  neutral shared code. The first
   continuation slices now live in `react-engine/continuation-controller.ts`:
   empty-round direct `sessions_send` and lookup `sessions_list` injection, plus
   approved-browser timeout, coverage/sibling timeout, and supplemental local
@@ -61,6 +64,7 @@ evidence/task-fact behavior, and adapter-side application of controller actions.
 | `326cdd3` | Extract independent evidence-stream continuation into `ContinuationController`; share detector/prompt helpers. |
 | `6b55996` | Extract forced pending approval `permission_result` continuation into `ContinuationController`; share permission trace readers/call builder. |
 | `2122b9e` | Extract post-execute missing approval-gate repair continuation into `ContinuationController`; share repair predicate/prompt helpers. |
+| `477245b` | Extract execution-budget closeout snapshot builders for recovery-budget, wall-clock, and round-limit closeouts. |
 
 ## Current Extracted Implementation
 
@@ -78,7 +82,8 @@ Real implementation now exists in:
 - `react-engine/engine-run-observer.ts`
 - `react-engine/execution-budget-controller.ts` for final tool-round warning,
   final-recovery truncation, per-round tool-call admission, and engine tool-batch
-  execution.
+  execution, plus budget closeout snapshot construction for recovery-budget,
+  wall-clock, and round-limit terminal synthesis.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -111,11 +116,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 55 / 55 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 58 / 58 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 243 / 243, 0 fail |
-| `npm run parity:engine` | 272 / 272, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 226 / 226, 0 fail |
+| `npm run parity:engine` | 267 / 267, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -126,7 +131,7 @@ zero failures and zero incomplete tests after recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2498` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that sixteen
+root plus several policy-heavy hook bodies. The main improvement is that seventeen
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -144,6 +149,9 @@ Stage 8 boundaries/slices are now real:
 - engine tool-batch execution routes through `ExecutionBudgetController.runToolBatch`
   for order-sensitive serialization, concurrency chunks, wall-clock signal setup,
   and non-abort tool-error shaping.
+- recovery-budget, wall-clock, and round-limit closeout snapshot construction
+  routes through `ExecutionBudgetController`; the adapter still owns when those
+  policies fire until `CloseoutPolicyRegistry` lands.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -176,8 +184,7 @@ Stage 8 boundaries/slices are now real:
 
 Continue with the remaining high-risk pieces:
 
-- execution-budget closeout decision/snapshot extraction, then extract closeout,
-  repair, completed-closeout, evidence ledger, task facts, and final adapter
-  thinning.
+- extract closeout policy registry decisions/precedence, then repair,
+  completed-closeout, evidence ledger, task facts, and final adapter thinning.
 
 The branch is **not pushed**.
