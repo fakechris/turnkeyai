@@ -2956,41 +2956,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           pendingContinuation =
             calls.length === 0 ? computeEmptyRoundContinuationCall(state) : null;
           const wallClockBudgetCloseoutSignal =
-            calls.length > 0
-              ? executionBudget.buildWallClockBudgetCloseoutSignal({
-                  toolCalls: calls,
-                  pendingToolCallCount: calls.length,
-                  taskPrompt: packet.taskPrompt,
-                  messages: state.messages,
-                  toolTrace,
-                  maxRounds,
-                  usedToolCalls: countNativeToolCalls(toolTrace),
-                  roundCount,
-                  evidenceAvailable: stateEvidence.usableEvidence,
-                  now: () => this.clock.now(),
-                  toolLoopStartedAtMs,
-                  ...(activeToolLoop.maxWallClockMs === undefined
-                    ? {}
-                    : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
-                })
-              : pendingContinuation
-                ? executionBudget.buildWallClockBudgetCloseoutSignal({
-                    toolCalls: [pendingContinuation],
-                    pendingToolCallCount: 1,
-                    taskPrompt: packet.taskPrompt,
-                    messages: state.messages,
-                    toolTrace,
-                    maxRounds,
-                    usedToolCalls: countNativeToolCalls(toolTrace),
-                    roundCount,
-                    evidenceAvailable: stateEvidence.usableEvidence,
-                    now: () => this.clock.now(),
-                    toolLoopStartedAtMs,
-                    ...(activeToolLoop.maxWallClockMs === undefined
-                      ? {}
-                      : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
-                  })
-                : null;
+            executionBudget.buildPendingCallsWallClockBudgetCloseoutSignal({
+              pendingCalls: calls,
+              pendingContinuation,
+              taskPrompt: packet.taskPrompt,
+              messages: state.messages,
+              toolTrace,
+              maxRounds,
+              usedToolCalls: countNativeToolCalls(toolTrace),
+              roundCount,
+              evidenceAvailable: stateEvidence.usableEvidence,
+              now: () => this.clock.now(),
+              toolLoopStartedAtMs,
+              ...(activeToolLoop.maxWallClockMs === undefined
+                ? {}
+                : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
+            });
           // 2-8. pending-call closeouts — operator_cancelled through the
           // repeated-call/session anti-loop policies.
           const remainingPendingCloseoutReason =

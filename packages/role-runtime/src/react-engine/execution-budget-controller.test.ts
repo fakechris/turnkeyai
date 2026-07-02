@@ -188,6 +188,65 @@ test("ExecutionBudgetController builds wall-clock closeout signals", () => {
   });
 });
 
+test("ExecutionBudgetController builds pending-call wall-clock signals from calls or continuation", () => {
+  const controller = createExecutionBudgetController();
+  const direct = controller.buildPendingCallsWallClockBudgetCloseoutSignal({
+    pendingCalls: [call("a"), call("b")],
+    pendingContinuation: call("continuation"),
+    taskPrompt: "Continue source inspection.",
+    messages: [{ role: "user", content: "Continue source inspection." }],
+    toolTrace: [],
+    maxRounds: 3,
+    usedToolCalls: 2,
+    roundCount: 1,
+    evidenceAvailable: true,
+    now: () => 10_000,
+    toolLoopStartedAtMs: 1_000,
+    maxWallClockMs: 5_000,
+  });
+
+  assert.equal(
+    direct?.buildCloseoutSnapshot(5_000).closeout.pendingToolCallCount,
+    2,
+  );
+
+  const continuation = controller.buildPendingCallsWallClockBudgetCloseoutSignal({
+    pendingCalls: [],
+    pendingContinuation: call("continuation"),
+    taskPrompt: "Continue source inspection.",
+    messages: [{ role: "user", content: "Continue source inspection." }],
+    toolTrace: [],
+    maxRounds: 3,
+    usedToolCalls: 2,
+    roundCount: 1,
+    evidenceAvailable: true,
+    now: () => 10_000,
+    toolLoopStartedAtMs: 1_000,
+    maxWallClockMs: 5_000,
+  });
+
+  assert.equal(
+    continuation?.buildCloseoutSnapshot(5_000).closeout.pendingToolCallCount,
+    1,
+  );
+  assert.equal(
+    controller.buildPendingCallsWallClockBudgetCloseoutSignal({
+      pendingCalls: [],
+      pendingContinuation: null,
+      taskPrompt: "No pending work.",
+      messages: [{ role: "user", content: "No pending work." }],
+      toolTrace: [],
+      maxRounds: 3,
+      usedToolCalls: 2,
+      roundCount: 1,
+      evidenceAvailable: false,
+      now: () => 10_000,
+      toolLoopStartedAtMs: 1_000,
+    }),
+    null,
+  );
+});
+
 test("ExecutionBudgetController builds round-limit closeout snapshots", () => {
   const controller = createExecutionBudgetController();
 

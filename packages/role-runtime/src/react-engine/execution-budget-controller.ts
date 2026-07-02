@@ -129,6 +129,15 @@ export interface WallClockBudgetCloseoutSignalInput {
   maxWallClockMs?: number;
 }
 
+export interface PendingCallsWallClockBudgetCloseoutSignalInput
+  extends Omit<
+    WallClockBudgetCloseoutSignalInput,
+    "toolCalls" | "pendingToolCallCount"
+  > {
+  pendingCalls: LLMToolCall[];
+  pendingContinuation: LLMToolCall | null;
+}
+
 export interface RoundLimitCloseoutSnapshotInput {
   maxRounds: number;
   pendingToolCallCount?: number;
@@ -272,8 +281,28 @@ export class ExecutionBudgetController {
           usedToolCalls: input.usedToolCalls,
           roundCount: input.roundCount,
           evidenceAvailable: input.evidenceAvailable,
-        }),
+      }),
     };
+  }
+
+  buildPendingCallsWallClockBudgetCloseoutSignal(
+    input: PendingCallsWallClockBudgetCloseoutSignalInput,
+  ): WallClockBudgetCloseoutSignal | null {
+    if (input.pendingCalls.length > 0) {
+      return this.buildWallClockBudgetCloseoutSignal({
+        ...input,
+        toolCalls: input.pendingCalls,
+        pendingToolCallCount: input.pendingCalls.length,
+      });
+    }
+    if (!input.pendingContinuation) {
+      return null;
+    }
+    return this.buildWallClockBudgetCloseoutSignal({
+      ...input,
+      toolCalls: [input.pendingContinuation],
+      pendingToolCallCount: 1,
+    });
   }
 
   buildRoundLimitCloseoutSnapshot(
