@@ -286,6 +286,19 @@ export interface CloseoutPolicyRegistry {
     input: PostExecuteCloseoutInput,
   ): PostExecuteCloseoutDecision | null;
 
+  applyPostExecuteCloseout<TCompletedSession, TTimeoutSignal, TToolResult>(
+    input: PostExecuteCloseoutApplicationInput<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+    target: PostExecuteCloseoutApplicationTarget<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+  ): EngineCloseoutReason | null;
+
   applyPendingCloseoutDecision(
     decision: PendingCloseoutApplicationDecision | null,
     target: PendingCloseoutApplicationTarget,
@@ -542,6 +555,28 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
   ): EngineCloseoutReason | null {
     return this.applyPendingCloseoutDecision(
       this.evaluateRemainingPendingCalls(input),
+      target,
+    );
+  }
+
+  applyPostExecuteCloseout<TCompletedSession, TTimeoutSignal, TToolResult>(
+    input: PostExecuteCloseoutApplicationInput<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+    target: PostExecuteCloseoutApplicationTarget<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+  ): EngineCloseoutReason | null {
+    return this.applyPostExecuteCloseoutDecision(
+      this.evaluatePostExecute({
+        completedSession: input.completedSession,
+        timeoutSignal: input.timeoutSignal,
+      }),
+      input,
       target,
     );
   }

@@ -34,7 +34,7 @@
     "ContinuationController.continueIndependentEvidenceStreams",
     "RepairPolicyRegistry.repairPostExecuteMissingApprovalGate",
     "ContinuationController.runForcedPermissionResultRound",
-    "CloseoutPolicyRegistry.evaluatePostExecute",
+    "CloseoutPolicyRegistry.applyPostExecuteCloseout",
     "ContinuationController.injectEmptyRoundContinuation",
     "RepairPolicyRegistry.evaluateNaturalFinish",
     "EngineRunState.captureFinalMessages",

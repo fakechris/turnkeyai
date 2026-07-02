@@ -3137,12 +3137,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           const timeoutSignal = completedSession
             ? null
             : evidenceLedger.subAgentToolTimeout(results);
-          const postExecuteCloseout = closeoutPolicy.evaluatePostExecute({
-            completedSession,
-            timeoutSignal,
-          });
-          return closeoutPolicy.applyPostExecuteCloseoutDecision(
-            postExecuteCloseout,
+          return closeoutPolicy.applyPostExecuteCloseout(
             {
               completedSession,
               timeoutSignal,

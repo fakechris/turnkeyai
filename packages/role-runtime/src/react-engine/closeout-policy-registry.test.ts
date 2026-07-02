@@ -745,6 +745,52 @@ test("CloseoutPolicyRegistry applies post-execute closeouts through a target", (
   assert.equal(writes.length, 2);
 });
 
+test("CloseoutPolicyRegistry applies post-execute closeout from hook input", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const completedSession = {
+    toolName: "sessions_spawn",
+    finalContents: ["done"],
+    browserRecoverySummaries: [],
+  };
+  const timeoutSignal = {
+    toolName: "sessions_spawn",
+    evidenceAvailable: false,
+  };
+  const toolResults = [{ toolCallId: "call-1" }];
+  const writes: unknown[] = [];
+  const target = {
+    recordCompletedSession(input: unknown) {
+      writes.push({ kind: "completed", input });
+    },
+    recordTimeoutSignal(input: unknown) {
+      writes.push({ kind: "timeout", input });
+    },
+  };
+
+  assert.equal(
+    registry.applyPostExecuteCloseout(
+      { completedSession, timeoutSignal, toolResults },
+      target,
+    ),
+    "completed_sub_agent_final",
+  );
+  assert.deepEqual(writes, [
+    {
+      kind: "completed",
+      input: { session: completedSession, toolResults },
+    },
+  ]);
+
+  assert.equal(
+    registry.applyPostExecuteCloseout(
+      { completedSession: null, timeoutSignal, toolResults },
+      target,
+    ),
+    "sub_agent_timeout",
+  );
+  assert.deepEqual(writes[1], { kind: "timeout", input: timeoutSignal });
+});
+
 test("CloseoutPolicyRegistry passes through pending terminate closeout", () => {
   const registry = createCloseoutPolicyRegistry();
   const pending = {

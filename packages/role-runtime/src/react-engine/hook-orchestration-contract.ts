@@ -121,7 +121,7 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     hook: "onAfterExecute",
     phase: "after_execute",
     installed: true,
-    moduleOps: ["CloseoutPolicyRegistry.evaluatePostExecute"],
+    moduleOps: ["CloseoutPolicyRegistry.applyPostExecuteCloseout"],
   },
   {
     hook: "onRoundEmpty",
