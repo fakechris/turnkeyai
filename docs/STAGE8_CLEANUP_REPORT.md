@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `84b1ae933284f7084c7e0cac6ff3e041c8008093`
+**Code HEAD before this docs-only report:** `58624f9173fc522751a6e374bea8be64a792a487`
 **Date:** 2026-07-02
 
 ## Summary
@@ -109,6 +109,11 @@ could not move the normalizer without making the inline parity reference import 
   provider protocol handoff to
   `EngineRunObserver.observeRuntimeForcedToolRound()`; the adapter supplies the
   actual tool-execution callback.
+  The full `onAfterExecuteContinue` hook flow now enters through
+  `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
+  owns provider tool-protocol round recording before current-round evidence
+  snapshotting and the post-execute continuation cascade. The adapter passes the
+  observer, ledger, hook state, and forced-round executor.
   Engine tool-call normalization context construction now lives in
   `react-engine/tool-call-normalizer.ts`: continuation context/directives,
   continuation lookup directives, and browser/explore worker availability are
@@ -199,7 +204,10 @@ could not move the normalizer without making the inline parity reference import 
   repair-marker recording callbacks, and empty-round action hook-result
   application for injected calls versus terminate decisions. The full
   post-execute continuation cascade now also evaluates and applies through that
-  controller; the adapter supplies evidence facts and the forced-round executor.
+  controller; the after-execute hook entrypoint additionally owns provider
+  protocol recording and current-round evidence snapshotting before the cascade,
+  while the adapter supplies the observer, ledger, hook state, and forced-round
+  executor.
   Pending-call closeout application now also routes through
   `CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout()` before
   empty-round continuation preview and
@@ -354,6 +362,7 @@ application outside the terminal completion path.
 | `38a7a56` | Move model-call-error forced pending-approval flow selection into `TerminalCloseoutController.completeModelCallErrorFlow`; route model-error usable-evidence through `EvidenceLedger.snapshot()`. |
 | `d2afbb1` | Add `EvidenceLedger.forRun()` and route engine run evidence snapshots through the ledger-owned run snapshotter instead of an adapter-local closure. |
 | `84b1ae9` | Move the full `onSuppressToolCalls` read-only / awaiting-context suppression flow into `PermissionPolicy.applySuppressToolCallsHook`; update the hook contract and policy-trace golden. |
+| `58624f9` | Move the full `onAfterExecuteContinue` observer / current-round evidence / continuation cascade flow into `ContinuationController.applyAfterExecuteContinuationHook`; update the hook contract and policy-trace golden. |
 
 ## Current Extracted Implementation
 
@@ -494,7 +503,10 @@ Real implementation now exists in:
   `continue` action hook-result application with repair-marker recording
   callback support, and empty-round action hook-result application for
   injected-call and terminate decisions, plus post-execute continuation cascade
-  precedence/application through one controller entrypoint.
+  precedence/application through one controller entrypoint, plus the full
+  `onAfterExecuteContinue` hook entrypoint that records provider protocol
+  rounds, reads the current-round evidence snapshot, and then applies the
+  cascade.
 - `task-facts-shared.ts` for requested table-column inference, markdown table
   header matching, provider search/pricing evidence-column inference,
   provider-support-schema request/result detection, missing requested-column
@@ -569,9 +581,9 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/permission-policy.test.ts` | 4 / 4 |
+| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 24 / 24 |
 | `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts packages/role-runtime/src/react-engine/policy-trace-characterization.test.ts` | 10 / 10 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 195 / 195 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 196 / 196 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -605,10 +617,12 @@ Stage 8 boundaries/slices are now real:
   `finalizeEngineAnswer`.
 - model/tool lifecycle observability routes through `EngineRunObserver`, including
   `toolTrace`, runtime progress recorder events, native tool-message persistence,
-  and normal post-execute plus forced runtime tool-round provider tool-protocol
-  round recording; engine-path forced runtime tool rounds now also route native
-  trace/progress snapshot persistence and assistant/tool message append through
-  `EngineRunObserver.observeRuntimeForcedToolRound()`.
+  and provider tool-protocol round recording; normal post-execute protocol
+  recording is now invoked from
+  `ContinuationController.applyAfterExecuteContinuationHook()` through the
+  injected observer, while forced runtime tool rounds route provider protocol
+  recording, native trace/progress snapshot persistence, and assistant/tool
+  message append through `EngineRunObserver.observeRuntimeForcedToolRound()`.
 - mutable cross-hook state routes through `EngineRunState`, including closeout
   result/metadata, completed/timeout signals, reductions, memory flushes, and final
   message snapshots.
@@ -871,8 +885,10 @@ Stage 8 boundaries/slices are now real:
   approved-browser continuation, independent evidence-stream continuation, and
   missing approval-gate repair marker recording through an adapter callback.
 - post-execute continuation cascade precedence and application now route through
-  a single `ContinuationController` entrypoint; the adapter supplies only
-  evidence facts, repair-marker storage, and the forced-round executor.
+  `ContinuationController.applyAfterExecuteContinuationHook`; the controller now
+  owns provider protocol recording, current-round evidence snapshotting, and the
+  continuation cascade, while the adapter supplies the observer, ledger,
+  repair-marker storage, and the forced-round executor.
 - completed product-signal dashboard URL extraction now lives in neutral shared
   code, removing the adapter-local duplicate dashboard regex tail.
 - browser/product-signal missing evidence repair detectors and repair prompt
