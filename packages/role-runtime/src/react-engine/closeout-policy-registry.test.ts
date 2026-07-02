@@ -9,6 +9,7 @@ import type {
 } from "./closeout-policy-registry";
 import type { LLMToolCall } from "./types";
 import {
+  buildRemainingPendingCallsSessionContext,
   createCloseoutPolicyRegistry,
   ENGINE_CLOSEOUT_POLICY_ORDER,
 } from "./closeout-policy-registry";
@@ -381,6 +382,36 @@ test("CloseoutPolicyRegistry skips operator-cancelled when the user asks to cont
     })),
     null,
   );
+});
+
+test("buildRemainingPendingCallsSessionContext resolves live continuation evidence", () => {
+  const sessionKey = "worker:browser:task-closeout";
+  const context = buildRemainingPendingCallsSessionContext({
+    taskPrompt: "Continue the browser session if needed.",
+    messages: [
+      {
+        role: "tool",
+        toolCallId: "call-1",
+        name: "sessions_spawn",
+        content: [
+          {
+            type: "tool_result",
+            toolUseId: "call-1",
+            content: JSON.stringify({
+              protocol: "turnkeyai.session_tool_result.v1",
+              status: "completed",
+              agent_id: "browser",
+              session_key: sessionKey,
+              final: "browser evidence",
+            }),
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.match(context, /Continue the browser session/);
+  assert.match(context, new RegExp(sessionKey));
 });
 
 test("CloseoutPolicyRegistry returns pseudo tool-call closeout decision", () => {

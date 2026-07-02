@@ -11,6 +11,7 @@
 // precedence; it is defined in Batch 0 so the contract is pinnable, and the
 // evaluating registry methods are added in Batch 3.
 import {
+  buildContinuationDirectiveContext,
   buildCompletedBrowserEvidenceDimensionCarryForwardLines,
   containsAnyToolCallForm,
   findExcessiveSessionContinuationCall,
@@ -138,6 +139,20 @@ export interface RemainingPendingCallsCloseoutInput {
   roundCount: number;
   evidenceAvailable: boolean;
   buildRoundLimitCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
+}
+
+export interface RemainingPendingCallsSessionContextInput {
+  taskPrompt: string;
+  messages: LLMMessage[];
+}
+
+export function buildRemainingPendingCallsSessionContext(
+  input: RemainingPendingCallsSessionContextInput,
+): string {
+  return `${input.taskPrompt}\n${buildContinuationDirectiveContext(
+    input.taskPrompt,
+    input.messages,
+  )}`;
 }
 
 export interface PostExecuteCloseoutInput {

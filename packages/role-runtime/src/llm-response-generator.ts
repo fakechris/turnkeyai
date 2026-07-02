@@ -241,6 +241,7 @@ import type { ModelClient, ReActState } from "@turnkeyai/agent-core/react-loop";
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
   createCloseoutPolicyRegistry,
+  buildRemainingPendingCallsSessionContext,
   createCompletedCloseoutController,
   createContinuationController,
   createEnginePolicyTrace,
@@ -3001,7 +3002,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               wallClockBudget: wallClockBudgetCloseoutSignal,
               taskPrompt: packet.taskPrompt,
               messages: state.messages,
-              sessionContext: `${packet.taskPrompt}\n${buildContinuationDirectiveContext(packet.taskPrompt, state.messages)}`,
+              sessionContext: buildRemainingPendingCallsSessionContext({
+                taskPrompt: packet.taskPrompt,
+                messages: state.messages,
+              }),
               toolTrace,
               maxRounds,
               usedToolCalls: countNativeToolCalls(toolTrace),
