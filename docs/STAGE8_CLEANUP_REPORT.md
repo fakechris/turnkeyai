@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `027961f2ad954637d836784cf6c7759c79cab5bf`
+**Code HEAD before this docs-only report:** `929d5d98c88b6ee20b6d033f91d567a87cba3d86`
 **Date:** 2026-07-02
 
 ## Summary
@@ -108,6 +108,9 @@ could not move the normalizer without making the inline parity reference import 
   continuation lookup directives, and browser/explore worker availability are
   built by the normalizer owner from task, message, trace, repair-marker, and
   capability inputs instead of being assembled in the adapter.
+  Read-only permission-query suppression context construction now lives in
+  `react-engine/permission-policy.ts`; the adapter passes calls/task/messages
+  for both the suppression decision and the pending-closeout pre-emption guard.
   `react-engine/terminal-closeout-controller.ts` now owns the engine's
   tool-evidence fallback closeout metadata/redaction assembly for hard approval
   wait-timeout fallback, plus model-call-error local evidence fallback gating,
@@ -328,6 +331,7 @@ application outside the terminal completion path.
 | `4ed66d7` | Route forced runtime tool-round provider protocol recording through `EngineRunObserver` on engine paths; keep the legacy safe-recorder fallback for no-observer paths. |
 | `6e0a4cc` | Move forced runtime tool-round native trace persistence, message append, and provider handoff into `EngineRunObserver`; adapter supplies only the executor callback on engine paths. |
 | `027961f` | Move engine tool-call normalizer context construction into `ToolCallNormalizer`; adapter passes only task/message/trace/repair/capability inputs. |
+| `929d5d9` | Move read-only permission suppression context construction into `PermissionPolicy`; adapter passes calls/task/messages. |
 
 ## Current Extracted Implementation
 
@@ -346,7 +350,7 @@ Real implementation now exists in:
   resolution, and browser/explore worker availability derivation.
 - `react-engine/permission-policy.ts` for approval-gate normalization,
   read-only permission-query suppression selection, and read-only suppression
-  hook-result application.
+  context construction / hook-result application.
 - `react-engine/finalization-pipeline.ts`
 - `react-engine/engine-run-observer.ts` for model/tool lifecycle observation,
   runtime progress/native trace persistence, and normal post-execute plus
@@ -534,8 +538,9 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
+| `npx tsx --test packages/role-runtime/src/react-engine/permission-policy.test.ts` | 3 / 3 |
 | `npx tsx --test packages/role-runtime/src/react-engine/tool-call-normalizer.test.ts` | 4 / 4 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 186 / 186 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 187 / 187 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -559,7 +564,9 @@ Stage 8 boundaries/slices are now real:
 - engine policy-trace debug gating routes through `policy-trace.ts`; the adapter
   imports the owner-owned helper instead of carrying the env check locally.
 - approval-gate normalizer steps and read-only suppression selection/application
-  route through `PermissionPolicy` in the engine path.
+  route through `PermissionPolicy` in the engine path; read-only suppression
+  context construction for both suppression and closeout pre-emption now lives
+  there as well.
 - the unconditional engine finalization epilogue routes through
   `finalizeEngineAnswer`.
 - model/tool lifecycle observability routes through `EngineRunObserver`, including
