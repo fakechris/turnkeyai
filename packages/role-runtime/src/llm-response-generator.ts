@@ -249,6 +249,7 @@ import {
   createEvidenceLedger,
   createEngineRunState,
   createEngineRunObserver,
+  buildPermissionSuppressInput,
   createPermissionPolicy,
   createRepairPolicyRegistry,
   createTerminalCloseoutController,
@@ -2847,14 +2848,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // suppression (inline :518 precedes :1013). sessionContext is the inline
           // continuation-directive context over state.messages.
           const readOnlySuppression =
-            permissionPolicy.suppressReadOnlyPermissionQuery({
-              calls,
-              taskPrompt: packet.taskPrompt,
-              sessionContext: buildContinuationDirectiveContext(
-                packet.taskPrompt,
-                state.messages,
-              ),
-            });
+            permissionPolicy.suppressReadOnlyPermissionQuery(
+              buildPermissionSuppressInput({
+                calls,
+                taskPrompt: packet.taskPrompt,
+                messages: state.messages,
+              }),
+            );
           const readOnlySuppressionResult =
             permissionPolicy.applySuppressDecision(readOnlySuppression, {
               messages: state.messages,
@@ -2898,14 +2898,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // round) and let onSuppressToolCalls perform the drop + tool-free re-prompt —
           // preserving the inline ordering for the read-only + closeout compound case.
           if (
-            permissionPolicy.wouldSuppressReadOnlyPermissionQuery({
-              calls,
-              taskPrompt: packet.taskPrompt,
-              sessionContext: buildContinuationDirectiveContext(
-                packet.taskPrompt,
-                state.messages,
-              ),
-            })
+            permissionPolicy.wouldSuppressReadOnlyPermissionQuery(
+              buildPermissionSuppressInput({
+                calls,
+                taskPrompt: packet.taskPrompt,
+                messages: state.messages,
+              }),
+            )
           ) {
             return null;
           }

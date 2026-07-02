@@ -2,6 +2,7 @@ import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
+  buildContinuationDirectiveContext,
   buildReadOnlyPermissionQuerySuppressionPrompt,
   enforceMissingApprovalGateRepairToolCalls,
   normalizeApprovalGatedBrowserSpawnCalls,
@@ -32,6 +33,12 @@ export interface PermissionSuppressInput {
   sessionContext: string;
 }
 
+export interface PermissionSuppressContextInput {
+  calls: LLMToolCall[];
+  taskPrompt: string;
+  messages: LLMMessage[];
+}
+
 type PermissionSuppressDecision = Extract<
   EngineSuppressDecision,
   { kind: "suppress" }
@@ -60,6 +67,19 @@ export interface PermissionPolicy {
 
 export function createPermissionPolicy(): PermissionPolicy {
   return DEFAULT_PERMISSION_POLICY;
+}
+
+export function buildPermissionSuppressInput(
+  input: PermissionSuppressContextInput,
+): PermissionSuppressInput {
+  return {
+    calls: input.calls,
+    taskPrompt: input.taskPrompt,
+    sessionContext: buildContinuationDirectiveContext(
+      input.taskPrompt,
+      input.messages,
+    ),
+  };
 }
 
 const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
