@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `3f33d7dba01bd954831f3baaf956dd39484aaa7a`
+**Code HEAD before this docs-only report:** `45297066a75be508d7900bdaf1cd29f91c3c6640`
 **Date:** 2026-07-02
 
 ## Summary
@@ -106,6 +106,9 @@ could not move the normalizer without making the inline parity reference import 
   focused durable-memory recall now lives in neutral `tool-definition-filter.ts`.
   Model-call boundary trace construction and model-use summary aggregation now
   live in neutral `model-call-trace.ts`.
+  Gateway input construction, final synthesis format-contract lines, no-tool
+  gateway transforms, mention extraction, and requested three-line label
+  normalization now live in neutral `gateway-input-builder.ts`.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence behavior,
@@ -165,6 +168,7 @@ of controller actions.
 | `4e7c4e8` | Move tool-result pruning, tool-history compaction, and pruning trace snapshot helpers into neutral `tool-history-pruning.ts`; add focused pruning tests. |
 | `d76df2a` | Move tool-definition filtering and its prompt/message context builders into neutral `tool-definition-filter.ts`; add focused filtering tests. |
 | `3f33d7d` | Move model-call boundary trace construction and model-use summary aggregation into neutral `model-call-trace.ts`; add focused trace tests. |
+| `4529706` | Move gateway input construction, final synthesis format-contract helpers, no-tool transforms, mention extraction, and requested three-line label normalization into neutral `gateway-input-builder.ts`; add focused builder tests. |
 
 ## Current Extracted Implementation
 
@@ -262,6 +266,10 @@ Real implementation now exists in:
 - `model-call-trace.ts` for model-call boundary trace construction, tool-choice
   trace formatting, request-envelope reduction metadata capture, and model-use
   token summary aggregation.
+- `gateway-input-builder.ts` for gateway input construction, runtime session
+  continuation directive prompt injection, final synthesis format-contract
+  lines, no-tool gateway transforms, mention extraction, tool-definition lookup,
+  and requested three-line label normalization.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
@@ -306,6 +314,7 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 4 / 4 |
 | `npx tsx --test packages/role-runtime/src/tool-definition-filter.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/model-call-trace.test.ts` | 2 / 2 |
+| `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 141 / 141 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
@@ -320,7 +329,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifty-nine
+root plus several policy-heavy hook bodies. The main improvement is that sixty
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -405,6 +414,11 @@ Stage 8 boundaries/slices are now real:
 - model-call boundary trace construction and model-use summary aggregation now
   live in neutral `model-call-trace.ts`; the adapter supplies gateway/result
   inputs but no longer owns trace formatting.
+- gateway input construction, runtime session continuation directive prompt
+  injection, final synthesis format-contract lines, no-tool gateway transforms,
+  mention extraction, tool-definition lookup, and requested three-line label
+  normalization now live in neutral `gateway-input-builder.ts`; the adapter
+  calls the module instead of owning those context-construction helpers.
 - incomplete approved-browser-action repair selection routes through
   `RepairPolicyRegistry`, using shared approval-applied evidence/prompt
   predicates and returning a typed forced `sessions_spawn` repair round.
