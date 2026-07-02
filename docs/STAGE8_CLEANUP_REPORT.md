@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `60ab50d25e1879df2c518f3e284c5dbc5620ffce`
+**Code HEAD before this docs-only report:** `10829de20b931c71f144d2cc1f5ebc08806a26d7`
 **Date:** 2026-07-02
 
 ## Summary
@@ -18,11 +18,12 @@ could not move the normalizer without making the inline parity reference import 
   into `react-engine/finalization-pipeline.ts`, and moved the engine tool-observability
   lifecycle into `react-engine/engine-run-observer.ts`. The mutable cross-hook run
   state now lives in `react-engine/engine-run-state.ts` instead of an adapter-local
-  `run` object.
+  `run` object. A narrow execution-budget admission slice now lives in
+  `react-engine/execution-budget-controller.ts`.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
-still an adapter-heavy bridge and still owns execution budget, continuation, closeout,
-repair, completed-closeout, and evidence/task-fact behavior.
+still an adapter-heavy bridge and still owns wall-clock execution/batching,
+continuation, closeout, repair, completed-closeout, and evidence/task-fact behavior.
 
 ## Commits Added After The Blocked Report
 
@@ -33,6 +34,7 @@ repair, completed-closeout, and evidence/task-fact behavior.
 | `8a27da3` | Extract `FinalizationPipeline` engine epilogue order; move shared finalization append/redaction helpers; add focused module tests. |
 | `7b4e225` | Extract `EngineRunObserver` lifecycle; move native tool trace conversion helpers into neutral shared code; add focused observer tests. |
 | `60ab50d` | Migrate mutable cross-hook run state into `EngineRunState`; add state mutation-rule tests. |
+| `10829de` | Extract `ExecutionBudgetController` admission/truncation slice; move skipped tool-call result helper to neutral shared code; add focused controller tests. |
 
 ## Current Extracted Implementation
 
@@ -48,11 +50,12 @@ Real implementation now exists in:
 - `react-engine/permission-policy.ts`
 - `react-engine/finalization-pipeline.ts`
 - `react-engine/engine-run-observer.ts`
+- `react-engine/execution-budget-controller.ts` for final-recovery truncation and
+  per-round tool-call admission.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine.
 
 Still shell/deferred:
 
-- `execution-budget-controller.ts`
 - `continuation-controller.ts`
 - `closeout-policy-registry.ts`
 - `repair-policy-registry.ts`
@@ -68,11 +71,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 27 / 27 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 31 / 31 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 271 / 271, 0 fail |
-| `npm run parity:engine` | 264 / 264, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 239 / 239, 0 fail |
+| `npm run parity:engine` | 232 / 232, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -83,8 +86,8 @@ zero failures and zero incomplete tests after recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2441` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that five
-Batch 1 boundaries are now real:
+root plus several policy-heavy hook bodies. The main improvement is that six
+Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
 - approval-gate normalizer steps and read-only suppression route through
@@ -96,12 +99,14 @@ Batch 1 boundaries are now real:
 - mutable cross-hook state routes through `EngineRunState`, including closeout
   result/metadata, completed/timeout signals, reductions, memory flushes, and final
   message snapshots.
+- execution-budget admission routes through `ExecutionBudgetController` for
+  final-recovery pending-call truncation and per-round over-cap skipped results.
 
 ## Remaining Work
 
 Continue with the remaining high-risk pieces:
 
-- extract execution budget, continuation, closeout, repair, completed-closeout,
-  evidence ledger, task facts, and final adapter thinning.
+- finish execution budget wall-clock/batching, then extract continuation, closeout,
+  repair, completed-closeout, evidence ledger, task facts, and final adapter thinning.
 
 The branch is **not pushed**.
