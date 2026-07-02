@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `e3c4e8e17754a13cb31a8a449bd2ed2364460ecd`
+**Code HEAD before this docs-only report:** `7f63ebde7ad6d03afd6241ddd1a6bc3e7c218f81`
 **Date:** 2026-07-02
 
 ## Summary
@@ -69,7 +69,10 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/evidence-ledger.ts` now has a behavior-neutral snapshot facade
   over the existing source-bounded and completed-session evidence collectors,
   and the extracted completed-closeout controller / repair registry read that
-  natural-finish evidence formula through the facade.
+  natural-finish evidence formula through the facade. The same snapshot now
+  owns tool-trace result content and usable-evidence truth for the engine
+  terminal/error/finalization paths, so those adapter paths no longer call the
+  raw evidence helpers directly.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -198,6 +201,7 @@ of controller actions.
 | `36deaba` | Move runtime-derived mission report construction into a neutral module and move supplemental browser-probe availability checking into shared tool-loop helpers. |
 | `da476f9` | Move wall-clock closeout signal construction into `ExecutionBudgetController`; `CloseoutPolicyRegistry` consumes the controller-owned signal type. |
 | `e3c4e8e` | Move the policy-trace debug env gate into `react-engine/policy-trace.ts`; add focused env-gate coverage. |
+| `7f63ebd` | Expand `EvidenceLedger` snapshots with tool-trace result content and usable-evidence facts; route engine terminal/error/finalization consumers through the snapshot. |
 
 ## Current Extracted Implementation
 
@@ -273,8 +277,9 @@ Real implementation now exists in:
   and final forbidden local URL redaction.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
-  evidence, and the natural-finish evidence formula consumed by extracted
-  repair policies/controllers.
+  evidence, tool-trace result content, usable-evidence truth, and the
+  natural-finish evidence formula consumed by extracted repair
+  policies/controllers and engine terminal/error/finalization paths.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -355,12 +360,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/runtime-derived-mission-report.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 11 / 11 |
-| `npx tsx --test packages/role-runtime/src/react-engine/execution-budget-controller.test.ts packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 39 / 39 |
-| `npx tsx --test packages/role-runtime/src/react-engine/policy-trace.test.ts` | 1 / 1 |
-| `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts packages/role-runtime/src/gateway-input-builder.test.ts packages/role-runtime/src/tool-loop-shared.test.ts` | 15 / 15 |
-| `npx tsx --test packages/role-runtime/src/react-engine/task-facts.test.ts packages/role-runtime/src/react-engine/repair-policy-registry.test.ts packages/role-runtime/src/react-engine/completed-closeout-controller.test.ts` | 57 / 57 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 146 / 146 |
+| `npx tsx --test packages/role-runtime/src/react-engine/evidence-ledger.test.ts packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts packages/role-runtime/src/react-engine/execution-budget-controller.test.ts` | 43 / 43 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 147 / 147 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -373,7 +374,7 @@ the engine chunks without individual recovery.
 ## Is The Adapter Thin?
 
 No. `runViaReActEngine` still begins at
-`packages/role-runtime/src/llm-response-generator.ts:2489` and remains the composition
+`packages/role-runtime/src/llm-response-generator.ts:2478` and remains the composition
 root plus several policy-heavy hook bodies. The main improvement is that more than sixty
 Stage 8 boundaries/slices are now real:
 
@@ -543,6 +544,9 @@ Stage 8 boundaries/slices are now real:
   URL redaction order.
 - natural-finish evidence formula construction for extracted repair
   policies/controllers routes through `EvidenceLedger` snapshots.
+- engine terminal/error/finalization paths now read tool-trace result content
+  and usable-evidence truth from `EvidenceLedger` snapshots instead of calling
+  the raw evidence helpers directly.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -590,8 +594,9 @@ Stage 8 boundaries/slices are now real:
 
 Continue with the remaining high-risk pieces:
 
-- continue expanding the evidence ledger beyond the current facade, extracting
-  typed facts as new shared facts appear, non-completed terminal closeout model
-  synthesis/result application, and final adapter thinning.
+- continue expanding the evidence ledger beyond the current source/completed
+  evidence, tool-result-content, and usable-evidence snapshot facts; extract
+  non-completed terminal closeout model synthesis/result application and keep
+  thinning the adapter.
 
 The branch is **not pushed**.
