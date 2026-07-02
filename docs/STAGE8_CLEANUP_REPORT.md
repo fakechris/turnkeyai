@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `38a7a563acdc5d2285b0c9e410b578e7cbf12110`
+**Code HEAD before this docs-only report:** `d2afbb116d613e4c4e02796dafefe090ff22254e`
 **Date:** 2026-07-02
 
 ## Summary
@@ -93,7 +93,11 @@ could not move the normalizer without making the inline parity reference import 
   timeout signals are now read through the ledger in engine continuation and
   post-execute closeout hooks. Those current-round facts now travel as a single
   `EvidenceLedger.currentRound()` snapshot for continuation and post-execute
-  closeout hook handoffs instead of adapter-local per-fact reads.
+  closeout hook handoffs instead of adapter-local per-fact reads. The
+  per-engine-run evidence snapshot binding now also lives in
+  `EvidenceLedger.forRun()`, so pending closeout, terminate, model-error, and
+  finalization epilogue paths share one ledger-owned run snapshotter instead of
+  an adapter-local `snapshotEvidence` closure.
   Provider tool-protocol round recording for the normal post-execute engine hook
   now also routes through `EngineRunObserver.onProviderToolProtocolRound()`; the
   adapter injects the existing safe recorder instead of calling it directly from
@@ -342,6 +346,7 @@ application outside the terminal completion path.
 | `1e0743c` | Move pending-call wall-clock closeout signal selection into `ExecutionBudgetController`; adapter passes native pending calls plus optional empty-round continuation. |
 | `ef56638` | Move the full pending-call closeout hook flow into `CloseoutPolicyRegistry.applyPendingCallsCloseout`; adapter supplies callbacks/state instead of stitching the closeout windows locally. |
 | `38a7a56` | Move model-call-error forced pending-approval flow selection into `TerminalCloseoutController.completeModelCallErrorFlow`; route model-error usable-evidence through `EvidenceLedger.snapshot()`. |
+| `d2afbb1` | Add `EvidenceLedger.forRun()` and route engine run evidence snapshots through the ledger-owned run snapshotter instead of an adapter-local closure. |
 
 ## Current Extracted Implementation
 
@@ -467,7 +472,8 @@ Real implementation now exists in:
   evidence, usable-evidence truth, and the natural-finish evidence formula
   consumed by extracted repair policies/controllers and engine continuation,
   terminal, model-error, and finalization paths, plus a current-round evidence
-  snapshot used by continuation and post-execute closeout hook handoffs.
+  snapshot used by continuation and post-execute closeout hook handoffs, plus
+  `forRun()` snapshot binding for per-engine-run evidence reads.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -554,9 +560,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 20 / 20 |
-| `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts packages/role-runtime/src/react-engine/policy-trace-characterization.test.ts` | 10 / 10 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 193 / 193 |
+| `npx tsx --test packages/role-runtime/src/react-engine/evidence-ledger.test.ts` | 9 / 9 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 194 / 194 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -792,6 +797,9 @@ Stage 8 boundaries/slices are now real:
 - engine terminal/model-error/finalization paths now read tool-trace result
   content and usable-evidence truth from `EvidenceLedger` snapshots instead of
   calling the raw evidence helpers directly.
+- pending closeout, terminate, model-error, and finalization epilogue evidence
+  reads now share `EvidenceLedger.forRun()` instead of an adapter-local
+  `snapshotEvidence` closure.
 - engine timeout-probe and completed terminal-synthesis handoffs now read
   current-round tool-result content through `EvidenceLedger` instead of calling
   the raw result-content collector directly.
