@@ -2939,8 +2939,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           //    exhausted (fires regardless of pending-call count).
           const usedToolCalls =
             recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace);
-          const recoveryBudgetCloseout =
-            closeoutPolicy.evaluateRecoveryToolBudget({
+          const recoveryBudgetCloseoutReason =
+            closeoutPolicy.applyRecoveryToolBudgetCloseout({
               recoveryToolBudget,
               usedToolCalls,
               pendingToolCallCount: calls.length,
@@ -2956,19 +2956,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   roundCount,
                   evidenceAvailable: stateEvidence.usableEvidence,
                 }),
-            });
-          if (recoveryBudgetCloseout?.kind === "defer") {
-            // Stage 8B (Batch E — T7 execution budget plane): the empty-round
-            // final-recovery-budget delegation-block repair runs BEFORE this closeout
-            // inline (:685-712 precedes the closeout at :752). The registry returns a
-            // defer decision so onRepairRound can inject the tool-free correction.
-            return null;
-          }
-          const recoveryBudgetCloseoutReason =
-            closeoutPolicy.applyPendingCloseoutDecision(
-              recoveryBudgetCloseout,
-              runState,
-            );
+            },
+            runState,
+          );
           if (recoveryBudgetCloseoutReason) {
             return recoveryBudgetCloseoutReason;
           }
@@ -3019,8 +3009,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 : null;
           // 2-8. pending-call closeouts — operator_cancelled through the
           // repeated-call/session anti-loop policies.
-          const remainingPendingCloseout =
-            closeoutPolicy.evaluateRemainingPendingCalls({
+          const remainingPendingCloseoutReason =
+            closeoutPolicy.applyRemainingPendingCallsCloseout({
               pendingCalls: calls,
               pendingToolCallCount: calls.length,
               pendingContinuation: pendingContinuation !== null,
@@ -3042,12 +3032,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   roundCount,
                   evidenceAvailable: stateEvidence.usableEvidence,
                 }),
-            });
-          const remainingPendingCloseoutReason =
-            closeoutPolicy.applyPendingCloseoutDecision(
-              remainingPendingCloseout,
-              runState,
-            );
+            },
+            runState,
+          );
           if (remainingPendingCloseoutReason) {
             return remainingPendingCloseoutReason;
           }

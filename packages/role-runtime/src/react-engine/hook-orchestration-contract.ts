@@ -82,9 +82,9 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     installed: true,
     moduleOps: [
       "PermissionPolicy.wouldSuppressReadOnlyPermissionQuery",
-      "CloseoutPolicyRegistry.evaluateRecoveryToolBudget",
+      "CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout",
       "ContinuationController.previewEmptyRoundContinuation",
-      "CloseoutPolicyRegistry.evaluateRemainingPendingCalls",
+      "CloseoutPolicyRegistry.applyRemainingPendingCallsCloseout",
     ],
   },
   {

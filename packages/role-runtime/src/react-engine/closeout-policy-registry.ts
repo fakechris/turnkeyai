@@ -272,6 +272,16 @@ export interface CloseoutPolicyRegistry {
     input: RemainingPendingCallsCloseoutInput,
   ): RemainingPendingCallsCloseoutDecision | null;
 
+  applyRecoveryToolBudgetCloseout(
+    input: RecoveryToolBudgetCloseoutInput,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null;
+
+  applyRemainingPendingCallsCloseout(
+    input: RemainingPendingCallsCloseoutInput,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null;
+
   evaluatePostExecute(
     input: PostExecuteCloseoutInput,
   ): PostExecuteCloseoutDecision | null;
@@ -516,11 +526,33 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
     return null;
   }
 
+  applyRecoveryToolBudgetCloseout(
+    input: RecoveryToolBudgetCloseoutInput,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null {
+    return this.applyPendingCloseoutDecision(
+      this.evaluateRecoveryToolBudget(input),
+      target,
+    );
+  }
+
+  applyRemainingPendingCallsCloseout(
+    input: RemainingPendingCallsCloseoutInput,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null {
+    return this.applyPendingCloseoutDecision(
+      this.evaluateRemainingPendingCalls(input),
+      target,
+    );
+  }
+
   applyPendingCloseoutDecision(
     decision: PendingCloseoutApplicationDecision | null,
     target: PendingCloseoutApplicationTarget,
   ): EngineCloseoutReason | null {
     if (!decision || decision.kind !== "closeout") {
+      // Defer decisions are intentionally non-terminal; their owning repair hook
+      // handles the follow-up.
       return null;
     }
     target.recordPendingCloseout({

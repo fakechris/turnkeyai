@@ -83,9 +83,9 @@ test("wiring guard: spy modules recorded in the contract order pass", () => {
 test("wiring guard: wrong cross-module order inside a hook FAILS", () => {
   // onToolCallsClose's contract order is:
   //   PermissionPolicy.wouldSuppressReadOnlyPermissionQuery ->
-  //   CloseoutPolicyRegistry.evaluateRecoveryToolBudget ->
+  //   CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout ->
   //   ContinuationController.previewEmptyRoundContinuation ->
-  //   CloseoutPolicyRegistry.evaluateRemainingPendingCalls
+  //   CloseoutPolicyRegistry.applyRemainingPendingCallsCloseout
   // Swapping recovery-budget after the continuation preview is a behavior change
   // (recovery_tool_budget must be evaluated before the empty-round injection).
   const contract = engineHookContract("onToolCallsClose");
@@ -93,8 +93,8 @@ test("wiring guard: wrong cross-module order inside a hook FAILS", () => {
   const wrong = [
     "PermissionPolicy.wouldSuppressReadOnlyPermissionQuery",
     "ContinuationController.previewEmptyRoundContinuation",
-    "CloseoutPolicyRegistry.evaluateRecoveryToolBudget",
-    "CloseoutPolicyRegistry.evaluateRemainingPendingCalls",
+    "CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout",
+    "CloseoutPolicyRegistry.applyRemainingPendingCallsCloseout",
   ];
   // Sanity: the wrong order is genuinely a reordering of the real contract ops.
   assert.notDeepEqual(wrong, contract!.moduleOps);
@@ -132,13 +132,13 @@ test("wiring guard: onAfterExecuteContinue completed-session branch order is pin
   assert.ok(repairIdx >= 0 && forcedIdx >= 0 && repairIdx < forcedIdx);
 });
 
-test("wiring guard: recovery_tool_budget is not evaluated twice in onToolCallsClose", () => {
+test("wiring guard: recovery_tool_budget is not applied twice in onToolCallsClose", () => {
   const contract = engineHookContract("onToolCallsClose");
   assert.ok(contract);
-  const recoveryEvals = contract!.moduleOps.filter((op) =>
-    op.startsWith("CloseoutPolicyRegistry.evaluateRecoveryToolBudget"),
+  const recoveryApplications = contract!.moduleOps.filter((op) =>
+    op.startsWith("CloseoutPolicyRegistry.applyRecoveryToolBudgetCloseout"),
   );
-  assert.equal(recoveryEvals.length, 1);
+  assert.equal(recoveryApplications.length, 1);
 });
 
 // ---------------------------------------------------------------------------

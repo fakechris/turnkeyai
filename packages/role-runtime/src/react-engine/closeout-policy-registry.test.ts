@@ -272,6 +272,71 @@ test("CloseoutPolicyRegistry applies pending closeout decisions through a target
   assert.equal(writes.length, 1);
 });
 
+test("CloseoutPolicyRegistry applies recovery-budget closeout through a target", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const writes: unknown[] = [];
+  const target = {
+    recordPendingCloseout(input: unknown) {
+      writes.push(input);
+    },
+  };
+
+  assert.equal(
+    registry.applyRecoveryToolBudgetCloseout(
+      {
+        recoveryToolBudget: { maxToolCalls: 2 },
+        usedToolCalls: 2,
+        pendingToolCallCount: 1,
+        messages: [],
+        repairMarkers: [],
+        resultText: "blocked: source remains unverified",
+        buildCloseoutSnapshot: recoverySnapshot,
+      },
+      target,
+    ),
+    "recovery_tool_budget",
+  );
+  assert.deepEqual(writes, [
+    {
+      reasonLines: ["Final recovery tool budget reached (2 tool calls)."],
+      closeout: recoverySnapshot().closeout,
+    },
+  ]);
+});
+
+test("CloseoutPolicyRegistry applies remaining pending closeout through a target", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const writes: unknown[] = [];
+  const target = {
+    recordPendingCloseout(input: unknown) {
+      writes.push(input);
+    },
+  };
+
+  assert.equal(
+    registry.applyRemainingPendingCallsCloseout(
+      remainingPendingInput({
+        pendingToolCallCount: 1,
+        taskPrompt: cancelledSessionTaskPrompt(),
+      }),
+      target,
+    ),
+    "operator_cancelled",
+  );
+  assert.equal(writes.length, 1);
+  assert.match(
+    (writes[0] as { reasonLines: string[] }).reasonLines[0] ?? "",
+    /cancelled by the operator/,
+  );
+  assert.deepEqual((writes[0] as { closeout: unknown }).closeout, {
+    reason: "operator_cancelled",
+    maxRounds: 3,
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+});
+
 test("CloseoutPolicyRegistry returns operator-cancelled closeout decision", () => {
   const registry = createCloseoutPolicyRegistry();
 
