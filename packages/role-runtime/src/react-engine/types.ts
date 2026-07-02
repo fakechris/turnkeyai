@@ -131,11 +131,12 @@ export type EngineSuppressDecision =
 // widen these as the closeout/repair registries are extracted.
 // ---------------------------------------------------------------------------
 
-export interface CloseoutDecision {
+export interface CloseoutDecision<TCloseout = unknown> {
   kind: "closeout";
   policyId: EngineCloseoutReason;
   reason: EngineCloseoutReason;
   reasonLines: string[];
+  closeout?: TCloseout;
 }
 
 // Re-export the underlying LLM/ReAct types so sibling react-engine modules can

@@ -165,6 +165,7 @@ import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/
 // so later batches can prove byte-identical behavior and so production-behind-flag
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
+  createCloseoutPolicyRegistry,
   createContinuationController,
   createEnginePolicyTrace,
   createExecutionBudgetController,
@@ -2646,6 +2647,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const permissionPolicy = createPermissionPolicy();
     const executionBudget = createExecutionBudgetController();
     const continuation = createContinuationController();
+    const closeoutPolicy = createCloseoutPolicyRegistry();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     type RoleEngineRunStateValues = DefaultEngineRunStateValues & {
@@ -2961,44 +2963,39 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           let pendingContinuation: LLMToolCall | null = null;
           // 1. recovery_tool_budget — the final recovery attempt's tool budget is
           //    exhausted (fires regardless of pending-call count).
-          if (recoveryToolBudget) {
-            const usedToolCalls =
-              recoveryToolCallsBeforeActivation + countToolCalls(toolTrace);
-            if (usedToolCalls >= recoveryToolBudget.maxToolCalls) {
-              // Stage 8B (Batch E — T7 execution budget plane): the empty-round
-              // final-recovery-budget delegation-block repair runs BEFORE this
-              // closeout inline (:685-712 precedes the closeout at :752). It is an
-              // empty-round tool-free repair, so — like the read-only suppression
-              // above — the engine expresses it in onRepairRound (which runs AFTER
-              // this hook). When it would fire (budget exhausted, no pending calls,
-              // and the candidate is a delegation directive rather than a blocked
-              // closeout), defer: return null here so onRepairRound injects the
-              // "Runtime correction: final recovery tool budget is exhausted"
-              // tool-free re-prompt. Once the repaired blocked closeout lands its
-              // marker makes shouldRepair false, and this closeout fires on the next
-              // round (deterministic + bounded), matching the inline ordering.
-              if (
-                calls.length === 0 &&
-                shouldRepairFinalRecoveryBudgetCloseout({
-                  messages: state.messages,
-                  repairMarkers: ctx.repairMarkers ?? [],
-                  resultText: state.lastText,
-                })
-              ) {
-                return null;
-              }
-              runState.recordPendingCloseout(
+          const usedToolCalls =
+            recoveryToolCallsBeforeActivation + countToolCalls(toolTrace);
+          const recoveryBudgetCloseout =
+            closeoutPolicy.evaluateRecoveryToolBudget({
+              recoveryToolBudget,
+              usedToolCalls,
+              pendingToolCallCount: calls.length,
+              messages: state.messages,
+              repairMarkers: ctx.repairMarkers ?? [],
+              resultText: state.lastText,
+              buildCloseoutSnapshot: () =>
                 executionBudget.buildRecoveryToolBudgetCloseoutSnapshot({
                   maxRounds,
-                  maxToolCalls: recoveryToolBudget.maxToolCalls,
+                  maxToolCalls: recoveryToolBudget?.maxToolCalls ?? 0,
                   pendingToolCallCount: calls.length,
                   usedToolCalls,
                   roundCount,
                   evidenceAvailable: hasUsableEvidence(toolTrace),
                 }),
-              );
-              return "recovery_tool_budget";
-            }
+            });
+          if (recoveryBudgetCloseout?.kind === "defer") {
+            // Stage 8B (Batch E — T7 execution budget plane): the empty-round
+            // final-recovery-budget delegation-block repair runs BEFORE this closeout
+            // inline (:685-712 precedes the closeout at :752). The registry returns a
+            // defer decision so onRepairRound can inject the tool-free correction.
+            return null;
+          }
+          if (recoveryBudgetCloseout?.kind === "closeout") {
+            runState.recordPendingCloseout({
+              reasonLines: recoveryBudgetCloseout.reasonLines,
+              closeout: recoveryBudgetCloseout.closeout,
+            });
+            return recoveryBudgetCloseout.reason;
           }
           // Now that recovery_tool_budget (the only closeout inline checks BEFORE the
           // empty-round injection) has run, resolve the pending continuation: every

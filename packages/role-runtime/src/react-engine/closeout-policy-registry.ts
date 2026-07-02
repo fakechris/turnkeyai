@@ -9,6 +9,14 @@
 // The exported order array below is the source of truth for closeout
 // precedence; it is defined in Batch 0 so the contract is pinnable, and the
 // evaluating registry methods are added in Batch 3.
+import { shouldRepairFinalRecoveryBudgetCloseout } from "../tool-loop-shared";
+import type { ExecutionBudgetCloseoutSnapshot } from "./execution-budget-controller";
+import type {
+  CloseoutDecision,
+  CloseoutDeferDecision,
+  LLMMessage,
+} from "./types";
+
 export const ENGINE_CLOSEOUT_POLICY_ORDER = [
   "recovery_tool_budget",
   "operator_cancelled",
@@ -25,3 +33,79 @@ export const ENGINE_CLOSEOUT_POLICY_ORDER = [
 ] as const;
 
 export type EngineCloseoutPolicyId = (typeof ENGINE_CLOSEOUT_POLICY_ORDER)[number];
+
+export type CloseoutPolicyPhase =
+  | "pending_calls"
+  | "post_execute"
+  | "model_error"
+  | "round_limit"
+  | "terminate";
+
+export interface CloseoutPolicy {
+  id: EngineCloseoutPolicyId;
+  phase: CloseoutPolicyPhase;
+}
+
+export interface RecoveryToolBudgetSignal {
+  maxToolCalls: number;
+}
+
+export interface RecoveryToolBudgetCloseoutInput {
+  recoveryToolBudget: RecoveryToolBudgetSignal | null;
+  usedToolCalls: number;
+  pendingToolCallCount: number;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  resultText: string;
+  buildCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
+}
+
+export type RecoveryToolBudgetCloseoutDecision =
+  | (CloseoutDecision<ExecutionBudgetCloseoutSnapshot["closeout"]> & {
+      closeout: ExecutionBudgetCloseoutSnapshot["closeout"];
+    })
+  | CloseoutDeferDecision;
+
+export interface CloseoutPolicyRegistry {
+  evaluateRecoveryToolBudget(
+    input: RecoveryToolBudgetCloseoutInput,
+  ): RecoveryToolBudgetCloseoutDecision | null;
+}
+
+class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
+  evaluateRecoveryToolBudget(
+    input: RecoveryToolBudgetCloseoutInput,
+  ): RecoveryToolBudgetCloseoutDecision | null {
+    const budget = input.recoveryToolBudget;
+    if (!budget || input.usedToolCalls < budget.maxToolCalls) {
+      return null;
+    }
+    if (
+      input.pendingToolCallCount === 0 &&
+      shouldRepairFinalRecoveryBudgetCloseout({
+        messages: input.messages,
+        repairMarkers: input.repairMarkers,
+        resultText: input.resultText,
+      })
+    ) {
+      return {
+        kind: "defer",
+        policyId: "recovery_tool_budget",
+        deferTo: "repair_round",
+        reason: "final_recovery_budget_closeout_repair",
+      };
+    }
+    const snapshot = input.buildCloseoutSnapshot();
+    return {
+      kind: "closeout",
+      policyId: "recovery_tool_budget",
+      reason: "recovery_tool_budget",
+      reasonLines: snapshot.reasonLines,
+      closeout: snapshot.closeout,
+    };
+  }
+}
+
+export function createCloseoutPolicyRegistry(): CloseoutPolicyRegistry {
+  return new DefaultCloseoutPolicyRegistry();
+}
