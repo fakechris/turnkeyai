@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `bdd5a13201c88e29206c19a26b4a17dc3678c5e0`
+**Code HEAD before this docs-only report:** `3cfa87bbbb83fe49d85be39cae46a04b306fe171`
 **Date:** 2026-07-02
 
 ## Summary
@@ -47,8 +47,9 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/repair-policy-registry.ts`; the registry now also applies
   natural-finish repair decisions into ReAct hook results, including assistant
   candidate carry-forward, repair-marker recording, force-tool-choice,
-  consumes-round, and local closeout shapes. The adapter keeps the original
-  precedence checkpoints.
+  consumes-round, and local closeout shapes. The natural-finish repair cascade
+  now also evaluates and applies through that registry in precedence order; the
+  adapter passes the hook state and no longer steps through each policy window.
   The forced `sessions_spawn` natural-finish repairs for missing
   browser-visible evidence and product-signal dashboard evidence now return
   typed decisions from the same registry, preserving their precedence before
@@ -283,6 +284,7 @@ application outside the terminal completion path.
 | `6c79d6f` | Move read-only permission-query and awaiting-context no-tool suppression hook-result application into `PermissionPolicy` / neutral TaskFacts owners. |
 | `78cae84` | Move pending closeout and post-execute closeout state-effect application into `CloseoutPolicyRegistry`; adapter passes the run-state target. |
 | `bdd5a13` | Move round-empty continuation hook-result application into `ContinuationController`; adapter consumes the controller-applied hook decision. |
+| `3cfa87b` | Move natural-finish repair cascade evaluation/application into `RepairPolicyRegistry`; adapter passes one cascade input instead of stepping policy windows. |
 
 ## Current Extracted Implementation
 
@@ -343,7 +345,8 @@ Real implementation now exists in:
   formula text for completed-closeout source/weak repairs, natural-finish
   ReAct repair hook application for assistant candidate carry-forward,
   repair-marker recording, force-tool-choice, consumes-round, and local closeout
-  shapes, plus
+  shapes, plus natural-finish cascade evaluation/application through one
+  registry entrypoint, plus
   `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER` and the completed-only
   repair policies `timeout_followup_final_guidance`,
   `missing_requested_next_action`, `missing_required_final_deliverables`,
@@ -473,8 +476,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 22 / 22 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 174 / 174 |
+| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 175 / 175 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -652,6 +655,9 @@ Stage 8 boundaries/slices are now real:
   through `RepairPolicyRegistry`, including repair marker recording, assistant
   candidate carry-forward, `forceToolChoice`, `consumesRound`, and
   `tool_evidence_fallback` closeout hook shapes.
+- natural-finish repair cascade precedence and application now route through a
+  single `RepairPolicyRegistry` entrypoint; the adapter passes the hook inputs
+  instead of selecting and applying each repair policy window.
 - completed synthesis repair precedence is pinned in
   `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER`.
 - completed-closeout timeout follow-up final-guidance repair selection routes
