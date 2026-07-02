@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `477245b887dc769d3f04ca1133b2b9ccfd42e823`
+**Code HEAD before this docs-only report:** `fa80eb993d51848496533a4443fd9b988d2d42e4`
 **Date:** 2026-07-02
 
 ## Summary
@@ -23,11 +23,13 @@ could not move the normalizer without making the inline parity reference import 
   now owns its wall-clock signal, serial/concurrent chunking, and per-tool error
   shaping. Budget closeout snapshots for final-recovery exhaustion, wall-clock
   exhaustion, and round-limit synthesis now route through that controller after
-  the adapter-selected policy fires. The final allowed tool-round warning now
-  routes through that controller while the warning text itself lives in neutral
-  shared code used by inline and engine. Final-recovery budget parsing, prior-call
-  counting, closeout reason lines, and repair prompt helpers also moved into
-  neutral shared code. The first
+  the selected policy fires. The first closeout registry policy also landed:
+  `recovery_tool_budget` now returns typed closeout/defer decisions from
+  `react-engine/closeout-policy-registry.ts`, including the repair-round defer
+  handoff. The final allowed tool-round warning now routes through that controller
+  while the warning text itself lives in neutral shared code used by inline and
+  engine. Final-recovery budget parsing, prior-call counting, closeout reason
+  lines, and repair prompt helpers also moved into neutral shared code. The first
   continuation slices now live in `react-engine/continuation-controller.ts`:
   empty-round direct `sessions_send` and lookup `sessions_list` injection, plus
   approved-browser timeout, coverage/sibling timeout, and supplemental local
@@ -65,6 +67,7 @@ evidence/task-fact behavior, and adapter-side application of controller actions.
 | `6b55996` | Extract forced pending approval `permission_result` continuation into `ContinuationController`; share permission trace readers/call builder. |
 | `2122b9e` | Extract post-execute missing approval-gate repair continuation into `ContinuationController`; share repair predicate/prompt helpers. |
 | `477245b` | Extract execution-budget closeout snapshot builders for recovery-budget, wall-clock, and round-limit closeouts. |
+| `fa80eb9` | Extract `recovery_tool_budget` closeout/defer policy into `CloseoutPolicyRegistry`; add golden-order and focused registry tests. |
 
 ## Current Extracted Implementation
 
@@ -84,6 +87,9 @@ Real implementation now exists in:
   final-recovery truncation, per-round tool-call admission, and engine tool-batch
   execution, plus budget closeout snapshot construction for recovery-budget,
   wall-clock, and round-limit terminal synthesis.
+- `react-engine/closeout-policy-registry.ts` for `ENGINE_CLOSEOUT_POLICY_ORDER`
+  and the first pending-call closeout policy, `recovery_tool_budget`, including
+  its repair-round defer decision.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -100,9 +106,9 @@ Real implementation now exists in:
   permission-result call construction, missing approval-gate repair predicate
   and prompt construction, and completed browser-session evidence checks.
 
-Still shell/deferred:
+Still shell/deferred or partial:
 
-- `closeout-policy-registry.ts`
+- remaining `closeout-policy-registry.ts` policies after `recovery_tool_budget`
 - `repair-policy-registry.ts`
 - `completed-closeout-controller.ts`
 - `evidence-ledger.ts`
@@ -116,11 +122,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 58 / 58 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 62 / 62 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 226 / 226, 0 fail |
-| `npm run parity:engine` | 267 / 267, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 264 / 264, 0 fail |
+| `npm run parity:engine` | 226 / 226, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -130,8 +136,8 @@ zero failures and zero incomplete tests after recovery.
 ## Is The Adapter Thin?
 
 No. `runViaReActEngine` still begins at
-`packages/role-runtime/src/llm-response-generator.ts:2498` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that seventeen
+`packages/role-runtime/src/llm-response-generator.ts:2499` and remains the composition
+root plus several policy-heavy hook bodies. The main improvement is that eighteen
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -150,8 +156,10 @@ Stage 8 boundaries/slices are now real:
   for order-sensitive serialization, concurrency chunks, wall-clock signal setup,
   and non-abort tool-error shaping.
 - recovery-budget, wall-clock, and round-limit closeout snapshot construction
-  routes through `ExecutionBudgetController`; the adapter still owns when those
-  policies fire until `CloseoutPolicyRegistry` lands.
+  routes through `ExecutionBudgetController`.
+- `recovery_tool_budget` pending-call closeout/defer selection routes through
+  `CloseoutPolicyRegistry`, including the repair-round defer handoff before
+  terminal closeout.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -184,7 +192,8 @@ Stage 8 boundaries/slices are now real:
 
 Continue with the remaining high-risk pieces:
 
-- extract closeout policy registry decisions/precedence, then repair,
-  completed-closeout, evidence ledger, task facts, and final adapter thinning.
+- continue extracting the remaining closeout policy registry decisions/precedence
+  after `recovery_tool_budget`, then repair, completed-closeout, evidence ledger,
+  task facts, and final adapter thinning.
 
 The branch is **not pushed**.
