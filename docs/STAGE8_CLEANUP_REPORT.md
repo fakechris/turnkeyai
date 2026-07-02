@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `326cdd3d9bc002e29370bcad3b7dc1a50e1600d7`
+**Code HEAD before this docs-only report:** `6b559965e494893b510b5924771d5ea7b7aec31a`
 **Date:** 2026-07-02
 
 ## Summary
@@ -29,10 +29,11 @@ could not move the normalizer without making the inline parity reference import 
   empty-round direct `sessions_send` and lookup `sessions_list` injection, plus
   approved-browser timeout, coverage/sibling timeout, and supplemental local
   timeout probe continuation decisions, and incomplete approved-browser session
-  continuation, and independent evidence-stream continuation. The timeout
-  predicates, session detectors, permission-applied detector, evidence-stream
-  detector, and continuation prompts are shared by inline and engine through
-  neutral role-runtime helper code.
+  continuation, independent evidence-stream continuation, and forced pending
+  approval `permission_result` continuation. The timeout predicates, session
+  detectors, permission-applied detector, permission-result detector,
+  evidence-stream detector, and continuation prompts/calls are shared by inline
+  and engine through neutral role-runtime helper code.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns post-execute continuation, closeout,
@@ -56,6 +57,7 @@ repair, completed-closeout, and evidence/task-fact behavior.
 | `859f15f` | Extract supplemental local timeout probe decisions into `ContinuationController`; share probe predicates/prompts. |
 | `27f0e96` | Extract incomplete approved-browser session continuation into `ContinuationController`; share detector/prompt helpers. |
 | `326cdd3` | Extract independent evidence-stream continuation into `ContinuationController`; share detector/prompt helpers. |
+| `6b55996` | Extract forced pending approval `permission_result` continuation into `ContinuationController`; share permission trace readers/call builder. |
 
 ## Current Extracted Implementation
 
@@ -78,13 +80,15 @@ Real implementation now exists in:
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
   probe continuation decisions, and incomplete approved-browser session
-  continuation and independent evidence-stream continuation.
+  continuation, independent evidence-stream continuation, and forced pending
+  approval `permission_result` continuation.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
   timeout probe predicates/prompts, incomplete approved-browser session
   detector/prompt helpers, independent evidence-stream detector/prompt helpers,
-  permission-applied evidence checks, and completed browser-session evidence
+  permission-applied evidence checks, permission-result status readers, forced
+  permission-result call construction, and completed browser-session evidence
   checks.
 
 Still shell/deferred:
@@ -103,11 +107,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 50 / 50 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 52 / 52 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 263 / 263, 0 fail |
-| `npm run parity:engine` | 238 / 238, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 241 / 241, 0 fail |
+| `npm run parity:engine` | 229 / 229, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -118,7 +122,7 @@ zero failures and zero incomplete tests after recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2441` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fourteen
+root plus several policy-heavy hook bodies. The main improvement is that fifteen
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -157,15 +161,17 @@ Stage 8 boundaries/slices are now real:
   `ContinuationController`, covering the post-completed-session
   `sessions_spawn` continuation when fewer than the required delegated streams
   have completed.
+- forced pending approval `permission_result` continuation routes through
+  `ContinuationController`, covering both post-execute completed-session
+  continuation and model-call-error continuation before evidence fallback.
 
 ## Remaining Work
 
 Continue with the remaining high-risk pieces:
 
-- finish the remaining continuation extraction (post-execute missing
-  approval-gate repair handoff, forced permission-result, and model-error
-  continuation), execution-budget closeout decision/snapshot extraction, then
-  extract closeout, repair, completed-closeout, evidence ledger, task facts, and
-  final adapter thinning.
+- finish the remaining continuation/repair handoff for post-execute missing
+  approval-gate repair, then execution-budget closeout decision/snapshot
+  extraction, then extract closeout, repair, completed-closeout, evidence ledger,
+  task facts, and final adapter thinning.
 
 The branch is **not pushed**.
