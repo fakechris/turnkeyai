@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `6b559965e494893b510b5924771d5ea7b7aec31a`
+**Code HEAD before this docs-only report:** `2122b9e26de80a6c173f17777d7e160b46a08cca`
 **Date:** 2026-07-02
 
 ## Summary
@@ -30,14 +30,16 @@ could not move the normalizer without making the inline parity reference import 
   approved-browser timeout, coverage/sibling timeout, and supplemental local
   timeout probe continuation decisions, and incomplete approved-browser session
   continuation, independent evidence-stream continuation, and forced pending
-  approval `permission_result` continuation. The timeout predicates, session
-  detectors, permission-applied detector, permission-result detector,
-  evidence-stream detector, and continuation prompts/calls are shared by inline
-  and engine through neutral role-runtime helper code.
+  approval `permission_result` continuation, plus post-execute missing
+  approval-gate repair handoff. The timeout predicates, session detectors,
+  permission-applied detector, permission-result detector, evidence-stream
+  detector, missing approval-gate repair detector/prompt, and continuation
+  prompts/calls are shared by inline and engine through neutral role-runtime
+  helper code.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
-still an adapter-heavy bridge and still owns post-execute continuation, closeout,
-repair, completed-closeout, and evidence/task-fact behavior.
+still an adapter-heavy bridge and still owns closeout, repair, completed-closeout,
+evidence/task-fact behavior, and adapter-side application of controller actions.
 
 ## Commits Added After The Blocked Report
 
@@ -58,6 +60,7 @@ repair, completed-closeout, and evidence/task-fact behavior.
 | `27f0e96` | Extract incomplete approved-browser session continuation into `ContinuationController`; share detector/prompt helpers. |
 | `326cdd3` | Extract independent evidence-stream continuation into `ContinuationController`; share detector/prompt helpers. |
 | `6b55996` | Extract forced pending approval `permission_result` continuation into `ContinuationController`; share permission trace readers/call builder. |
+| `2122b9e` | Extract post-execute missing approval-gate repair continuation into `ContinuationController`; share repair predicate/prompt helpers. |
 
 ## Current Extracted Implementation
 
@@ -81,15 +84,16 @@ Real implementation now exists in:
   coverage/sibling timeout continuation decisions and supplemental local timeout
   probe continuation decisions, and incomplete approved-browser session
   continuation, independent evidence-stream continuation, and forced pending
-  approval `permission_result` continuation.
+  approval `permission_result` continuation, plus post-execute missing
+  approval-gate repair continuation.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
   timeout probe predicates/prompts, incomplete approved-browser session
   detector/prompt helpers, independent evidence-stream detector/prompt helpers,
   permission-applied evidence checks, permission-result status readers, forced
-  permission-result call construction, and completed browser-session evidence
-  checks.
+  permission-result call construction, missing approval-gate repair predicate
+  and prompt construction, and completed browser-session evidence checks.
 
 Still shell/deferred:
 
@@ -107,11 +111,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 52 / 52 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 55 / 55 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 241 / 241, 0 fail |
-| `npm run parity:engine` | 229 / 229, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 243 / 243, 0 fail |
+| `npm run parity:engine` | 272 / 272, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -121,8 +125,8 @@ zero failures and zero incomplete tests after recovery.
 ## Is The Adapter Thin?
 
 No. `runViaReActEngine` still begins at
-`packages/role-runtime/src/llm-response-generator.ts:2441` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that fifteen
+`packages/role-runtime/src/llm-response-generator.ts:2498` and remains the composition
+root plus several policy-heavy hook bodies. The main improvement is that sixteen
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -164,14 +168,16 @@ Stage 8 boundaries/slices are now real:
 - forced pending approval `permission_result` continuation routes through
   `ContinuationController`, covering both post-execute completed-session
   continuation and model-call-error continuation before evidence fallback.
+- post-execute missing approval-gate repair continuation routes through
+  `ContinuationController`, returning the repair marker as typed action data while
+  the adapter applies it to the idempotency ledger.
 
 ## Remaining Work
 
 Continue with the remaining high-risk pieces:
 
-- finish the remaining continuation/repair handoff for post-execute missing
-  approval-gate repair, then execution-budget closeout decision/snapshot
-  extraction, then extract closeout, repair, completed-closeout, evidence ledger,
-  task facts, and final adapter thinning.
+- execution-budget closeout decision/snapshot extraction, then extract closeout,
+  repair, completed-closeout, evidence ledger, task facts, and final adapter
+  thinning.
 
 The branch is **not pushed**.
