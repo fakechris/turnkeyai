@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import type { RoleToolExecutionResult } from "../tool-use";
 import {
   buildEvidenceSnapshot,
+  buildToolResultContentText,
   createEvidenceLedger,
   EVIDENCE_LEDGER_MODULE,
 } from "./evidence-ledger";
@@ -133,4 +135,33 @@ test("EvidenceLedger marks skipped/error-only traces as not usable evidence", ()
 
   assert.match(snapshot.toolTraceResultContent, /source failed/);
   assert.equal(snapshot.usableEvidence, false);
+});
+
+test("EvidenceLedger owns current tool-result content text", () => {
+  const results: RoleToolExecutionResult[] = [
+    {
+      toolCallId: "toolu-first",
+      toolName: "web_fetch",
+      content: "first source result",
+    },
+    {
+      toolCallId: "toolu-empty",
+      toolName: "web_fetch",
+      content: "   ",
+    },
+    {
+      toolCallId: "toolu-second",
+      toolName: "sessions_spawn",
+      content: "second delegated result",
+    },
+  ];
+
+  assert.equal(
+    buildToolResultContentText(results),
+    "first source result\n\nsecond delegated result",
+  );
+  assert.equal(
+    createEvidenceLedger().toolResultContentText(results),
+    "first source result\n\nsecond delegated result",
+  );
 });

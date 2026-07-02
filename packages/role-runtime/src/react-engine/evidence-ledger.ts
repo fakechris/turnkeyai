@@ -16,11 +16,13 @@
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import type { RoleToolExecutionResult } from "../tool-use";
 import {
   collectCompletedSessionEvidenceText,
   collectSourceBoundedEvidenceText,
 } from "../tool-loop-shared";
 import {
+  collectToolResultContentText,
   collectToolTraceResultContent,
   hasUsableEvidence,
 } from "../tool-result-evidence";
@@ -44,6 +46,10 @@ export interface EvidenceSnapshot {
 export class EvidenceLedger {
   snapshot(input: EvidenceLedgerInput): EvidenceSnapshot {
     return buildEvidenceSnapshot(input);
+  }
+
+  toolResultContentText(results: RoleToolExecutionResult[]): string {
+    return buildToolResultContentText(results);
   }
 }
 
@@ -75,4 +81,10 @@ export function buildEvidenceSnapshot(
       .filter((text) => text.trim().length > 0)
       .join("\n\n"),
   };
+}
+
+export function buildToolResultContentText(
+  results: RoleToolExecutionResult[],
+): string {
+  return collectToolResultContentText(results);
 }

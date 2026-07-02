@@ -3146,7 +3146,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 taskPrompt: packet.taskPrompt,
                 messages: state.messages,
                 toolTrace,
-                evidenceText: collectToolResultContentText(results),
+                evidenceText: evidenceLedger.toolResultContentText(results),
                 completedSessionEvidence: false,
                 timeoutSignal,
                 ...(initialGatewayInput.tools === undefined
@@ -3955,9 +3955,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 messages: state.messages,
                 repairMarkers,
                 completedSession: completedSessionForRepair,
-                completedSessionToolResultText: collectToolResultContentText(
-                  runState.completedSessionToolResults() ?? [],
-                ),
+                completedSessionToolResultText:
+                  evidenceLedger.toolResultContentText(
+                    runState.completedSessionToolResults() ?? [],
+                  ),
                 initialSynthesis: generated,
                 ...(activation ? { activation } : {}),
                 ...(initialGatewayInput.tools === undefined
