@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `2c15c614fab6dffff5857abaf4992fba144d6ef4`
+**Code HEAD before this docs-only report:** `3707df84d7d972b314c58894ff15ed1c64dd1261`
 **Date:** 2026-07-02
 
 ## Summary
@@ -89,7 +89,9 @@ could not move the normalizer without making the inline parity reference import 
   also exposed through the ledger for the engine timeout-probe and completed
   terminal-synthesis handoffs, and current-round completed-session / sub-agent
   timeout signals are now read through the ledger in engine continuation and
-  post-execute closeout hooks.
+  post-execute closeout hooks. Those current-round facts now travel as a single
+  `EvidenceLedger.currentRound()` snapshot for continuation and post-execute
+  closeout hook handoffs instead of adapter-local per-fact reads.
   `react-engine/terminal-closeout-controller.ts` now owns the engine's
   tool-evidence fallback closeout metadata/redaction assembly for hard approval
   wait-timeout fallback, plus model-call-error local evidence fallback gating,
@@ -305,6 +307,7 @@ application outside the terminal completion path.
 | `a552f63` | Move pending-call closeout evaluate/apply windows into `CloseoutPolicyRegistry` application helpers; adapter keeps only the recovery-before-preview ordering. |
 | `1660d44` | Move post-execute closeout evaluate/apply into `CloseoutPolicyRegistry.applyPostExecuteCloseout`; adapter passes hook input and run-state target. |
 | `2c15c61` | Route the hard approval wait-timeout terminal fallback through `TerminalCloseoutController.handleTerminalCloseoutHook`; adapter supplies fallback evidence instead of owning the early deterministic branch. |
+| `3707df8` | Route current-round tool-result content, completed-session signal, and timeout signal through one `EvidenceLedger.currentRound()` snapshot for continuation and post-execute closeout hook handoffs. |
 
 ## Current Extracted Implementation
 
@@ -415,7 +418,8 @@ Real implementation now exists in:
   result signals, tool-trace result content, approval wait-timeout runtime
   evidence, usable-evidence truth, and the natural-finish evidence formula
   consumed by extracted repair policies/controllers and engine continuation,
-  terminal, error, and finalization paths.
+  terminal, error, and finalization paths, plus a current-round evidence
+  snapshot used by continuation and post-execute closeout hook handoffs.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -502,8 +506,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| terminal-closeout focused test plus hook/golden focused tests | 29 / 29 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 180 / 180 |
+| evidence-ledger focused test plus continuation/closeout focused tests | 62 / 62 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 181 / 181 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -563,7 +567,8 @@ Stage 8 boundaries/slices are now real:
 - post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
   selection and state-effect application route through `CloseoutPolicyRegistry`;
   the adapter passes the hook input and run-state target through a single
-  registry application entrypoint.
+  registry application entrypoint, and reads the round's completed/timeout
+  signals from `EvidenceLedger.currentRound()`.
 - terminal closeout reasonLines and metadata construction routes through
   `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
   passthrough, completed session closeout, sub-agent timeout closeout,
@@ -728,6 +733,10 @@ Stage 8 boundaries/slices are now real:
 - engine timeout-probe and completed terminal-synthesis handoffs now read
   current-round tool-result content through `EvidenceLedger` instead of calling
   the raw result-content collector directly.
+- engine continuation and post-execute closeout hooks now consume a single
+  `EvidenceLedger.currentRound()` snapshot for current tool-result content,
+  completed-session signal, completed final contents, and sub-agent timeout
+  signal instead of collecting those facts separately in the adapter.
 - engine hard approval wait-timeout fallback now reads approval runtime
   evidence through `EvidenceLedger` and assembles its deterministic fallback
   result through `TerminalCloseoutController`; model-call-error local evidence
@@ -800,7 +809,7 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue expanding the evidence ledger beyond the current source/completed
-  evidence, current-result-content, current result signals,
+  evidence, current-round result snapshot,
   approval-timeout-runtime evidence, tool-trace-result-content, and
   usable-evidence snapshot facts; continue thinning terminal closeout gateway
   callback wiring beyond the current deterministic/generic/model-error fallback
