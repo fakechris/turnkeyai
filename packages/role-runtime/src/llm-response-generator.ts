@@ -2997,43 +2997,41 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // shouldCloseoutCancelledSessionWithoutContinuation guard is false.
           pendingContinuation =
             calls.length === 0 ? computeEmptyRoundContinuationCall(state) : null;
-          const buildWallClockBudgetCloseoutSignal = (
-            toolCalls: LLMToolCall[],
-            pendingToolCallCount: number,
-          ) => {
-            const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
-              ...(activeToolLoop.maxWallClockMs !== undefined
-                ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
-                : {}),
-              toolCalls,
-            });
-            const requiredTimeoutContinuationPastWallClock =
-              shouldAllowRequiredTimeoutContinuationPastWallClock({
-                taskPrompt: packet.taskPrompt,
-                messages: state.messages,
-                toolCalls,
-                toolTrace,
-              });
-            return {
-              maxWallClockMs,
-              requiredTimeoutContinuationPastWallClock,
-              readElapsedMs: () => this.clock.now() - toolLoopStartedAtMs,
-              buildCloseoutSnapshot: (activeMaxWallClockMs: number) =>
-                executionBudget.buildWallClockBudgetCloseoutSnapshot({
+          const wallClockBudgetCloseoutSignal =
+            calls.length > 0
+              ? executionBudget.buildWallClockBudgetCloseoutSignal({
+                  toolCalls: calls,
+                  pendingToolCallCount: calls.length,
+                  taskPrompt: packet.taskPrompt,
+                  messages: state.messages,
+                  toolTrace,
                   maxRounds,
-                  maxWallClockMs: activeMaxWallClockMs,
-                  pendingToolCallCount,
                   usedToolCalls: countNativeToolCalls(toolTrace),
                   roundCount,
                   evidenceAvailable: hasUsableEvidence(toolTrace),
-                }),
-            };
-          };
-          const wallClockBudgetCloseoutSignal =
-            calls.length > 0
-              ? buildWallClockBudgetCloseoutSignal(calls, calls.length)
+                  now: () => this.clock.now(),
+                  toolLoopStartedAtMs,
+                  ...(activeToolLoop.maxWallClockMs === undefined
+                    ? {}
+                    : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
+                })
               : pendingContinuation
-                ? buildWallClockBudgetCloseoutSignal([pendingContinuation], 1)
+                ? executionBudget.buildWallClockBudgetCloseoutSignal({
+                    toolCalls: [pendingContinuation],
+                    pendingToolCallCount: 1,
+                    taskPrompt: packet.taskPrompt,
+                    messages: state.messages,
+                    toolTrace,
+                    maxRounds,
+                    usedToolCalls: countNativeToolCalls(toolTrace),
+                    roundCount,
+                    evidenceAvailable: hasUsableEvidence(toolTrace),
+                    now: () => this.clock.now(),
+                    toolLoopStartedAtMs,
+                    ...(activeToolLoop.maxWallClockMs === undefined
+                      ? {}
+                      : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
+                  })
                 : null;
           // 2-8. pending-call closeouts — operator_cancelled through the
           // repeated-call/session anti-loop policies.

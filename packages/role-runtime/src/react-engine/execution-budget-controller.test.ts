@@ -157,6 +157,37 @@ test("ExecutionBudgetController builds wall-clock closeout snapshots", () => {
   });
 });
 
+test("ExecutionBudgetController builds wall-clock closeout signals", () => {
+  const controller = createExecutionBudgetController();
+  const signal = controller.buildWallClockBudgetCloseoutSignal({
+    toolCalls: [call("a")],
+    pendingToolCallCount: 1,
+    taskPrompt: "Inspect this source.",
+    messages: [{ role: "user", content: "Inspect this source." }],
+    toolTrace: [],
+    maxRounds: 3,
+    usedToolCalls: 4,
+    roundCount: 2,
+    evidenceAvailable: true,
+    now: () => 130_000,
+    toolLoopStartedAtMs: 10_000,
+    maxWallClockMs: 90_000,
+  });
+
+  assert.equal(signal.maxWallClockMs, 90_000);
+  assert.equal(signal.requiredTimeoutContinuationPastWallClock, false);
+  assert.equal(signal.readElapsedMs(), 120_000);
+  assert.deepEqual(signal.buildCloseoutSnapshot(90_000).closeout, {
+    reason: "wall_clock_budget",
+    maxRounds: 3,
+    maxWallClockMs: 90_000,
+    pendingToolCallCount: 1,
+    toolCallCount: 4,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+});
+
 test("ExecutionBudgetController builds round-limit closeout snapshots", () => {
   const controller = createExecutionBudgetController();
 

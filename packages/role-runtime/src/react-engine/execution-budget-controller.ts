@@ -1,7 +1,9 @@
 import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
+import type { NativeToolRoundTrace } from "../native-tool-messages";
 import { shouldSerializeToolBatch } from "../react/predicates";
+import { shouldAllowRequiredTimeoutContinuationPastWallClock } from "../tool-result-evidence";
 import {
   buildFinalRecoveryBudgetCloseoutReasonLines,
   buildToolCallLimitExceededResult,
@@ -103,6 +105,28 @@ export interface WallClockBudgetCloseoutSnapshotInput {
   usedToolCalls: number;
   roundCount: number;
   evidenceAvailable: boolean;
+}
+
+export interface WallClockBudgetCloseoutSignal {
+  maxWallClockMs: number | undefined;
+  requiredTimeoutContinuationPastWallClock: boolean;
+  readElapsedMs(): number;
+  buildCloseoutSnapshot(maxWallClockMs: number): ExecutionBudgetCloseoutSnapshot;
+}
+
+export interface WallClockBudgetCloseoutSignalInput {
+  toolCalls: LLMToolCall[];
+  pendingToolCallCount: number;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  maxRounds: number;
+  usedToolCalls: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+  now(): number;
+  toolLoopStartedAtMs: number;
+  maxWallClockMs?: number;
 }
 
 export interface RoundLimitCloseoutSnapshotInput {
@@ -217,6 +241,38 @@ export class ExecutionBudgetController {
         roundCount: input.roundCount,
         evidenceAvailable: input.evidenceAvailable,
       },
+    };
+  }
+
+  buildWallClockBudgetCloseoutSignal(
+    input: WallClockBudgetCloseoutSignalInput,
+  ): WallClockBudgetCloseoutSignal {
+    const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+      ...(input.maxWallClockMs === undefined
+        ? {}
+        : { maxWallClockMs: input.maxWallClockMs }),
+      toolCalls: input.toolCalls,
+    });
+    const requiredTimeoutContinuationPastWallClock =
+      shouldAllowRequiredTimeoutContinuationPastWallClock({
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolCalls: input.toolCalls,
+        toolTrace: input.toolTrace,
+      });
+    return {
+      maxWallClockMs,
+      requiredTimeoutContinuationPastWallClock,
+      readElapsedMs: () => input.now() - input.toolLoopStartedAtMs,
+      buildCloseoutSnapshot: (activeMaxWallClockMs: number) =>
+        this.buildWallClockBudgetCloseoutSnapshot({
+          maxRounds: input.maxRounds,
+          maxWallClockMs: activeMaxWallClockMs,
+          pendingToolCallCount: input.pendingToolCallCount,
+          usedToolCalls: input.usedToolCalls,
+          roundCount: input.roundCount,
+          evidenceAvailable: input.evidenceAvailable,
+        }),
     };
   }
 

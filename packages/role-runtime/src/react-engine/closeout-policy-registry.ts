@@ -21,7 +21,10 @@ import {
 } from "../tool-loop-shared";
 import { findRepeatedFailedToolCall } from "../react/predicates";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
-import type { ExecutionBudgetCloseoutSnapshot } from "./execution-budget-controller";
+import type {
+  ExecutionBudgetCloseoutSnapshot,
+  WallClockBudgetCloseoutSignal,
+} from "./execution-budget-controller";
 import type {
   CloseoutDecision,
   CloseoutDeferDecision,
@@ -87,13 +90,6 @@ export interface PseudoToolCallCloseoutMetadata {
   toolCallCount: number;
   roundCount: number;
   evidenceAvailable: boolean;
-}
-
-export interface WallClockBudgetCloseoutSignal {
-  maxWallClockMs: number | undefined;
-  requiredTimeoutContinuationPastWallClock: boolean;
-  readElapsedMs(): number;
-  buildCloseoutSnapshot(maxWallClockMs: number): ExecutionBudgetCloseoutSnapshot;
 }
 
 export interface RepeatedToolFailureCloseoutMetadata {
