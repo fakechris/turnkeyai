@@ -1639,6 +1639,25 @@ export function buildCompletedBrowserEvidenceDimensionCarryForwardLines(input: {
   ];
 }
 
+export function extractProductSignalDashboardUrl(
+  taskPrompt: string,
+): string | null {
+  const lines = taskPrompt.split(/\r?\n/);
+  for (const line of lines) {
+    if (!taskRequestsProductSignalDashboardEvidence(line)) {
+      continue;
+    }
+    const url = extractHttpUrls(line)[0];
+    if (url) {
+      return url;
+    }
+  }
+  return (
+    extractHttpUrls(taskPrompt).find((url) => /product-signals/i.test(url)) ??
+    null
+  );
+}
+
 const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [
   /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b/i,
   /(?:^|[^A-Za-z0-9_])待确认(?![A-Za-z0-9_])/,

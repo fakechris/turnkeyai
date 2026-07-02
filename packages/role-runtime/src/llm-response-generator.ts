@@ -95,6 +95,7 @@ import {
   escapeRegExp,
   extractHttpUrls,
   extractLatestUserContinuationText,
+  extractProductSignalDashboardUrl,
   extractSessionToolResultRecords,
   findExcessiveSessionContinuationCall,
   findRepeatedSessionInspectionCall,
@@ -6448,47 +6449,6 @@ function buildBrowserEvidenceRepairContext(
     buildContinuationDirectiveContext(taskPrompt, messages),
     ...messages.map((message) => readMessageContentText(message.content)),
   ].join("\n");
-}
-
-const PRODUCT_SIGNAL_NUMERIC_METRIC_PATTERN =
-  "\\b[A-Za-z][A-Za-z0-9 _/-]{1,48}\\b\\s*(?:[:=\\-]|\\bis\\b)\\s*(?:\\*\\*)?\\d+(?:\\.\\d+)?(?:\\*\\*)?\\b";
-const PRODUCT_SIGNAL_RATE_METRIC_PATTERN =
-  "\\b[A-Za-z][A-Za-z0-9 _/-]{1,48}\\b\\s*(?:[:=\\-]|\\bis\\b)\\s*(?:\\*\\*)?\\d+(?:\\.\\d+)?%(?!\\d)(?:\\*\\*)?";
-const PRODUCT_SIGNAL_DASHBOARD_COUNTERS_PATTERN = new RegExp(
-  `\\b(?:dashboard|signals?|metrics?|counters?|rates?)\\b[\\s\\S]{0,360}(?:${PRODUCT_SIGNAL_NUMERIC_METRIC_PATTERN}[\\s\\S]{0,240}${PRODUCT_SIGNAL_RATE_METRIC_PATTERN}|${PRODUCT_SIGNAL_RATE_METRIC_PATTERN}[\\s\\S]{0,240}${PRODUCT_SIGNAL_NUMERIC_METRIC_PATTERN})|(?:${PRODUCT_SIGNAL_NUMERIC_METRIC_PATTERN}[\\s\\S]{0,240}${PRODUCT_SIGNAL_RATE_METRIC_PATTERN}|${PRODUCT_SIGNAL_RATE_METRIC_PATTERN}[\\s\\S]{0,240}${PRODUCT_SIGNAL_NUMERIC_METRIC_PATTERN})[\\s\\S]{0,360}\\b(?:dashboard|signals?|metrics?|counters?|rates?)\\b`,
-  "i",
-);
-const PRODUCT_SIGNAL_DASHBOARD_RENDERED_RESULT_PATTERN = new RegExp(
-  `(?:\\b(?:rendered|browser|browser-visible|visible|screenshot|snapshot|DOM)\\b[\\s\\S]{0,360}${PRODUCT_SIGNAL_DASHBOARD_COUNTERS_PATTERN.source})|(?:${PRODUCT_SIGNAL_DASHBOARD_COUNTERS_PATTERN.source}[\\s\\S]{0,360}\\b(?:rendered|browser|browser-visible|visible|screenshot|snapshot|DOM)\\b)`,
-  "i",
-);
-const PRODUCT_SIGNAL_DASHBOARD_COUNTERS_UNVERIFIED_PATTERN =
-  /\b(?:live counters?|dashboard counters?|signals? dashboard counters?|counter values?|metric values?|product signals? dashboard|product signal dashboard|live signal dashboard|signals? dashboard)\b[\s\S]{0,260}\b(?:not verified|unverified|not confirmed|unconfirmed|not extracted|not captured|not observed|not in (?:the )?(?:completed )?evidence)|\b(?:not verified|unverified|not confirmed|unconfirmed|not extracted|not captured|not observed|not in (?:the )?(?:completed )?evidence)\b[\s\S]{0,260}\b(?:live counters?|dashboard counters?|signals? dashboard counters?|counter values?|metric values?|product signals? dashboard|product signal dashboard|live signal dashboard|signals? dashboard)\b/i;
-const PRODUCT_SIGNAL_BROWSER_EVIDENCE_UNVERIFIED_PATTERN =
-  /\b(?:browser|rendered|rendered browser|browser-rendered|browser visible|browser-visible|DOM|screenshot|snapshot)\s+(?:evidence|inspection|verification|view|capture|signal|signals|dashboard)\b[\s\S]{0,220}\b(?:not verified|unverified|not confirmed|unconfirmed|not extracted|not captured|not observed|not in (?:the )?(?:completed )?evidence)|\b(?:not verified|unverified|not confirmed|unconfirmed|not extracted|not captured|not observed|not in (?:the )?(?:completed )?evidence)\b[\s\S]{0,220}\b(?:browser|rendered|rendered browser|browser-rendered|browser visible|browser-visible|DOM|screenshot|snapshot)\s+(?:evidence|inspection|verification|view|capture|signal|signals|dashboard)\b/i;
-
-function hasProductSignalDashboardUnverifiedContradiction(text: string): boolean {
-  return (
-    PRODUCT_SIGNAL_DASHBOARD_COUNTERS_UNVERIFIED_PATTERN.test(text) ||
-    PRODUCT_SIGNAL_BROWSER_EVIDENCE_UNVERIFIED_PATTERN.test(text)
-  );
-}
-
-function extractProductSignalDashboardUrl(taskPrompt: string): string | null {
-  const lines = taskPrompt.split(/\r?\n/);
-  for (const line of lines) {
-    if (!taskRequestsProductSignalDashboardEvidence(line)) {
-      continue;
-    }
-    const url = extractHttpUrls(line)[0];
-    if (url) {
-      return url;
-    }
-  }
-  return (
-    extractHttpUrls(taskPrompt).find((url) => /product-signals/i.test(url)) ??
-    null
-  );
 }
 
 function hasToolDefinition(
