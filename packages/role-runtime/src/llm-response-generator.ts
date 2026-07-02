@@ -129,6 +129,7 @@ import {
   requestsStatusVisibleTextEvidenceUrlLines,
   resolveRecoveryToolBudgetForActivation,
   resolveEffectiveToolLoopWallClockMs,
+  shouldCloseoutCancelledSessionWithoutContinuation,
   shouldContinueTimedOutApprovedBrowserSession,
   shouldContinueTimedOutSiblingSession,
   shouldContinueIndependentEvidenceStreams,
@@ -3008,29 +3009,25 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             calls.length === 0 ? computeEmptyRoundContinuationCall(state) : null;
           // 2. operator_cancelled — a prior session was cancelled and the latest
           //    user message did not ask to continue (pending calls present).
-          if (
-            calls.length > 0 &&
-            shouldCloseoutCancelledSessionWithoutContinuation({
+          const remainingPendingCloseout =
+            closeoutPolicy.evaluateRemainingPendingCalls({
+              pendingToolCallCount: calls.length,
               taskPrompt: packet.taskPrompt,
               messages: state.messages,
-            })
+              maxRounds,
+              usedToolCalls: countToolCalls(toolTrace),
+              roundCount,
+              evidenceAvailable: hasUsableEvidence(toolTrace),
+            });
+          if (
+            remainingPendingCloseout?.kind === "closeout" &&
+            remainingPendingCloseout.reason === "operator_cancelled"
           ) {
             runState.recordPendingCloseout({
-              reasonLines: [
-                "A previous sub-agent session was cancelled by the operator.",
-                "The latest user message did not ask to continue, resume, or retry that cancelled session.",
-                "Do not call more tools or spawn a replacement session. Produce the final answer from the cancellation evidence already present.",
-                "State what remains unverified and how the user can continue later if they want the cancelled work resumed.",
-              ],
-              closeout: {
-                reason: "operator_cancelled",
-                maxRounds,
-                toolCallCount: countToolCalls(toolTrace),
-                roundCount,
-                evidenceAvailable: hasUsableEvidence(toolTrace),
-              },
+              reasonLines: remainingPendingCloseout.reasonLines,
+              closeout: remainingPendingCloseout.closeout,
             });
-            return "operator_cancelled";
+            return remainingPendingCloseout.reason;
           }
           // 3. pseudo_tool_call — no native calls, but the text emitted tool-call
           //    markup (XML/JSON/pseudo). Skip when a continuation is pending: inline
@@ -8305,28 +8302,6 @@ function parseJsonObject(value: unknown): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function shouldCloseoutCancelledSessionWithoutContinuation(input: {
-  taskPrompt: string;
-  messages: LLMMessage[];
-}): boolean {
-  const context = buildContinuationDirectiveContext(
-    input.taskPrompt,
-    input.messages,
-  );
-  if (!contextHasCancelledSessionResult(context)) {
-    return false;
-  }
-  return !isExplicitSessionContinuationRequest(
-    extractLatestUserContinuationText(input.taskPrompt),
-  );
-}
-
-function contextHasCancelledSessionResult(context: string): boolean {
-  return extractSessionToolResultRecords(context).some(
-    (result) => result["status"] === "cancelled",
-  );
 }
 
 function hasAttemptedBrowserSessionEvidence(

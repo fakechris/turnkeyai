@@ -1466,6 +1466,28 @@ export function contextHasTimeoutSessionResult(context: string): boolean {
   );
 }
 
+export function shouldCloseoutCancelledSessionWithoutContinuation(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+}): boolean {
+  const context = buildContinuationDirectiveContext(
+    input.taskPrompt,
+    input.messages,
+  );
+  if (!contextHasCancelledSessionResult(context)) {
+    return false;
+  }
+  return !isExplicitSessionContinuationRequest(
+    extractLatestUserContinuationText(input.taskPrompt),
+  );
+}
+
+function contextHasCancelledSessionResult(context: string): boolean {
+  return extractSessionToolResultRecords(context).some(
+    (result) => result["status"] === "cancelled",
+  );
+}
+
 export function contextHasSessionListResult(context: string): boolean {
   return parseJsonObjectsFromContext(context).some((parsed) => {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {

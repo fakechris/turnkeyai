@@ -9,7 +9,10 @@
 // The exported order array below is the source of truth for closeout
 // precedence; it is defined in Batch 0 so the contract is pinnable, and the
 // evaluating registry methods are added in Batch 3.
-import { shouldRepairFinalRecoveryBudgetCloseout } from "../tool-loop-shared";
+import {
+  shouldCloseoutCancelledSessionWithoutContinuation,
+  shouldRepairFinalRecoveryBudgetCloseout,
+} from "../tool-loop-shared";
 import type { ExecutionBudgetCloseoutSnapshot } from "./execution-budget-controller";
 import type {
   CloseoutDecision,
@@ -60,16 +63,43 @@ export interface RecoveryToolBudgetCloseoutInput {
   buildCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
 }
 
+export interface OperatorCancelledCloseoutMetadata {
+  reason: "operator_cancelled";
+  maxRounds: number;
+  toolCallCount: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+}
+
+export interface RemainingPendingCallsCloseoutInput {
+  pendingToolCallCount: number;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  maxRounds: number;
+  usedToolCalls: number;
+  roundCount: number;
+  evidenceAvailable: boolean;
+}
+
 export type RecoveryToolBudgetCloseoutDecision =
   | (CloseoutDecision<ExecutionBudgetCloseoutSnapshot["closeout"]> & {
       closeout: ExecutionBudgetCloseoutSnapshot["closeout"];
     })
   | CloseoutDeferDecision;
 
+export type RemainingPendingCallsCloseoutDecision =
+  CloseoutDecision<OperatorCancelledCloseoutMetadata> & {
+    closeout: OperatorCancelledCloseoutMetadata;
+  };
+
 export interface CloseoutPolicyRegistry {
   evaluateRecoveryToolBudget(
     input: RecoveryToolBudgetCloseoutInput,
   ): RecoveryToolBudgetCloseoutDecision | null;
+
+  evaluateRemainingPendingCalls(
+    input: RemainingPendingCallsCloseoutInput,
+  ): RemainingPendingCallsCloseoutDecision | null;
 }
 
 class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
@@ -102,6 +132,38 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
       reason: "recovery_tool_budget",
       reasonLines: snapshot.reasonLines,
       closeout: snapshot.closeout,
+    };
+  }
+
+  evaluateRemainingPendingCalls(
+    input: RemainingPendingCallsCloseoutInput,
+  ): RemainingPendingCallsCloseoutDecision | null {
+    if (
+      input.pendingToolCallCount <= 0 ||
+      !shouldCloseoutCancelledSessionWithoutContinuation({
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+      })
+    ) {
+      return null;
+    }
+    return {
+      kind: "closeout",
+      policyId: "operator_cancelled",
+      reason: "operator_cancelled",
+      reasonLines: [
+        "A previous sub-agent session was cancelled by the operator.",
+        "The latest user message did not ask to continue, resume, or retry that cancelled session.",
+        "Do not call more tools or spawn a replacement session. Produce the final answer from the cancellation evidence already present.",
+        "State what remains unverified and how the user can continue later if they want the cancelled work resumed.",
+      ],
+      closeout: {
+        reason: "operator_cancelled",
+        maxRounds: input.maxRounds,
+        toolCallCount: input.usedToolCalls,
+        roundCount: input.roundCount,
+        evidenceAvailable: input.evidenceAvailable,
+      },
     };
   }
 }

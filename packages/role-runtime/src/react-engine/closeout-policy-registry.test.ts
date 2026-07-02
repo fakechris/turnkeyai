@@ -21,6 +21,25 @@ function recoverySnapshot(): ExecutionBudgetCloseoutSnapshot {
   };
 }
 
+function cancelledSessionTaskPrompt(latestUserText = "Summarize the status."): string {
+  return [
+    "Task brief:",
+    latestUserText,
+    "",
+    "Previous tool result:",
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      session_key: "worker:explore:cancelled:toolu-cancel",
+      agent_id: "explore",
+      status: "cancelled",
+      result: "cancelled by operator",
+    }),
+    "",
+    "Recent turns:",
+    `[user] ${latestUserText}`,
+  ].join("\n");
+}
+
 test("ENGINE_CLOSEOUT_POLICY_ORDER pins terminal closeout precedence", () => {
   assert.deepEqual([...ENGINE_CLOSEOUT_POLICY_ORDER], [
     "recovery_tool_budget",
@@ -114,4 +133,65 @@ test("CloseoutPolicyRegistry returns exhausted recovery budget closeout decision
     reasonLines: ["Final recovery tool budget reached (2 tool calls)."],
     closeout: recoverySnapshot().closeout,
   });
+});
+
+test("CloseoutPolicyRegistry returns operator-cancelled closeout decision", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  const decision = registry.evaluateRemainingPendingCalls({
+    pendingToolCallCount: 1,
+    taskPrompt: cancelledSessionTaskPrompt(),
+    messages: [],
+    maxRounds: 3,
+    usedToolCalls: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+
+  assert.equal(decision?.kind, "closeout");
+  assert.equal(decision?.reason, "operator_cancelled");
+  assert.match(decision?.reasonLines[0] ?? "", /cancelled by the operator/);
+  assert.deepEqual(decision?.closeout, {
+    reason: "operator_cancelled",
+    maxRounds: 3,
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+});
+
+test("CloseoutPolicyRegistry skips operator-cancelled without pending calls", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateRemainingPendingCalls({
+      pendingToolCallCount: 0,
+      taskPrompt: cancelledSessionTaskPrompt(),
+      messages: [],
+      maxRounds: 3,
+      usedToolCalls: 2,
+      roundCount: 2,
+      evidenceAvailable: true,
+    }),
+    null,
+  );
+});
+
+test("CloseoutPolicyRegistry skips operator-cancelled when the user asks to continue", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateRemainingPendingCalls({
+      pendingToolCallCount: 1,
+      taskPrompt: cancelledSessionTaskPrompt(
+        "Continue the cancelled source-check session.",
+      ),
+      messages: [],
+      maxRounds: 3,
+      usedToolCalls: 2,
+      roundCount: 2,
+      evidenceAvailable: true,
+    }),
+    null,
+  );
 });
