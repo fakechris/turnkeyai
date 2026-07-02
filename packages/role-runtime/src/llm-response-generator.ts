@@ -3123,13 +3123,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 ? {}
                 : { tools: initialGatewayInput.tools }),
             });
-          if (timeoutContinuation.kind === "continue") {
-            return {
-              messages: timeoutContinuation.messages,
-              ...(timeoutContinuation.forceToolChoice
-                ? { forceToolChoice: timeoutContinuation.forceToolChoice }
-                : {}),
-            };
+          const timeoutContinuationResult =
+            continuation.applyContinueAction(timeoutContinuation);
+          if (timeoutContinuationResult) {
+            return timeoutContinuationResult;
           }
           // S7 branches 3-4 + S5: a COMPLETED delegated session, continued before the
           // completed_sub_agent_final closeout (inline :1603-1712, inside completedSession).
@@ -3157,13 +3154,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   : { tools: initialGatewayInput.tools }),
                 browserAvailable: allowsSupplementalBrowserProbe(packet),
               });
-            if (timeoutProbe.kind === "continue") {
-              return {
-                messages: timeoutProbe.messages,
-                ...(timeoutProbe.forceToolChoice
-                  ? { forceToolChoice: timeoutProbe.forceToolChoice }
-                  : {}),
-              };
+            const timeoutProbeResult =
+              continuation.applyContinueAction(timeoutProbe);
+            if (timeoutProbeResult) {
+              return timeoutProbeResult;
             }
             return null;
           }
@@ -3181,13 +3175,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 : { tools: initialGatewayInput.tools }),
               browserAvailable: allowsSupplementalBrowserProbe(packet),
             });
-          if (supplementalLocalTimeoutProbe.kind === "continue") {
-            return {
-              messages: supplementalLocalTimeoutProbe.messages,
-              ...(supplementalLocalTimeoutProbe.forceToolChoice
-                ? { forceToolChoice: supplementalLocalTimeoutProbe.forceToolChoice }
-                : {}),
-            };
+          const supplementalLocalTimeoutProbeResult =
+            continuation.applyContinueAction(supplementalLocalTimeoutProbe);
+          if (supplementalLocalTimeoutProbeResult) {
+            return supplementalLocalTimeoutProbeResult;
           }
           // S7 branch 4: incomplete approved browser session via sessions_send (:1626).
           const incompleteApprovedBrowserSession =
@@ -3200,16 +3191,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 ? {}
                 : { tools: initialGatewayInput.tools }),
             });
-          if (incompleteApprovedBrowserSession.kind === "continue") {
-            return {
-              messages: incompleteApprovedBrowserSession.messages,
-              ...(incompleteApprovedBrowserSession.forceToolChoice
-                ? {
-                    forceToolChoice:
-                      incompleteApprovedBrowserSession.forceToolChoice,
-                  }
-                : {}),
-            };
+          const incompleteApprovedBrowserSessionResult =
+            continuation.applyContinueAction(incompleteApprovedBrowserSession);
+          if (incompleteApprovedBrowserSessionResult) {
+            return incompleteApprovedBrowserSessionResult;
           }
           // S8: independent evidence streams — a multi-stream delegation task that has
           // not yet completed all required streams continues via a forced sessions_spawn
@@ -3225,13 +3210,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 ? {}
                 : { tools: initialGatewayInput.tools }),
             });
-          if (independentEvidenceStreams.kind === "continue") {
-            return {
-              messages: independentEvidenceStreams.messages,
-              ...(independentEvidenceStreams.forceToolChoice
-                ? { forceToolChoice: independentEvidenceStreams.forceToolChoice }
-                : {}),
-            };
+          const independentEvidenceStreamsResult =
+            continuation.applyContinueAction(independentEvidenceStreams);
+          if (independentEvidenceStreamsResult) {
+            return independentEvidenceStreamsResult;
           }
           // S9 (post-execute): an approval-gated browser task whose completed session
           // never went through the approval gate re-arms a forced permission_query round
@@ -3251,16 +3233,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 ? {}
                 : { tools: initialGatewayInput.tools }),
             });
-          if (missingApprovalGateRepair.kind === "continue") {
-            if (missingApprovalGateRepair.repairMarker) {
-              s9RepairMarkers.push(missingApprovalGateRepair.repairMarker);
-            }
-            return {
-              messages: missingApprovalGateRepair.messages,
-              ...(missingApprovalGateRepair.forceToolChoice
-                ? { forceToolChoice: missingApprovalGateRepair.forceToolChoice }
-                : {}),
-            };
+          const missingApprovalGateRepairResult =
+            continuation.applyContinueAction(missingApprovalGateRepair, {
+              recordRepairMarker: (marker) => {
+                s9RepairMarkers.push(marker);
+              },
+            });
+          if (missingApprovalGateRepairResult) {
+            return missingApprovalGateRepairResult;
           }
           // S5: forced permission_result round (host-authored, no model call). The
           // builder's guards (approval-wait-timeout task + pending permission_query +

@@ -400,6 +400,42 @@ test("ContinuationController continues an approved browser timeout before covera
   );
 });
 
+test("ContinuationController applies continue actions as hook continuations", () => {
+  const controller = createContinuationController();
+  const repairMarker: LLMMessage = {
+    role: "user",
+    content: "Runtime correction: request approval first.",
+  };
+  const messages: LLMMessage[] = [
+    { role: "user", content: "original task" },
+    repairMarker,
+  ];
+  const recorded: LLMMessage[] = [];
+
+  assert.deepEqual(
+    controller.applyContinueAction(
+      {
+        kind: "continue",
+        messages,
+        forceToolChoice: { name: "permission_query" },
+        repairMarker,
+        reason: "missing_approval_gate_repair_continuation",
+      },
+      {
+        recordRepairMarker: (marker) => {
+          recorded.push(marker);
+        },
+      },
+    ),
+    {
+      messages,
+      forceToolChoice: { name: "permission_query" },
+    },
+  );
+  assert.deepEqual(recorded, [repairMarker]);
+  assert.equal(controller.applyContinueAction({ kind: "none" }), null);
+});
+
 test("ContinuationController continues a coverage-critical sibling timeout", () => {
   const controller = createContinuationController();
   const timeoutSignal = {

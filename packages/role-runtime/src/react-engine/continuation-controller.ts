@@ -102,6 +102,17 @@ export interface ForcedPermissionResultInput {
   tools?: readonly ContinuationToolDefinition[];
 }
 
+type ContinueAction = Extract<EngineContinueAction, { kind: "continue" }>;
+
+export interface ContinuationHookResult {
+  messages: LLMMessage[];
+  forceToolChoice?: ContinueAction["forceToolChoice"];
+}
+
+export interface ContinueActionApplicationOptions {
+  recordRepairMarker?(marker: LLMMessage): void;
+}
+
 type ForcedToolRoundAction = Extract<
   EngineContinueAction,
   { kind: "forced_tool_round" }
@@ -401,6 +412,24 @@ export class ContinuationController {
       calls: [call],
       assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
       reason: "forced_pending_approval_wait_timeout_permission_result",
+    };
+  }
+
+  applyContinueAction(
+    action: EngineContinueAction,
+    options: ContinueActionApplicationOptions = {},
+  ): ContinuationHookResult | null {
+    if (action.kind !== "continue") {
+      return null;
+    }
+    if (action.repairMarker) {
+      options.recordRepairMarker?.(action.repairMarker);
+    }
+    return {
+      messages: action.messages,
+      ...(action.forceToolChoice === undefined
+        ? {}
+        : { forceToolChoice: action.forceToolChoice }),
     };
   }
 
