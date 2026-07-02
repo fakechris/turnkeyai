@@ -2651,6 +2651,68 @@ export function buildApprovalWaitTimeoutCloseoutRepairPrompt(): string {
   ].join("\n");
 }
 
+export function collectApprovalWaitTimeoutRuntimeEvidence(
+  toolTrace: NativeToolRoundTrace[],
+): string {
+  const evidence: string[] = [];
+  for (const round of toolTrace) {
+    for (const result of round.results) {
+      if (
+        result.toolName !== "permission_query" &&
+        result.toolName !== "permission_result"
+      ) {
+        continue;
+      }
+      if (!result.content) {
+        continue;
+      }
+      evidence.push(`${result.toolName}: ${sliceUtf8(result.content, 1200)}`);
+    }
+  }
+  return evidence.length
+    ? evidence.join("\n")
+    : "permission_query/permission_result evidence shows the approval request remains pending.";
+}
+
+export function buildApprovalWaitTimeoutLocalEvidenceCloseout(input: {
+  selection: {
+    modelId?: string;
+    modelChainId?: string;
+  };
+  evidenceText: string;
+  error: unknown;
+}): GenerateTextResult {
+  return {
+    text: [
+      "Approval wait-timeout closeout confirmed.",
+      "",
+      "Wait-timeout closeout evidence is preserved below.",
+      "Approval status: the operator decision is still pending after the bounded wait; permission_result returned pending/approval_wait_timeout.",
+      "Runtime evidence: permission_query requested approval for browser.form.submit and permission_result confirmed the approval remains pending.",
+      "Action boundary: no form submission, no side effects, and no browser mutation were performed.",
+      `Verified runtime evidence: ${sliceUtf8(input.evidenceText, 3 * 1024)}`,
+      "Residual risk: the requested submit/apply step remains unverified because pending approval remains.",
+      "Next action: ask the operator to approve or deny, then continue the same mission and apply only the approved scoped action.",
+    ].join("\n"),
+    modelId: input.selection.modelId ?? "local-evidence-closeout",
+    ...(input.selection.modelChainId
+      ? { modelChainId: input.selection.modelChainId }
+      : {}),
+    providerId: "local",
+    protocol: "openai-compatible",
+    adapterName: "local-evidence-closeout",
+    raw: {
+      reason: "approval_wait_timeout_final_synthesis_unavailable",
+      message: errorMessage(input.error),
+      evidence: sliceUtf8(input.evidenceText, 2000),
+    },
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function shouldRepairIncompleteApprovedBrowserAction(input: {
   taskPrompt: string;
   resultText: string;
