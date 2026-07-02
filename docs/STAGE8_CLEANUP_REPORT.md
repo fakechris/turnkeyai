@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `7b4e2256f8d6d7c2a4a62a47c31f761339adb7aa`
+**Code HEAD before this docs-only report:** `60ab50d25e1879df2c518f3e284c5dbc5620ffce`
 **Date:** 2026-07-02
 
 ## Summary
@@ -16,7 +16,9 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/tool-call-normalizer.ts`, moved engine permission wrapper behavior into
   `react-engine/permission-policy.ts`, moved the engine finalization epilogue order
   into `react-engine/finalization-pipeline.ts`, and moved the engine tool-observability
-  lifecycle into `react-engine/engine-run-observer.ts`.
+  lifecycle into `react-engine/engine-run-observer.ts`. The mutable cross-hook run
+  state now lives in `react-engine/engine-run-state.ts` instead of an adapter-local
+  `run` object.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns execution budget, continuation, closeout,
@@ -30,6 +32,7 @@ repair, completed-closeout, and evidence/task-fact behavior.
 | `5181294` | Extract `ToolCallNormalizer` order/pipeline and `PermissionPolicy` wrapper; add focused module tests. |
 | `8a27da3` | Extract `FinalizationPipeline` engine epilogue order; move shared finalization append/redaction helpers; add focused module tests. |
 | `7b4e225` | Extract `EngineRunObserver` lifecycle; move native tool trace conversion helpers into neutral shared code; add focused observer tests. |
+| `60ab50d` | Migrate mutable cross-hook run state into `EngineRunState`; add state mutation-rule tests. |
 
 ## Current Extracted Implementation
 
@@ -65,11 +68,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 23 / 23 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 27 / 27 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 231 / 231, 0 fail |
-| `npm run parity:engine` | 232 / 232, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 271 / 271, 0 fail |
+| `npm run parity:engine` | 264 / 264, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -80,7 +83,7 @@ zero failures and zero incomplete tests after recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2441` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that four
+root plus several policy-heavy hook bodies. The main improvement is that five
 Batch 1 boundaries are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -90,13 +93,15 @@ Batch 1 boundaries are now real:
   `finalizeEngineAnswer`.
 - model/tool lifecycle observability routes through `EngineRunObserver`, including
   `toolTrace`, runtime progress recorder events, and native tool-message persistence.
+- mutable cross-hook state routes through `EngineRunState`, including closeout
+  result/metadata, completed/timeout signals, reductions, memory flushes, and final
+  message snapshots.
 
 ## Remaining Work
 
-Continue Batch 1 with the remaining high-risk pieces:
+Continue with the remaining high-risk pieces:
 
-- migrate the remaining mutable cross-hook `run` object to `EngineRunState`;
-- then proceed to Batch 2+ for execution budget, continuation, closeout, repair,
-  completed-closeout, evidence ledger, task facts, and final adapter thinning.
+- extract execution budget, continuation, closeout, repair, completed-closeout,
+  evidence ledger, task facts, and final adapter thinning.
 
 The branch is **not pushed**.
