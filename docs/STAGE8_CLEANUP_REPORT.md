@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `3dae00b6d309786d1bdc18fd514f8aea9ffc0fb6`
+**Code HEAD before this docs-only report:** `920e16d622df45e00e996167a115b051c7a7f2eb`
 **Date:** 2026-07-02
 
 ## Summary
@@ -100,7 +100,11 @@ could not move the normalizer without making the inline parity reference import 
   `TerminalCloseoutController` boundary instead of adapter-local generated-result
   unpacking. Terminal synthesis path selection and final/re-arm application now
   also route through `TerminalCloseoutController`; the adapter supplies only the
-  gateway/completed-closeout callbacks for that terminal path.
+  gateway/completed-closeout callbacks for that terminal path. The full
+  terminal closeout entrypoint now also lives in that controller: the adapter
+  passes the `CloseoutPolicyRegistry` decision and gateway callbacks, while the
+  controller owns sticky pre-recording, reason-line handoff, completion path
+  selection, and final/re-arm state-effect application.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -246,6 +250,7 @@ application outside the terminal completion path.
 | `ee3a57d` | Move sticky completed terminal closeout pre-recording into `TerminalCloseoutController`; adapter passes sticky metadata and the run-state recorder target. |
 | `8a22741` | Move completed terminal initial-synthesis handoff into `TerminalCloseoutController`; adapter supplies the completed-closeout callback instead of unpacking the initial generated result. |
 | `3dae00b` | Move terminal synthesis path selection and final/re-arm application into `TerminalCloseoutController`; adapter supplies gateway/completed-closeout callbacks. |
+| `920e16d` | Move the terminal closeout entrypoint into `TerminalCloseoutController`; adapter passes the terminate decision and gateway callbacks instead of stitching sticky/application steps locally. |
 
 ## Current Extracted Implementation
 
@@ -332,7 +337,8 @@ Real implementation now exists in:
   application helpers, sticky completed terminal closeout pre-recording, and
   completed terminal initial-synthesis handoff into the completed-closeout
   controller callback, plus terminal synthesis path selection and final/re-arm
-  application through an injected recorder target.
+  application through an injected recorder target, plus the full terminal
+  closeout entrypoint from terminate decision to completion.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -420,8 +426,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 14 / 14 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 164 / 164 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 15 / 15 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 165 / 165 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -500,7 +506,9 @@ Stage 8 boundaries/slices are now real:
   synthesis now hands off through a controller-owned callback boundary. Terminal
   synthesis path selection, final response application, and completed
   re-arm/effect application now also route through the controller-owned
-  completion boundary.
+  completion boundary. The adapter now enters terminal closeout through a single
+  controller-owned entrypoint that consumes the terminate decision and applies
+  sticky pre-recording plus final/re-arm effects.
 - final-recovery budget natural-finish repair selection routes through
   `RepairPolicyRegistry`, while the adapter still appends the prior assistant
   candidate and records the repair marker.
@@ -694,6 +702,7 @@ Continue with the remaining high-risk pieces:
   synthesis-effect application, final response shaping, closeout write-mode
   selection, explicit state-effect application, sticky completed closeout
   pre-recording, completed initial-synthesis handoff, terminal path selection,
-  and final/re-arm application slices; keep thinning the adapter.
+  final/re-arm application, and terminal entrypoint slices; keep thinning the
+  adapter.
 
 The branch is **not pushed**.
