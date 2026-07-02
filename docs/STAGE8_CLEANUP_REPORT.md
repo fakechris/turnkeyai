@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `73733db0a27d3f3f6979f4c25ce84ca1c1e0605f`
+**Code HEAD before this docs-only report:** `b1884905b3a7c01aee931b4341b044694f18b8c9`
 **Date:** 2026-07-02
 
 ## Summary
@@ -25,8 +25,11 @@ could not move the normalizer without making the inline parity reference import 
   while the warning text itself lives in neutral shared code used by inline and
   engine. Final-recovery budget parsing, prior-call counting, closeout reason
   lines, and repair prompt helpers also moved into neutral shared code. The first
-  continuation slice now lives in `react-engine/continuation-controller.ts`:
-  empty-round direct `sessions_send` and lookup `sessions_list` injection.
+  continuation slices now live in `react-engine/continuation-controller.ts`:
+  empty-round direct `sessions_send` and lookup `sessions_list` injection, plus
+  approved-browser timeout and coverage/sibling timeout continuation decisions.
+  The timeout predicates and continuation prompts are shared by inline and engine
+  through neutral role-runtime helper code.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns post-execute continuation, closeout,
@@ -46,6 +49,7 @@ repair, completed-closeout, and evidence/task-fact behavior.
 | `a3d2961` | Move final tool-round warning ownership into `ExecutionBudgetController`; share the warning transform with inline. |
 | `d2253a5` | Move final-recovery budget parsing/counting/repair helpers into neutral shared code. |
 | `73733db` | Extract empty-round continuation injection into `ContinuationController`; add focused direct-send/lookup tests. |
+| `b188490` | Extract approved-browser and coverage timeout continuation decisions into `ContinuationController`; share timeout continuation helpers. |
 
 ## Current Extracted Implementation
 
@@ -65,9 +69,11 @@ Real implementation now exists in:
   final-recovery truncation, per-round tool-call admission, and engine tool-batch
   execution.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
-  `sessions_list` continuation injection and preview.
+  `sessions_list` continuation injection and preview, plus approved-browser and
+  coverage/sibling timeout continuation decisions.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
-  including final-recovery budget parsing/counting and repair text helpers.
+  including final-recovery budget parsing/counting, repair text helpers, timeout
+  continuation predicates, and timeout continuation prompts.
 
 Still shell/deferred:
 
@@ -85,11 +91,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 40 / 40 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 43 / 43 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
-| `npm run parity:inline` | 264 / 264, 0 fail |
-| `npm run parity:engine` | 232 / 232, 0 fail, 0 incomplete after individual recovery |
+| `npm run parity:inline` | 267 / 267, 0 fail |
+| `npm run parity:engine` | 233 / 233, 0 fail, 0 incomplete after individual recovery |
 | `git diff --check` | clean |
 
 Note: the parity runner's discovered count varies by mode/run because the default
@@ -100,7 +106,7 @@ zero failures and zero incomplete tests after recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2441` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that ten
+root plus several policy-heavy hook bodies. The main improvement is that eleven
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -126,13 +132,18 @@ Stage 8 boundaries/slices are now real:
 - empty-round continuation preview and injection route through
   `ContinuationController`, covering direct `sessions_send` and lookup
   `sessions_list` precedence.
+- post-execute timeout continuation routes through `ContinuationController`,
+  covering `approved_browser_timeout_continuation` precedence over
+  `coverage_timeout_continuation`.
 
 ## Remaining Work
 
 Continue with the remaining high-risk pieces:
 
-- finish post-execute continuation extraction, execution-budget closeout
-  decision/snapshot extraction, then extract closeout, repair, completed-closeout,
-  evidence ledger, task facts, and final adapter thinning.
+- finish remaining post-execute continuation extraction (supplemental timeout
+  probes, completed-session branch, independent streams, forced
+  permission-result), execution-budget closeout decision/snapshot extraction,
+  then extract closeout, repair, completed-closeout, evidence ledger, task facts,
+  and final adapter thinning.
 
 The branch is **not pushed**.
