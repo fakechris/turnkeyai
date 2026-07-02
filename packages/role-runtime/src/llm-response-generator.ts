@@ -71,6 +71,9 @@ import {
   extractSessionToolResultRecords,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
+  hasSessionTimeoutEvidence,
+  hasTimeoutCloseoutGuidance,
+  hasTimeoutContinuationGuidance,
   hasMissingApprovalGateRepairPrompt,
   hasPermissionGateEvidence,
   inferIndependentEvidenceStreamCount,
@@ -87,11 +90,21 @@ import {
   normalizePrivateUrlResearchSpawnCalls,
   normalizeSessionToolAliasCalls,
   normalizeSessionToolCalls,
+  maybeAppendBrowserFailureBucketVisibility,
+  maybeAppendBrowserRecoveryResidualRiskVisibility,
+  maybeAppendRecoveredTimeoutCloseoutVisibility,
+  maybeAppendRequiredTimeoutFollowupVisibility,
+  maybeRedactForbiddenLocalUrls,
+  mentionsTimeout,
   readCompletedSessionEvidence,
   readMessageContentText,
   readSessionKeyFromToolInput,
   readStringInput,
   requestsApprovalGatedBrowserAction,
+  requestsStatusVisibleTextEvidenceUrlLines,
+  shouldAppendRecoveredTimeoutCloseoutVisibility,
+  shouldAppendTimeoutContinuationVisibility,
+  shouldPreserveRecoveredTimeoutCloseout,
   shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
   taskAllowsPermissionTools,
@@ -100,6 +113,8 @@ import {
   taskRequestsSessionTranscript,
   taskRequestsTimeoutFollowupContinuation,
   taskRequiresBrowserEvidence,
+  toolTraceHasCall,
+  expectsExactFinalAnswerShape,
 } from "./tool-loop-shared";
 import type {
   SessionContinuationDirective,
@@ -114,6 +129,7 @@ import type { ModelClient, ReActReArm, ReActState } from "@turnkeyai/agent-core/
 import {
   createEnginePolicyTrace,
   createPermissionPolicy,
+  finalizeEngineAnswer,
   normalizeEngineToolCalls,
   traceEngineHooks,
 } from "./react-engine";
@@ -5037,31 +5053,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       ...(run.closeoutResult ?? lastResult ?? {}),
       text: finalText,
     } as GenerateTextResult;
-    if (
-      shouldAppendRecoveredTimeoutCloseoutVisibility({
-        resultText: finalResult.text,
-        taskPrompt: packet.taskPrompt,
-        messages: epilogueMessages,
-        toolTrace,
-      })
-    ) {
-      finalResult = maybeAppendRecoveredTimeoutCloseoutVisibility(finalResult);
-    }
-    finalResult = maybeAppendRequiredTimeoutFollowupVisibility({
+    finalResult = finalizeEngineAnswer({
       result: finalResult,
       taskPrompt: packet.taskPrompt,
       messages: epilogueMessages,
       toolTrace,
-    });
-    finalResult = maybeAppendBrowserRecoveryResidualRiskVisibility({
-      result: finalResult,
-      taskPrompt: packet.taskPrompt,
-      messages: epilogueMessages,
-      toolTrace,
-    });
-    finalResult = maybeAppendBrowserFailureBucketVisibility({
-      result: finalResult,
-      taskPrompt: packet.taskPrompt,
       evidenceText: collectToolTraceResultContent(toolTrace),
     });
     finalText = finalResult.text;
@@ -7501,31 +7497,6 @@ function collectBrowserRecoverySummariesFromToolTrace(
   return dedupeStrings(summaries);
 }
 
-function maybeAppendBrowserFailureBucketVisibility(input: {
-  result: GenerateTextResult;
-  taskPrompt: string;
-  evidenceText: string;
-}): GenerateTextResult {
-  const buckets = collectBrowserFailureBucketNames(input.evidenceText);
-  if (buckets.length === 0) {
-    return input.result;
-  }
-  if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
-    return input.result;
-  }
-  const missingBuckets = buckets.filter(
-    (bucket) => !browserFailureBucketVisible(input.result.text, bucket),
-  );
-  if (missingBuckets.length === 0) {
-    return input.result;
-  }
-  const limitation = buildBrowserFailureBucketVisibilityLine(missingBuckets, input.result.text);
-  return {
-    ...input.result,
-    text: `${input.result.text.trim()}\n\n${limitation}`.trim(),
-  };
-}
-
 function collectToolResultContentText(
   results: RoleToolExecutionResult[],
 ): string {
@@ -7608,90 +7579,6 @@ function looksLikeSourceBoundedEvidenceLine(line: string): boolean {
   );
 }
 
-function collectBrowserFailureBucketNames(text: string): string[] {
-  const buckets = new Set<string>();
-  const pattern =
-    /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|wait_condition_timeout|transport_failure|owner_mismatch|lease_conflict)\b/gi;
-  for (const match of text.matchAll(pattern)) {
-    buckets.add(match[1]!.toLowerCase());
-  }
-  return [...buckets].sort();
-}
-
-function browserFailureBucketVisible(text: string, bucket: string): boolean {
-  if (bucket === "cdp_command_timeout") {
-    return /\b(?:CDP|snapshot|screenshot|capture|browser)\b[\s\S]{0,160}\b(?:timed out|timeout|incomplete|not captured|not verified|unverified|bounded)\b/i.test(
-      text,
-    );
-  }
-  if (bucket === "browser_cdp_unavailable") {
-    return /\b(?:browser|CDP|Chrome DevTools)\b[\s\S]{0,160}\b(?:unavailable|unreachable|not reachable|connection refused)\b/i.test(
-      text,
-    );
-  }
-  if (bucket === "detached_target") {
-    return /\b(?:browser|target|tab|page)\b[\s\S]{0,160}\bdetached\b|\bdetached\b[\s\S]{0,160}\b(?:browser|target|tab|page)\b/i.test(
-      text,
-    );
-  }
-  if (new RegExp(`\\b${escapeRegExp(bucket)}\\b`, "i").test(text)) {
-    return true;
-  }
-  return /\b(?:browser|session|target|transport|attach|detached|profile)\b[\s\S]{0,160}\b(?:recovered|failed|unavailable|not found|detached|bounded|unverified)\b/i.test(
-    text,
-  );
-}
-
-function buildBrowserFailureBucketVisibilityLine(buckets: string[], resultText: string): string {
-  if (buckets.includes("detached_target")) {
-    return [
-      `Browser limitation: browser target detached during browser work (${buckets.join(", ")}).`,
-      "Treat the verified page facts as bounded target evidence; browser target details beyond the reported URL, marker, screenshot, or visible text remain incomplete or unverified.",
-      "Next action: retry or continue the browser task after the target is stable if additional rendered details matter.",
-    ].join(" ");
-  }
-  if (buckets.includes("cdp_command_timeout")) {
-    return [
-      `Browser limitation: ${buckets.join(", ")} occurred during browser CDP capture/snapshot work.`,
-      "Treat the verified page facts as bounded to recovered browser evidence; deeper CDP traversal or missing capture details remain unverified.",
-      "Next action: retry or continue the browser capture with a longer timeout if those missing details matter.",
-    ].join(" ");
-  }
-  if (hasRecoveredRenderedBrowserEvidence(resultText)) {
-    return [
-      `Browser limitation: ${buckets.join(", ")} occurred during browser work.`,
-      "Treat the verified page facts above as bounded to recovered browser evidence; no additional browser-visible facts are claimed beyond the reported marker, URL, screenshot, or confirmation text.",
-      "Next action: retry or continue the browser task only if extra rendered details beyond those reported facts matter.",
-    ].join(" ");
-  }
-  return [
-    `Browser limitation: ${buckets.join(", ")} occurred during browser work.`,
-    "Verified: the browser failure bucket itself is the available source-backed evidence; rendered page content remains unverified.",
-    "Next action: retry or continue the browser task after the browser target/session is stable if the missing rendered evidence matters.",
-  ].join(" ");
-}
-
-function hasRecoveredRenderedBrowserEvidence(text: string): boolean {
-  if (
-    /\b(?:rendered|browser-visible|visible page|page content)\b[\s\S]{0,120}\b(?:unverified|not verified|unknown|missing|blocked|not confirmed)\b/i.test(
-      text
-    ) ||
-    /\b(?:unverified|not verified|unknown|missing|blocked|not confirmed)\b[\s\S]{0,120}\b(?:rendered|browser-visible|visible page|page content)\b/i.test(
-      text
-    )
-  ) {
-    return false;
-  }
-  return (
-    /\b(?:marker|confirmation marker|success text|confirmation text|final URL|screenshot|snapshot|post-submit|post submission|post-submission|page confirmed|browser fixture evidence)\b/i.test(
-      text
-    ) ||
-    /\b(?:verified|observed|confirmed|found)\b[\s\S]{0,160}\b(?:page|fixture|marker|screenshot|snapshot|URL|confirmation|success text|rendered|browser-visible)\b/i.test(
-      text
-    )
-  );
-}
-
 function enforceRequestedThreeLineLabelShape(input: { taskPrompt: string; resultText: string }): string {
   if (!requestsStatusVisibleTextEvidenceUrlLines(input.taskPrompt)) {
     return input.resultText;
@@ -7723,17 +7610,6 @@ function normalizeRequestedThreeLineLabel(line: string, label: string): string {
   return `${label}: ${value || line}`;
 }
 
-function requestsStatusVisibleTextEvidenceUrlLines(taskPrompt: string): boolean {
-  return (
-    /(?:只|仅|只需|仅需)(?:用|以)?(?:回答|输出|返回|给出)[^\n。；;]{0,24}(?:三|3)\s*(?:行|条|句)/i.test(
-      taskPrompt,
-    ) &&
-    /状态/.test(taskPrompt) &&
-    /最终可见文本/.test(taskPrompt) &&
-    /证据\s*URL/i.test(taskPrompt)
-  );
-}
-
 function maybeAppendTimeoutContinuationVisibility(
   result: GenerateTextResult,
 ): GenerateTextResult {
@@ -7744,259 +7620,6 @@ function maybeAppendTimeoutContinuationVisibility(
     ...result,
     text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.`.trim(),
   };
-}
-
-function shouldAppendRecoveredTimeoutCloseoutVisibility(input: {
-  resultText: string;
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  const recoveredTimeoutContext =
-    (hasSessionTimeoutEvidence(input) ||
-      taskRequestsTimeoutContinuationCloseout(input.taskPrompt)) &&
-    toolTraceHasCall(input.toolTrace, "sessions_send");
-  if (!recoveredTimeoutContext) {
-    return false;
-  }
-  if (
-    taskRequestsUnverifiedTimeoutCloseout(input.taskPrompt) &&
-    !mentionsUnverifiedScope(input.resultText)
-  ) {
-    return true;
-  }
-  return (
-    !hasTimeoutCloseoutGuidance(input.resultText)
-  );
-}
-
-function maybeAppendRecoveredTimeoutCloseoutVisibility(
-  result: GenerateTextResult,
-): GenerateTextResult {
-  if (hasTimeoutCloseoutGuidance(result.text)) {
-    return result;
-  }
-  return {
-    ...result,
-    text: `${result.text.trim()}\n\nTimeout closeout: the resumed source produced source-backed evidence. Continue or retry the same source-check with a bounded timeout if future release-gated evidence is missing or if production-equivalent validation is required.`.trim(),
-  };
-}
-
-function maybeAppendRequiredTimeoutFollowupVisibility(input: {
-  result: GenerateTextResult;
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): GenerateTextResult {
-  if (!taskRequestsTimeoutFollowupContinuation(input.taskPrompt)) {
-    return input.result;
-  }
-  const contextText = [
-    input.taskPrompt,
-    input.result.text,
-    ...input.messages.map((message) => readMessageContentText(message.content)),
-  ].join("\n");
-  const hasRecoveredTimeoutEvidence =
-    hasSessionTimeoutEvidence(input) ||
-    /\b(?:timeout|timed out|timeout recovery|recovered after .*timeout|resumed after .*timeout|earlier timeout|previous timeout|prior timeout)\b/i.test(
-      contextText,
-    );
-  if (!hasRecoveredTimeoutEvidence || !toolTraceHasCall(input.toolTrace, "sessions_send")) {
-    return input.result;
-  }
-  const missingLines: string[] = [];
-  if (!hasTimeoutContinuationGuidance(input.result.text)) {
-    missingLines.push(
-      "Continuation guidance: continue or retry the same source-check with a bounded timeout if future release-gated evidence is missing or if production-equivalent validation is required.",
-    );
-  }
-  if (!mentionsUnverifiedScope(input.result.text)) {
-    missingLines.push(
-      "Unverified scope: production-equivalent release health and any source facts beyond the recovered result remain unverified.",
-    );
-  }
-  if (!mentionsTimeout(input.result.text)) {
-    missingLines.push(
-      "Timeout recovery: this answer follows a resumed source-check after an earlier timeout.",
-    );
-  }
-  if (missingLines.length === 0) {
-    return input.result;
-  }
-  return {
-    ...input.result,
-    text: `${input.result.text.trim()}\n\n${missingLines.join(" ")}`.trim(),
-  };
-}
-
-function maybeAppendBrowserRecoveryResidualRiskVisibility(input: {
-  result: GenerateTextResult;
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): GenerateTextResult {
-  if (requestsStatusVisibleTextEvidenceUrlLines(input.taskPrompt)) {
-    return input.result;
-  }
-  if (!taskRequiresBrowserEvidence(input.taskPrompt)) {
-    return input.result;
-  }
-  if (mentionsUnverifiedScope(input.result.text) || /\bresidual risks?\b/i.test(input.result.text)) {
-    return input.result;
-  }
-  const contextText = [
-    input.taskPrompt,
-    input.result.text,
-    ...input.messages.map((message) => readMessageContentText(message.content)),
-  ].join("\n");
-  if (!/\b(?:residual risk|unverified scope|remaining risk|what remains unverified)\b/i.test(contextText)) {
-    return input.result;
-  }
-  const hasBrowserRecoveryOrTimeout =
-    toolTraceHasTimeoutResult(input.toolTrace) ||
-    /\b(?:browser recovery metadata|resume mode|cold resume|recovered browser|browser.*timed out|timed out.*browser|screenshot.*timed out|snapshot.*timed out|scroll.*timed out|wait_for.*timed out)\b/i.test(
-      contextText,
-    );
-  if (!hasBrowserRecoveryOrTimeout) {
-    return input.result;
-  }
-  return {
-    ...input.result,
-    text: `${input.result.text.trim()}\n\nResidual risk: this browser review is source-bounded to recovered local fixture evidence; wider production state and any browser traversal that timed out remain unverified.`.trim(),
-  };
-}
-
-function taskRequestsTimeoutContinuationCloseout(taskPrompt: string): boolean {
-  return /\b(?:explain|state|say|describe)\b[\s\S]{0,160}\bwhether\b[\s\S]{0,160}\b(?:earlier|previous|prior)\s+timeouts?\b[\s\S]{0,160}\b(?:still\s+)?limits?\b[\s\S]{0,120}\bconclusion\b|\b(?:earlier|previous|prior)\s+timeouts?\b[\s\S]{0,120}\b(?:still\s+)?limits?\b[\s\S]{0,120}\bconclusion\b/i.test(
-    taskPrompt,
-  );
-}
-
-function taskRequestsUnverifiedTimeoutCloseout(taskPrompt: string): boolean {
-  return (
-    taskRequestsTimeoutContinuationCloseout(taskPrompt) &&
-    /\b(?:unverified|not verified|residual risk|uncertainty|uncertain)\b/i.test(
-      taskPrompt,
-    )
-  );
-}
-
-function mentionsUnverifiedScope(text: string): boolean {
-  return /\b(?:unverified|not verified|unconfirmed|uncertain|uncertainty|not confirmed)\b/i.test(
-    text,
-  );
-}
-
-function shouldPreserveRecoveredTimeoutCloseout(input: {
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-  evidenceText: string;
-}): boolean {
-  if (shouldAppendTimeoutContinuationVisibility(input)) {
-    return true;
-  }
-  return (
-    hasSessionTimeoutEvidence(input) &&
-    toolTraceHasCall(input.toolTrace, "sessions_send") &&
-    mentionsTimeout(input.evidenceText)
-  );
-}
-
-function hasTimeoutCloseoutGuidance(text: string): boolean {
-  return (
-    hasTimeoutContinuationGuidance(text) ||
-    /\b(?:earlier|previous|prior)\s+timeouts?\b[\s\S]{0,120}\b(?:no longer|still|does not|doesn't)\b[\s\S]{0,80}\blimits?\b[\s\S]{0,80}\bconclusion\b/i.test(
-      text,
-    )
-  );
-}
-
-function hasTimeoutContinuationGuidance(text: string): boolean {
-  return (
-    /\b(?:continue|retry|resume|resumable|bounded retry|timeout-gated)\b/i.test(
-      text,
-    ) ||
-    /\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|bounded retry)\b/i.test(
-      text,
-    ) ||
-    /\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b/i.test(
-      text,
-    ) ||
-    /\btimeouts?\b[\s\S]{0,80}\b(?:retry|recover|configure|exclude|timeout-gated|bounded retry)\b/i.test(
-      text,
-    )
-  );
-}
-
-function mentionsTimeout(text: string): boolean {
-  return /\b(?:timeout|timed out)\b/i.test(text);
-}
-
-function toolTraceHasCall(
-  toolTrace: NativeToolRoundTrace[],
-  toolName: string,
-): boolean {
-  return toolTrace.some((roundTrace) =>
-    roundTrace.calls.some((call) => call.name === toolName),
-  );
-}
-
-function toolTraceHasTimeoutResult(toolTrace: NativeToolRoundTrace[]): boolean {
-  return toolTrace.some((roundTrace) =>
-    roundTrace.results.some((result) => {
-      if (
-        result.toolName !== "sessions_spawn" &&
-        result.toolName !== "sessions_send"
-      ) {
-        return false;
-      }
-      if (typeof result.content !== "string") {
-        return false;
-      }
-      return parseSessionToolResult(result.content)?.status === "timeout";
-    }),
-  );
-}
-
-function hasSessionTimeoutEvidence(input: {
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  if (toolTraceHasTimeoutResult(input.toolTrace)) {
-    return true;
-  }
-  return contextHasTimeoutSessionResult(
-    buildContinuationDirectiveContext(input.taskPrompt, input.messages),
-  );
-}
-
-function maybeRedactForbiddenLocalUrls(input: {
-  result: GenerateTextResult;
-  packet: RolePromptPacket;
-}): GenerateTextResult {
-  const constraintText = `${input.packet.taskPrompt}\n${input.packet.outputContract}`;
-  if (!forbidsFinalUrls(constraintText)) {
-    return input.result;
-  }
-  const redacted = input.result.text.replace(
-    /\bhttps?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/[^\s)\],;]*)?/gi,
-    "local fixture source",
-  );
-  if (redacted === input.result.text) {
-    return input.result;
-  }
-  return {
-    ...input.result,
-    text: redacted,
-  };
-}
-
-function forbidsFinalUrls(text: string): boolean {
-  return /\b(?:do not include (?:source )?urls?|do not use [^\n.]*links?|links? (?:are )?forbidden|no links?|bare http:\/\/\s*\/\s*https?:\/\/ URLs?)\b/i.test(
-    text,
-  );
 }
 
 function containsAnyToolCallForm(result: {
@@ -9240,24 +8863,6 @@ function looksLikeCompleteApprovalWaitTimeoutCloseout(text: string): boolean {
   );
 }
 
-function expectsExactFinalAnswerShape(
-  taskPrompt: string,
-  resultText: string,
-): boolean {
-  const combined = `${taskPrompt}\n${resultText}`;
-  if (/^\s*(?:\{[\s\S]*\}|\[[\s\S]*\])\s*$/.test(resultText)) {
-    try {
-      JSON.parse(resultText);
-      return true;
-    } catch {
-      // Fall through to prompt-shape checks.
-    }
-  }
-  return /\b(?:respond with only|output only|answer only|final answer must|answer must be|use this exact final answer|exact final answer shape|valid json|json object|json array|csv only|markdown table only)\b|(?:只|仅|只需|仅需)(?:用|以)?(?:回答|输出|返回|给出)[^\n。；;]{0,24}(?:一|二|两|三|四|五|六|七|八|九|十|\d+)\s*(?:行|条|句)|^\s*Final Answer\s*:/im.test(
-    combined,
-  );
-}
-
 function hasStalePendingApprovalRepairPrompt(messages: LLMMessage[]): boolean {
   return messages.some(
     (message) =>
@@ -9790,39 +9395,6 @@ function shouldCloseoutCancelledSessionWithoutContinuation(input: {
 function contextHasCancelledSessionResult(context: string): boolean {
   return extractSessionToolResultRecords(context).some(
     (result) => result["status"] === "cancelled",
-  );
-}
-
-function shouldAppendTimeoutContinuationVisibility(input: {
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  const taskPromptSuffix = input.taskPrompt.slice(
-    Math.max(0, input.taskPrompt.length - 4000),
-  );
-  if (
-    !isExplicitSessionContinuationRequest(
-      extractLatestUserContinuationText(taskPromptSuffix),
-    ) &&
-    !isExplicitSessionContinuationRequest(taskPromptSuffix)
-  ) {
-    return false;
-  }
-  if (
-    !input.toolTrace.some((roundTrace) =>
-      roundTrace.calls.some((call) => call.name === "sessions_send"),
-    )
-  ) {
-    return false;
-  }
-  const context = buildContinuationDirectiveContext(
-    input.taskPrompt,
-    input.messages,
-  );
-  return (
-    toolTraceHasTimeoutResult(input.toolTrace) ||
-    contextHasTimeoutSessionResult(context)
   );
 }
 
