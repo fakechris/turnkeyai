@@ -231,6 +231,15 @@ export interface TerminalFinalResponse {
   stopReason?: string;
 }
 
+export type TerminalModelCallErrorFallbackResult =
+  | {
+      kind: "final";
+      response: TerminalFinalResponse;
+    }
+  | {
+      kind: "rethrow";
+    };
+
 export type TerminalCloseoutRecordMode = "if_absent" | "overwrite";
 
 export interface TerminalCloseoutApplicationTarget<
@@ -384,6 +393,25 @@ export class TerminalCloseoutController {
       },
       target,
     );
+  }
+
+  handleModelCallErrorFallback<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: ModelCallErrorFallbackInput,
+    target: TerminalCloseoutApplicationTarget<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): TerminalModelCallErrorFallbackResult {
+    const response = this.applyModelCallErrorFallback(input, target);
+    if (!response) {
+      return { kind: "rethrow" };
+    }
+    return { kind: "final", response };
   }
 
   buildSynthesisMessages(input: TerminalSynthesisMessagesInput): LLMMessage[] {

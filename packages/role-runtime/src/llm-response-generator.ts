@@ -4061,7 +4061,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             });
             return { messages: forcedRound.messages };
           }
-          const fallbackResponse = terminalCloseout.applyModelCallErrorFallback(
+          const fallbackResult = terminalCloseout.handleModelCallErrorFallback(
             {
               active: Boolean(activeToolLoop),
               usableEvidence: errorEvidence.usableEvidence,
@@ -4076,10 +4076,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
             runState,
           );
-          if (!fallbackResponse) {
+          if (fallbackResult.kind === "rethrow") {
             return "rethrow";
           }
-          return fallbackResponse;
+          return fallbackResult.response;
         },
         // Capture the live message history for the post-loop finalization epilogue.
         // onTerminate / onModelCallError stash runState finalMessages on the closeout and

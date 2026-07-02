@@ -262,6 +262,66 @@ test("TerminalCloseoutController applies model-call-error fallback through a tar
   assert.equal(resultEvent[0], "result");
 });
 
+test("TerminalCloseoutController owns model-call-error fallback and rethrow boundary", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      name: "web_fetch",
+      content: "ACME pricing was verified at http://127.0.0.1:5173/pricing.",
+    } as LLMMessage,
+  ];
+  const common = {
+    messages,
+    packet: packet("Summarize the verified source fact.", "No links."),
+    selection: { modelId: "model-b" },
+    error: new Error("gateway unavailable"),
+    maxRounds: 5,
+    toolCallCount: 1,
+    roundCount: 1,
+  };
+  const skipped = recordingTarget();
+
+  assert.deepEqual(
+    controller.handleModelCallErrorFallback(
+      {
+        ...common,
+        active: false,
+        usableEvidence: true,
+      },
+      skipped.target,
+    ),
+    { kind: "rethrow" },
+  );
+  assert.deepEqual(skipped.events, []);
+
+  const applied = recordingTarget();
+  const handled = controller.handleModelCallErrorFallback(
+    {
+      ...common,
+      active: true,
+      usableEvidence: true,
+    },
+    applied.target,
+  );
+
+  assert.equal(handled.kind, "final");
+  assert.match(handled.kind === "final" ? handled.response.text : "", /Verified:/);
+  assert.deepEqual(applied.events[0], [
+    "overwrite",
+    {
+      reason: "tool_evidence_fallback",
+      maxRounds: 5,
+      toolCallCount: 1,
+      roundCount: 1,
+      evidenceAvailable: true,
+    },
+  ]);
+  const resultEvent = applied.events[1];
+  assert.ok(Array.isArray(resultEvent));
+  assert.equal(resultEvent[0], "result");
+});
+
 test("TerminalCloseoutController appends current assistant text for pseudo tool-call synthesis only", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];
