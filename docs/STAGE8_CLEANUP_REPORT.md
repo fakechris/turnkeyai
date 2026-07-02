@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `6e0a4cc5ebaf0c86d393def8212c09fbf7192bcd`
+**Code HEAD before this docs-only report:** `027961f2ad954637d836784cf6c7759c79cab5bf`
 **Date:** 2026-07-02
 
 ## Summary
@@ -103,6 +103,11 @@ could not move the normalizer without making the inline parity reference import 
   provider protocol handoff to
   `EngineRunObserver.observeRuntimeForcedToolRound()`; the adapter supplies the
   actual tool-execution callback.
+  Engine tool-call normalization context construction now lives in
+  `react-engine/tool-call-normalizer.ts`: continuation context/directives,
+  continuation lookup directives, and browser/explore worker availability are
+  built by the normalizer owner from task, message, trace, repair-marker, and
+  capability inputs instead of being assembled in the adapter.
   `react-engine/terminal-closeout-controller.ts` now owns the engine's
   tool-evidence fallback closeout metadata/redaction assembly for hard approval
   wait-timeout fallback, plus model-call-error local evidence fallback gating,
@@ -322,6 +327,7 @@ application outside the terminal completion path.
 | `3c97ab8` | Route provider tool-protocol round recording for the normal post-execute engine hook through `EngineRunObserver`; adapter injects the existing safe recorder. |
 | `4ed66d7` | Route forced runtime tool-round provider protocol recording through `EngineRunObserver` on engine paths; keep the legacy safe-recorder fallback for no-observer paths. |
 | `6e0a4cc` | Move forced runtime tool-round native trace persistence, message append, and provider handoff into `EngineRunObserver`; adapter supplies only the executor callback on engine paths. |
+| `027961f` | Move engine tool-call normalizer context construction into `ToolCallNormalizer`; adapter passes only task/message/trace/repair/capability inputs. |
 
 ## Current Extracted Implementation
 
@@ -334,7 +340,10 @@ Real implementation now exists in:
 - `react-engine/hook-policy-trace.ts`
 - `react-engine/hook-orchestration-contract.ts`
 - `react-engine/policy-trace-characterization.ts`
-- `react-engine/tool-call-normalizer.ts`
+- `react-engine/tool-call-normalizer.ts` for engine tool-call normalization
+  order/pipeline and live normalization context construction, including session
+  continuation context/directive resolution, continuation lookup directive
+  resolution, and browser/explore worker availability derivation.
 - `react-engine/permission-policy.ts` for approval-gate normalization,
   read-only permission-query suppression selection, and read-only suppression
   hook-result application.
@@ -525,9 +534,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 4 / 4 |
-| engine-run-observer focused test | 6 / 6 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 185 / 185 |
+| `npx tsx --test packages/role-runtime/src/react-engine/tool-call-normalizer.test.ts` | 4 / 4 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 186 / 186 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -544,7 +552,10 @@ No. `runViaReActEngine` still begins at
 root plus several policy-heavy hook bodies. The main improvement is that more than sixty
 Stage 8 boundaries/slices are now real:
 
-- `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
+- `onToolCalls` delegates normalization to `normalizeEngineToolCalls`, and no
+  longer builds normalizer context locally; `ToolCallNormalizer` now owns live
+  continuation context/directive lookup and browser/explore availability
+  construction.
 - engine policy-trace debug gating routes through `policy-trace.ts`; the adapter
   imports the owner-owned helper instead of carrying the env check locally.
 - approval-gate normalizer steps and read-only suppression selection/application
