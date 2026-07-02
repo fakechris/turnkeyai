@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `d298c29d39d85856a4082e2ab1b219aca508fa0f`
+**Code HEAD before this docs-only report:** `c66dea9f3074d36afb333438524ea16c792a7083`
 **Date:** 2026-07-02
 
 ## Summary
@@ -36,7 +36,7 @@ could not move the normalizer without making the inline parity reference import 
   The first natural-finish repair policies,
   `final_recovery_budget_closeout_repair`, `missing_approval_gate`, and
   the approval-state repair sequence through
-  `approval_wait_timeout_local_closeout`, now return typed decisions from
+  `incomplete_approved_browser_action`, now return typed decisions from
   `react-engine/repair-policy-registry.ts`; the adapter still applies the
   repair marker and appended messages at the original precedence points.
   The final allowed tool-round warning now routes through that controller while
@@ -95,6 +95,7 @@ application, and adapter-side application of controller actions.
 | `472a12a` | Extract stale pending-approval repair selection into `RepairPolicyRegistry`; share applied-approval continuation detector/prompt helpers. |
 | `78d92bc` | Extract denied approval repair selection into `RepairPolicyRegistry`; share denied-approval predicate/prompt helpers. |
 | `d298c29` | Extract approval wait-timeout closeout and failed-repair local closeout selections into `RepairPolicyRegistry`; share wait-timeout closeout predicates/prompt helpers. |
+| `c66dea9` | Extract incomplete approved-browser-action repair selection into `RepairPolicyRegistry`; share its predicate and forced-spawn repair prompt. |
 
 ## Current Extracted Implementation
 
@@ -130,13 +131,14 @@ Real implementation now exists in:
   `missing_approval_gate`, `pending_approval_wait_timeout_check`,
   `premature_pending_approval`, `stale_pending_approval`, and
   `stale_denied_approval`, plus `approval_wait_timeout_closeout` and
-  `approval_wait_timeout_local_closeout`, including exhausted final-recovery
+  `approval_wait_timeout_local_closeout`, and
+  `incomplete_approved_browser_action`, including exhausted final-recovery
   budget gating, bounded-closeout skip behavior, approval-gate repair gating,
   approval wait-timeout permission-result repair gating, stale pending/denied
   approval repair gating, approval wait-timeout closeout repair gating,
-  failed-repair deterministic local closeout gating, repair marker idempotency,
-  prompt construction, and typed tool-free/tool-round resynthesis or closeout
-  decisions.
+  failed-repair deterministic local closeout gating, incomplete approved-browser
+  action repair gating, repair marker idempotency, prompt construction, and
+  typed tool-free/tool-round resynthesis or closeout decisions.
 - `react-engine/continuation-controller.ts` for empty-round `sessions_send` /
   `sessions_list` continuation injection and preview, plus approved-browser and
   coverage/sibling timeout continuation decisions and supplemental local timeout
@@ -155,13 +157,14 @@ Real implementation now exists in:
   and prompt construction, premature/stale pending-approval repair predicates
   and prompt construction, denied approval repair predicate and prompt
   construction, approval wait-timeout closeout repair predicates and prompt
+  construction, incomplete approved-browser-action repair predicate and prompt
   construction, cancelled-session closeout detection, pseudo tool-call markup
   detection, repeated session inspection/continuation detectors, and completed
   browser-session evidence checks.
 
 Still shell/deferred or partial:
 
-- `repair-policy-registry.ts` policies after `approval_wait_timeout_local_closeout`
+- `repair-policy-registry.ts` policies after `incomplete_approved_browser_action`
 - `completed-closeout-controller.ts`
 - `evidence-ledger.ts`
 - `task-facts.ts`
@@ -173,9 +176,9 @@ All gates below passed on the current code before the report update:
 
 | Gate | Result |
 | --- | --- |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 22 / 22 |
+| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 25 / 25 |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 101 / 101 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 104 / 104 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -189,7 +192,7 @@ the engine chunks without individual recovery.
 
 No. `runViaReActEngine` still begins at
 `packages/role-runtime/src/llm-response-generator.ts:2514` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that thirty-one
+root plus several policy-heavy hook bodies. The main improvement is that thirty-two
 Stage 8 boundaries/slices are now real:
 
 - `onToolCalls` delegates normalization to `normalizeEngineToolCalls`.
@@ -250,6 +253,9 @@ Stage 8 boundaries/slices are now real:
 - failed approval wait-timeout repair local closeout selection routes through
   `RepairPolicyRegistry`, returning a typed `tool_evidence_fallback` closeout
   directive while the adapter still builds the deterministic local-evidence text.
+- incomplete approved-browser-action repair selection routes through
+  `RepairPolicyRegistry`, using shared approval-applied evidence/prompt
+  predicates and returning a typed forced `sessions_spawn` repair round.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -283,7 +289,7 @@ Stage 8 boundaries/slices are now real:
 Continue with the remaining high-risk pieces:
 
 - continue extracting remaining repair decisions after
-  `approval_wait_timeout_local_closeout`, then completed-closeout, evidence
+  `incomplete_approved_browser_action`, then completed-closeout, evidence
   ledger, task facts, terminal closeout synthesis/application, and final adapter
   thinning.
 
