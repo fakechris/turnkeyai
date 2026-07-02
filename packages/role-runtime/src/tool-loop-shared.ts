@@ -3277,6 +3277,12 @@ export function throwIfAborted(signal: AbortSignal | undefined): void {
   throw error;
 }
 
+export function allowsSupplementalBrowserProbe(packet: RolePromptPacket): boolean {
+  const unavailable =
+    packet.capabilityInspection?.unavailableCapabilities ?? [];
+  return !unavailable.some((capability) => /\bbrowser\b/i.test(capability));
+}
+
 export function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {
   if (isProviderSearchPricingResearchTask(taskPrompt)) {
     return true;

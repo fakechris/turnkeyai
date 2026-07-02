@@ -6,6 +6,7 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
 import {
+  allowsSupplementalBrowserProbe,
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
   collectApprovalWaitTimeoutRuntimeEvidence,
@@ -185,5 +186,21 @@ test("throwIfAborted rethrows a stable AbortError", () => {
   assert.throws(
     () => throwIfAborted(controller.signal),
     (error) => error instanceof Error && error.name === "AbortError",
+  );
+});
+
+test("allowsSupplementalBrowserProbe respects unavailable browser capabilities", () => {
+  assert.equal(
+    allowsSupplementalBrowserProbe(packet("Inspect a rendered page.")),
+    true,
+  );
+  assert.equal(
+    allowsSupplementalBrowserProbe({
+      ...packet("Inspect a rendered page."),
+      capabilityInspection: {
+        unavailableCapabilities: ["browser sessions unavailable"],
+      },
+    } as RolePromptPacket),
+    false,
   );
 });
