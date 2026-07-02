@@ -55,10 +55,13 @@ import {
   buildToolCallLimitExceededResult,
   buildReadOnlyPermissionQuerySuppressionPrompt,
   buildContinuationDirectiveContext,
+  buildFinalRecoveryBudgetCloseoutReasonLines,
+  buildFinalRecoveryBudgetCloseoutRepairPrompt,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
   createToolExecutionSignal,
   countCompletedSessionEvidenceResults,
+  countRecoveryToolCallsBeforeActivation,
   dedupeStrings,
   disclaimsApprovalGatedBrowserAction,
   disclaimsIntendedBrowserMutation,
@@ -104,9 +107,11 @@ import {
   readStringInput,
   requestsApprovalGatedBrowserAction,
   requestsStatusVisibleTextEvidenceUrlLines,
+  resolveRecoveryToolBudgetForActivation,
   resolveEffectiveToolLoopWallClockMs,
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
+  shouldRepairFinalRecoveryBudgetCloseout,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
@@ -9979,155 +9984,6 @@ function readPrunedToolResultReason(content: string): string | undefined {
 
 function countToolCalls(rounds: NativeToolRoundTrace[]): number {
   return rounds.reduce((sum, round) => sum + round.calls.length, 0);
-}
-
-function resolveRecoveryToolBudgetForActivation(input: {
-  activation: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-}): { maxToolCalls: number } | null {
-  return resolveFinalRecoveryToolBudget(
-    buildFinalRecoveryBudgetContext(input),
-  );
-}
-
-function countRecoveryToolCallsBeforeActivation(input: {
-  activation: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-}): number {
-  const context = buildFinalRecoveryBudgetContext(input);
-  const marker = findLastFinalRecoveryBudgetMarker(context);
-  if (marker < 0) return 0;
-  return countRenderedToolCallLines(context.slice(marker));
-}
-
-function findLastFinalRecoveryBudgetMarker(text: string): number {
-  let marker = -1;
-  const pattern =
-    /Automatic recovery attempt\s+(\d+)\s+of\s+(\d+)[\s\S]{0,600}?at most\s+([a-z]+|\d+)\s+additional tool calls total/gi;
-  for (const match of text.matchAll(pattern)) {
-    const currentAttempt = Number(match[1]);
-    const maxAttempt = Number(match[2]);
-    if (
-      Number.isFinite(currentAttempt) &&
-      Number.isFinite(maxAttempt) &&
-      currentAttempt >= maxAttempt
-    ) {
-      marker = match.index ?? marker;
-    }
-  }
-  return marker;
-}
-
-function countRenderedToolCallLines(text: string): number {
-  return Array.from(
-    text.matchAll(
-      /(?:^|[\n\r])\s*Calling\s+[A-Za-z_][\w-]*\s*\(/g,
-    ),
-  ).length;
-}
-
-function buildFinalRecoveryBudgetContext(input: {
-  activation: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-}): string {
-  const intent = input.activation.handoff.payload.intent;
-  return [
-    input.taskPrompt,
-    intent?.relayBrief ?? "",
-    intent?.instructions ?? "",
-    ...(intent?.recentMessages ?? []).map((message) =>
-      typeof message.content === "string"
-        ? message.content
-        : JSON.stringify(message.content ?? ""),
-    ),
-    ...input.messages
-      .filter((message) => message.role === "user")
-      .map((message) => readToolResultContentText(message.content)),
-  ].join("\n");
-}
-
-function buildFinalRecoveryBudgetCloseoutReasonLines(maxToolCalls: number): string[] {
-  return [
-    `Final recovery tool budget reached (${maxToolCalls} tool calls).`,
-    "Do not call more tools. Produce a bounded blocked closeout from the evidence already gathered.",
-    "List the exact missing goal slots, the pages/tools already attempted, what each source proved, and what remains unverified.",
-    "This is not a success closeout. Start the answer with an explicit blocked/partial status when any original goal slot remains unverified.",
-    "Do not convert absence of evidence into a negative claim. If a source does not explicitly prove provider support, search/web_search support, or pricing, write 未验证 for that cell instead of ✅, ❌, supported, unsupported, available, unavailable, or not supported.",
-    "Do not recommend a provider, cheapest option, or next business decision unless the required support, search/web_search behavior, and input/output pricing are all explicitly verified by quoted source evidence.",
-    "For every table row that contains a confirmed value, include the evidence URL and a short quoted/source-excerpt phrase that directly supports that exact value; otherwise mark the value 未验证.",
-  ];
-}
-
-function shouldRepairFinalRecoveryBudgetCloseout(input: {
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  resultText: string;
-}): boolean {
-  if (hasFinalRecoveryBudgetCloseoutRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (/@\{role-[^}]+}/i.test(input.resultText)) {
-    return true;
-  }
-  return !/(?:blocked|partial|未验证|无法验证|无法确认|not verified|unverified|needs follow-up|缺口|缺少)/i.test(
-    input.resultText,
-  );
-}
-
-function hasFinalRecoveryBudgetCloseoutRepairPrompt(messages: LLMMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readToolResultContentText(message.content).includes(
-        "Runtime correction: final recovery tool budget is exhausted",
-      ),
-  );
-}
-
-function buildFinalRecoveryBudgetCloseoutRepairPrompt(maxToolCalls: number): string {
-  return [
-    "Runtime correction: final recovery tool budget is exhausted.",
-    ...buildFinalRecoveryBudgetCloseoutReasonLines(maxToolCalls),
-    "Do not delegate to another role, do not ask another agent to continue, and do not emit @{role-...} routing text.",
-    "Rewrite the final answer now without calling tools.",
-  ].join("\n");
-}
-
-function resolveFinalRecoveryToolBudget(taskPrompt: string): { maxToolCalls: number } | null {
-  const attempt = taskPrompt.match(/Automatic recovery attempt\s+(\d+)\s+of\s+(\d+)/i);
-  if (!attempt) return null;
-  const currentAttempt = Number(attempt[1]);
-  const maxAttempt = Number(attempt[2]);
-  if (!Number.isFinite(currentAttempt) || !Number.isFinite(maxAttempt) || currentAttempt < maxAttempt) {
-    return null;
-  }
-  const budget = taskPrompt.match(/at most\s+([a-z]+|\d+)\s+additional tool calls total/i);
-  if (!budget) return null;
-  const maxToolCalls = parseSmallIntegerWord(budget[1] ?? "");
-  if (!Number.isFinite(maxToolCalls) || maxToolCalls <= 0) return null;
-  return { maxToolCalls };
-}
-
-function parseSmallIntegerWord(value: string): number {
-  const normalized = value.trim().toLowerCase();
-  const numeric = Number(normalized);
-  if (Number.isFinite(numeric)) return Math.floor(numeric);
-  const words: Record<string, number> = {
-    one: 1,
-    two: 2,
-    three: 3,
-    four: 4,
-    five: 5,
-    six: 6,
-    seven: 7,
-    eight: 8,
-    nine: 9,
-    ten: 10,
-  };
-  return words[normalized] ?? Number.NaN;
 }
 
 function buildLocalEvidenceCloseout(input: {
