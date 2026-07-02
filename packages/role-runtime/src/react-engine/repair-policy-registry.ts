@@ -8,8 +8,10 @@
 import {
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
+  buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   shouldRepairFinalRecoveryBudgetCloseout,
   shouldRepairMissingApprovalGate,
+  shouldRepairPendingApprovalWaitTimeoutCheck,
 } from "../tool-loop-shared";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { LLMMessage, ReActToolChoice } from "./types";
@@ -19,6 +21,7 @@ export const REPAIR_POLICY_REGISTRY_MODULE = "repair-policy-registry" as const;
 export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "final_recovery_budget_closeout_repair",
   "missing_approval_gate",
+  "pending_approval_wait_timeout_check",
 ] as const;
 
 export type EngineNaturalFinishRepairPolicyId =
@@ -56,6 +59,14 @@ export type NaturalFinishRepairDecision =
       repairPrompt: string;
       forceToolChoice: { name: "permission_query" };
       consumesRound: true;
+    }
+  | {
+      kind: "force_tool_round";
+      policyId: "pending_approval_wait_timeout_check";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: { name: "permission_result" };
+      consumesRound: true;
     };
 
 export interface RepairPolicyRegistry {
@@ -82,6 +93,14 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
         }
         case "missing_approval_gate": {
           const decision = evaluateMissingApprovalGateRepair(input);
+          if (decision) {
+            return decision;
+          }
+          break;
+        }
+        case "pending_approval_wait_timeout_check": {
+          const decision =
+            evaluatePendingApprovalWaitTimeoutCheckRepair(input);
           if (decision) {
             return decision;
           }
@@ -151,6 +170,33 @@ function evaluateMissingApprovalGateRepair(
     evidenceFormula: "candidate_final",
     repairPrompt: buildMissingApprovalGateRepairPrompt(),
     forceToolChoice: { name: "permission_query" },
+    consumesRound: true,
+  };
+}
+
+function evaluatePendingApprovalWaitTimeoutCheckRepair(
+  input: NaturalFinishRepairInput,
+): NaturalFinishRepairDecision | null {
+  if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    !shouldRepairPendingApprovalWaitTimeoutCheck({
+      taskPrompt: input.taskPrompt,
+      resultText: input.resultText,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      toolTrace: input.toolTrace,
+    })
+  ) {
+    return null;
+  }
+  return {
+    kind: "force_tool_round",
+    policyId: "pending_approval_wait_timeout_check",
+    evidenceFormula: "candidate_final",
+    repairPrompt: buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
+    forceToolChoice: { name: "permission_result" },
     consumesRound: true,
   };
 }

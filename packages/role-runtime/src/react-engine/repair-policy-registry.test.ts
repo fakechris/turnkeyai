@@ -10,6 +10,7 @@ test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence
   assert.deepEqual([...ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER], [
     "final_recovery_budget_closeout_repair",
     "missing_approval_gate",
+    "pending_approval_wait_timeout_check",
   ]);
 });
 
@@ -157,6 +158,89 @@ test("RepairPolicyRegistry does not repeat missing-approval-gate repair after ma
         "Approval required for browser.form.submit dry-run. Use the browser to submit the form only after native approval.",
       toolTrace: [],
       tools: [{ name: "permission_query" }],
+    }),
+    null,
+  );
+});
+
+test("RepairPolicyRegistry returns pending-approval wait-timeout check repair decision", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["pending_approval_wait_timeout_check"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending.",
+    taskPrompt:
+      "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [
+          { id: "toolu-permission-query", name: "permission_query", input: {} },
+        ],
+        results: [],
+      },
+    ],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "pending_approval_wait_timeout_check");
+  assert.equal(decision?.evidenceFormula, "candidate_final");
+  assert.deepEqual(decision?.forceToolChoice, { name: "permission_result" });
+  assert.equal(decision?.consumesRound, true);
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /approval decision has not arrived/i,
+  );
+});
+
+test("RepairPolicyRegistry does not repeat pending-approval wait-timeout check repair after marker", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const first = registry.evaluateNaturalFinish({
+    enabledPolicies: ["pending_approval_wait_timeout_check"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending.",
+    taskPrompt:
+      "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [
+          { id: "toolu-permission-query", name: "permission_query", input: {} },
+        ],
+        results: [],
+      },
+    ],
+  });
+  assert.ok(first);
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      enabledPolicies: ["pending_approval_wait_timeout_check"],
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [{ role: "user", content: first.repairPrompt }],
+      resultText: "Approval is still pending.",
+      taskPrompt:
+        "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.",
+      toolTrace: [
+        {
+          round: 1,
+          calls: [
+            {
+              id: "toolu-permission-query",
+              name: "permission_query",
+              input: {},
+            },
+          ],
+          results: [],
+        },
+      ],
     }),
     null,
   );

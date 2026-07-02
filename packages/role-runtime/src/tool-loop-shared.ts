@@ -1156,6 +1156,43 @@ export function taskPromptRequestsApprovalWaitTimeoutCloseout(
   );
 }
 
+export function shouldRepairPendingApprovalWaitTimeoutCheck(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: readonly LLMMessage[];
+  repairMarkers: readonly LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasPendingApprovalWaitTimeoutCheckRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+    return false;
+  }
+  return latestPermissionToolName(input.toolTrace) === "permission_query";
+}
+
+function hasPendingApprovalWaitTimeoutCheckRepairPrompt(
+  messages: readonly LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: approval decision has not arrived",
+      ),
+  );
+}
+
+export function buildPendingApprovalWaitTimeoutCheckRepairPrompt(): string {
+  return [
+    "Runtime correction: approval decision has not arrived during an attempt that requested a no-decision closeout.",
+    "Call permission_result for the pending approval_id from permission.query now.",
+    "If it is still pending, do not call permission_applied and do not call browser tools.",
+    "Then write a safe wait-timeout closeout: state what remains pending, state that no browser form submission or side effect ran, keep the unexecuted result unverified, and give the safe fallback or next action.",
+  ].join("\n");
+}
+
 export function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input: {
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];

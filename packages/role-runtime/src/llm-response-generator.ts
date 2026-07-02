@@ -66,6 +66,7 @@ import {
   buildFinalRecoveryBudgetCloseoutReasonLines,
   buildFinalRecoveryBudgetCloseoutRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
+  buildPendingApprovalWaitTimeoutCheckRepairPrompt,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
   createToolExecutionSignal,
@@ -141,6 +142,7 @@ import {
   shouldAppendTimeoutContinuationVisibility,
   shouldRepairFinalRecoveryBudgetCloseout,
   shouldRepairMissingApprovalGate,
+  shouldRepairPendingApprovalWaitTimeoutCheck,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
@@ -3545,14 +3547,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // bounds them. The hard fallback closeout (shouldForceApprovalWaitTimeoutLocal
           // CloseoutAfterFailedRepair, inline :955-983) is expressed below via an
           // onRepairRound `{ closeout: "tool_evidence_fallback" }` directive.
-          if (
-            shouldRepairPendingApprovalWaitTimeoutCheck({
+          const pendingApprovalWaitTimeoutCheckRepair =
+            repairPolicy.evaluateNaturalFinish({
+              enabledPolicies: ["pending_approval_wait_timeout_check"],
+              finalRecoveryBudget: null,
               taskPrompt: packet.taskPrompt,
               resultText: state.lastText,
               messages: state.messages,
               repairMarkers,
               toolTrace,
-            })
+            });
+          if (
+            pendingApprovalWaitTimeoutCheckRepair?.policyId ===
+            "pending_approval_wait_timeout_check"
           ) {
             return {
               messages: [
@@ -3560,11 +3567,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 { role: "assistant", content: state.lastText },
                 recordRepairPrompt(
                   repairMarkers,
-                  buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
+                  pendingApprovalWaitTimeoutCheckRepair.repairPrompt,
                 ),
               ],
-              forceToolChoice: { name: "permission_result" },
-              consumesRound: true,
+              forceToolChoice:
+                pendingApprovalWaitTimeoutCheckRepair.forceToolChoice,
+              consumesRound: pendingApprovalWaitTimeoutCheckRepair.consumesRound,
             };
           }
           if (
@@ -6618,22 +6626,6 @@ function shouldRepairStalePendingApproval(input: {
   );
 }
 
-function shouldRepairPendingApprovalWaitTimeoutCheck(input: {
-  taskPrompt: string;
-  resultText: string;
-  messages: LLMMessage[];
-  repairMarkers: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
-}): boolean {
-  if (hasPendingApprovalWaitTimeoutCheckRepairPrompt(input.repairMarkers)) {
-    return false;
-  }
-  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
-    return false;
-  }
-  return latestPermissionToolName(input.toolTrace) === "permission_query";
-}
-
 function shouldRepairPrematurePendingApprovalFinal(input: {
   taskPrompt: string;
   resultText: string;
@@ -7619,18 +7611,6 @@ function hasStalePendingApprovalRepairPrompt(messages: LLMMessage[]): boolean {
   );
 }
 
-function hasPendingApprovalWaitTimeoutCheckRepairPrompt(
-  messages: LLMMessage[],
-): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      readMessageContentText(message.content).includes(
-        "Runtime correction: approval decision has not arrived",
-      ),
-  );
-}
-
 function hasPrematurePendingApprovalRepairPrompt(
   messages: LLMMessage[],
 ): boolean {
@@ -7788,15 +7768,6 @@ function buildStalePendingApprovalRepairPrompt(): string {
     "Runtime correction: approval already applied, but the assistant tried to finalize with a pending-approval explanation.",
     "Do not wait again. Continue from the applied approval point now.",
     "Use native tools for the approved scoped action, preferably sessions_spawn with agent_id=browser, then summarize the concrete browser result.",
-  ].join("\n");
-}
-
-function buildPendingApprovalWaitTimeoutCheckRepairPrompt(): string {
-  return [
-    "Runtime correction: approval decision has not arrived during an attempt that requested a no-decision closeout.",
-    "Call permission_result for the pending approval_id from permission.query now.",
-    "If it is still pending, do not call permission_applied and do not call browser tools.",
-    "Then write a safe wait-timeout closeout: state what remains pending, state that no browser form submission or side effect ran, keep the unexecuted result unverified, and give the safe fallback or next action.",
   ].join("\n");
 }
 
