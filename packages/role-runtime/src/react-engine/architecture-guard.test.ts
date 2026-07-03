@@ -165,6 +165,26 @@ test("engine final generated reply assembly routes through final-response owner"
   );
 });
 
+test("engine agent event consumption routes through runner owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+
+  assert.equal(
+    engineSource.includes("for await (const event of agent.run("),
+    false,
+    "engine ReAct event consumption must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("runEngineAgent({"),
+    true,
+    "runViaReActEngine should consume ReAct events through the react-engine runner",
+  );
+});
+
 test("terminal final synthesis provider-schema repair request routes through terminal controller", () => {
   const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   assert.equal(

@@ -248,6 +248,7 @@ import {
   createEngineModelClient,
   createEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
+  runEngineAgent,
   enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
   createEvidenceLedger,
@@ -258,7 +259,6 @@ import {
   createRepairPolicyRegistry,
   createTerminalCloseoutController,
   type DefaultEngineRunStateValues,
-  type EngineRunObserver,
   buildToolCallNormalizationContext,
   normalizeEngineToolCalls,
   traceEngineHooks,
@@ -3277,28 +3277,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }, policyTrace),
     });
 
-    let finalText = "";
-    for await (const event of agent.run({
+    const finalText = await runEngineAgent({
+      agent,
       messages: initialGatewayInput.messages,
       ctx,
       ...(signal ? { signal } : {}),
-    })) {
-      if (event.type === "model_response") {
-        observer.onModelResponse({
-          round: event.round,
-          toolCalls: event.toolCalls,
-        });
-      } else if (event.type === "tool_started") {
-        await observer.onToolStarted({
-          round: event.round,
-          call: event.call,
-        });
-      } else if (event.type === "tool_result") {
-        await observer.onToolResult({ result: event.result });
-      } else if (event.type === "final") {
-        finalText = event.text;
-      }
-    }
+      observer,
+    });
 
     // Record the request-envelope reduction boundary before building metadata,
     // matching the inline path's observability (a closeout's final synthesis may
