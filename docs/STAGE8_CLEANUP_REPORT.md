@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `59d1e192ddecbc2c87d12aca42521d9a69ad0bf9`
+**Code HEAD before this docs-only report:** `460d460143b0a0933310fd7e0e2dc21e8d03af6a`
 **Date:** 2026-07-02
 
 ## Summary
@@ -57,9 +57,9 @@ could not move the normalizer without making the inline parity reference import 
   consumes-round, and local closeout shapes. The natural-finish repair cascade
   now also evaluates and applies through that registry in precedence order; the
   adapter passes the hook state and no longer steps through each policy window.
-  Terminal final synthesis provider-schema repair selection now also evaluates
-  through the registry using a single-policy window before the adapter performs
-  the gateway repair retry.
+  Terminal final synthesis provider-schema repair selection now also enters
+  through `TerminalCloseoutController`, which delegates to the registry using a
+  single-policy window before the adapter performs the gateway repair retry.
   The forced `sessions_spawn` natural-finish repairs for missing
   browser-visible evidence and product-signal dashboard evidence now return
   typed decisions from the same registry, preserving their precedence before
@@ -184,6 +184,9 @@ could not move the normalizer without making the inline parity reference import 
   model-error fallback after gateway failure now also routes through the
   controller for local evidence fallback and URL redaction. The model-call-error
   usable-evidence read now also routes through `EvidenceLedger.snapshot()`.
+  Terminal final synthesis provider-schema repair selection now also routes
+  through the controller-owned repair-policy window, so the adapter no longer
+  evaluates the registry directly for that final retry decision.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -397,6 +400,7 @@ outside the terminal completion path.
 | `047befd` | Move final-synthesis tool-call artifact fallback result construction into `TerminalCloseoutController`; adapter delegates the local/generic fallback shaping. |
 | `4b6eb72` | Move final-synthesis repair effect merging into `TerminalCloseoutController`; adapter delegates repair-over-initial reduction and memory-flush precedence. |
 | `59d1e19` | Move final-synthesis gateway-error local evidence fallback construction into `TerminalCloseoutController`; adapter rethrows only when no local fallback exists. |
+| `460d460` | Move terminal final synthesis provider-schema repair selection into `TerminalCloseoutController`; adapter no longer evaluates the repair registry directly for that retry decision. |
 
 ## Current Extracted Implementation
 
@@ -518,7 +522,8 @@ Real implementation now exists in:
   pending-approval continuation selection, fallback flow selection, and
   hook-result application through injected forced-result builder /
   forced-round executor callbacks, including raw forced-round execution result
-  trimming.
+  trimming, plus terminal final synthesis provider-schema repair selection
+  through a controller-owned `RepairPolicyRegistry` single-policy window.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -624,8 +629,8 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 10 / 10 |
 | `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 25 / 25 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 202 / 202 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 26 / 26 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 203 / 203 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -792,9 +797,8 @@ Stage 8 boundaries/slices are now real:
   the adapter supplies packet/messages/result text instead of owning those
   final/repair message arrays.
 - extraneous provider-schema repair-message construction for terminal final
-  synthesis now also routes through `gateway-input-builder.ts`; the adapter
-  keeps the repair predicate call but no longer assembles that repair prompt
-  message array locally.
+  synthesis now also routes through `gateway-input-builder.ts`; the adapter no
+  longer assembles that repair prompt message array locally.
 - request-envelope reduced prompt replacement now lives in
   `gateway-input-builder.ts`; the adapter calls the module instead of owning the
   prompt/history splice helper.
@@ -846,8 +850,9 @@ Stage 8 boundaries/slices are now real:
   single `RepairPolicyRegistry` entrypoint; the adapter passes the hook inputs
   instead of selecting and applying each repair policy window.
 - terminal final synthesis provider-schema repair selection now routes through
-  a `RepairPolicyRegistry` single-policy window; an architecture guard fails if
-  that helper regresses to direct predicate selection.
+  `TerminalCloseoutController`, which delegates to a `RepairPolicyRegistry`
+  single-policy window; an architecture guard fails if the adapter regresses to
+  direct registry or predicate selection.
 - completed synthesis repair precedence is pinned in
   `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER`.
 - completed-closeout timeout follow-up final-guidance repair selection routes
