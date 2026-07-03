@@ -29,6 +29,10 @@ import {
   type GenerateWithEnvelopeRetryResult,
 } from "./gateway-envelope-retry";
 import {
+  generateFinalAfterToolRoundLimit,
+  type GenerateFinalAfterToolRoundLimitInput,
+} from "./terminal-final-synthesis";
+import {
   collectToolResultContentText,
   collectToolTraceResultContent,
   findCompletedSessionEvidence,
@@ -400,6 +404,33 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
     const toolTrace: NativeToolRoundTrace[] = [];
     const modelCallTrace: ModelCallBoundaryTrace[] = [];
+    type InlineFinalSynthesisInput = Omit<
+      GenerateFinalAfterToolRoundLimitInput,
+      | "gateway"
+      | "now"
+      | "runtimeProgressRecorder"
+      | "preCompactionMemoryFlusher"
+      | "activation"
+      | "packet"
+      | "selection"
+      | "baseGatewayInput"
+      | "modelCallTrace"
+    >;
+    const synthesizeFinalAfterToolRoundLimit = (
+      finalInput: InlineFinalSynthesisInput,
+    ) =>
+      generateFinalAfterToolRoundLimit({
+        gateway: this.gateway,
+        now: () => this.clock.now(),
+        runtimeProgressRecorder: this.runtimeProgressRecorder,
+        preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
+        activation: input.activation,
+        packet: input.packet,
+        selection,
+        baseGatewayInput: initialGatewayInput,
+        modelCallTrace,
+        ...finalInput,
+      });
     let messages: LLMMessage[] = initialGatewayInput.messages;
     const recoveryToolBudget = activeToolLoop
       ? resolveRecoveryToolBudgetForActivation({
@@ -738,14 +769,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             evidenceAvailable: hasUsableEvidence(toolTrace),
           };
           throwIfAborted(input.signal);
-          const generated = await this.generateFinalAfterToolRoundLimit({
-            activation: input.activation,
-            packet: input.packet,
-            selection,
-            baseGatewayInput: initialGatewayInput,
+          const generated = await synthesizeFinalAfterToolRoundLimit({
             messages,
             maxRounds,
-            modelCallTrace,
             reasonLines: buildFinalRecoveryBudgetCloseoutReasonLines(
               recoveryToolBudget.maxToolCalls,
             ),
@@ -811,14 +837,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             "A previous sub-agent session was cancelled by the operator.",
             "The latest user message did not ask to continue, resume, or retry that cancelled session.",
@@ -1173,11 +1194,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages: [
             ...messages,
             {
@@ -1186,7 +1203,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
           ],
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
             "Tools are not available through text markup. Do not call more tools.",
@@ -1424,14 +1440,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
             "Do not call more tools. Produce the best final answer from the evidence already gathered.",
@@ -1488,14 +1499,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             `Tool-use round limit reached (${maxRounds}).`,
             "Do not call more tools. Produce the best final answer from the evidence already gathered.",
@@ -1525,14 +1531,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             `Repeated failing tool call detected: ${repeatedFailure.toolName} failed ${repeatedFailure.failureCount} times with the same arguments.`,
             "Do not call the same tool again with those arguments, and do not spawn a fallback session for the same target.",
@@ -1567,14 +1568,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             `Repeated session inspection detected: ${repeatedSessionInspection.toolName} already inspected ${repeatedSessionInspection.sessionKey}.`,
             "Do not call sessions_history or sessions_list again for the same session.",
@@ -1607,14 +1603,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             `Repeated session continuation detected: ${excessiveSessionContinuation.sessionKey} was already continued ${excessiveSessionContinuation.continuationCount} times.`,
             "Do not call sessions_send again for the same session.",
@@ -1917,14 +1908,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         };
         toolLoopCloseout ??= completedSessionCloseout;
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             `${completedSession.toolName} returned completed delegated session evidence.`,
             "Do not call sessions_history or sessions_list just to restate this delegated result.",
@@ -2409,14 +2395,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           roundCount: toolTrace.length,
         };
         throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
+        const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
           maxRounds,
-          modelCallTrace,
           reasonLines: [
             `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
             "Do not call more tools or spawn fallback sessions for this timeout.",
@@ -2570,6 +2551,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // snapshot is surfaced into debug metadata behind the engine flag (this whole
     // method is engine-only) so a production-behind-flag failure is diagnosable.
     const policyTrace = createEnginePolicyTrace();
+
+    type EngineFinalSynthesisInput = Omit<
+      GenerateFinalAfterToolRoundLimitInput,
+      | "gateway"
+      | "now"
+      | "runtimeProgressRecorder"
+      | "preCompactionMemoryFlusher"
+      | "activation"
+      | "packet"
+      | "selection"
+      | "baseGatewayInput"
+      | "modelCallTrace"
+    >;
+    const synthesizeFinalAfterToolRoundLimit = (
+      finalInput: EngineFinalSynthesisInput,
+    ) =>
+      generateFinalAfterToolRoundLimit({
+        gateway: this.gateway,
+        now: () => this.clock.now(),
+        runtimeProgressRecorder: this.runtimeProgressRecorder,
+        preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
+        activation,
+        packet,
+        selection,
+        baseGatewayInput: initialGatewayInput,
+        modelCallTrace,
+        ...finalInput,
+      });
 
     let lastResult: GenerateTextResult | undefined;
     let traceRound = 0;
@@ -3259,14 +3268,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 messages: LLMMessage[];
                 reasonLines?: string[];
               }) =>
-                this.generateFinalAfterToolRoundLimit({
-                  activation,
-                  packet,
-                  selection,
-                  baseGatewayInput: initialGatewayInput,
+                synthesizeFinalAfterToolRoundLimit({
                   messages,
                   maxRounds,
-                  modelCallTrace,
                   ...(terminalReasonLines
                     ? { reasonLines: terminalReasonLines }
                     : {}),
@@ -3298,14 +3302,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     tracePhase: "final_synthesis_repair",
                   }),
                 synthesizeToolCallArtifactCleanup: async ({ messages }) =>
-                  this.generateFinalAfterToolRoundLimit({
-                    activation,
-                    packet,
-                    selection,
-                    baseGatewayInput: initialGatewayInput,
+                  synthesizeFinalAfterToolRoundLimit({
                     messages,
                     maxRounds,
-                    modelCallTrace,
                   }),
                 toolTrace,
               },
@@ -3547,61 +3546,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           : {}),
       },
     };
-  }
-
-  private async generateFinalAfterToolRoundLimit(input: {
-    activation: RoleActivationInput;
-    packet: RolePromptPacket;
-    selection: {
-      modelId?: string;
-      modelChainId?: string;
-    };
-    baseGatewayInput: GenerateTextInput;
-    messages: LLMMessage[];
-    maxRounds: number;
-    modelCallTrace?: ModelCallBoundaryTrace[];
-    reasonLines?: string[];
-  }): Promise<{
-    result: GenerateTextResult;
-    reduction?: {
-      level: RequestEnvelopeReductionLevel;
-      omittedSections: string[];
-    };
-    reductionSnapshot?: RequestEnvelopeReductionSnapshot;
-    memoryFlush?: PreCompactionMemoryFlushResult;
-  }> {
-    return createTerminalCloseoutController().synthesizeFinalAfterToolRoundLimit({
-      activation: input.activation,
-      packet: input.packet,
-      baseGatewayInput: input.baseGatewayInput,
-      messages: input.messages,
-      maxRounds: input.maxRounds,
-      selection: input.selection,
-      ...(input.reasonLines === undefined
-        ? {}
-        : { reasonLines: input.reasonLines }),
-      recordPruning: (snapshot) =>
-        recordToolResultPruningBoundarySafely({
-          activation: input.activation,
-          runtimeProgressRecorder: this.runtimeProgressRecorder,
-          selection: input.selection,
-          snapshot,
-        }),
-      synthesize: ({ gatewayInput, tracePhase }) =>
-        generateWithEnvelopeRetry({
-          gateway: this.gateway,
-          now: () => this.clock.now(),
-          preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
-          activation: input.activation,
-          packet: input.packet,
-          selection: input.selection,
-          gatewayInput,
-          ...(input.modelCallTrace
-            ? { modelCallTrace: input.modelCallTrace }
-            : {}),
-          tracePhase,
-        }),
-    });
   }
 
 }

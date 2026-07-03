@@ -22,6 +22,10 @@ const GATEWAY_ENVELOPE_RETRY = path.join(
   ROLE_RUNTIME_DIR,
   "gateway-envelope-retry.ts",
 );
+const TERMINAL_FINAL_SYNTHESIS = path.join(
+  ROLE_RUNTIME_DIR,
+  "terminal-final-synthesis.ts",
+);
 const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
 
 /** Forbidden import specifiers: the composition root and any known re-exporter. */
@@ -117,23 +121,18 @@ test("forced runtime provider protocol fallback routes through tool-history owne
 });
 
 test("terminal final synthesis provider-schema repair request routes through terminal controller", () => {
-  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf(
-    "private async generateFinalAfterToolRoundLimit",
+  const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  assert.equal(
+    adapterSource.includes("private async generateFinalAfterToolRoundLimit"),
+    false,
+    "terminal final synthesis gateway wrapper must not stay as an adapter-private method",
   );
-  const end =
-    source.indexOf("\n  private async executeToolCalls", start) >= 0
-      ? source.indexOf("\n  private async executeToolCalls", start)
-      : source.indexOf("\n  private async executeRuntimeForcedToolRound", start) >= 0
-        ? source.indexOf("\n  private async executeRuntimeForcedToolRound", start)
-        : source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "generateFinalAfterToolRoundLimit must exist");
-  assert.notEqual(
-    end,
-    -1,
-    "generateFinalAfterToolRoundLimit boundary must be found",
+  assert.equal(
+    adapterSource.includes("generateFinalAfterToolRoundLimit({"),
+    true,
+    "adapter should call the neutral terminal final synthesis owner",
   );
-  const helperSource = source.slice(start, end);
+  const helperSource = readFileSync(TERMINAL_FINAL_SYNTHESIS, "utf8");
 
   assert.equal(
     helperSource.includes("shouldRepairExtraneousProviderTableSchema"),
