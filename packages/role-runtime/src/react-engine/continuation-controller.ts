@@ -32,6 +32,7 @@ import type {
   CompletedSessionEvidenceFact,
   TimeoutEvidenceFact,
 } from "./evidence-ledger";
+import type { TaskFactsSnapshot } from "./task-facts";
 import type { EngineContinueAction } from "./types";
 
 // Stage 8 engine cleanup — ContinuationController.
@@ -91,6 +92,7 @@ export interface IndependentEvidenceStreamsInput {
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];
   tools?: readonly ContinuationToolDefinition[];
+  taskFacts?: TaskFactsSnapshot;
 }
 
 export interface MissingApprovalGateRepairInput {
@@ -119,6 +121,7 @@ export interface AfterExecuteContinuationInput {
   repairMarkers: LLMMessage[];
   tools?: readonly ContinuationToolDefinition[];
   browserAvailable: boolean;
+  taskFacts?: TaskFactsSnapshot;
 }
 
 export interface AfterExecuteContinuationEvidenceSnapshot {
@@ -150,6 +153,7 @@ export interface AfterExecuteContinuationHookInput {
   browserAvailable: boolean;
   observer: AfterExecuteContinuationObserver;
   evidence: AfterExecuteContinuationEvidenceProvider;
+  taskFacts?: TaskFactsSnapshot;
 }
 
 type ContinueAction = Extract<EngineContinueAction, { kind: "continue" }>;
@@ -399,6 +403,12 @@ export class ContinuationController {
     input: IndependentEvidenceStreamsInput,
   ): EngineContinueAction {
     if (
+      input.taskFacts &&
+      input.taskFacts.requiredIndependentEvidenceStreams < 2
+    ) {
+      return { kind: "none" };
+    }
+    if (
       !shouldContinueIndependentEvidenceStreams({
         taskPrompt: input.taskPrompt,
         messages: input.messages,
@@ -415,9 +425,9 @@ export class ContinuationController {
         {
           role: "user",
           content: buildIndependentEvidenceStreamContinuationPrompt({
-            requiredStreams: inferIndependentEvidenceStreamCount(
-              input.taskPrompt,
-            ),
+            requiredStreams:
+              input.taskFacts?.requiredIndependentEvidenceStreams ??
+              inferIndependentEvidenceStreamCount(input.taskPrompt),
             completedSessions: countCompletedSessionEvidenceResults(
               input.toolTrace,
             ),
@@ -574,6 +584,7 @@ export class ContinuationController {
         messages: input.messages,
         toolTrace: input.toolTrace,
         ...(input.tools === undefined ? {} : { tools: input.tools }),
+        ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
       });
     const independentEvidenceStreamsResult =
       this.applyContinueAction(independentEvidenceStreams);
@@ -640,6 +651,7 @@ export class ContinuationController {
         repairMarkers: input.repairMarkers,
         ...(input.tools === undefined ? {} : { tools: input.tools }),
         browserAvailable: input.browserAvailable,
+        ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
       },
       executeForcedRound,
     );

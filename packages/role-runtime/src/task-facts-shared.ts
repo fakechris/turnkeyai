@@ -9,6 +9,44 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 export const TASK_FACTS_MODULE = "task-facts" as const;
 
+export interface TaskFactsInput {
+  taskPrompt: string;
+  activation?: RoleActivationInput | undefined;
+  messages: LLMMessage[];
+}
+
+export interface TaskFactsSnapshot {
+  requestedTableColumns: string[];
+  providerSupportSchemaRequested: boolean;
+  browserVisibleEvidenceRequired: boolean;
+  productSignalDashboardEvidenceRequested: boolean;
+  timeoutRecoveryRequested: boolean;
+  awaitingContextSetupOnly: boolean;
+  requiredIndependentEvidenceStreams: number;
+}
+
+export function buildTaskFacts(input: TaskFactsInput): TaskFactsSnapshot {
+  const taskAndContext = buildTaskFactTextContext(input);
+  const taskAndContextText = taskAndContext.join("\n");
+  return {
+    requestedTableColumns: resolveRequestedTableColumns(taskAndContext),
+    providerSupportSchemaRequested: taskAndContext.some(
+      explicitlyRequestsProviderSupportSchema,
+    ),
+    browserVisibleEvidenceRequired:
+      taskFactRequiresBrowserVisibleEvidence(taskAndContextText),
+    productSignalDashboardEvidenceRequested:
+      taskFactRequestsProductSignalDashboardEvidence(taskAndContextText),
+    timeoutRecoveryRequested:
+      taskFactRequestsTimeoutRecovery(taskAndContextText),
+    awaitingContextSetupOnly: taskPromptRequestsAwaitingContextSetup(
+      input.taskPrompt,
+    ),
+    requiredIndependentEvidenceStreams:
+      inferTaskFactIndependentEvidenceStreamCount(input.taskPrompt),
+  };
+}
+
 export function resolveRequestedTableColumns(texts: string[]): string[] {
   const inferred = inferRequestedTableColumns(texts);
   const providerColumns = inferEvidenceSensitiveProviderTableColumns(texts);
@@ -43,6 +81,127 @@ export function resolveRequestedTableColumns(texts: string[]): string[] {
     return providerColumns;
   }
   return inferred;
+}
+
+function buildTaskFactTextContext(input: TaskFactsInput): string[] {
+  return [
+    input.taskPrompt,
+    ...buildRequestedTableColumnActivationContext(input.activation),
+    ...requestedTableColumnMessageContext(input.messages),
+  ].filter((text) => text.trim().length > 0);
+}
+
+function taskFactRequestsProductSignalDashboardEvidence(text: string): boolean {
+  return /\b(?:product-signals|live signal dashboard|product signal dashboard)\b/i.test(
+    text,
+  );
+}
+
+function taskFactRequiresBrowserVisibleEvidence(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized || taskFactExplicitlyDisclaimsBrowserRenderedEvidence(normalized)) {
+    return false;
+  }
+  return (
+    /\b(?:browser-visible|browser rendered|browser-rendered|browser-observed|as (?:a|an) (?:user|operator) would see|user-visible|visible page|rendered page|rendered DOM|client[- ]side|JavaScript-rendered|JS-rendered|dynamic dashboard|live dashboard)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:rendered browser page|browser page rendered|fully render(?:ed)?|rendered values?|visible values?|exact visible text|exact visible values?)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:in (?:the )?browser|browser session|browser worker)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:live signal|signal dashboard|real-time indicators?|visible metrics?|metrics? dashboards?)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:dashboards?|metrics?|signal values?)\b[\s\S]{0,120}\bshown on (?:the )?page\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:iframe|embedded source frame|frame content|shadow(?:-style)? component|shadow DOM|details popup|popup workflow|open the details popup)\b/i.test(
+      normalized,
+    )
+  );
+}
+
+function taskFactExplicitlyDisclaimsBrowserRenderedEvidence(text: string): boolean {
+  return (
+    /\b(?:not|never)\s+(?:a\s+)?(?:browser-visible|browser-rendered|browser rendered|browser-observed|user-visible)\b/i.test(
+      text,
+    ) ||
+    /\b(?:no|without)\s+(?:client[- ]side|JavaScript-rendered|JS-rendered|rendered DOM|browser-rendered|browser rendered|browser-visible)\s+(?:rendering|content|evidence|required|needed)?\b/i.test(
+      text,
+    ) ||
+    /\bstatic HTML only\b[\s\S]{0,80}\b(?:no|without)\s+(?:JavaScript|JS|client[- ]side|browser-rendered|browser rendered)\b/i.test(
+      text,
+    )
+  );
+}
+
+function taskFactRequestsTimeoutRecovery(text: string): boolean {
+  return (
+    /\b(?:continue|resume|retry|recover|recovered|recovery|follow-?up)\b|继续|恢复|重试/i.test(
+      text,
+    ) &&
+    /\b(?:timeout|timed[- ]out|bounded attempt|slow[- ]source|source[- ]check)\b|超时/i.test(
+      text,
+    )
+  );
+}
+
+function inferTaskFactIndependentEvidenceStreamCount(taskPrompt: string): number {
+  if (isTaskFactTwoSourceComparisonTask(taskPrompt)) {
+    return Math.min(6, uniqueTaskFactHttpUrlCount(taskPrompt));
+  }
+  if (/\b(?:three|3) independent evidence streams\b/i.test(taskPrompt)) {
+    return 3;
+  }
+  if (
+    /\b(?:three|3)\b[\s\S]{0,80}\b(?:separate|independent|distinct)\b[\s\S]{0,80}\bevidence streams\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:route|budget|live readiness)\b[\s\S]{0,120}\b(?:separate|independent|distinct)\b[\s\S]{0,80}\bevidence streams\b/i.test(
+      taskPrompt,
+    )
+  ) {
+    return 3;
+  }
+  if (
+    /\bgather evidence from (?:three|3) independent child sessions\b/i.test(
+      taskPrompt,
+    )
+  ) {
+    return 3;
+  }
+  const sourceLineCount = taskPrompt
+    .split(/\r?\n/)
+    .filter((line) =>
+      /^\s*(?:[-*]\s*)?(?:Research source|Capability source|Route source|Budget source|Live signal dashboard|Live readiness dashboard|[A-Z][\w -]{2,30}: use (?:an? )?(?:explore|browser) session)\b/i.test(
+        line,
+      ),
+    ).length;
+  return sourceLineCount >= 3 ? sourceLineCount : 0;
+}
+
+function isTaskFactTwoSourceComparisonTask(taskPrompt: string): boolean {
+  if (uniqueTaskFactHttpUrlCount(taskPrompt) !== 2) return false;
+  return (
+    /\b(?:compare|comparison|between|versus|vs\.?|tradeoff|recommendation)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:review|check|inspect|fetch|extract)\b[\s\S]{0,120}\b(?:two|2)\b[\s\S]{0,80}\b(?:source pages?|sources?|urls?)\b/i.test(
+      taskPrompt,
+    ) ||
+    /比较|对比|两个来源|两个页面|两个\s*URL/i.test(taskPrompt)
+  );
+}
+
+function uniqueTaskFactHttpUrlCount(text: string): number {
+  return new Set(
+    Array.from(text.matchAll(/\bhttps?:\/\/[^\s"'`<>]+/gi), (match) =>
+      match[0].replace(/[),.;，。；]+$/, ""),
+    ),
+  ).size;
 }
 
 export function markdownTableHasExactRequestedColumns(

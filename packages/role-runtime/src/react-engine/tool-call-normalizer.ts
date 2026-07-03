@@ -28,6 +28,7 @@ import {
   createPermissionPolicy,
   type PermissionPolicy,
 } from "./permission-policy";
+import type { TaskFactsSnapshot } from "./task-facts";
 import type {
   ExecutionBudgetController,
   RecoveryToolBudget,
@@ -56,6 +57,7 @@ export interface ToolCallNormalizationContext {
   sessionContinuationLookupDirective: SessionContinuationLookupDirective | null;
   browserAvailable: boolean;
   exploreAvailable: boolean;
+  taskFacts?: TaskFactsSnapshot;
   permissionPolicy?: PermissionPolicy;
 }
 
@@ -65,6 +67,7 @@ export interface ToolCallNormalizationContextInput {
   toolTrace: NativeToolRoundTrace[];
   repairMarkers: LLMMessage[];
   capabilityInspection?: { availableWorkers?: readonly string[] };
+  taskFacts?: TaskFactsSnapshot;
   permissionPolicy?: PermissionPolicy;
 }
 
@@ -85,6 +88,7 @@ export interface EngineToolCallsHookInput {
   recoveryToolBudget: RecoveryToolBudget | null;
   recoveryToolCallsBeforeActivation: number;
   capabilityInspection?: { availableWorkers?: readonly string[] };
+  taskFacts?: TaskFactsSnapshot;
 }
 
 /**
@@ -185,11 +189,18 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
   },
   {
     name: "limitIndependentEvidenceSpawn",
-    apply: (c, x) =>
-      limitIndependentEvidenceSpawnCalls(c, {
+    apply: (c, x) => {
+      if (
+        x.taskFacts &&
+        x.taskFacts.requiredIndependentEvidenceStreams < 2
+      ) {
+        return c;
+      }
+      return limitIndependentEvidenceSpawnCalls(c, {
         taskPrompt: x.taskPrompt,
         toolTrace: x.toolTrace,
-      }),
+      });
+    },
   },
 ];
 
@@ -241,6 +252,7 @@ export function buildToolCallNormalizationContext(
     sessionContinuationLookupDirective,
     browserAvailable: availableWorkers.includes("browser"),
     exploreAvailable: availableWorkers.includes("explore"),
+    ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
     ...(input.permissionPolicy === undefined
       ? {}
       : { permissionPolicy: input.permissionPolicy }),
@@ -274,6 +286,7 @@ export function applyEngineToolCallsHook(
       ...(input.capabilityInspection === undefined
         ? {}
         : { capabilityInspection: input.capabilityInspection }),
+      ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
     }),
   );
   return input.executionBudget.truncateForRecoveryBudget({

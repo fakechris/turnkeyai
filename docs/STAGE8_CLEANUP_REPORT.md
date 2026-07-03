@@ -762,10 +762,14 @@ Real implementation now exists in:
   `onAfterExecuteContinue` hook entrypoint that records provider protocol
   rounds, reads the current-round evidence snapshot, and then applies the
   cascade.
-- `task-facts-shared.ts` for requested table-column inference, markdown table
-  header matching, provider search/pricing evidence-column inference,
-  provider-support-schema request/result detection, missing requested-column
-  repair helpers, extraneous provider-schema repair helpers, awaiting-context
+- `task-facts-shared.ts` for the neutral `TaskFactsSnapshot` producer:
+  requested table-column inference, provider-support-schema request detection,
+  browser-visible evidence intent, product-signal dashboard evidence intent,
+  timeout-recovery intent, awaiting-context setup-only intent, and required
+  independent evidence-stream count. It also owns markdown table header
+  matching, provider search/pricing evidence-column inference,
+  provider-support-schema result detection, missing requested-column repair
+  helpers, extraneous provider-schema repair helpers, awaiting-context
   setup-only no-tool suppression and hook-result application, and repair marker
   insertion used by the adapter, repair registry, and completed-closeout
   controller.
@@ -885,21 +889,65 @@ Real implementation now exists in:
 Still shell/deferred or partial:
 
 - `evidence-ledger.ts` producer rewrite beyond the current facade.
-- Typed task facts beyond the current requested table/provider schema extraction.
+- Producer-owned typed evidence for completed stream labels and resumable
+  timeout sessions. Stage 4 produces task intent facts, but the completed-stream
+  and timeout-session evidence side still uses the existing session/evidence
+  helpers for behavior-neutral compatibility.
+- Browser-visible, product-signal, independent-stream, and timeout-recovery task
+  facts remain text-derived compatibility facts until upstream task/evidence
+  producers expose stronger typed signals.
 - Legacy detector consolidation: `legacy-text-detectors.ts` and the remaining
   regex-heavy detector helpers are intentionally documented debt, not silently
   rewritten in this landing slice.
 
+## Stage 4 Task Intent Facts Checkpoint
+
+What landed:
+
+- `TaskFactsSnapshot` now carries task intent facts for requested table columns,
+  provider-schema requests, browser-visible evidence, product-signal dashboard
+  evidence, timeout recovery, awaiting-context setup-only turns, and required
+  independent evidence-stream count.
+- `runViaReActEngine` builds one task-facts snapshot at the composition boundary
+  and injects it into the installed hook owners. It does not branch on individual
+  task-fact fields.
+- `PermissionPolicy` consumes `awaitingContextSetupOnly` before running the
+  setup-only no-tool suppression path.
+- `ContinuationController` and `ToolCallNormalizer` consume
+  `requiredIndependentEvidenceStreams` for independent-stream continuation and
+  over-spawn capping.
+- `RepairPolicyRegistry` consumes `browserVisibleEvidenceRequired` and
+  `productSignalDashboardEvidenceRequested` before forcing browser/product-signal
+  evidence repair rounds.
+- `architecture-guard.test.ts` now locks this boundary: the adapter may build and
+  pass task facts, while owner modules consume the product-policy fields.
+
+What remains:
+
+- `timeoutRecoveryRequested` is produced, but bounded-timeout routing still uses
+  the existing behavior-neutral timeout/session helpers. This avoids changing
+  recovery behavior in Stage 4.
+- `EvidenceSnapshot.completedStreamLabels[]` and
+  `EvidenceSnapshot.resumableTimeouts[]` are still future typed-evidence work.
+- Browser-visible/product-signal and independent-stream facts are still
+  text-derived compatibility facts, not producer-owned browser/evidence events.
+- `legacy-text-detectors.ts` is still the Stage 5 quarantine target.
+
+Why the adapter remains acceptable: this stage keeps `runViaReActEngine` as a
+composition layer. It builds the typed task-facts snapshot once, injects it into
+policy owners, and leaves field-level product-policy decisions in
+`PermissionPolicy`, `ContinuationController`, `RepairPolicyRegistry`, and
+`ToolCallNormalizer`.
+
 ## Latest Gates
 
-Fresh gates run for this approval fallback hook landing slice:
+Fresh gates run for this task-intent facts landing slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 41 / 41 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 38 / 38 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 275 / 275 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 44 / 44 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 285 / 285 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |

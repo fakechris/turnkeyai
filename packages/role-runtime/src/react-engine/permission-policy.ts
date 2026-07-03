@@ -1,7 +1,10 @@
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
-import { applyAwaitingContextSetupNoToolSuppression } from "../task-facts-shared";
+import {
+  applyAwaitingContextSetupNoToolSuppression,
+  type TaskFactsSnapshot,
+} from "../task-facts-shared";
 import {
   buildContinuationDirectiveContext,
   buildReadOnlyPermissionQuerySuppressionPrompt,
@@ -62,6 +65,7 @@ export interface PermissionSuppressHookInput {
   messages: LLMMessage[];
   lastText: string;
   repairMarkers: LLMMessage[];
+  taskFacts?: TaskFactsSnapshot;
 }
 
 export interface PermissionPolicy {
@@ -178,6 +182,9 @@ const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
     });
     if (readOnlySuppressionResult) {
       return readOnlySuppressionResult;
+    }
+    if (input.taskFacts && !input.taskFacts.awaitingContextSetupOnly) {
+      return null;
     }
     return applyAwaitingContextSetupNoToolSuppression({
       taskPrompt: input.taskPrompt,

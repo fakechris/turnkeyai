@@ -259,6 +259,58 @@ test("engine ReAct agent creation routes through runner owner", () => {
   );
 });
 
+test("engine task intent facts are built at the adapter boundary and consumed by owners", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+
+  assert.equal(
+    engineSource.includes("const taskFacts = buildTaskFacts({"),
+    true,
+    "runViaReActEngine should build one TaskFacts snapshot at the composition boundary",
+  );
+  for (const forbiddenAccess of [
+    "taskFacts.requestedTableColumns",
+    "taskFacts.providerSupportSchemaRequested",
+    "taskFacts.browserVisibleEvidenceRequired",
+    "taskFacts.productSignalDashboardEvidenceRequested",
+    "taskFacts.timeoutRecoveryRequested",
+    "taskFacts.awaitingContextSetupOnly",
+    "taskFacts.requiredIndependentEvidenceStreams",
+  ]) {
+    assert.equal(
+      engineSource.includes(forbiddenAccess),
+      false,
+      `runViaReActEngine must pass task facts through, not branch on ${forbiddenAccess}`,
+    );
+  }
+
+  const ownerExpectations: Array<[string, string]> = [
+    ["permission-policy.ts", "input.taskFacts.awaitingContextSetupOnly"],
+    [
+      "continuation-controller.ts",
+      "input.taskFacts.requiredIndependentEvidenceStreams",
+    ],
+    ["repair-policy-registry.ts", "input.taskFacts.browserVisibleEvidenceRequired"],
+    [
+      "repair-policy-registry.ts",
+      "input.taskFacts.productSignalDashboardEvidenceRequested",
+    ],
+    ["tool-call-normalizer.ts", "x.taskFacts.requiredIndependentEvidenceStreams"],
+  ];
+  for (const [fileName, expectedSource] of ownerExpectations) {
+    const ownerSource = readFileSync(path.join(ENGINE_DIR, fileName), "utf8");
+    assert.equal(
+      ownerSource.includes(expectedSource),
+      true,
+      `${fileName} should consume typed TaskFacts in the owner module`,
+    );
+  }
+});
+
 test("engine role toolkit wiring routes through toolkit owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

@@ -60,11 +60,13 @@ import {
   type PermissionEvidenceFacts,
 } from "./evidence-ledger";
 import {
+  buildTaskFacts,
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
   recordRepairPrompt,
   shouldRepairExtraneousProviderTableSchema,
   shouldRepairMissingRequestedTableColumns,
+  type TaskFactsSnapshot,
 } from "./task-facts";
 import type { LLMMessage, ReActToolChoice } from "./types";
 
@@ -119,6 +121,7 @@ export interface NaturalFinishRepairInput {
   tools?: readonly { name: string }[];
   evidenceText?: string;
   permissionFacts?: PermissionEvidenceFacts;
+  taskFacts?: TaskFactsSnapshot;
 }
 
 export interface NaturalFinishRepairHookContext {
@@ -136,6 +139,7 @@ export interface NaturalFinishRepairHookInput {
   taskPrompt?: string;
   toolTrace: NativeToolRoundTrace[];
   tools?: readonly { name: string }[];
+  taskFacts?: TaskFactsSnapshot;
 }
 
 export interface CompletedSynthesisRepairInput {
@@ -354,6 +358,15 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
       messages: input.messages,
       toolTrace: input.toolTrace,
     });
+    const taskFacts =
+      input.taskFacts ??
+      buildTaskFacts({
+        taskPrompt: input.taskPrompt ?? "",
+        ...(input.activation === undefined
+          ? {}
+          : { activation: input.activation }),
+        messages: input.messages,
+      });
     return this.applyNaturalFinishRepair({
       ...(input.activation === undefined
         ? {}
@@ -375,6 +388,7 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
       toolTrace: input.toolTrace,
       ...(input.tools === undefined ? {} : { tools: input.tools }),
       permissionFacts: evidence.permission,
+      taskFacts,
     });
   }
 
@@ -655,6 +669,9 @@ function evaluateMissingBrowserEvidenceRepair(
   if (!input.taskPrompt || !input.toolTrace) {
     return null;
   }
+  if (input.taskFacts && !input.taskFacts.browserVisibleEvidenceRequired) {
+    return null;
+  }
   if (
     !shouldRepairMissingBrowserEvidence({
       taskPrompt: input.taskPrompt,
@@ -681,6 +698,12 @@ function evaluateMissingProductSignalBrowserEvidenceRepair(
   input: NaturalFinishRepairInput,
 ): NaturalFinishRepairDecision | null {
   if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (
+    input.taskFacts &&
+    !input.taskFacts.productSignalDashboardEvidenceRequested
+  ) {
     return null;
   }
   if (

@@ -263,6 +263,7 @@ import {
   type EngineCloseoutReason,
 } from "./react-engine";
 import {
+  buildTaskFacts,
   buildAwaitingContextSetupNoToolRepairPrompt,
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
@@ -2554,6 +2555,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     });
 
     const ctx: RoleToolContext = { activation, packet, repairMarkers: [], ...(signal ? { signal } : {}) };
+    const taskFacts = buildTaskFacts({
+      taskPrompt: packet.taskPrompt,
+      activation,
+      messages: initialGatewayInput.messages,
+    });
     const permissionPolicy = createPermissionPolicy();
     const executionBudget = createExecutionBudgetController();
     const continuation = createContinuationController();
@@ -2647,6 +2653,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolTrace,
             repairMarkers: hookCtx.repairMarkers ?? [],
             permissionPolicy,
+            taskFacts,
             executionBudget,
             recoveryToolBudget,
             recoveryToolCallsBeforeActivation,
@@ -2702,6 +2709,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             messages: state.messages,
             lastText: state.lastText,
             repairMarkers: (ctx.repairMarkers ??= []),
+            taskFacts,
           });
         },
         // Stage 5 PR2d pending-call closeouts: the registry owns the
@@ -2771,6 +2779,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 ? {}
                 : { tools: initialGatewayInput.tools }),
               browserAvailable: allowsSupplementalBrowserProbe(packet),
+              taskFacts,
               observer,
               evidence: evidenceLedger,
             },
@@ -2848,6 +2857,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             resultText: state.lastText,
             messages: state.messages,
             toolTrace,
+            taskFacts,
             ...(initialGatewayInput.tools === undefined
               ? {}
               : { tools: initialGatewayInput.tools }),

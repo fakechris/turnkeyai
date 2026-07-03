@@ -6,6 +6,7 @@ import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 import {
   buildAwaitingContextSetupNoToolRepairPrompt,
   applyAwaitingContextSetupNoToolSuppression,
+  buildTaskFacts,
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
   buildOriginalRequestTableColumnContext,
@@ -138,6 +139,29 @@ test("TaskFacts detects extraneous provider support schema and explicit requests
     ]),
     true,
   );
+});
+
+test("TaskFacts produces typed browser-visible and timeout recovery intent", () => {
+  const facts = buildTaskFacts({
+    taskPrompt:
+      "Inspect the rendered checkout page in the browser and continue the timed-out source session if evidence is incomplete.",
+    activation: undefined,
+    messages: [],
+  });
+
+  assert.equal(facts.browserVisibleEvidenceRequired, true);
+  assert.equal(facts.timeoutRecoveryRequested, true);
+});
+
+test("TaskFacts produces typed independent evidence stream requirements", () => {
+  const facts = buildTaskFacts({
+    taskPrompt:
+      "Compare two independent sources: https://a.example and https://b.example. Do not finalize until both streams complete.",
+    activation: undefined,
+    messages: [],
+  });
+
+  assert.equal(facts.requiredIndependentEvidenceStreams, 2);
 });
 
 test("TaskFacts owns missing requested table column repair prompts and markers", () => {
