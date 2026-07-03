@@ -3660,19 +3660,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         tracePhase: "final_synthesis",
       });
       const providerSchemaRepair =
-        createRepairPolicyRegistry().evaluateNaturalFinish({
-          enabledPolicies: ["extraneous_provider_table_schema"],
-          finalRecoveryBudget: null,
-          activation: input.activation,
-          taskPrompt: input.packet.taskPrompt,
-          messages: finalMessages,
-          // Separate entry point (generateFinalAfterToolRoundLimit) outside the
-          // generate() loop: its idempotency ledger is finalMessages, which is
-          // where this method injects + scans its own repair prompt. Pass it as
-          // repairMarkers to preserve the pre-migration finalMessages scan.
-          repairMarkers: finalMessages,
-          resultText: generated.result.text,
-        });
+        createTerminalCloseoutController()
+          .evaluateFinalSynthesisProviderSchemaRepair({
+            activation: input.activation,
+            taskPrompt: input.packet.taskPrompt,
+            messages: finalMessages,
+            // Separate entry point (generateFinalAfterToolRoundLimit) outside the
+            // generate() loop: its idempotency ledger is finalMessages, which is
+            // where this method injects + scans its own repair prompt. Pass it as
+            // repairMarkers to preserve the pre-migration finalMessages scan.
+            repairMarkers: finalMessages,
+            resultText: generated.result.text,
+          });
       if (
         providerSchemaRepair?.policyId ===
         "extraneous_provider_table_schema"

@@ -337,6 +337,43 @@ test("TerminalCloseoutController builds final synthesis error fallback results",
   );
 });
 
+test("TerminalCloseoutController evaluates final synthesis provider-schema repair", () => {
+  const controller = createTerminalCloseoutController();
+
+  const decision = controller.evaluateFinalSynthesisProviderSchemaRepair({
+    messages: [],
+    repairMarkers: [],
+    resultText: [
+      "| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+      "| --- | --- | --- | --- |",
+      "| A | 未验证 | 未验证 | 未验证 |",
+    ].join("\n"),
+    taskPrompt:
+      "Compare pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead.",
+  });
+
+  assert.equal(decision?.policyId, "extraneous_provider_table_schema");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /introduced provider\/search\/model-support columns/i,
+  );
+
+  assert.equal(
+    controller.evaluateFinalSynthesisProviderSchemaRepair({
+      messages: [],
+      repairMarkers: [],
+      resultText: [
+        "| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+        "| --- | --- | --- | --- |",
+        "| A | 未验证 | 未验证 | 未验证 |",
+      ].join("\n"),
+      taskPrompt:
+        "Compare provider options for DeepSeek R1 search/web_search support, input price, and output price.",
+    }),
+    null,
+  );
+});
+
 test("TerminalCloseoutController applies model-call-error fallback through a target", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [

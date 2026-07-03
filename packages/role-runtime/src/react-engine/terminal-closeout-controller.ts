@@ -21,7 +21,11 @@ import type {
   CompletedCloseoutTerminalResult,
   CompletedCloseoutVisibilitySession,
 } from "./completed-closeout-controller";
-import type { RepairPolicyRegistry } from "./repair-policy-registry";
+import {
+  createRepairPolicyRegistry,
+  type NaturalFinishRepairDecision,
+  type RepairPolicyRegistry,
+} from "./repair-policy-registry";
 import type { EngineCloseoutReason, EngineContinueAction } from "./types";
 
 // Stage 8 engine cleanup — TerminalCloseoutController.
@@ -89,6 +93,15 @@ export interface FinalSynthesisErrorFallbackInput {
     modelChainId?: string;
   };
   error: unknown;
+}
+
+export interface FinalSynthesisProviderSchemaRepairInput {
+  activation?: RoleActivationInput;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  resultText: string;
+  taskPrompt: string;
+  repairPolicy?: RepairPolicyRegistry;
 }
 
 type ForcedModelCallErrorContinuation = Extract<
@@ -567,6 +580,23 @@ export class TerminalCloseoutController {
     return maybeRedactForbiddenLocalUrls({
       result: localResult,
       packet: input.packet,
+    });
+  }
+
+  evaluateFinalSynthesisProviderSchemaRepair(
+    input: FinalSynthesisProviderSchemaRepairInput,
+  ): NaturalFinishRepairDecision | null {
+    const repairPolicy = input.repairPolicy ?? createRepairPolicyRegistry();
+    return repairPolicy.evaluateNaturalFinish({
+      enabledPolicies: ["extraneous_provider_table_schema"],
+      finalRecoveryBudget: null,
+      ...(input.activation === undefined
+        ? {}
+        : { activation: input.activation }),
+      taskPrompt: input.taskPrompt,
+      messages: input.messages,
+      repairMarkers: input.repairMarkers,
+      resultText: input.resultText,
     });
   }
 
