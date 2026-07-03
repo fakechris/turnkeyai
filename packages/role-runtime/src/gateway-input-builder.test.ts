@@ -11,6 +11,7 @@ import {
   buildGatewayInput,
   buildToolCallArtifactCleanupMessages,
   buildToolFreeGatewayInput,
+  buildToolRoundGatewayRequest,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
   finalSynthesisFormatContract,
@@ -149,6 +150,87 @@ test("buildToolFreeGatewayInput strips tools, replaces messages, and recomputes 
   assert.equal(gatewayInput.envelope?.toolResultCount, 1);
   assert.ok((gatewayInput.envelope?.toolResultBytes ?? 0) > 0);
   assert.deepEqual(gatewayInput.envelope?.artifactIds, ["artifact-1"]);
+});
+
+test("buildToolRoundGatewayRequest prepares active tool-round gateway input", () => {
+  const tools = [tool("web_fetch")];
+  const baseGatewayInput: GenerateTextInput = {
+    messages: [{ role: "user", content: "old task" }],
+    tools,
+    envelope: {
+      toolCount: 1,
+      toolSchemaBytes: 123,
+      toolResultCount: 99,
+      toolResultBytes: 999,
+    },
+  };
+  const messages: LLMMessage[] = [
+    { role: "user", content: "new task" },
+    {
+      role: "tool",
+      toolCallId: "toolu-1",
+      name: "web_fetch",
+      content: "fresh tool evidence",
+    },
+  ];
+
+  const request = buildToolRoundGatewayRequest({
+    baseGatewayInput,
+    messages,
+    toolChoice: { type: "tool", name: "web_fetch" },
+  });
+
+  assert.deepEqual(request.gatewayMessages, messages);
+  assert.equal(request.pruning, undefined);
+  assert.equal(request.gatewayInput.tools, tools);
+  assert.deepEqual(request.gatewayInput.toolChoice, {
+    type: "tool",
+    name: "web_fetch",
+  });
+  assert.deepEqual(request.gatewayInput.messages, messages);
+  assert.equal(request.gatewayInput.envelope?.toolCount, 1);
+  assert.equal(request.gatewayInput.envelope?.toolSchemaBytes, 123);
+  assert.equal(request.gatewayInput.envelope?.toolResultCount, 1);
+  assert.ok((request.gatewayInput.envelope?.toolResultBytes ?? 0) > 0);
+});
+
+test("buildToolRoundGatewayRequest prepares tool-free gateway input", () => {
+  const baseGatewayInput: GenerateTextInput = {
+    messages: [{ role: "user", content: "old task" }],
+    tools: [tool("web_fetch")],
+    toolChoice: { type: "tool", name: "web_fetch" },
+    envelope: {
+      toolCount: 1,
+      toolSchemaBytes: 123,
+      toolResultCount: 99,
+      toolResultBytes: 999,
+    },
+  };
+  const messages: LLMMessage[] = [
+    { role: "user", content: "new task" },
+    {
+      role: "tool",
+      toolCallId: "toolu-1",
+      name: "web_fetch",
+      content: "fresh tool evidence",
+    },
+  ];
+
+  const request = buildToolRoundGatewayRequest({
+    baseGatewayInput,
+    messages,
+    noToolRound: true,
+  });
+
+  assert.deepEqual(request.gatewayMessages, messages);
+  assert.equal(request.pruning, undefined);
+  assert.equal("tools" in request.gatewayInput, false);
+  assert.equal(request.gatewayInput.toolChoice, "none");
+  assert.deepEqual(request.gatewayInput.messages, messages);
+  assert.equal(request.gatewayInput.envelope?.toolCount, 0);
+  assert.equal(request.gatewayInput.envelope?.toolSchemaBytes, 0);
+  assert.equal(request.gatewayInput.envelope?.toolResultCount, 1);
+  assert.ok((request.gatewayInput.envelope?.toolResultBytes ?? 0) > 0);
 });
 
 test("buildFinalSynthesisSourceMessages appends format contract and default closeout guidance", () => {

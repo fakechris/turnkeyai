@@ -19,7 +19,7 @@ import type {
 } from "./deterministic-response-generator";
 import {
   buildGatewayInput,
-  buildToolFreeGatewayInput,
+  buildToolRoundGatewayRequest,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
   hasToolDefinition,
@@ -62,9 +62,7 @@ import {
   deriveToolResultEnvelope,
   findFollowingToolMessageIndexes,
   findLatestAssistantToolUseMessageIndex,
-  prepareToolHistoryForGateway,
   readToolResultContentText,
-  summarizeToolResultPruning,
   type ToolResultPruningSnapshot,
 } from "./tool-history-pruning";
 import {
@@ -452,39 +450,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         round,
         maxRounds,
       });
-      const gatewayMessages = prepareToolHistoryForGateway(warningMessages);
+      const gatewayRequest = buildToolRoundGatewayRequest({
+        baseGatewayInput: initialGatewayInput,
+        messages: warningMessages,
+        noToolRound: nextToolChoice === "none",
+        ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
+      });
       await this.recordToolResultPruningBoundarySafely(
         input.activation,
         selection,
-        summarizeToolResultPruning(warningMessages, gatewayMessages),
+        gatewayRequest.pruning,
       );
       let generated: Awaited<
         ReturnType<LLMRoleResponseGenerator["generateWithEnvelopeRetry"]>
       >;
       try {
-        const noToolRound = nextToolChoice === "none";
-        const gatewayInput = noToolRound
-          ? {
-              ...buildToolFreeGatewayInput({
-                baseGatewayInput: initialGatewayInput,
-                messages: gatewayMessages,
-              }),
-              ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
-            }
-          : {
-              ...initialGatewayInput,
-              messages: gatewayMessages,
-              ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
-              envelope: {
-                ...(initialGatewayInput.envelope ?? {}),
-                ...deriveToolResultEnvelope(gatewayMessages),
-              },
-            };
         generated = await this.generateWithEnvelopeRetry({
           activation: input.activation,
           packet: input.packet,
           selection,
-          gatewayInput,
+          gatewayInput: gatewayRequest.gatewayInput,
           modelCallTrace,
           tracePhase: "tool_round",
           traceRound: round,
@@ -2540,44 +2525,29 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           round: modelCallRound,
           maxRounds,
         });
-        const gatewayMessages = prepareToolHistoryForGateway(warningMessages);
+        const gatewayRequest = buildToolRoundGatewayRequest({
+          baseGatewayInput: initialGatewayInput,
+          messages: warningMessages,
+          noToolRound,
+          ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
+        });
         // Stage 8B (Batch D — C5 memory/compaction/envelope plane): record the
         // tool-result pruning + compaction boundary, mirroring the inline tool
-        // loop (:497-502). prepareToolHistoryForGateway prunes older oversized
-        // tool results (pruneToolResultsToTotalBudget) and compacts older tool
-        // history (compactOlderToolHistoryForGateway) in place; summarizeToolResultPruning
-        // diffs the pre/post message lists to detect what was pruned/compacted, and
-        // recordToolResultPruningBoundarySafely persists that observability snapshot
-        // to the runtime progress recorder. Measured against warningMessages (the
-        // post-final-round-warning list), exactly as inline (:497-502), so the
-        // observability snapshot and the outgoing gateway messages are the same list.
+        // loop (:497-502). buildToolRoundGatewayRequest owns history preparation,
+        // pruning diffing, tool-free stripping, and envelope recomputation.
+        // Measured against warningMessages (the post-final-round-warning list),
+        // exactly as inline (:497-502), so the observability snapshot and outgoing
+        // gateway messages are derived from the same list.
         await this.recordToolResultPruningBoundarySafely(
           activation,
           selection,
-          summarizeToolResultPruning(warningMessages, gatewayMessages),
+          gatewayRequest.pruning,
         );
-        const gatewayInput = noToolRound
-          ? {
-              ...buildToolFreeGatewayInput({
-                baseGatewayInput: initialGatewayInput,
-                messages: gatewayMessages,
-              }),
-              ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
-            }
-          : {
-              ...initialGatewayInput,
-              messages: gatewayMessages,
-              ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
-              envelope: {
-                ...(initialGatewayInput.envelope ?? {}),
-                ...deriveToolResultEnvelope(gatewayMessages),
-              },
-            };
         const generated = await this.generateWithEnvelopeRetry({
           activation,
           packet,
           selection,
-          gatewayInput,
+          gatewayInput: gatewayRequest.gatewayInput,
           modelCallTrace,
           tracePhase: "tool_round",
           traceRound: traceRound++,

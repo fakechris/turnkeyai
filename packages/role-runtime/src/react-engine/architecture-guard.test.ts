@@ -224,3 +224,33 @@ test("terminal completed closeout repair gateway input routes through terminal c
     "completed closeout repair synthesis must receive controller-built gateway input",
   );
 });
+
+test("engine model gateway request construction routes through neutral gateway builder", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("const model: ModelClient = {");
+  const end = source.indexOf("\n    };\n\n    const toolDefinitions", start);
+  assert.notEqual(start, -1, "engine model client must exist");
+  assert.notEqual(end, -1, "engine model client boundary must be found");
+  const modelSource = source.slice(start, end);
+
+  assert.equal(
+    modelSource.includes("prepareToolHistoryForGateway"),
+    false,
+    "engine model gateway message preparation must not stay in the adapter",
+  );
+  assert.equal(
+    modelSource.includes("buildToolFreeGatewayInput"),
+    false,
+    "engine model tool-free gateway input construction must not stay in the adapter",
+  );
+  assert.equal(
+    modelSource.includes("summarizeToolResultPruning"),
+    false,
+    "engine model pruning summary construction must not stay in the adapter",
+  );
+  assert.equal(
+    modelSource.includes("buildToolRoundGatewayRequest"),
+    true,
+    "engine model gateway request construction must route through the neutral gateway builder",
+  );
+});

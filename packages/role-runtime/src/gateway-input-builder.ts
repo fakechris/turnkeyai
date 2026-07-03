@@ -16,7 +16,12 @@ import {
   buildExtraneousProviderTableSchemaRepairPrompt,
   resolveRequestedTableColumns,
 } from "./task-facts-shared";
-import { deriveToolResultEnvelope } from "./tool-history-pruning";
+import {
+  deriveToolResultEnvelope,
+  prepareToolHistoryForGateway,
+  summarizeToolResultPruning,
+  type ToolResultPruningSnapshot,
+} from "./tool-history-pruning";
 
 export function buildGatewayInput(input: {
   activation: RoleActivationInput;
@@ -261,6 +266,44 @@ export function buildToolFreeGatewayInput(input: {
       toolSchemaBytes: 0,
       ...deriveToolResultEnvelope(input.messages),
     },
+  };
+}
+
+export interface ToolRoundGatewayRequest {
+  gatewayMessages: LLMMessage[];
+  gatewayInput: GenerateTextInput;
+  pruning?: ToolResultPruningSnapshot;
+}
+
+export function buildToolRoundGatewayRequest(input: {
+  baseGatewayInput: GenerateTextInput;
+  messages: LLMMessage[];
+  noToolRound?: boolean;
+  toolChoice?: GenerateTextInput["toolChoice"];
+}): ToolRoundGatewayRequest {
+  const gatewayMessages = prepareToolHistoryForGateway(input.messages);
+  const gatewayInput = input.noToolRound
+    ? {
+        ...buildToolFreeGatewayInput({
+          baseGatewayInput: input.baseGatewayInput,
+          messages: gatewayMessages,
+        }),
+        ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
+      }
+    : {
+        ...input.baseGatewayInput,
+        messages: gatewayMessages,
+        ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
+        envelope: {
+          ...(input.baseGatewayInput.envelope ?? {}),
+          ...deriveToolResultEnvelope(gatewayMessages),
+        },
+      };
+  const pruning = summarizeToolResultPruning(input.messages, gatewayMessages);
+  return {
+    gatewayMessages,
+    gatewayInput,
+    ...(pruning === undefined ? {} : { pruning }),
   };
 }
 
