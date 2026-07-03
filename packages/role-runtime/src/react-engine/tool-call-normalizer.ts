@@ -1,6 +1,9 @@
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
-import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  countNativeToolCalls,
+  type NativeToolRoundTrace,
+} from "../native-tool-messages";
 import {
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
@@ -25,6 +28,10 @@ import {
   createPermissionPolicy,
   type PermissionPolicy,
 } from "./permission-policy";
+import type {
+  ExecutionBudgetController,
+  RecoveryToolBudget,
+} from "./execution-budget-controller";
 
 // Stage 8 engine cleanup — ToolCallNormalizer.
 //
@@ -64,6 +71,20 @@ export interface ToolCallNormalizationContextInput {
 export interface ToolCallNormalizationStep {
   name: string;
   apply(calls: LLMToolCall[], ctx: ToolCallNormalizationContext): LLMToolCall[];
+}
+
+export interface EngineToolCallsHookInput {
+  active: boolean;
+  calls: LLMToolCall[];
+  messages: LLMMessage[];
+  taskPrompt: string;
+  toolTrace: NativeToolRoundTrace[];
+  repairMarkers: LLMMessage[];
+  permissionPolicy: PermissionPolicy;
+  executionBudget: Pick<ExecutionBudgetController, "truncateForRecoveryBudget">;
+  recoveryToolBudget: RecoveryToolBudget | null;
+  recoveryToolCallsBeforeActivation: number;
+  capabilityInspection?: { availableWorkers?: readonly string[] };
 }
 
 /**
@@ -234,4 +255,32 @@ export function normalizeEngineToolCalls(
     (acc, step) => step.apply(acc, ctx),
     calls,
   );
+}
+
+export function applyEngineToolCallsHook(
+  input: EngineToolCallsHookInput,
+): LLMToolCall[] {
+  if (!input.active) {
+    return input.calls;
+  }
+  const normalized = normalizeEngineToolCalls(
+    input.calls,
+    buildToolCallNormalizationContext({
+      taskPrompt: input.taskPrompt,
+      messages: input.messages,
+      toolTrace: input.toolTrace,
+      repairMarkers: input.repairMarkers,
+      permissionPolicy: input.permissionPolicy,
+      ...(input.capabilityInspection === undefined
+        ? {}
+        : { capabilityInspection: input.capabilityInspection }),
+    }),
+  );
+  return input.executionBudget.truncateForRecoveryBudget({
+    calls: normalized,
+    recoveryToolBudget: input.recoveryToolBudget,
+    usedToolCalls:
+      input.recoveryToolCallsBeforeActivation +
+      countNativeToolCalls(input.toolTrace),
+  });
 }

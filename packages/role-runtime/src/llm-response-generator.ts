@@ -259,8 +259,7 @@ import {
   createPermissionPolicy,
   createRepairPolicyRegistry,
   createTerminalCloseoutController,
-  buildToolCallNormalizationContext,
-  normalizeEngineToolCalls,
+  applyEngineToolCallsHook,
   traceEngineHooks,
   type EngineCloseoutReason,
 } from "./react-engine";
@@ -2637,49 +2636,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // (Stage 8B Batch B). Runs every active-loop round before execution and
         // before the current round is recorded in toolTrace, so each step's trace
         // reads reflect only prior rounds — matching inline's pre-normalize point.
-        // The ordered steps live in ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE; here we
-        // build the SHARED context once (inline :449-472) from `state.messages` —
-        // now that onToolCalls receives `state`, the session-continuation directives
-        // are computed from the live message history exactly as inline does, not
-        // approximated from the trace. Side-effect permission gating is unchanged:
-        // the approval-gate steps still rewrite premature mutating spawns into
-        // permission_query PRE-execute, and read-only suppression stays in
-        // onSuppressToolCalls (which runs after this and before runToolBatch).
+        // The normalizer owner builds the shared live-message context, runs the
+        // ordered pipeline, and applies final-recovery budget truncation after
+        // normalization. Side-effect permission gating is unchanged.
         onToolCalls: (calls, state, hookCtx) => {
-          if (!activeToolLoop) {
-            return calls;
-          }
-          const normalized = normalizeEngineToolCalls(
+          return applyEngineToolCallsHook({
             calls,
-            buildToolCallNormalizationContext({
-              taskPrompt: packet.taskPrompt,
-              messages: state.messages,
-              toolTrace,
-              repairMarkers: hookCtx.repairMarkers ?? [],
-              permissionPolicy,
-              ...(packet.capabilityInspection === undefined
-                ? {}
-                : { capabilityInspection: packet.capabilityInspection }),
-            }),
-          );
-          // Stage 8B (Batch E — T7 execution budget plane): the final-recovery
-          // tool-budget truncation (inline :817-819). When a final recovery
-          // attempt still has budget remaining but this round's pending calls
-          // exceed it, keep only the first `remaining` calls so the round cannot
-          // spend past the budget. This runs AFTER the normalizers, exactly like
-          // inline's slice (:818), and is the mirror of onToolCallsClose step 1:
-          // that closeout fires (with the FULL pending-call count) only when the
-          // budget is already exhausted (remaining <= 0); when remaining > 0 the
-          // budget is not yet spent, so we truncate here and let the NEXT round's
-          // onToolCallsClose close out once the trace crosses the budget. The two
-          // conditions are mutually exclusive, so the engine order (onToolCalls
-          // before onToolCallsClose) preserves the inline order (closeout at :752
-          // before truncation at :817).
-          return executionBudget.truncateForRecoveryBudget({
-            calls: normalized,
+            active: Boolean(activeToolLoop),
+            taskPrompt: packet.taskPrompt,
+            messages: state.messages,
+            toolTrace,
+            repairMarkers: hookCtx.repairMarkers ?? [],
+            permissionPolicy,
+            executionBudget,
             recoveryToolBudget,
-            usedToolCalls:
-              recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace),
+            recoveryToolCallsBeforeActivation,
+            ...(packet.capabilityInspection === undefined
+              ? {}
+              : { capabilityInspection: packet.capabilityInspection }),
           });
         },
         // Stage 8B (Batch E — T7 execution budget plane): the per-turn tool-call

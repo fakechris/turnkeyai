@@ -4,12 +4,17 @@ import test from "node:test";
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import {
+  applyEngineToolCallsHook,
   buildToolCallNormalizationContext,
   ENGINE_TOOL_CALL_NORMALIZATION_ORDER,
   normalizeEngineToolCalls,
   type ToolCallNormalizationContext,
 } from "./tool-call-normalizer";
-import type { PermissionPolicy } from "./permission-policy";
+import { createExecutionBudgetController } from "./execution-budget-controller";
+import {
+  createPermissionPolicy,
+  type PermissionPolicy,
+} from "./permission-policy";
 
 function baseContext(
   overrides: Partial<ToolCallNormalizationContext> = {},
@@ -132,4 +137,68 @@ test("buildToolCallNormalizationContext resolves live continuation context and w
   assert.equal(ctx.sessionContinuationLookupDirective, null);
   assert.equal(ctx.browserAvailable, true);
   assert.equal(ctx.exploreAvailable, false);
+});
+
+test("applyEngineToolCallsHook normalizes before recovery-budget truncation", () => {
+  const calls: LLMToolCall[] = [
+    { id: "call-1", name: "sessions_history", input: {} },
+    { id: "call-2", name: "web_fetch", input: { url: "https://example.com" } },
+  ];
+  const permissionPolicy: PermissionPolicy = {
+    normalizeMissingApprovalGateRepair(input) {
+      return input.calls;
+    },
+    normalizeApprovalGatedBrowserSpawn(input) {
+      return input.calls;
+    },
+    suppressReadOnlyPermissionQuery() {
+      return { kind: "none" };
+    },
+    applySuppressDecision() {
+      return null;
+    },
+    applySuppressToolCallsHook() {
+      return null;
+    },
+    wouldSuppressReadOnlyPermissionQuery() {
+      return false;
+    },
+  };
+
+  const result = applyEngineToolCallsHook({
+    active: true,
+    calls,
+    messages: [],
+    taskPrompt: "",
+    toolTrace: [],
+    repairMarkers: [],
+    permissionPolicy,
+    executionBudget: createExecutionBudgetController(),
+    recoveryToolBudget: { maxToolCalls: 1 },
+    recoveryToolCallsBeforeActivation: 0,
+  });
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.name, "sessions_history");
+});
+
+test("applyEngineToolCallsHook returns calls unchanged when no active tool loop exists", () => {
+  const calls: LLMToolCall[] = [
+    { id: "call-1", name: "sessions_history", input: {} },
+  ];
+
+  const result = applyEngineToolCallsHook({
+    active: false,
+    calls,
+    messages: [],
+    taskPrompt: "Continue a session.",
+    toolTrace: [],
+    repairMarkers: [],
+    permissionPolicy: createPermissionPolicy(),
+    executionBudget: createExecutionBudgetController(),
+    recoveryToolBudget: { maxToolCalls: 0 },
+    recoveryToolCallsBeforeActivation: 10,
+  });
+
+  assert.equal(result, calls);
 });

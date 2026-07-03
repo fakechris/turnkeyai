@@ -279,6 +279,50 @@ test("engine role toolkit wiring routes through toolkit owner", () => {
   );
 });
 
+test("engine onToolCalls hook routes through tool-call normalizer owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const normalizerSource = readFileSync(
+    path.join(ENGINE_DIR, "tool-call-normalizer.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    engineSource.includes("buildToolCallNormalizationContext({"),
+    false,
+    "engine onToolCalls normalization context construction must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("normalizeEngineToolCalls("),
+    false,
+    "engine onToolCalls normalizer invocation must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("truncateForRecoveryBudget({"),
+    false,
+    "engine onToolCalls recovery-budget truncation must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("applyEngineToolCallsHook({"),
+    true,
+    "runViaReActEngine should delegate onToolCalls to the normalizer owner",
+  );
+  assert.equal(
+    normalizerSource.includes("normalizeEngineToolCalls("),
+    true,
+    "tool-call normalizer owner should keep the normalizer invocation",
+  );
+  assert.equal(
+    normalizerSource.includes("truncateForRecoveryBudget({"),
+    true,
+    "tool-call normalizer owner should bind recovery-budget truncation",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");
