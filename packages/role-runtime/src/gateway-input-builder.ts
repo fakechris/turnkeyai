@@ -15,6 +15,7 @@ import {
   requestedTableColumnMessageContext,
   resolveRequestedTableColumns,
 } from "./task-facts-shared";
+import { deriveToolResultEnvelope } from "./tool-history-pruning";
 
 export function buildGatewayInput(input: {
   activation: RoleActivationInput;
@@ -173,6 +174,22 @@ export function withoutToolUse(input: GenerateTextInput): GenerateTextInput {
   return {
     ...rest,
     toolChoice: "none",
+  };
+}
+
+export function buildToolFreeGatewayInput(input: {
+  baseGatewayInput: GenerateTextInput;
+  messages: LLMMessage[];
+}): GenerateTextInput {
+  return {
+    ...withoutToolUse(input.baseGatewayInput),
+    messages: input.messages,
+    envelope: {
+      ...(input.baseGatewayInput.envelope ?? {}),
+      toolCount: 0,
+      toolSchemaBytes: 0,
+      ...deriveToolResultEnvelope(input.messages),
+    },
   };
 }
 

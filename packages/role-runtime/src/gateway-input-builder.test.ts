@@ -7,6 +7,7 @@ import type { GenerateTextInput, LLMMessage } from "@turnkeyai/llm-adapter/index
 import type { RolePromptPacket } from "./prompt-policy";
 import {
   buildGatewayInput,
+  buildToolFreeGatewayInput,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
   finalSynthesisFormatContract,
@@ -107,6 +108,44 @@ test("withoutToolUse strips tool definitions and forces no tool choice", () => {
   assert.equal(stripped.toolChoice, "none");
   assert.equal("tools" in stripped, false);
   assert.deepEqual(stripped.messages, gatewayInput.messages);
+});
+
+test("buildToolFreeGatewayInput strips tools, replaces messages, and recomputes tool-result envelope", () => {
+  const baseGatewayInput: GenerateTextInput = {
+    messages: [{ role: "user", content: "old task" }],
+    tools: [tool("web_fetch")],
+    toolChoice: { type: "tool", name: "web_fetch" },
+    envelope: {
+      toolCount: 1,
+      toolSchemaBytes: 123,
+      toolResultCount: 99,
+      toolResultBytes: 999,
+      artifactIds: ["artifact-1"],
+    },
+  };
+  const messages: LLMMessage[] = [
+    { role: "user", content: "new task" },
+    {
+      role: "tool",
+      toolCallId: "toolu-1",
+      name: "web_fetch",
+      content: "fresh tool evidence",
+    },
+  ];
+
+  const gatewayInput = buildToolFreeGatewayInput({
+    baseGatewayInput,
+    messages,
+  });
+
+  assert.equal("tools" in gatewayInput, false);
+  assert.equal(gatewayInput.toolChoice, "none");
+  assert.deepEqual(gatewayInput.messages, messages);
+  assert.equal(gatewayInput.envelope?.toolCount, 0);
+  assert.equal(gatewayInput.envelope?.toolSchemaBytes, 0);
+  assert.equal(gatewayInput.envelope?.toolResultCount, 1);
+  assert.ok((gatewayInput.envelope?.toolResultBytes ?? 0) > 0);
+  assert.deepEqual(gatewayInput.envelope?.artifactIds, ["artifact-1"]);
 });
 
 test("replaceInitialPromptMessages swaps prompt messages and preserves tool-loop history", () => {

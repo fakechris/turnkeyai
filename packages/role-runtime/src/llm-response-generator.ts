@@ -19,12 +19,12 @@ import type {
 } from "./deterministic-response-generator";
 import {
   buildGatewayInput,
+  buildToolFreeGatewayInput,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
   finalSynthesisFormatContract,
   hasToolDefinition,
   replaceInitialPromptMessages,
-  withoutToolUse,
 } from "./gateway-input-builder";
 import {
   collectToolResultContentText,
@@ -464,19 +464,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       >;
       try {
         const noToolRound = nextToolChoice === "none";
-        const baseGatewayInput = noToolRound
-          ? withoutToolUse(initialGatewayInput)
-          : initialGatewayInput;
-        const gatewayInput = {
-          ...baseGatewayInput,
-          messages: gatewayMessages,
-          ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
-          envelope: {
-            ...(baseGatewayInput.envelope ?? {}),
-            ...(noToolRound ? { toolCount: 0, toolSchemaBytes: 0 } : {}),
-            ...deriveToolResultEnvelope(gatewayMessages),
-          },
-        };
+        const gatewayInput = noToolRound
+          ? {
+              ...buildToolFreeGatewayInput({
+                baseGatewayInput: initialGatewayInput,
+                messages: gatewayMessages,
+              }),
+              ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
+            }
+          : {
+              ...initialGatewayInput,
+              messages: gatewayMessages,
+              ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
+              envelope: {
+                ...(initialGatewayInput.envelope ?? {}),
+                ...deriveToolResultEnvelope(gatewayMessages),
+              },
+            };
         generated = await this.generateWithEnvelopeRetry({
           activation: input.activation,
           packet: input.packet,
@@ -2522,9 +2526,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             : typeof toolChoice === "string"
               ? toolChoice
               : { type: "tool", name: toolChoice.name };
-        const baseGatewayInput = noToolRound
-          ? withoutToolUse(initialGatewayInput)
-          : initialGatewayInput;
         // Stage 8B (Batch D — C5 memory/compaction/envelope plane): inject the
         // final-allowed-tool-round warning, mirroring the inline tool loop (:492-496).
         // On the last permitted round (round === maxRounds - 1), inline appends a
@@ -2556,16 +2557,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           selection,
           summarizeToolResultPruning(warningMessages, gatewayMessages),
         );
-        const gatewayInput = {
-          ...baseGatewayInput,
-          messages: gatewayMessages,
-          ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
-          envelope: {
-            ...(baseGatewayInput.envelope ?? {}),
-            ...(noToolRound ? { toolCount: 0, toolSchemaBytes: 0 } : {}),
-            ...deriveToolResultEnvelope(gatewayMessages),
-          },
-        };
+        const gatewayInput = noToolRound
+          ? {
+              ...buildToolFreeGatewayInput({
+                baseGatewayInput: initialGatewayInput,
+                messages: gatewayMessages,
+              }),
+              ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
+            }
+          : {
+              ...initialGatewayInput,
+              messages: gatewayMessages,
+              ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
+              envelope: {
+                ...(initialGatewayInput.envelope ?? {}),
+                ...deriveToolResultEnvelope(gatewayMessages),
+              },
+            };
         const generated = await this.generateWithEnvelopeRetry({
           activation,
           packet,
@@ -3192,16 +3200,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     activation,
                     packet,
                     selection,
-                    gatewayInput: {
-                      ...withoutToolUse(initialGatewayInput),
+                    gatewayInput: buildToolFreeGatewayInput({
+                      baseGatewayInput: initialGatewayInput,
                       messages: repairGatewayMessages,
-                      envelope: {
-                        ...(initialGatewayInput.envelope ?? {}),
-                        toolCount: 0,
-                        toolSchemaBytes: 0,
-                        ...deriveToolResultEnvelope(repairGatewayMessages),
-                      },
-                    },
+                    }),
                     modelCallTrace,
                     tracePhase: "final_synthesis_repair",
                   });
@@ -3652,16 +3654,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         activation: input.activation,
         packet: input.packet,
         selection: input.selection,
-        gatewayInput: {
-          ...withoutToolUse(input.baseGatewayInput),
+        gatewayInput: buildToolFreeGatewayInput({
+          baseGatewayInput: input.baseGatewayInput,
           messages: finalMessages,
-          envelope: {
-            ...(input.baseGatewayInput.envelope ?? {}),
-            toolCount: 0,
-            toolSchemaBytes: 0,
-            ...deriveToolResultEnvelope(finalMessages),
-          },
-        },
+        }),
         ...(input.modelCallTrace
           ? { modelCallTrace: input.modelCallTrace }
           : {}),
@@ -3705,16 +3701,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           activation: input.activation,
           packet: input.packet,
           selection: input.selection,
-          gatewayInput: {
-            ...withoutToolUse(input.baseGatewayInput),
+          gatewayInput: buildToolFreeGatewayInput({
+            baseGatewayInput: input.baseGatewayInput,
             messages: repairedMessages,
-            envelope: {
-              ...(input.baseGatewayInput.envelope ?? {}),
-              toolCount: 0,
-              toolSchemaBytes: 0,
-              ...deriveToolResultEnvelope(repairedMessages),
-            },
-          },
+          }),
           ...(input.modelCallTrace
             ? { modelCallTrace: input.modelCallTrace }
             : {}),
@@ -3765,16 +3755,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         activation: input.activation,
         packet: input.packet,
         selection: input.selection,
-        gatewayInput: {
-          ...withoutToolUse(input.baseGatewayInput),
+        gatewayInput: buildToolFreeGatewayInput({
+          baseGatewayInput: input.baseGatewayInput,
           messages: repairedMessages,
-          envelope: {
-            ...(input.baseGatewayInput.envelope ?? {}),
-            toolCount: 0,
-            toolSchemaBytes: 0,
-            ...deriveToolResultEnvelope(repairedMessages),
-          },
-        },
+        }),
         ...(input.modelCallTrace
           ? { modelCallTrace: input.modelCallTrace }
           : {}),
