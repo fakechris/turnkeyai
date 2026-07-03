@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `8ea3070bac6b3484ff39be5dacb379ef064cc894`
+**Code HEAD before this docs-only report:** `4b7772fe3e9449946580b40293babee1c62f0c57`
 **Date:** 2026-07-02
 
 ## Summary
@@ -276,7 +276,8 @@ could not move the normalizer without making the inline parity reference import 
   role-runtime helper code.
   Tool-result pruning, tool-result envelope accounting, older tool-history
   compaction, and pruning trace snapshots now live in neutral
-  `tool-history-pruning.ts`.
+  `tool-history-pruning.ts`, including the runtime boundary recorder that emits
+  pruning metadata for inline, engine, and final-synthesis gateway calls.
   Tool-definition filtering for permission tools, task-tracking tools, and
   focused durable-memory recall now lives in neutral `tool-definition-filter.ts`.
   Model-call boundary trace construction and model-use summary aggregation now
@@ -439,6 +440,7 @@ outside the terminal completion path.
 | `d42e6c7` | Move final-after-tool-round-limit tool-free gateway input construction into `TerminalCloseoutController`; adapter receives a ready gateway input. |
 | `bf7e3f1` | Move completed-closeout repair gateway-message preparation and tool-free gateway input construction into `TerminalCloseoutController`; adapter receives a ready gateway input. |
 | `8ea3070` | Centralize tool-round gateway request construction in `gateway-input-builder`; inline and engine model rounds share neutral history preparation, pruning snapshots, tool-free shaping, and envelope recomputation. |
+| `4b7772f` | Move tool-result pruning boundary recording into neutral `tool-history-pruning.ts`; adapter passes activation/selection/recorder instead of owning runtime progress metadata construction. |
 
 ## Current Extracted Implementation
 
@@ -606,7 +608,8 @@ Real implementation now exists in:
   TaskFacts implementation for engine import sites.
 - `tool-history-pruning.ts` for request-envelope tool-result pruning, older
   tool-history compaction, tool-result envelope accounting, pruning trace
-  snapshots, and assistant/tool block indexing helpers.
+  snapshots, assistant/tool block indexing helpers, and runtime pruning boundary
+  progress recording.
 - `tool-definition-filter.ts` for permission-tool suppression, source-check
   task-tracking suppression, focused durable-memory recall narrowing, and
   tool-definition filter prompt/message context construction.
@@ -676,10 +679,11 @@ All gates below passed on the current code before the report update:
 | --- | --- |
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 12 / 12 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 7 / 7 |
+| `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 6 / 6 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 8 / 8 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 212 / 212 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 213 / 213 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -824,7 +828,9 @@ Stage 8 boundaries/slices are now real:
 - request-envelope tool-result pruning, older tool-history compaction,
   tool-result envelope accounting, pruning trace snapshots, and assistant/tool
   block indexing now live in neutral `tool-history-pruning.ts`; the adapter
-  calls the module instead of owning that pruning closure.
+  calls the module instead of owning that pruning closure. Tool-result pruning
+  runtime boundary recording now also lives there, so the adapter no longer owns
+  the `tool_result_pruning` progress metadata shape.
 - tool-definition filtering for permission tools, task-tracking tools, and
   focused durable-memory recall now lives in neutral
   `tool-definition-filter.ts`; the adapter calls the module instead of owning
