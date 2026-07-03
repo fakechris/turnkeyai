@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `4b7772fe3e9449946580b40293babee1c62f0c57`
+**Code HEAD before this docs-only report:** `f5329430bb315c72026d407aa6289b5d2f5dcd0e`
 **Date:** 2026-07-02
 
 ## Summary
@@ -291,11 +291,13 @@ could not move the normalizer without making the inline parity reference import 
   final/repair synthesis paths. Tool-round gateway request construction now also
   lives there: active/tool-free request shaping, gateway-history preparation,
   pruning snapshots, and envelope recomputation share one neutral builder for
-  inline and engine model rounds. Final synthesis source-message construction,
-  extraneous provider-schema repair-message construction, and tool-call artifact
-  cleanup repair-message construction now also live there, so terminal final
-  synthesis and cleanup repair share the neutral owner instead of adapter-local
-  message arrays.
+  inline and engine model rounds. Request-envelope reduced retry gateway input
+  construction now also lives there, so prompt-message replacement and retry
+  envelope recomputation are no longer adapter-local. Final synthesis
+  source-message construction, extraneous provider-schema repair-message
+  construction, and tool-call artifact cleanup repair-message construction now
+  also live there, so terminal final synthesis and cleanup repair share the
+  neutral owner instead of adapter-local message arrays.
   Session trace canonicalization from structured session results and native
   tool-call counting now live in `native-tool-messages.ts`.
   Shared JSON object parsing and the stable `AbortError` guard now live in
@@ -441,6 +443,7 @@ outside the terminal completion path.
 | `bf7e3f1` | Move completed-closeout repair gateway-message preparation and tool-free gateway input construction into `TerminalCloseoutController`; adapter receives a ready gateway input. |
 | `8ea3070` | Centralize tool-round gateway request construction in `gateway-input-builder`; inline and engine model rounds share neutral history preparation, pruning snapshots, tool-free shaping, and envelope recomputation. |
 | `4b7772f` | Move tool-result pruning boundary recording into neutral `tool-history-pruning.ts`; adapter passes activation/selection/recorder instead of owning runtime progress metadata construction. |
+| `f532943` | Centralize request-envelope reduced retry gateway input construction in `gateway-input-builder`; adapter no longer hand-builds reduced prompt replacement or retry envelope recomputation. |
 
 ## Current Extracted Implementation
 
@@ -623,7 +626,9 @@ Real implementation now exists in:
   replacement, plus tool-free gateway input construction with tool stripping,
   message replacement, and tool-result envelope recomputation, plus tool-round
   gateway request construction with history preparation, pruning snapshots,
-  active/tool-free shaping, and envelope recomputation, plus final
+  active/tool-free shaping, and envelope recomputation, plus request-envelope
+  reduced retry gateway input construction with prompt-message replacement and
+  retry envelope recomputation, plus final
   synthesis source-message construction, extraneous provider-schema
   repair-message construction, and tool-call artifact cleanup repair-message
   construction for terminal final/repair synthesis.
@@ -678,12 +683,12 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 12 / 12 |
+| `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 6 / 6 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 8 / 8 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 9 / 9 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 213 / 213 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 214 / 214 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -852,6 +857,10 @@ Stage 8 boundaries/slices are now real:
   preparation, pruning snapshot construction, active/tool-free request shaping,
   and tool-result envelope recomputation instead of duplicating that branch in
   the adapter.
+- request-envelope reduced retry gateway input construction now also routes
+  through `gateway-input-builder.ts`; `generateWithEnvelopeRetry` keeps retry
+  control flow, while prompt-message replacement and retry envelope recomputation
+  live in the neutral gateway builder.
 - final synthesis source-message construction, gateway-history preparation, and
   pruning summary construction now enter through `TerminalCloseoutController`;
   the controller uses neutral gateway-input/tool-history helpers internally and
