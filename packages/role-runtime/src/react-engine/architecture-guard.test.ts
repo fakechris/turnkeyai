@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as ts from "typescript";
 
 const ENGINE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROLE_RUNTIME_DIR = path.dirname(ENGINE_DIR);
@@ -35,6 +36,26 @@ const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
   /import\s*\(\s*["'][^"']*llm-response-generator["']\s*\)/,
   /require\(\s*["'][^"']*llm-response-generator["']\s*\)/,
 ];
+
+function regexLiteralTexts(source: string): string[] {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    false,
+    ts.LanguageVariant.Standard,
+    source,
+  );
+  const regexes: string[] = [];
+  for (
+    let token = scanner.scan();
+    token !== ts.SyntaxKind.EndOfFileToken;
+    token = scanner.scan()
+  ) {
+    if (token === ts.SyntaxKind.RegularExpressionLiteral) {
+      regexes.push(scanner.getTokenText());
+    }
+  }
+  return regexes;
+}
 
 function engineSourceFiles(): string[] {
   return readdirSync(ENGINE_DIR)
@@ -1506,5 +1527,29 @@ test("forced runtime tool-round orchestration routes through tool-use owner", ()
     source.includes("executeRuntimeForcedToolRound({"),
     true,
     "adapter should call the neutral forced runtime tool-round runner",
+  );
+});
+
+test("policy modules do not add unregistered regex detector branches", () => {
+  const policyFiles = [
+    "permission-policy.ts",
+    "tool-call-normalizer.ts",
+    "continuation-controller.ts",
+    "closeout-policy-registry.ts",
+    "repair-policy-registry.ts",
+    "completed-closeout-controller.ts",
+    "terminal-closeout-controller.ts",
+  ];
+  const offenders: string[] = [];
+  for (const name of policyFiles) {
+    const source = readFileSync(path.join(ENGINE_DIR, name), "utf8");
+    for (const regex of regexLiteralTexts(source)) {
+      offenders.push(`${name}: ${regex}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "new policy regex must move to typed facts or legacy-text-detectors metadata",
   );
 });

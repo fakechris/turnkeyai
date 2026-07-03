@@ -886,7 +886,7 @@ Real implementation now exists in:
   guard used by adapter/controller code, plus supplemental browser-probe
   availability checking.
 
-Still shell/deferred or partial:
+Still deferred or partial:
 
 - `evidence-ledger.ts` producer rewrite beyond the current facade.
 - Producer-owned typed evidence for completed stream labels and resumable
@@ -896,9 +896,9 @@ Still shell/deferred or partial:
 - Browser-visible, product-signal, independent-stream, and timeout-recovery task
   facts remain text-derived compatibility facts until upstream task/evidence
   producers expose stronger typed signals.
-- Legacy detector consolidation: `legacy-text-detectors.ts` and the remaining
-  regex-heavy detector helpers are intentionally documented debt, not silently
-  rewritten in this landing slice.
+- Legacy detector migration into typed producers remains long-term work. Stage 5
+  adds the registry and no-new-policy-regex guard, but intentionally does not
+  broad-rewrite existing shared compatibility helpers.
 
 ## Stage 4 Task Intent Facts Checkpoint
 
@@ -939,15 +939,48 @@ policy owners, and leaves field-level product-policy decisions in
 `PermissionPolicy`, `ContinuationController`, `RepairPolicyRegistry`, and
 `ToolCallNormalizer`.
 
+## Stage 5 Legacy Detector Quarantine Checkpoint
+
+What landed:
+
+- `legacy-text-detectors.ts` now exposes a real
+  `LEGACY_TEXT_DETECTORS` registry with migration metadata: target typed field,
+  producer, feasibility class, inventory row, and positive/negative fixtures.
+- The registry covers the remaining text-fallback families currently tracked by
+  the inventory: approval wait-timeout/applied/denied text, browser-visible and
+  product-signal intent, independent evidence-stream count, timeout-recovery
+  intent, awaiting-context setup-only intent, and pseudo tool-call markup.
+- `runLegacyTextDetector()` returns fact values only; it does not authorize,
+  validate, or execute any side-effect tool.
+- `legacy-text-detectors.test.ts` locks metadata completeness, runner behavior,
+  fixture positives/negatives, and unknown-detector safety.
+- `architecture-guard.test.ts` now scans policy owner modules with the TypeScript
+  scanner and fails if a new regex detector branch is added outside typed facts
+  or the legacy registry.
+
+What remains:
+
+- Existing shared compatibility helpers in `tool-loop-shared.ts` still contain
+  regex/text heuristics. This stage quarantines and documents them; it does not
+  rewrite behavior broadly.
+- The long-term endpoint is still producer-owned typed evidence for completed
+  stream labels, resumable timeout sessions, and browser-visible/product-signal
+  evidence events.
+
+Why the adapter remains acceptable: this stage does not add adapter policy. It
+adds enforcement around policy owners so future detector work must either use
+typed facts or register legacy text debt with metadata and tests.
+
 ## Latest Gates
 
-Fresh gates run for this task-intent facts landing slice:
+Fresh gates run for this legacy-detector quarantine landing slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 44 / 44 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 285 / 285 |
+| `npx tsx --test packages/role-runtime/src/react-engine/legacy-text-detectors.test.ts` | 4 / 4 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 45 / 45 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 290 / 290 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -1427,11 +1460,13 @@ items are longer-term typed-facts / detector ownership work:
 - Expand `EvidenceLedger` beyond the current facade if future work needs
   producer-owned structured evidence, instead of adding new adapter-local
   evidence reads.
-- Continue typed task-facts extraction beyond the current requested
-  table/provider-schema facts only when a concrete policy needs it.
-- Consolidate `legacy-text-detectors.ts` and the remaining regex-heavy shared
-  detector helpers behind typed fact producers. This landing intentionally
-  documents that debt instead of doing broad regex rewrites.
+- Replace text-derived task facts with producer-owned task/evidence signals only
+  when a concrete producer exists. The Stage 4 fields are typed, but several are
+  still compatibility facts derived from text.
+- Migrate registered legacy detectors into typed producers over time. Stage 5
+  now provides registry metadata and a no-new-policy-regex guard, but this
+  landing intentionally avoids broad behavior rewrites of existing shared
+  compatibility helpers.
 - Keep gateway execution callbacks, forced-round executor callbacks, feature
   flags, dependency injection, and final reply assembly in `runViaReActEngine`
   unless a future change identifies a concrete owner-bound policy decision.

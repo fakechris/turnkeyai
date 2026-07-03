@@ -1,7 +1,7 @@
 # Stage 8 Typed Facts Inventory
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Status:** Stage 4 task intent facts checkpoint
+**Status:** Stage 5 legacy detector quarantine checkpoint
 **Rule:** New policy code may consume typed facts or registered legacy fallbacks only.
 
 ## Stage Checkpoints
@@ -12,7 +12,7 @@
 | 2 | Complete | `EvidenceLedger.currentRound()` now produces typed `completedSessions[]` and `timeoutSignals[]`; singular completed/timeout fields are compatibility values derived from those typed facts. `ContinuationController` and `CloseoutPolicyRegistry` consume the typed arrays in their installed hooks. |
 | 3 | Complete | `EvidenceSnapshot.permission` now owns wait-timeout-compatible, pending, applied, and denied permission facts. These facts intentionally preserve text/runtime-progress compatibility until the permission producer is fully typed upstream. |
 | 4 | Complete | `TaskFactsSnapshot` now owns requested table/provider-schema, browser-visible, product-signal dashboard, timeout-recovery, awaiting-context, and required independent-stream intent facts. The browser/stream/timeout fields remain text-derived compatibility facts until upstream producers expose stronger typed signals. |
-| 5 | Pending | Remaining text detectors still need registry metadata and no-new-regex guards in `legacy-text-detectors.ts`. |
+| 5 | Complete | `legacy-text-detectors.ts` now has a metadata-backed detector registry with positive/negative fixtures. `architecture-guard.test.ts` blocks new regex detector branches in policy owner modules. |
 
 ## Migration Classes
 
@@ -37,4 +37,4 @@
 | independent_evidence_streams | `shouldContinueIndependentEvidenceStreams` and stream-count detectors | task prompt, completed sessions, tool trace | `ContinuationController`, `ToolCallNormalizer` | `present_only_as_text` for required count; completed-stream evidence still follows legacy session evidence | `TaskFactsSnapshot.requiredIndependentEvidenceStreams`; future `EvidenceSnapshot.completedStreamLabels[]` remains debt | 4 complete / evidence debt | two-source comparison, AsiaWalk streams, continued session not new stream |
 | timeout_recovery_intent | timeout continuation directive helpers | task prompt, messages, timeout result | `ContinuationController`, finalization visibility | `present_only_as_text`; typed intent produced but not used to rewrite bounded-timeout routing in this stage | `TaskFactsSnapshot.timeoutRecoveryRequested`; future `EvidenceSnapshot.resumableTimeouts[]` remains debt | 4 complete / evidence debt | explicit continue, no timeout JSON, listed session |
 | awaiting_context_setup | `shouldSuppressToolsForAwaitingContextSetup` | task prompt | `PermissionPolicy` | `present_only_as_text` | `TaskFactsSnapshot.awaitingContextSetupOnly` | 4 complete | setup-only no-tool suppression and memory recall negative |
-| legacy_fallbacks | scattered regex/text helpers in `tool-loop-shared.ts` | mixed text messages/tool payloads | all policy owners | mixed | registered `LegacyTextDetector` rows | 5 | registry metadata plus positive/negative fixtures |
+| legacy_fallbacks | scattered regex/text helpers in `tool-loop-shared.ts` | mixed text messages/tool payloads | all policy owners | mixed | `LEGACY_TEXT_DETECTORS` registry rows with target field, producer, feasibility class, inventory row, and fixtures | 5 complete | `legacy-text-detectors.test.ts` metadata/fixture coverage plus architecture no-new-policy-regex guard |
