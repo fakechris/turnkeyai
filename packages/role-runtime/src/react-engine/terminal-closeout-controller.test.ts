@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type {
+  GenerateTextInput,
   GenerateTextResult,
   LLMMessage,
 } from "@turnkeyai/llm-adapter/index";
@@ -27,6 +28,20 @@ function packet(
 
 function result(text: string): GenerateTextResult {
   return { text } as GenerateTextResult;
+}
+
+function baseGatewayInput(): GenerateTextInput {
+  return {
+    messages: [],
+    tools: [{ name: "web_search", description: "", inputSchema: {} }],
+    toolChoice: "auto",
+    envelope: {
+      toolCount: 1,
+      toolSchemaBytes: 99,
+      toolResultCount: 0,
+      toolResultBytes: 0,
+    },
+  } as GenerateTextInput;
 }
 
 function recordingTarget() {
@@ -481,13 +496,18 @@ test("TerminalCloseoutController owns final synthesis provider repair orchestrat
     packet: packet(
       "Compare pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead.",
     ),
+    baseGatewayInput: baseGatewayInput(),
     messages: [{ role: "user", content: "Compare pricing." }],
     maxRounds: 2,
     selection: {},
     recordPruning: (snapshot) => {
       pruningCalls.push(snapshot ?? null);
     },
-    synthesize: async ({ request, tracePhase }) => {
+    synthesize: async ({ gatewayInput, request, tracePhase }) => {
+      assert.equal(gatewayInput.messages, request.gatewayMessages);
+      assert.equal(gatewayInput.tools, undefined);
+      assert.equal(gatewayInput.toolChoice, "none");
+      assert.equal(gatewayInput.envelope?.toolCount, 0);
       phases.push(tracePhase);
       requests.push(request.gatewayMessages);
       if (tracePhase === "final_synthesis") {
@@ -523,11 +543,13 @@ test("TerminalCloseoutController owns final synthesis tool-call cleanup orchestr
 
   const synthesis = await controller.synthesizeFinalAfterToolRoundLimit({
     packet: packet("Summarize the verified evidence."),
+    baseGatewayInput: baseGatewayInput(),
     messages: [{ role: "user", content: "Summarize evidence." }],
     maxRounds: 2,
     selection: {},
     recordPruning: () => {},
-    synthesize: async ({ request, tracePhase }) => {
+    synthesize: async ({ gatewayInput, request, tracePhase }) => {
+      assert.equal(gatewayInput.messages, request.gatewayMessages);
       phases.push(tracePhase);
       requests.push(request.gatewayMessages);
       if (tracePhase === "final_synthesis") {
@@ -550,6 +572,7 @@ test("TerminalCloseoutController owns final synthesis gateway-error fallback", a
 
   const synthesis = await controller.synthesizeFinalAfterToolRoundLimit({
     packet: packet("Summarize the verified source fact.", "No links."),
+    baseGatewayInput: baseGatewayInput(),
     messages: [
       {
         role: "tool",

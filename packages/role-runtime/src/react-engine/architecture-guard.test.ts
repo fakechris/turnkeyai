@@ -130,6 +130,11 @@ test("terminal final synthesis provider-schema repair request routes through ter
     "terminal final synthesis pruning summary construction must not stay in the adapter",
   );
   assert.equal(
+    helperSource.includes("buildToolFreeGatewayInput"),
+    false,
+    "terminal final synthesis tool-free gateway input construction must not stay in the adapter",
+  );
+  assert.equal(
     helperSource.includes("buildFinalSynthesisGatewayRequest"),
     false,
     "terminal final synthesis gateway request construction must not be orchestrated directly in the adapter",

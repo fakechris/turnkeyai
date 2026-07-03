@@ -1,6 +1,7 @@
 import type { ReActReArm } from "@turnkeyai/agent-core/react-loop";
 import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type {
+  GenerateTextInput,
   GenerateTextResult,
   LLMMessage,
 } from "@turnkeyai/llm-adapter/index";
@@ -9,6 +10,7 @@ import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 import {
   buildExtraneousProviderTableSchemaRepairMessages,
   buildFinalSynthesisSourceMessages,
+  buildToolFreeGatewayInput,
   buildToolCallArtifactCleanupMessages,
 } from "../gateway-input-builder";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
@@ -161,6 +163,7 @@ export type FinalSynthesisTracePhase =
   | "final_synthesis_repair";
 
 export interface FinalSynthesisGatewayInvocationInput {
+  gatewayInput: GenerateTextInput;
   request: FinalSynthesisPreparedGatewayRequest;
   tracePhase: FinalSynthesisTracePhase;
 }
@@ -171,6 +174,7 @@ export interface FinalSynthesisAfterToolRoundLimitInput<
   TMemoryFlush = unknown,
 > {
   packet: RolePromptPacket;
+  baseGatewayInput: GenerateTextInput;
   messages: LLMMessage[];
   maxRounds: number;
   selection: {
@@ -783,6 +787,10 @@ export class TerminalCloseoutController {
       });
       await input.recordPruning(initialRequest.pruning);
       const generated = await input.synthesize({
+        gatewayInput: buildToolFreeGatewayInput({
+          baseGatewayInput: input.baseGatewayInput,
+          messages: initialRequest.gatewayMessages,
+        }),
         request: initialRequest,
         tracePhase: "final_synthesis",
       });
@@ -803,6 +811,10 @@ export class TerminalCloseoutController {
       if (providerSchemaRepairRequest) {
         await input.recordPruning(providerSchemaRepairRequest.pruning);
         const repaired = await input.synthesize({
+          gatewayInput: buildToolFreeGatewayInput({
+            baseGatewayInput: input.baseGatewayInput,
+            messages: providerSchemaRepairRequest.gatewayMessages,
+          }),
           request: providerSchemaRepairRequest,
           tracePhase: "final_synthesis_repair",
         });
@@ -822,6 +834,10 @@ export class TerminalCloseoutController {
       }
       await input.recordPruning(toolCallArtifactRepairRequest.pruning);
       const repaired = await input.synthesize({
+        gatewayInput: buildToolFreeGatewayInput({
+          baseGatewayInput: input.baseGatewayInput,
+          messages: toolCallArtifactRepairRequest.gatewayMessages,
+        }),
         request: toolCallArtifactRepairRequest,
         tracePhase: "final_synthesis_repair",
       });

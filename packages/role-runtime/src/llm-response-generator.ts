@@ -3631,6 +3631,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     return createTerminalCloseoutController().synthesizeFinalAfterToolRoundLimit({
       activation: input.activation,
       packet: input.packet,
+      baseGatewayInput: input.baseGatewayInput,
       messages: input.messages,
       maxRounds: input.maxRounds,
       selection: input.selection,
@@ -3643,15 +3644,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           input.selection,
           snapshot,
         ),
-      synthesize: ({ request, tracePhase }) =>
+      synthesize: ({ gatewayInput, tracePhase }) =>
         this.generateWithEnvelopeRetry({
           activation: input.activation,
           packet: input.packet,
           selection: input.selection,
-          gatewayInput: buildToolFreeGatewayInput({
-            baseGatewayInput: input.baseGatewayInput,
-            messages: request.gatewayMessages,
-          }),
+          gatewayInput,
           ...(input.modelCallTrace
             ? { modelCallTrace: input.modelCallTrace }
             : {}),
