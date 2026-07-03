@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `e12c9ba719d43d0205b32dcf19540b28b5dda4f5`
+**Code HEAD before this docs-only report:** `239395c61172d30a23adc478277ec192340b653e`
 **Date:** 2026-07-02
 
 ## Summary
@@ -144,6 +144,11 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/engine-forced-tool-round-runner.ts`: the adapter creates one
   runner for `runViaReActEngine`, and the continuation/model-error hooks pass
   only messages, tool calls, and assistant text into it.
+  Engine final response assembly now lives in
+  `react-engine/engine-final-response.ts`: finalization epilogue application,
+  final content/mention extraction, model metadata selection, tool/model-use
+  metadata, reduction/memory closeout metadata, mission report construction, and
+  debug-only policy trace exposure are handled by the react-engine owner.
   The full `onAfterExecuteContinue` hook flow now enters through
   `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
   owns provider tool-protocol round recording before current-round evidence
@@ -500,6 +505,7 @@ outside the terminal completion path.
 | `014abe7` | Centralize terminal final-synthesis runner wiring in `terminal-final-synthesis.ts`; adapter creates shared runners instead of declaring duplicate inline/engine injection types. |
 | `04be9f8` | Move the engine `ModelClient` wrapper into `react-engine/engine-model-client.ts`; adapter passes dependencies and consumes the owner model/last-result boundary. |
 | `e12c9ba` | Centralize engine forced runtime tool-round runner wiring in `react-engine/engine-forced-tool-round-runner.ts`; adapter reuses one runner from continuation and model-error hooks. |
+| `239395c` | Move engine final response assembly into `react-engine/engine-final-response.ts`; adapter passes final run-state snapshots into the owner builder. |
 
 ## Current Extracted Implementation
 
@@ -716,6 +722,11 @@ Real implementation now exists in:
   defer mode, observer, and signal are bound once per engine run, while forced
   continuation and model-error hooks pass only the round messages, calls, and
   assistant text.
+- `react-engine/engine-final-response.ts` for engine final generated-reply
+  assembly: finalization epilogue invocation, requested three-line label
+  enforcement, mention extraction, closeout-vs-last-model metadata selection,
+  tool-use/model-use/reduction/memory metadata construction, runtime-derived
+  mission report construction, and debug-only policy trace metadata exposure.
 - `native-tool-messages.ts` for native tool-message construction and persistence
   safe/defer handling, session trace canonicalization from structured session
   results, and native tool-call counting.
@@ -769,20 +780,20 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this forced-round runner slice:
+Fresh gates run for this final-response assembly slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/engine-forced-tool-round-runner.test.ts packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 23 / 23 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 229 / 229 |
+| `npx tsx --test packages/role-runtime/src/react-engine/engine-final-response.test.ts packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 25 / 25 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 232 / 232 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
-| `npm run parity:inline` | 271 / 271, 0 fail |
-| `npm run parity:engine` | 251 / 251, 0 fail; all 13 chunks completed |
+| `npm run parity:inline` | 272 / 272, 0 fail |
+| `npm run parity:engine` | 272 / 272, 0 fail; all 14 chunks completed |
 
-Note: this latest parity run reported 271 inline test points and discovered 251
+Note: this latest parity run reported 272 inline test points and discovered 272
 engine test points. Engine chunks completed without individual recovery.
 
 ## Is The Adapter Thin?
@@ -968,6 +979,10 @@ Stage 8 boundaries/slices are now real:
   observer, clock, defer, and signal dependencies once, then continuation and
   model-error hooks pass only each forced round's messages, calls, and assistant
   text.
+- engine final generated-reply assembly now routes through
+  `react-engine/engine-final-response.ts`; `runViaReActEngine` passes final text,
+  run-state snapshots, tool trace, model-call trace, and last model result into
+  the owner instead of assembling finalization output and metadata inline.
 - request-envelope overflow retry orchestration now routes through neutral
   `gateway-envelope-retry.ts`; the adapter injects gateway, clock, and
   pre-compaction memory flusher instead of owning `generateWithEnvelopeRetry`.
@@ -1217,7 +1232,9 @@ Continue with the remaining high-risk pieces:
   model-client wrapper behavior delegates to
   `react-engine/engine-model-client.ts`; engine forced runtime tool-round
   runner wiring delegates to
-  `react-engine/engine-forced-tool-round-runner.ts`; keep thinning the adapter. The only
+  `react-engine/engine-forced-tool-round-runner.ts`; engine final generated
+  response assembly delegates to
+  `react-engine/engine-final-response.ts`; keep thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
 
