@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `f5329430bb315c72026d407aa6289b5d2f5dcd0e`
+**Code HEAD before this docs-only report:** `4073d09dadf456a86c4f7ff513b1cd11fed72707`
 **Date:** 2026-07-02
 
 ## Summary
@@ -302,6 +302,9 @@ could not move the normalizer without making the inline parity reference import 
   tool-call counting now live in `native-tool-messages.ts`.
   Shared JSON object parsing and the stable `AbortError` guard now live in
   neutral `tool-loop-shared.ts`.
+  Request-envelope reduction boundary recording now lives in
+  `request-envelope-reducer.ts`, so the adapter no longer owns
+  `request_envelope_reduction` runtime progress metadata construction.
   Runtime-derived mission terminal reports now live in
   `runtime-derived-mission-report.ts`, and the supplemental browser-probe
   capability check now lives in neutral `tool-loop-shared.ts`.
@@ -444,6 +447,7 @@ outside the terminal completion path.
 | `8ea3070` | Centralize tool-round gateway request construction in `gateway-input-builder`; inline and engine model rounds share neutral history preparation, pruning snapshots, tool-free shaping, and envelope recomputation. |
 | `4b7772f` | Move tool-result pruning boundary recording into neutral `tool-history-pruning.ts`; adapter passes activation/selection/recorder instead of owning runtime progress metadata construction. |
 | `f532943` | Centralize request-envelope reduced retry gateway input construction in `gateway-input-builder`; adapter no longer hand-builds reduced prompt replacement or retry envelope recomputation. |
+| `4073d09` | Move request-envelope reduction boundary recording into `request-envelope-reducer.ts`; adapter passes activation/packet/selection/recorder instead of owning runtime progress metadata construction. |
 
 ## Current Extracted Implementation
 
@@ -619,6 +623,9 @@ Real implementation now exists in:
 - `model-call-trace.ts` for model-call boundary trace construction, tool-choice
   trace formatting, request-envelope reduction metadata capture, and model-use
   token summary aggregation.
+- `request-envelope-reducer.ts` for prompt packet reduction levels/results,
+  reduction snapshot typing, and request-envelope reduction runtime boundary
+  progress recording.
 - `gateway-input-builder.ts` for gateway input construction, runtime session
   continuation directive prompt injection, final synthesis format-contract
   lines, no-tool gateway transforms, mention extraction, tool-definition lookup,
@@ -685,10 +692,11 @@ All gates below passed on the current code before the report update:
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 6 / 6 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 9 / 9 |
+| `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 10 / 10 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 214 / 214 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 215 / 215 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -861,6 +869,9 @@ Stage 8 boundaries/slices are now real:
   through `gateway-input-builder.ts`; `generateWithEnvelopeRetry` keeps retry
   control flow, while prompt-message replacement and retry envelope recomputation
   live in the neutral gateway builder.
+- request-envelope reduction boundary recording now routes through
+  `request-envelope-reducer.ts`; the adapter no longer owns the
+  `request_envelope_reduction` runtime progress metadata shape.
 - final synthesis source-message construction, gateway-history preparation, and
   pruning summary construction now enter through `TerminalCloseoutController`;
   the controller uses neutral gateway-input/tool-history helpers internally and
