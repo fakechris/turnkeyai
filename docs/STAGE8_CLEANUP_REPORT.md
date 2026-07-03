@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `a1d8228c81db73280f3a8edad4eb1cc127e5133c`
+**Code HEAD before this docs-only report:** `2e4c3127b4d758a4cadff977529b7dc8fac427d5`
 **Date:** 2026-07-02
 
 ## Summary
@@ -57,6 +57,9 @@ could not move the normalizer without making the inline parity reference import 
   consumes-round, and local closeout shapes. The natural-finish repair cascade
   now also evaluates and applies through that registry in precedence order; the
   adapter passes the hook state and no longer steps through each policy window.
+  Terminal final synthesis provider-schema repair selection now also evaluates
+  through the registry using a single-policy window before the adapter performs
+  the gateway repair retry.
   The forced `sessions_spawn` natural-finish repairs for missing
   browser-visible evidence and product-signal dashboard evidence now return
   typed decisions from the same registry, preserving their precedence before
@@ -383,6 +386,7 @@ outside the terminal completion path.
 | `a0acc56` | Centralize tool-free gateway input construction in `gateway-input-builder`; adapter reuses it for inline/engine no-tool rounds and terminal final/repair synthesis. |
 | `37abf6c` | Centralize final synthesis source-message and tool-call artifact cleanup repair-message construction in `gateway-input-builder`; adapter reuses the neutral builder for terminal final/repair synthesis. |
 | `a1d8228` | Centralize extraneous provider-schema repair-message construction in `gateway-input-builder`; terminal final synthesis no longer builds that repair message array in the adapter. |
+| `2e4c312` | Route terminal final synthesis provider-schema repair selection through `RepairPolicyRegistry`; add an architecture guard against direct predicate drift. |
 
 ## Current Extracted Implementation
 
@@ -608,8 +612,10 @@ All gates below passed on the current code before the report update:
 | --- | --- |
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 10 / 10 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 5 / 5 |
+| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 22 / 22 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 198 / 198 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 199 / 199 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -829,6 +835,9 @@ Stage 8 boundaries/slices are now real:
 - natural-finish repair cascade precedence and application now route through a
   single `RepairPolicyRegistry` entrypoint; the adapter passes the hook inputs
   instead of selecting and applying each repair policy window.
+- terminal final synthesis provider-schema repair selection now routes through
+  a `RepairPolicyRegistry` single-policy window; an architecture guard fails if
+  that helper regresses to direct predicate selection.
 - completed synthesis repair precedence is pinned in
   `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER`.
 - completed-closeout timeout follow-up final-guidance repair selection routes
