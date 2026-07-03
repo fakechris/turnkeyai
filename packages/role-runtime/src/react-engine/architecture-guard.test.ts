@@ -765,6 +765,55 @@ test("engine terminal synthesis callbacks route through terminal closeout owner"
   );
 });
 
+test("engine approval wait-timeout fallback hook routes through terminal closeout owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const hookStart = engineSource.indexOf("onTerminate: async (reason, state");
+  const hookEnd = engineSource.indexOf(
+    "          if (terminalCompletion.kind === \"rearm\")",
+    hookStart,
+  );
+  assert.notEqual(hookStart, -1, "onTerminate hook must exist");
+  assert.notEqual(hookEnd, -1, "onTerminate terminal handoff boundary must be found");
+  const hookSource = engineSource.slice(hookStart, hookEnd);
+  const terminalSource = readFileSync(
+    path.join(ENGINE_DIR, "terminal-closeout-controller.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    hookSource.includes("reason === \"tool_evidence_fallback\""),
+    false,
+    "approval wait-timeout fallback reason gating must live with TerminalCloseoutController",
+  );
+  assert.equal(
+    hookSource.includes("approvalWaitTimeoutFallback: {"),
+    false,
+    "approval wait-timeout fallback input assembly must not stay inline in the adapter",
+  );
+  assert.equal(
+    hookSource.includes(
+      "approval wait-timeout repair omitted required pending evidence",
+    ),
+    false,
+    "approval wait-timeout fallback error construction must live with TerminalCloseoutController",
+  );
+  assert.equal(
+    hookSource.includes("terminalCloseout.buildApprovalWaitTimeoutFallbackHook({"),
+    true,
+    "onTerminate should delegate approval wait-timeout fallback hook assembly to TerminalCloseoutController",
+  );
+  assert.equal(
+    terminalSource.includes("buildApprovalWaitTimeoutFallbackHook("),
+    true,
+    "terminal closeout owner should expose approval wait-timeout fallback hook builder",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

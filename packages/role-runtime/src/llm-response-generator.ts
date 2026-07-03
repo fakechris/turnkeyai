@@ -2908,19 +2908,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               // directive. The answer is built deterministically (no model
               // synthesis), so the controller short-circuits the standard
               // reasonLines + generateFinalAfterToolRoundLimit path.
-              ...(reason === "tool_evidence_fallback"
-                ? {
-                    approvalWaitTimeoutFallback: {
-                      selection,
-                      packet,
-                      maxRounds,
-                      ...terminateCloseout.approvalWaitTimeoutFallback,
-                      error: new Error(
-                        "approval wait-timeout repair omitted required pending evidence",
-                      ),
-                    },
-                  }
-                : {}),
+              ...terminalCloseout.buildApprovalWaitTimeoutFallbackHook({
+                reason: reason as EngineCloseoutReason,
+                selection,
+                packet,
+                maxRounds,
+                fallback: terminateCloseout.approvalWaitTimeoutFallback,
+              }),
               synthesize: terminalCloseout.buildTerminalSynthesisHook({
                 maxRounds,
                 synthesizeFinal: synthesizeFinalAfterToolRoundLimit,

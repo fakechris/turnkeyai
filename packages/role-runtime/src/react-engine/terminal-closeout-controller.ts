@@ -53,6 +53,9 @@ import type { EngineCloseoutReason, EngineContinueAction } from "./types";
 export const TERMINAL_CLOSEOUT_CONTROLLER_MODULE =
   "terminal-closeout-controller" as const;
 
+const APPROVAL_WAIT_TIMEOUT_FALLBACK_ERROR_MESSAGE =
+  "approval wait-timeout repair omitted required pending evidence";
+
 export interface ApprovalWaitTimeoutFallbackInput {
   selection: {
     modelId?: string;
@@ -65,6 +68,24 @@ export interface ApprovalWaitTimeoutFallbackInput {
   evidenceText: string;
   error: unknown;
 }
+
+export interface ApprovalWaitTimeoutFallbackHookInput
+  extends Omit<
+    ApprovalWaitTimeoutFallbackInput,
+    "toolCallCount" | "roundCount" | "evidenceText" | "error"
+  > {
+  reason: EngineCloseoutReason;
+  fallback: Pick<
+    ApprovalWaitTimeoutFallbackInput,
+    "toolCallCount" | "roundCount" | "evidenceText"
+  >;
+}
+
+export type ApprovalWaitTimeoutFallbackHookResult =
+  | {
+      approvalWaitTimeoutFallback: ApprovalWaitTimeoutFallbackInput;
+    }
+  | {};
 
 export interface ToolEvidenceFallbackInput {
   packet: RolePromptPacket;
@@ -1312,6 +1333,23 @@ export class TerminalCloseoutController {
       completedSession: state.completedSession() ?? null,
       completedSessionToolResults: state.completedSessionToolResults() ?? [],
       repairMarkers: (hookContext.repairMarkers ??= []),
+    };
+  }
+
+  buildApprovalWaitTimeoutFallbackHook(
+    input: ApprovalWaitTimeoutFallbackHookInput,
+  ): ApprovalWaitTimeoutFallbackHookResult {
+    if (input.reason !== "tool_evidence_fallback") {
+      return {};
+    }
+    return {
+      approvalWaitTimeoutFallback: {
+        selection: input.selection,
+        packet: input.packet,
+        maxRounds: input.maxRounds,
+        ...input.fallback,
+        error: new Error(APPROVAL_WAIT_TIMEOUT_FALLBACK_ERROR_MESSAGE),
+      },
     };
   }
 

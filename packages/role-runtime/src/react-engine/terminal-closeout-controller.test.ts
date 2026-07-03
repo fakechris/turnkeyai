@@ -134,6 +134,53 @@ test("TerminalCloseoutController applies approval wait-timeout fallback through 
   assert.equal(resultEvent[0], "result");
 });
 
+test("TerminalCloseoutController owns approval wait-timeout fallback hook input gating", () => {
+  const controller = createTerminalCloseoutController();
+  const fallback = {
+    toolCallCount: 3,
+    roundCount: 5,
+    evidenceText: "permission_result: pending approval_wait_timeout",
+  };
+
+  assert.deepEqual(
+    controller.buildApprovalWaitTimeoutFallbackHook({
+      reason: "round_limit",
+      selection: { modelId: "model-a", modelChainId: "chain-a" },
+      packet: packet("Check approval."),
+      maxRounds: 4,
+      fallback,
+    }),
+    {},
+  );
+
+  const hookInput = controller.buildApprovalWaitTimeoutFallbackHook({
+    reason: "tool_evidence_fallback",
+    selection: { modelId: "model-a", modelChainId: "chain-a" },
+    packet: packet("Check approval."),
+    maxRounds: 4,
+    fallback,
+  });
+
+  assert.ok("approvalWaitTimeoutFallback" in hookInput);
+  const approvalFallback = hookInput.approvalWaitTimeoutFallback;
+  assert.deepEqual(approvalFallback.selection, {
+    modelId: "model-a",
+    modelChainId: "chain-a",
+  });
+  assert.equal(approvalFallback.maxRounds, 4);
+  assert.equal(approvalFallback.toolCallCount, 3);
+  assert.equal(approvalFallback.roundCount, 5);
+  assert.equal(
+    approvalFallback.evidenceText,
+    "permission_result: pending approval_wait_timeout",
+  );
+  assert.ok(approvalFallback.error instanceof Error);
+  assert.equal(
+    approvalFallback.error.message,
+    "approval wait-timeout repair omitted required pending evidence",
+  );
+});
+
 test("TerminalCloseoutController owns terminal hook fallback before synthesis", async () => {
   const controller = createTerminalCloseoutController();
   const { events, target } = recordingTarget();
