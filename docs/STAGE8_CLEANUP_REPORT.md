@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `37abf6c220115d6c548509baaeff856fd8e88fce`
+**Code HEAD before this docs-only report:** `a1d8228c81db73280f3a8edad4eb1cc127e5133c`
 **Date:** 2026-07-02
 
 ## Summary
@@ -245,10 +245,11 @@ could not move the normalizer without making the inline parity reference import 
   reduced prompt replacement now lives there too. Tool-free gateway input
   construction now also lives there, including tool stripping, message
   replacement, and tool-result envelope recomputation for inline and engine
-  final/repair synthesis paths. Final synthesis source-message construction and
-  tool-call artifact cleanup repair-message construction now also live there, so
-  terminal final synthesis and cleanup repair share the neutral owner instead of
-  adapter-local message arrays.
+  final/repair synthesis paths. Final synthesis source-message construction,
+  extraneous provider-schema repair-message construction, and tool-call artifact
+  cleanup repair-message construction now also live there, so terminal final
+  synthesis and cleanup repair share the neutral owner instead of adapter-local
+  message arrays.
   Session trace canonicalization from structured session results and native
   tool-call counting now live in `native-tool-messages.ts`.
   Shared JSON object parsing and the stable `AbortError` guard now live in
@@ -381,6 +382,7 @@ outside the terminal completion path.
 | `1b3f511` | Move completed-closeout reason/null-session guards into `TerminalCloseoutController`; adapter passes completed-closeout handoff data unconditionally. |
 | `a0acc56` | Centralize tool-free gateway input construction in `gateway-input-builder`; adapter reuses it for inline/engine no-tool rounds and terminal final/repair synthesis. |
 | `37abf6c` | Centralize final synthesis source-message and tool-call artifact cleanup repair-message construction in `gateway-input-builder`; adapter reuses the neutral builder for terminal final/repair synthesis. |
+| `a1d8228` | Centralize extraneous provider-schema repair-message construction in `gateway-input-builder`; terminal final synthesis no longer builds that repair message array in the adapter. |
 
 ## Current Extracted Implementation
 
@@ -551,8 +553,9 @@ Real implementation now exists in:
   requested three-line label normalization, and request-envelope prompt-message
   replacement, plus tool-free gateway input construction with tool stripping,
   message replacement, and tool-result envelope recomputation, plus final
-  synthesis source-message construction and tool-call artifact cleanup
-  repair-message construction for terminal final/repair synthesis.
+  synthesis source-message construction, extraneous provider-schema
+  repair-message construction, and tool-call artifact cleanup repair-message
+  construction for terminal final/repair synthesis.
 - `native-tool-messages.ts` for native tool-message construction, session trace
   canonicalization from structured session results, and native tool-call
   counting.
@@ -604,7 +607,7 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 9 / 9 |
+| `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 10 / 10 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 22 / 22 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 198 / 198 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
@@ -772,6 +775,10 @@ Stage 8 boundaries/slices are now real:
   repair-message construction now also route through `gateway-input-builder.ts`;
   the adapter supplies packet/messages/result text instead of owning those
   final/repair message arrays.
+- extraneous provider-schema repair-message construction for terminal final
+  synthesis now also routes through `gateway-input-builder.ts`; the adapter
+  keeps the repair predicate call but no longer assembles that repair prompt
+  message array locally.
 - request-envelope reduced prompt replacement now lives in
   `gateway-input-builder.ts`; the adapter calls the module instead of owning the
   prompt/history splice helper.
