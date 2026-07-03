@@ -16,6 +16,7 @@ import {
   buildExtraneousProviderTableSchemaRepairPrompt,
   resolveRequestedTableColumns,
 } from "./task-facts-shared";
+import type { RequestEnvelopeReductionResult } from "./request-envelope-reducer";
 import {
   deriveToolResultEnvelope,
   prepareToolHistoryForGateway,
@@ -304,6 +305,47 @@ export function buildToolRoundGatewayRequest(input: {
     gatewayMessages,
     gatewayInput,
     ...(pruning === undefined ? {} : { pruning }),
+  };
+}
+
+export function buildReducedRetryGatewayInput(input: {
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  gatewayInput: GenerateTextInput;
+  reduction: RequestEnvelopeReductionResult;
+}): GenerateTextInput {
+  const reducedGatewayInput = buildGatewayInput({
+    activation: input.activation,
+    packet: input.packet,
+    ...(input.selection.modelId ? { modelId: input.selection.modelId } : {}),
+    ...(input.selection.modelChainId
+      ? { modelChainId: input.selection.modelChainId }
+      : {}),
+    overrideSystemPrompt: input.reduction.reducedSystemPrompt,
+    overrideTaskPrompt: input.reduction.reducedTaskPrompt,
+    artifactIds: input.reduction.artifactIds,
+    envelopeHint: input.reduction.envelopeHint,
+    tools: input.gatewayInput.tools,
+    toolChoice: input.gatewayInput.toolChoice,
+    ...(input.gatewayInput.signal ? { signal: input.gatewayInput.signal } : {}),
+  });
+  const reducedMessages = replaceInitialPromptMessages(
+    input.gatewayInput.messages,
+    reducedGatewayInput.messages,
+  );
+  return {
+    ...input.gatewayInput,
+    messages: reducedMessages,
+    envelope: {
+      ...(input.gatewayInput.envelope ?? {}),
+      ...input.reduction.envelopeHint,
+      artifactIds: input.reduction.artifactIds,
+      ...deriveToolResultEnvelope(reducedMessages),
+    },
   };
 }
 

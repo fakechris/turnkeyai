@@ -9,6 +9,7 @@ import {
   buildExtraneousProviderTableSchemaRepairMessages,
   buildFinalSynthesisSourceMessages,
   buildGatewayInput,
+  buildReducedRetryGatewayInput,
   buildToolCallArtifactCleanupMessages,
   buildToolFreeGatewayInput,
   buildToolRoundGatewayRequest,
@@ -231,6 +232,74 @@ test("buildToolRoundGatewayRequest prepares tool-free gateway input", () => {
   assert.equal(request.gatewayInput.envelope?.toolSchemaBytes, 0);
   assert.equal(request.gatewayInput.envelope?.toolResultCount, 1);
   assert.ok((request.gatewayInput.envelope?.toolResultBytes ?? 0) > 0);
+});
+
+test("buildReducedRetryGatewayInput swaps reduced prompt messages and recomputes envelope", () => {
+  const abort = new AbortController();
+  const originalMessages: LLMMessage[] = [
+    { role: "system", content: "original system" },
+    { role: "user", content: "original task" },
+    { role: "assistant", content: "I will fetch." },
+    {
+      role: "tool",
+      toolCallId: "toolu-1",
+      name: "web_fetch",
+      content: "fresh tool evidence",
+    },
+  ];
+  const tools = [tool("web_fetch")];
+  const gatewayInput: GenerateTextInput = {
+    messages: originalMessages,
+    tools,
+    toolChoice: { type: "tool", name: "web_fetch" },
+    signal: abort.signal,
+    envelope: {
+      artifactIds: ["old-artifact"],
+      toolCount: 1,
+      toolSchemaBytes: 123,
+      toolResultCount: 99,
+      toolResultBytes: 999,
+      inlineAttachmentBytes: 50,
+    },
+  };
+
+  const retryGatewayInput = buildReducedRetryGatewayInput({
+    activation: activation(),
+    packet: packet(),
+    selection: {
+      modelId: "model-a",
+      modelChainId: "chain-a",
+    },
+    gatewayInput,
+    reduction: {
+      level: "minimal",
+      reducedSystemPrompt: "reduced system",
+      reducedTaskPrompt: "reduced task",
+      artifactIds: ["reduced-artifact"],
+      envelopeHint: {
+        inlineAttachmentBytes: 5,
+        inlineImageCount: 1,
+      },
+      omittedSections: ["thread-summary"],
+    },
+  });
+
+  assert.equal(retryGatewayInput.tools, tools);
+  assert.deepEqual(retryGatewayInput.toolChoice, {
+    type: "tool",
+    name: "web_fetch",
+  });
+  assert.equal(retryGatewayInput.signal, abort.signal);
+  assert.equal(retryGatewayInput.messages[0]?.content, "reduced system");
+  assert.match(String(retryGatewayInput.messages[1]?.content), /reduced task/);
+  assert.deepEqual(retryGatewayInput.messages.slice(2), originalMessages.slice(2));
+  assert.equal(retryGatewayInput.envelope?.toolCount, 1);
+  assert.equal(retryGatewayInput.envelope?.toolSchemaBytes, 123);
+  assert.deepEqual(retryGatewayInput.envelope?.artifactIds, ["reduced-artifact"]);
+  assert.equal(retryGatewayInput.envelope?.inlineAttachmentBytes, 5);
+  assert.equal(retryGatewayInput.envelope?.inlineImageCount, 1);
+  assert.equal(retryGatewayInput.envelope?.toolResultCount, 1);
+  assert.ok((retryGatewayInput.envelope?.toolResultBytes ?? 0) > 0);
 });
 
 test("buildFinalSynthesisSourceMessages appends format contract and default closeout guidance", () => {

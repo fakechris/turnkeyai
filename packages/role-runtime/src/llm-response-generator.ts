@@ -19,11 +19,11 @@ import type {
 } from "./deterministic-response-generator";
 import {
   buildGatewayInput,
+  buildReducedRetryGatewayInput,
   buildToolRoundGatewayRequest,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
   hasToolDefinition,
-  replaceInitialPromptMessages,
 } from "./gateway-input-builder";
 import {
   collectToolResultContentText,
@@ -59,7 +59,6 @@ import {
 import {
   countToolResultBlocks,
   countToolUseBlocks,
-  deriveToolResultEnvelope,
   findFollowingToolMessageIndexes,
   findLatestAssistantToolUseMessageIndex,
   readToolResultContentText,
@@ -3459,39 +3458,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           level,
         });
         try {
-          const reducedGatewayInput = buildGatewayInput({
+          const retryGatewayInput = buildReducedRetryGatewayInput({
             activation: input.activation,
             packet: input.packet,
-            ...(input.selection.modelId
-              ? { modelId: input.selection.modelId }
-              : {}),
-            ...(input.selection.modelChainId
-              ? { modelChainId: input.selection.modelChainId }
-              : {}),
-            overrideSystemPrompt: reduced.reducedSystemPrompt,
-            overrideTaskPrompt: reduced.reducedTaskPrompt,
-            artifactIds: reduced.artifactIds,
-            envelopeHint: reduced.envelopeHint,
-            tools: input.gatewayInput.tools,
-            toolChoice: input.gatewayInput.toolChoice,
-            ...(input.gatewayInput.signal
-              ? { signal: input.gatewayInput.signal }
-              : {}),
+            selection: input.selection,
+            gatewayInput: input.gatewayInput,
+            reduction: reduced,
           });
-          const reducedMessages = replaceInitialPromptMessages(
-            input.gatewayInput.messages,
-            reducedGatewayInput.messages,
-          );
-          const retryGatewayInput = {
-            ...input.gatewayInput,
-            messages: reducedMessages,
-            envelope: {
-              ...(input.gatewayInput.envelope ?? {}),
-              ...reduced.envelopeHint,
-              artifactIds: reduced.artifactIds,
-              ...deriveToolResultEnvelope(reducedMessages),
-            },
-          };
           const startedAt = this.clock.now();
           const result = await this.gateway.generate(retryGatewayInput);
           const reduction = {

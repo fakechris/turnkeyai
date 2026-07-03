@@ -274,3 +274,28 @@ test("tool-result pruning boundary recording routes through neutral pruning owne
     "adapter should call the neutral safe pruning boundary recorder",
   );
 });
+
+test("request-envelope reduced retry gateway input routes through neutral gateway builder", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async generateWithEnvelopeRetry");
+  const end = source.indexOf("\n  private async flushPreCompactionMemorySafely", start);
+  assert.notEqual(start, -1, "generateWithEnvelopeRetry must exist");
+  assert.notEqual(end, -1, "generateWithEnvelopeRetry boundary must be found");
+  const helperSource = source.slice(start, end);
+
+  assert.equal(
+    helperSource.includes("replaceInitialPromptMessages"),
+    false,
+    "request-envelope retry prompt-message replacement must not stay in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("deriveToolResultEnvelope"),
+    false,
+    "request-envelope retry tool-result envelope recomputation must not stay in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("buildReducedRetryGatewayInput"),
+    true,
+    "request-envelope retry gateway input construction must route through the neutral gateway builder",
+  );
+});
