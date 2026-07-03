@@ -118,7 +118,7 @@ test("wiring guard: onToolCallsClose delegates to one pending-call closeout entr
   const contract = engineHookContract("onToolCallsClose");
   assert.ok(contract);
   assert.deepEqual(contract!.moduleOps, [
-    "CloseoutPolicyRegistry.applyPendingCallsCloseout",
+    "CloseoutPolicyRegistry.applyPendingCallsCloseoutHook",
   ]);
 });
 

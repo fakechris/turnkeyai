@@ -2695,10 +2695,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // ctx.repairMarkers, exactly like inline (the same ledger the Stage 6
         // cascade uses). Gated on activeToolLoop + calls.length > 0 like inline.
         onSuppressToolCalls: (calls, state, ctx) => {
-          if (!activeToolLoop || calls.length === 0) {
-            return null;
-          }
           return permissionPolicy.applySuppressToolCallsHook({
+            active: Boolean(activeToolLoop),
             calls,
             taskPrompt: packet.taskPrompt,
             messages: state.messages,
@@ -2798,17 +2796,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // post-execute branches that continue or repair the loop run in
         // onAfterExecuteContinue above; this callback only decides whether the
         // just-executed round terminates.
-        onAfterExecute: (results) => {
-          const roundEvidence = evidenceLedger.currentRound(results);
-          return closeoutPolicy.applyPostExecuteCloseout(
+        onAfterExecute: (results) =>
+          closeoutPolicy.applyPostExecuteCloseoutHook(
             {
-              completedSession: roundEvidence.completedSession,
-              timeoutSignal: roundEvidence.timeoutSignal,
               toolResults: results,
+              evidence: evidenceLedger,
             },
             runState,
-          );
-        },
+          ),
         // Stage 7 S4: empty-round session-continuation injection. When the model
         // returns no tool calls but a pending continuation directive names an unsent
         // session, the inline loop injects a synthetic sessions_send to continue it
@@ -2821,8 +2816,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // injection) falls through to onRepairRound, so the inject pre-empts the
         // S2/S3 forced-spawn exactly as inline :567 pre-empts :748; lookup
         // continuations inject sessions_list from the same helper.
-        onRoundEmpty: (state) => {
-          const action = continuation.onRoundEmpty({
+        onRoundEmpty: (state) =>
+          continuation.applyRoundEmptyHook({
             active: Boolean(activeToolLoop),
             messages: state.messages,
             round: state.round,
@@ -2831,9 +2826,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ...(initialGatewayInput.tools === undefined
               ? {}
               : { tools: initialGatewayInput.tools }),
-          });
-          return continuation.applyRoundEmptyAction(action);
-        },
+          }),
         // Stage 6: post-synthesis repairs on the engine's tool-free candidate
         // answer (the natural-finish path), mirroring the inline tool-free cascade
         // (:1110-1272). Each fires only when its shouldRepair* predicate detects a

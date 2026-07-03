@@ -333,6 +333,30 @@ export interface PostExecuteCloseoutApplicationInput<
   toolResults: TToolResult[];
 }
 
+export interface PostExecuteCloseoutEvidenceSnapshot<
+  TCompletedSession = unknown,
+  TTimeoutSignal = unknown,
+> {
+  completedSession: TCompletedSession | null;
+  timeoutSignal: TTimeoutSignal | null;
+}
+
+export interface PostExecuteCloseoutHookInput<
+  TCompletedSession = unknown,
+  TTimeoutSignal = unknown,
+  TToolResult = unknown,
+> {
+  toolResults: TToolResult[];
+  evidence: {
+    currentRound(
+      results: TToolResult[],
+    ): PostExecuteCloseoutEvidenceSnapshot<
+      TCompletedSession,
+      TTimeoutSignal
+    >;
+  };
+}
+
 export interface PostExecuteCloseoutApplicationTarget<
   TCompletedSession = unknown,
   TTimeoutSignal = unknown,
@@ -380,6 +404,19 @@ export interface CloseoutPolicyRegistry {
 
   applyPostExecuteCloseout<TCompletedSession, TTimeoutSignal, TToolResult>(
     input: PostExecuteCloseoutApplicationInput<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+    target: PostExecuteCloseoutApplicationTarget<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+  ): EngineCloseoutReason | null;
+
+  applyPostExecuteCloseoutHook<TCompletedSession, TTimeoutSignal, TToolResult>(
+    input: PostExecuteCloseoutHookInput<
       TCompletedSession,
       TTimeoutSignal,
       TToolResult
@@ -807,6 +844,29 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         timeoutSignal: input.timeoutSignal,
       }),
       input,
+      target,
+    );
+  }
+
+  applyPostExecuteCloseoutHook<TCompletedSession, TTimeoutSignal, TToolResult>(
+    input: PostExecuteCloseoutHookInput<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+    target: PostExecuteCloseoutApplicationTarget<
+      TCompletedSession,
+      TTimeoutSignal,
+      TToolResult
+    >,
+  ): EngineCloseoutReason | null {
+    const roundEvidence = input.evidence.currentRound(input.toolResults);
+    return this.applyPostExecuteCloseout(
+      {
+        completedSession: roundEvidence.completedSession,
+        timeoutSignal: roundEvidence.timeoutSignal,
+        toolResults: input.toolResults,
+      },
       target,
     );
   }

@@ -121,7 +121,37 @@ test("PermissionPolicy owns suppress-tool-calls hook flow order", () => {
   const policy = createPermissionPolicy();
   const readOnlyRepairMarkers: Array<{ role: "user"; content: string }> = [];
 
+  assert.equal(
+    policy.applySuppressToolCallsHook({
+      active: false,
+      calls: [
+        {
+          id: "call-permission",
+          name: "permission_query",
+          input: { action: "browser.form.submit" },
+        },
+      ],
+      taskPrompt: "Read-only browser inspection.",
+      messages: [{ role: "user", content: "Research provider pricing." }],
+      lastText: "I need approval before continuing.",
+      repairMarkers: readOnlyRepairMarkers,
+    }),
+    null,
+  );
+  assert.equal(
+    policy.applySuppressToolCallsHook({
+      active: true,
+      calls: [],
+      taskPrompt: "Read-only browser inspection.",
+      messages: [{ role: "user", content: "Research provider pricing." }],
+      lastText: "I need approval before continuing.",
+      repairMarkers: readOnlyRepairMarkers,
+    }),
+    null,
+  );
+
   const readOnlyResult = policy.applySuppressToolCallsHook({
+    active: true,
     calls: [
       {
         id: "call-permission",
@@ -152,6 +182,7 @@ test("PermissionPolicy owns suppress-tool-calls hook flow order", () => {
 
   const setupRepairMarkers: Array<{ role: "user"; content: string }> = [];
   const setupResult = policy.applySuppressToolCallsHook({
+    active: true,
     calls: [
       {
         id: "call-search",
@@ -178,6 +209,7 @@ test("PermissionPolicy owns suppress-tool-calls hook flow order", () => {
 
   assert.equal(
     policy.applySuppressToolCallsHook({
+      active: true,
       calls: [{ id: "call-search", name: "web_search", input: { query: "x" } }],
       taskPrompt: "Research current provider pricing.",
       messages: [{ role: "user", content: "Research pricing." }],

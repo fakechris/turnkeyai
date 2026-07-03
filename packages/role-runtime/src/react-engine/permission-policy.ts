@@ -56,6 +56,7 @@ export interface PermissionSuppressHookResult {
 }
 
 export interface PermissionSuppressHookInput {
+  active?: boolean;
   calls: LLMToolCall[];
   taskPrompt: string;
   messages: LLMMessage[];
@@ -161,6 +162,9 @@ const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
   },
 
   applySuppressToolCallsHook(input) {
+    if (input.active === false || input.calls.length === 0) {
+      return null;
+    }
     const readOnlySuppression = suppressReadOnlyPermissionQuery(
       buildPermissionSuppressInput({
         calls: input.calls,

@@ -253,6 +253,10 @@ export class ContinuationController {
     return "terminate";
   }
 
+  applyRoundEmptyHook(input: EmptyRoundContinuationInput): ReActEmptyDecision {
+    return this.applyRoundEmptyAction(this.onRoundEmpty(input));
+  }
+
   onAfterExecuteTimeoutContinuation(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {

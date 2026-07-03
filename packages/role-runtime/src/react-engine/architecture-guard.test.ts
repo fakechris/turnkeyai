@@ -414,6 +414,88 @@ test("engine pending-call closeout hook routes through closeout-policy owner", (
   );
 });
 
+test("engine lightweight hook entrypoints route through their owners", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+
+  const suppressStart = engineSource.indexOf(
+    "onSuppressToolCalls: (calls, state, ctx)",
+  );
+  const suppressEnd = engineSource.indexOf(
+    "        // Stage 5 PR2d pending-call closeouts:",
+    suppressStart,
+  );
+  assert.notEqual(suppressStart, -1, "onSuppressToolCalls hook must exist");
+  assert.notEqual(suppressEnd, -1, "onSuppressToolCalls boundary must be found");
+  const suppressSource = engineSource.slice(suppressStart, suppressEnd);
+
+  const afterExecuteStart = engineSource.indexOf("onAfterExecute: (results)");
+  const afterExecuteEnd = engineSource.indexOf(
+    "        // Stage 7 S4: empty-round session-continuation injection.",
+    afterExecuteStart,
+  );
+  assert.notEqual(afterExecuteStart, -1, "onAfterExecute hook must exist");
+  assert.notEqual(afterExecuteEnd, -1, "onAfterExecute boundary must be found");
+  const afterExecuteSource = engineSource.slice(
+    afterExecuteStart,
+    afterExecuteEnd,
+  );
+
+  const roundEmptyStart = engineSource.indexOf("onRoundEmpty: (state)");
+  const roundEmptyEnd = engineSource.indexOf(
+    "        // Stage 6: post-synthesis repairs",
+    roundEmptyStart,
+  );
+  assert.notEqual(roundEmptyStart, -1, "onRoundEmpty hook must exist");
+  assert.notEqual(roundEmptyEnd, -1, "onRoundEmpty boundary must be found");
+  const roundEmptySource = engineSource.slice(roundEmptyStart, roundEmptyEnd);
+
+  assert.equal(
+    suppressSource.includes("if (!activeToolLoop || calls.length === 0)"),
+    false,
+    "suppress-tool-calls active/empty gating must live with PermissionPolicy",
+  );
+  assert.equal(
+    suppressSource.includes("active: Boolean(activeToolLoop)"),
+    true,
+    "onSuppressToolCalls should pass active state into PermissionPolicy",
+  );
+  assert.equal(
+    afterExecuteSource.includes("evidenceLedger.currentRound(results)"),
+    false,
+    "post-execute current-round evidence reads must live with CloseoutPolicyRegistry",
+  );
+  assert.equal(
+    afterExecuteSource.includes("applyPostExecuteCloseout("),
+    false,
+    "post-execute generic closeout application must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    afterExecuteSource.includes("applyPostExecuteCloseoutHook("),
+    true,
+    "onAfterExecute should delegate hook flow to CloseoutPolicyRegistry",
+  );
+  assert.equal(
+    roundEmptySource.includes("const action = continuation.onRoundEmpty({"),
+    false,
+    "round-empty action selection must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    roundEmptySource.includes("applyRoundEmptyAction(action)"),
+    false,
+    "round-empty action application must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    roundEmptySource.includes("applyRoundEmptyHook({"),
+    true,
+    "onRoundEmpty should delegate action selection/application to ContinuationController",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

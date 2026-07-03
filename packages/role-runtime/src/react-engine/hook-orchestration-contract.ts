@@ -77,19 +77,19 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     hook: "onToolCallsClose",
     phase: "tool_calls",
     installed: true,
-    moduleOps: ["CloseoutPolicyRegistry.applyPendingCallsCloseout"],
+    moduleOps: ["CloseoutPolicyRegistry.applyPendingCallsCloseoutHook"],
   },
   {
     hook: "onBeforeExecute",
     phase: "before_execute",
     installed: true,
-    moduleOps: ["ExecutionBudgetController.applyMaxToolCallsPerRound"],
+    moduleOps: ["ExecutionBudgetController.applyEngineBeforeExecuteHook"],
   },
   {
     hook: "runToolBatch",
     phase: "before_execute",
     installed: true,
-    moduleOps: ["ExecutionBudgetController.runToolBatch"],
+    moduleOps: ["ExecutionBudgetController.runEngineToolBatchHook"],
   },
   {
     hook: "onAfterExecuteContinue",
@@ -101,13 +101,13 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     hook: "onAfterExecute",
     phase: "after_execute",
     installed: true,
-    moduleOps: ["CloseoutPolicyRegistry.applyPostExecuteCloseout"],
+    moduleOps: ["CloseoutPolicyRegistry.applyPostExecuteCloseoutHook"],
   },
   {
     hook: "onRoundEmpty",
     phase: "round_empty",
     installed: true,
-    moduleOps: ["ContinuationController.injectEmptyRoundContinuation"],
+    moduleOps: ["ContinuationController.applyRoundEmptyHook"],
   },
   {
     hook: "onRepairRound",

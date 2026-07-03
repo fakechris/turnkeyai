@@ -384,6 +384,52 @@ test("ContinuationController applies empty-round actions as hook decisions", () 
   );
 });
 
+test("ContinuationController owns round-empty hook selection and application", () => {
+  const controller = createContinuationController();
+
+  const injected = controller.applyRoundEmptyHook({
+    active: true,
+    messages: [],
+    round: 0,
+    taskPrompt: taskPromptWithSession(),
+    toolTrace: [],
+    tools: [{ name: "sessions_send" }],
+  });
+
+  assert.notEqual(injected, "terminate");
+  assert.equal(
+    injected !== "terminate" && injected.injectedCalls[0]?.id,
+    "runtime-continuation-1",
+  );
+  assert.equal(
+    injected !== "terminate" && injected.injectedCalls[0]?.name,
+    "sessions_send",
+  );
+  assert.equal(
+    injected !== "terminate" &&
+      injected.injectedCalls[0]?.input["session_key"],
+    sessionKey,
+  );
+  assert.match(
+    String(
+      injected !== "terminate" &&
+        injected.injectedCalls[0]?.input["message"],
+    ),
+    /Continuation context from the original task/,
+  );
+  assert.equal(
+    controller.applyRoundEmptyHook({
+      active: false,
+      messages: [],
+      round: 0,
+      taskPrompt: taskPromptWithSession(),
+      toolTrace: [],
+      tools: [{ name: "sessions_send" }],
+    }),
+    "terminate",
+  );
+});
+
 test("ContinuationController continues an approved browser timeout before coverage timeout", () => {
   const controller = createContinuationController();
   const timeoutSignal = {
