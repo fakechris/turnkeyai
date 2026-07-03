@@ -4,6 +4,7 @@ import test from "node:test";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import { createExecutionBudgetController } from "./execution-budget-controller";
+import type { RoleToolContext, RoleToolLoopOptions } from "../tool-use";
 
 function call(id: string): LLMToolCall {
   return {
@@ -105,6 +106,25 @@ test("ExecutionBudgetController treats invalid per-round caps as no cap", () => 
 
   assert.equal(decision.executable, calls);
   assert.deepEqual(decision.rejected, []);
+});
+
+test("ExecutionBudgetController applies engine before-execute hook admission", () => {
+  const controller = createExecutionBudgetController();
+  const calls = [call("a"), call("b")];
+
+  const decision = controller.applyEngineBeforeExecuteHook({
+    calls,
+    activeToolLoop: { maxToolCallsPerRound: 1 },
+  });
+
+  assert.deepEqual(
+    decision.executable.map((item) => item.id),
+    ["a"],
+  );
+  assert.deepEqual(
+    decision.rejected.map((result) => result.toolCallId),
+    ["b"],
+  );
 });
 
 test("ExecutionBudgetController builds recovery-budget closeout snapshots", () => {
@@ -423,4 +443,55 @@ test("ExecutionBudgetController rethrows abort tool failures", async () => {
     }),
     (error) => error === abort,
   );
+});
+
+test("ExecutionBudgetController applies engine tool-batch hook with active role loop executor", async () => {
+  const controller = createExecutionBudgetController();
+  const calls = [call("a")];
+  const seen: Array<{ activation: unknown; packet: unknown; signal: boolean }> = [];
+  const activeToolLoop: RoleToolLoopOptions = {
+    executor: {
+      definitions: () => [],
+      async execute(input) {
+        seen.push({
+          activation: input.activation,
+          packet: input.packet,
+          signal: Boolean(input.signal),
+        });
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: "ok",
+        };
+      },
+    },
+  };
+  const ctx = {
+    activation: { thread: { threadId: "thread-1" } },
+    packet: { taskPrompt: "task" },
+    signal: new AbortController().signal,
+  } as unknown as RoleToolContext;
+
+  const results = await controller.runEngineToolBatchHook({
+    calls,
+    ctx,
+    now: () => 0,
+    toolLoopStartedAtMs: 0,
+    activeToolLoop,
+  });
+
+  assert.deepEqual(results, [
+    {
+      toolCallId: "a",
+      toolName: "tool_a",
+      content: "ok",
+    },
+  ]);
+  assert.deepEqual(seen, [
+    {
+      activation: ctx.activation,
+      packet: ctx.packet,
+      signal: true,
+    },
+  ]);
 });

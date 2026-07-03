@@ -4,6 +4,7 @@ import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import { shouldSerializeToolBatch } from "../react/predicates";
 import { shouldAllowRequiredTimeoutContinuationPastWallClock } from "../tool-result-evidence";
+import type { RoleToolContext, RoleToolLoopOptions } from "../tool-use";
 import {
   buildFinalRecoveryBudgetCloseoutReasonLines,
   buildToolCallLimitExceededResult,
@@ -55,6 +56,24 @@ export interface LimitToolCallsPerRoundInput {
 export interface ToolCallAdmissionDecision {
   executable: LLMToolCall[];
   rejected: ToolResult[];
+}
+
+export interface EngineBeforeExecuteHookInput {
+  calls: LLMToolCall[];
+  activeToolLoop?: Pick<RoleToolLoopOptions, "maxToolCallsPerRound">;
+}
+
+export interface EngineToolBatchHookInput {
+  calls: LLMToolCall[];
+  ctx: RoleToolContext;
+  now(): number;
+  toolLoopStartedAtMs: number;
+  activeToolLoop?:
+    | Pick<
+        RoleToolLoopOptions,
+        "executor" | "maxParallelToolCalls" | "maxWallClockMs"
+      >
+    | undefined;
 }
 
 export type ExecutionBudgetCloseoutMetadata =
@@ -212,6 +231,17 @@ export class ExecutionBudgetController {
           ),
       ),
     };
+  }
+
+  applyEngineBeforeExecuteHook(
+    input: EngineBeforeExecuteHookInput,
+  ): ToolCallAdmissionDecision {
+    return this.limitToolCallsPerRound({
+      calls: input.calls,
+      ...(input.activeToolLoop?.maxToolCallsPerRound === undefined
+        ? {}
+        : { maxToolCallsPerRound: input.activeToolLoop.maxToolCallsPerRound }),
+    });
   }
 
   buildRecoveryToolBudgetCloseoutSnapshot(
@@ -384,6 +414,35 @@ export class ExecutionBudgetController {
       }
     }
     return results;
+  }
+
+  async runEngineToolBatchHook(
+    input: EngineToolBatchHookInput,
+  ): Promise<ToolResult[]> {
+    const activeToolLoop = input.activeToolLoop;
+    return this.runToolBatch<RoleToolContext>({
+      calls: input.calls,
+      ctx: input.ctx,
+      now: input.now,
+      toolLoopStartedAtMs: input.toolLoopStartedAtMs,
+      ...(activeToolLoop?.maxParallelToolCalls === undefined
+        ? {}
+        : { maxParallelToolCalls: activeToolLoop.maxParallelToolCalls }),
+      ...(activeToolLoop?.maxWallClockMs === undefined
+        ? {}
+        : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
+      ...(activeToolLoop
+        ? {
+            execute: (call, ctx, signal) =>
+              activeToolLoop.executor.execute({
+                call,
+                activation: ctx.activation,
+                packet: ctx.packet,
+                ...(signal ? { signal } : {}),
+              }),
+          }
+        : {}),
+    });
   }
 }
 

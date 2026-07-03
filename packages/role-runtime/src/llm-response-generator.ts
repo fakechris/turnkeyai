@@ -2667,46 +2667,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // Runs after onToolCalls (whose final-recovery-budget truncation already
         // shaped `calls`), so `calls.length` is the requested count the inline
         // executor sees (its `input.toolCalls.length`).
-        onBeforeExecute: (calls) => {
-          return executionBudget.limitToolCallsPerRound({
+        onBeforeExecute: (calls) =>
+          executionBudget.applyEngineBeforeExecuteHook({
             calls,
-            ...(activeToolLoop?.maxToolCallsPerRound === undefined
-              ? {}
-              : { maxToolCallsPerRound: activeToolLoop.maxToolCallsPerRound }),
-          });
-        },
+            ...(activeToolLoop ? { activeToolLoop } : {}),
+          }),
         // Honor the remaining execution limits the per-call default bypasses:
         // order-dependent serialization, bounded concurrency, and per-chunk
         // wall-clock aborts — reusing the same helpers the inline executeToolCalls
         // uses, rather than refactoring that heavily-tested method. `calls` here is
         // already the executable subset (onBeforeExecute applied the per-turn cap).
-        runToolBatch: async (calls, _runOne, hookCtx) => {
+        runToolBatch: async (calls, _runOne, hookCtx) =>
           // The over-cap skipped results are produced by onBeforeExecute (above) and
           // ordered by agent-core AFTER these executed results, matching inline.
-          return executionBudget.runToolBatch<RoleToolContext>({
+          executionBudget.runEngineToolBatchHook({
             calls,
             ctx: hookCtx,
             now: () => this.clock.now(),
             toolLoopStartedAtMs,
-            ...(activeToolLoop?.maxParallelToolCalls === undefined
-              ? {}
-              : { maxParallelToolCalls: activeToolLoop.maxParallelToolCalls }),
-            ...(activeToolLoop?.maxWallClockMs === undefined
-              ? {}
-              : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
-            ...(activeToolLoop
-              ? {
-                  execute: (call, ctx, signal) =>
-                    activeToolLoop.executor.execute({
-                      call,
-                      activation: ctx.activation,
-                      packet: ctx.packet,
-                      ...(signal ? { signal } : {}),
-                    }),
-                }
-              : {}),
-          });
-        },
+            ...(activeToolLoop ? { activeToolLoop } : {}),
+          }),
         // Stage 7 S1: pre-execute tool suppression. When the model returns tool
         // calls on a setup-only "awaiting context" turn, the inline loop drops
         // them and forces a tool-free round (inline :1010-1034). Mirror that via

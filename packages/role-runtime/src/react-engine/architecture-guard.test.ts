@@ -323,6 +323,50 @@ test("engine onToolCalls hook routes through tool-call normalizer owner", () => 
   );
 });
 
+test("engine execution budget hooks route through execution-budget owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const budgetSource = readFileSync(
+    path.join(ENGINE_DIR, "execution-budget-controller.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    engineSource.includes("limitToolCallsPerRound({"),
+    false,
+    "engine onBeforeExecute admission must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("runToolBatch<RoleToolContext>({"),
+    false,
+    "engine runToolBatch hook wiring must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("applyEngineBeforeExecuteHook({"),
+    true,
+    "runViaReActEngine should delegate onBeforeExecute to the execution-budget owner",
+  );
+  assert.equal(
+    engineSource.includes("runEngineToolBatchHook({"),
+    true,
+    "runViaReActEngine should delegate runToolBatch to the execution-budget owner",
+  );
+  assert.equal(
+    budgetSource.includes("limitToolCallsPerRound({"),
+    true,
+    "execution-budget owner should keep per-round admission logic",
+  );
+  assert.equal(
+    budgetSource.includes("runToolBatch<RoleToolContext>({"),
+    true,
+    "execution-budget owner should keep role tool-batch wiring",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");
