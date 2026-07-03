@@ -359,3 +359,18 @@ test("provider tool protocol boundary recording routes through neutral history o
     "adapter should call the neutral safe provider protocol boundary recorder",
   );
 });
+
+test("runtime tool progress safe recording routes through tool-use owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async recordToolProgressSafely"),
+    false,
+    "runtime tool progress safe recording must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes("recordRoleToolProgressSafely({"),
+    true,
+    "adapter should call the neutral safe runtime tool progress recorder",
+  );
+});

@@ -186,6 +186,36 @@ export async function recordRoleToolProgress(input: {
   });
 }
 
+export async function recordRoleToolProgressSafely(input: {
+  recorder: RuntimeProgressRecorder | undefined;
+  activation: RoleActivationInput;
+  call: LLMToolCall;
+  progress: RoleToolProgressEvent;
+  defer?: boolean | undefined;
+}): Promise<void> {
+  const work = async () => {
+    await recordRoleToolProgress(input);
+  };
+  const onError = (error: unknown) => {
+    console.error("runtime tool progress recording failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      toolName: input.call.name,
+      error,
+    });
+  };
+  if (input.defer) {
+    void work().catch(onError);
+    return;
+  }
+  try {
+    await work();
+  } catch (error) {
+    onError(error);
+  }
+}
+
 export function createWorkerSessionToolExecutor(options: {
   workerRuntime: WorkerRuntime;
   availableWorkerKinds?: WorkerKind[];

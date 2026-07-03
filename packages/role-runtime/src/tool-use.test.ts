@@ -8,12 +8,91 @@ import type {
   WorkerRuntime,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
+import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { TaskToolService } from "./task-tool-service";
 import type { RolePromptPacket } from "./prompt-policy";
 import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
-import { createWorkerSessionToolExecutor } from "./tool-use";
+import {
+  createWorkerSessionToolExecutor,
+  recordRoleToolProgressSafely,
+  type RoleToolProgressEvent,
+} from "./tool-use";
+
+test("recordRoleToolProgressSafely records runtime tool progress", async () => {
+  const events: Array<{
+    progressId: string;
+    summary: string;
+    phase: string;
+    metadata?: Record<string, unknown>;
+  }> = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: { agent_id: "browser" },
+  };
+  const progress: RoleToolProgressEvent = {
+    phase: "completed",
+    toolName: "sessions_spawn",
+    summary: "Tool call completed: sessions_spawn",
+    detail: { status: "ok" },
+  };
+
+  await recordRoleToolProgressSafely({
+    recorder: {
+      async record(event) {
+        events.push(event as (typeof events)[number]);
+      },
+    },
+    activation: buildActivation(),
+    call,
+    progress,
+  });
+
+  assert.equal(events.length, 1);
+  assert.match(events[0]!.progressId, /^progress:tool:/);
+  assert.equal(events[0]!.phase, "completed");
+  assert.equal(events[0]!.summary, "Tool call completed: sessions_spawn");
+  assert.deepEqual(events[0]!.metadata, {
+    toolCallId: "call-1",
+    toolName: "sessions_spawn",
+    detail: { status: "ok" },
+  });
+});
+
+test("recordRoleToolProgressSafely swallows recorder failures", async () => {
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    await recordRoleToolProgressSafely({
+      recorder: {
+        async record() {
+          throw new Error("progress recorder unavailable");
+        },
+      },
+      activation: buildActivation(),
+      call: {
+        id: "call-1",
+        name: "sessions_spawn",
+        input: {},
+      },
+      progress: {
+        phase: "started",
+        toolName: "sessions_spawn",
+        summary: "Tool call started: sessions_spawn",
+      },
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.[0], "runtime tool progress recording failed");
+});
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {
   const executor = createWorkerSessionToolExecutor({

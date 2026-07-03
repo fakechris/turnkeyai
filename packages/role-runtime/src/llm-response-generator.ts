@@ -70,7 +70,7 @@ import {
   appendAssistantToolCallMessage,
   appendToolResultMessages,
   DEFAULT_ROLE_TOOL_MAX_ROUNDS,
-  recordRoleToolProgress,
+  recordRoleToolProgressSafely,
   type RoleToolContext,
   type RoleToolExecutionResult,
   type RoleToolLoopOptions,
@@ -2655,7 +2655,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const observer = createEngineRunObserver(toolTrace, {
       now: () => this.clock.now(),
       recordToolProgress: (call, progress) =>
-        this.recordToolProgressSafely(activation, call, progress),
+        recordRoleToolProgressSafely({
+          recorder:
+            this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+          activation,
+          call,
+          progress,
+          defer: this.deferToolObservability,
+        }),
       recordProviderToolProtocolRound: (round) =>
         recordProviderToolProtocolRoundSafely({
           activation,
@@ -3608,7 +3615,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     signal?: AbortSignal;
     onProgress?: (
       call: LLMToolCall,
-      progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
+      progress: Parameters<typeof recordRoleToolProgressSafely>[0]["progress"],
     ) => Promise<void>;
     onResult?: (result: RoleToolExecutionResult) => Promise<void>;
   }): Promise<RoleToolExecutionResult[]> {
@@ -3870,15 +3877,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private async emitToolProgressSafely(
     activation: RoleActivationInput,
     call: LLMToolCall,
-    progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
+    progress: Parameters<typeof recordRoleToolProgressSafely>[0]["progress"],
     onProgress:
       | ((
           call: LLMToolCall,
-          progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
+          progress: Parameters<typeof recordRoleToolProgressSafely>[0]["progress"],
         ) => Promise<void>)
       | undefined,
   ): Promise<void> {
-    await this.recordToolProgressSafely(activation, call, progress);
+    await recordRoleToolProgressSafely({
+      recorder:
+        this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+      activation,
+      call,
+      progress,
+      defer: this.deferToolObservability,
+    });
     try {
       await onProgress?.(call, progress);
     } catch (error) {
@@ -3918,41 +3932,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
     };
     if (this.deferToolObservability && !options.forceBlocking) {
-      void work().catch(onError);
-      return;
-    }
-    try {
-      await work();
-    } catch (error) {
-      onError(error);
-    }
-  }
-
-  private async recordToolProgressSafely(
-    activation: RoleActivationInput,
-    call: LLMToolCall,
-    progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
-  ): Promise<void> {
-    const work = async () => {
-      await recordRoleToolProgress({
-        recorder:
-          this.toolLoop?.runtimeProgressRecorder ??
-          this.runtimeProgressRecorder,
-        activation,
-        call,
-        progress,
-      });
-    };
-    const onError = (error: unknown) => {
-      console.error("runtime tool progress recording failed", {
-        threadId: activation.thread.threadId,
-        flowId: activation.flow.flowId,
-        taskId: activation.handoff.taskId,
-        toolName: call.name,
-        error,
-      });
-    };
-    if (this.deferToolObservability) {
       void work().catch(onError);
       return;
     }
