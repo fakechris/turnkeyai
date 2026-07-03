@@ -708,6 +708,61 @@ test("engine completed terminal handoff routes through terminal closeout owner",
   );
 });
 
+test("engine policy owners consume completed/timeout facts through EvidenceLedger", () => {
+  const offenders: string[] = [];
+  for (const name of [
+    "continuation-controller.ts",
+    "closeout-policy-registry.ts",
+    "completed-closeout-controller.ts",
+    "terminal-closeout-controller.ts",
+  ]) {
+    const source = readFileSync(path.join(ENGINE_DIR, name), "utf8");
+    if (
+      source.includes("findCompletedSessionEvidence") ||
+      source.includes("findSubAgentToolTimeout")
+    ) {
+      offenders.push(name);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `engine policy owners must consume EvidenceLedger typed facts, not raw finder helpers:\n${offenders.join("\n")}`,
+  );
+
+  const continuationSource = readFileSync(
+    path.join(ENGINE_DIR, "continuation-controller.ts"),
+    "utf8",
+  );
+  assert.equal(
+    continuationSource.includes("roundEvidence.timeoutSignals[0]"),
+    true,
+    "continuation hook must read typed timeout facts from EvidenceLedger",
+  );
+  assert.equal(
+    continuationSource.includes(
+      "collectCompletedSessionFinalContents(roundEvidence.completedSessions)",
+    ),
+    true,
+    "continuation hook must read typed completed-session facts from EvidenceLedger",
+  );
+
+  const closeoutSource = readFileSync(
+    path.join(ENGINE_DIR, "closeout-policy-registry.ts"),
+    "utf8",
+  );
+  assert.equal(
+    closeoutSource.includes("roundEvidence.completedSessions.length > 0"),
+    true,
+    "closeout hook must read typed completed-session facts from EvidenceLedger",
+  );
+  assert.equal(
+    closeoutSource.includes("roundEvidence.timeoutSignals[0]"),
+    true,
+    "closeout hook must read typed timeout facts from EvidenceLedger",
+  );
+});
+
 test("engine terminal synthesis callbacks route through terminal closeout owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

@@ -1013,6 +1013,9 @@ test("CloseoutPolicyRegistry applies post-execute closeouts through a target", (
   };
   const timeoutSignal = {
     toolName: "sessions_spawn",
+    sessionKey: "worker:source:task-1",
+    agentId: "source",
+    timeoutSeconds: null,
     evidenceAvailable: false,
   };
   const toolResults = [{ toolCallId: "call-1" }];
@@ -1146,8 +1149,10 @@ test("CloseoutPolicyRegistry owns post-execute hook evidence lookup", () => {
             assert.equal(results, toolResults);
             return {
               completedSession,
+              completedSessions: [completedSession],
               completedSessionFinalContents: ["done"],
               timeoutSignal,
+              timeoutSignals: [timeoutSignal],
               toolResultContentText: "done",
             };
           },

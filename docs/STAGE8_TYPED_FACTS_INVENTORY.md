@@ -1,8 +1,18 @@
 # Stage 8 Typed Facts Inventory
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Status:** Stage 1 inventory lock
+**Status:** Stage 2 evidence producer checkpoint
 **Rule:** New policy code may consume typed facts or registered legacy fallbacks only.
+
+## Stage Checkpoints
+
+| Stage | Status | Notes |
+| --- | --- | --- |
+| 1 | Complete | Inventory rows are locked with producer, consumer, migration class, target field, stage, and required tests. |
+| 2 | Complete | `EvidenceLedger.currentRound()` now produces typed `completedSessions[]` and `timeoutSignals[]`; singular completed/timeout fields are compatibility values derived from those typed facts. `ContinuationController` and `CloseoutPolicyRegistry` consume the typed arrays in their installed hooks. |
+| 3 | Pending | Permission facts still rely on text/runtime progress fallbacks until `PermissionFacts` owns wait-timeout, pending, applied, and denied state. |
+| 4 | Pending | Task intent facts beyond requested table/provider-schema remain detector-backed until `TaskFacts` owns the browser-visible, stream, timeout-recovery, and context-setup facts. |
+| 5 | Pending | Remaining text detectors still need registry metadata and no-new-regex guards in `legacy-text-detectors.ts`. |
 
 ## Migration Classes
 
@@ -16,8 +26,8 @@
 
 | Fact Family | Current Helper / Detector | Current Producer | Current Consumers | Migration Class | Target Typed Field | Stage | Required Tests |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| completed_session | `findCompletedSessionEvidence`, `readCompletedSessionEvidence` | `sessions_spawn`, `sessions_send`, `sessions_history` tool results | `CloseoutPolicyRegistry`, `ContinuationController`, `CompletedCloseoutController`, `TerminalCloseoutController` | `already_structured` | `EvidenceRoundSnapshot.completedSession`, `EvidenceSnapshot.completedSessions[]` | 2 | completed session final content, browser recovery summary, sessions_history fallback |
-| sub_agent_timeout | `findSubAgentToolTimeout` | `sessions_spawn`, `sessions_send` tool results | `CloseoutPolicyRegistry`, `ContinuationController`, `ExecutionBudgetController`, finalization visibility | `already_structured` | `EvidenceRoundSnapshot.timeoutSignal`, `EvidenceSnapshot.timeoutSignals[]` | 2 | timeout seconds, agent id, evidence available, null when completed |
+| completed_session | `findCompletedSessionEvidence`, `readCompletedSessionEvidence` | `sessions_spawn`, `sessions_send`, `sessions_history` tool results | `CloseoutPolicyRegistry`, `ContinuationController`, `CompletedCloseoutController`, `TerminalCloseoutController` | `already_structured` | `EvidenceRoundSnapshot.completedSessions[]`; compatibility `completedSession` and `completedSessionFinalContents` derive from typed facts | 2 | completed session final content, browser recovery summary, sessions_history fallback |
+| sub_agent_timeout | `findSubAgentToolTimeout` | `sessions_spawn`, `sessions_send` tool results | `CloseoutPolicyRegistry`, `ContinuationController`, `ExecutionBudgetController`, finalization visibility | `already_structured` | `EvidenceRoundSnapshot.timeoutSignals[]`; compatibility `timeoutSignal` derives from typed facts | 2 | timeout seconds, agent id, evidence available, null when completed |
 | tool_result_content | `collectToolResultContentText`, `collectToolTraceResultContent` | native tool result content | terminal fallback, completed synthesis, final response builder | `already_structured` | `EvidenceRoundSnapshot.toolResultContentText`, `EvidenceSnapshot.toolTraceResultContent` | 2 | skipped/error exclusion rules remain unchanged |
 | usable_evidence | `hasUsableEvidence` | native tool trace results | model-error fallback, terminal fallback | `already_structured` | `EvidenceSnapshot.usableEvidence` | 2 | skipped/error-only false, any non-skipped non-error true |
 | approval_wait_timeout | `collectApprovalWaitTimeoutRuntimeEvidence`, permission-result string readers | `permission_query`, `permission_result`, tool trace/progress text | `RepairPolicyRegistry`, `ContinuationController`, `TerminalCloseoutController` | `present_only_as_text` until permission result producer is typed | `PermissionFacts.waitTimeout`, `PermissionFacts.pendingApproval` | 3 | pending, applied, denied, timeout, no-result |

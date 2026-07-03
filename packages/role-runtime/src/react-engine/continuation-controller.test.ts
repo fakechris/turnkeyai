@@ -617,8 +617,14 @@ test("ContinuationController owns after-execute continuation hook flow", async (
           events.push("evidence");
           assert.equal(roundResults, results);
           return {
-            timeoutSignal: null,
-            completedSessionFinalContents: ["Source A evidence."],
+            timeoutSignals: [],
+            completedSessions: [
+              {
+                toolName: "sessions_spawn",
+                finalContents: ["Source A evidence."],
+                browserRecoverySummaries: [],
+              },
+            ],
             toolResultContentText: "Source A evidence.",
           };
         },

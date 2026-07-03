@@ -35,7 +35,11 @@ import type {
   ContinuationController,
   ContinuationToolDefinition,
 } from "./continuation-controller";
-import type { EvidenceRunSnapshotter } from "./evidence-ledger";
+import type {
+  CompletedSessionEvidenceFact,
+  EvidenceRunSnapshotter,
+  TimeoutEvidenceFact,
+} from "./evidence-ledger";
 import type { PermissionPolicy } from "./permission-policy";
 import type {
   CloseoutDecision,
@@ -383,8 +387,16 @@ export interface PostExecuteCloseoutEvidenceSnapshot<
   TTimeoutSignal = unknown,
 > {
   completedSession: TCompletedSession | null;
+  completedSessions: readonly TCompletedSession[];
   timeoutSignal: TTimeoutSignal | null;
+  timeoutSignals: readonly TTimeoutSignal[];
 }
+
+export type TypedPostExecuteCloseoutEvidenceSnapshot =
+  PostExecuteCloseoutEvidenceSnapshot<
+    CompletedSessionEvidenceFact,
+    TimeoutEvidenceFact
+  >;
 
 export interface PostExecuteCloseoutHookInput<
   TCompletedSession = unknown,
@@ -910,8 +922,11 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
     const roundEvidence = input.evidence.currentRound(input.toolResults);
     return this.applyPostExecuteCloseout(
       {
-        completedSession: roundEvidence.completedSession,
-        timeoutSignal: roundEvidence.timeoutSignal,
+        completedSession:
+          roundEvidence.completedSessions.length > 0
+            ? roundEvidence.completedSession
+            : null,
+        timeoutSignal: roundEvidence.timeoutSignals[0] ?? null,
         toolResults: input.toolResults,
       },
       target,

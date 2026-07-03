@@ -23,6 +23,22 @@ export interface CompletedSessionEvidenceSummary {
   browserRecoverySummaries: string[];
 }
 
+export interface CompletedSessionEvidenceFact {
+  toolName: string;
+  sessionKey?: string;
+  agentId?: string;
+  finalContents: string[];
+  browserRecoverySummaries: string[];
+}
+
+export interface TimeoutEvidenceFact {
+  toolName: string;
+  sessionKey: string;
+  agentId: string;
+  timeoutSeconds: number | null;
+  evidenceAvailable: boolean;
+}
+
 export function findSubAgentToolTimeout(
   results: RoleToolExecutionResult[],
 ): SubAgentToolTimeoutSignal | null {
@@ -51,6 +67,37 @@ export function findSubAgentToolTimeout(
     };
   }
   return null;
+}
+
+export function collectSubAgentTimeoutFacts(
+  results: RoleToolExecutionResult[],
+): TimeoutEvidenceFact[] {
+  const facts: TimeoutEvidenceFact[] = [];
+  for (const result of results) {
+    if (
+      result.toolName !== "sessions_spawn" &&
+      result.toolName !== "sessions_send"
+    ) {
+      continue;
+    }
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed || parsed.status !== "timeout") {
+      continue;
+    }
+    const timeoutSeconds = parsed.timeout_seconds;
+    const evidenceAvailable =
+      parsed.evidence_available === true ||
+      typeof parsed.evidence_summary === "string";
+    facts.push({
+      toolName: result.toolName,
+      sessionKey: parsed.session_key,
+      agentId: parsed.agent_id,
+      timeoutSeconds:
+        typeof timeoutSeconds === "number" ? timeoutSeconds : null,
+      evidenceAvailable,
+    });
+  }
+  return facts;
 }
 
 export function findCompletedSessionEvidence(
@@ -109,6 +156,92 @@ export function findCompletedSessionEvidence(
   return toolName && finalContents.length > 0
     ? { toolName, finalContents, browserRecoverySummaries }
     : null;
+}
+
+export function collectCompletedSessionEvidenceFacts(
+  results: RoleToolExecutionResult[],
+): CompletedSessionEvidenceFact[] {
+  const facts: CompletedSessionEvidenceFact[] = [];
+  for (const result of results) {
+    if (result.isError || result.cancelled || result.skipped) {
+      continue;
+    }
+    if (
+      result.toolName !== "sessions_spawn" &&
+      result.toolName !== "sessions_send" &&
+      result.toolName !== "sessions_history"
+    ) {
+      continue;
+    }
+    if (result.toolName === "sessions_history") {
+      const historyEvidence = readSessionHistoryEvidence(result.content);
+      if (!historyEvidence) {
+        continue;
+      }
+      const identity = readSessionHistoryIdentity(result.content);
+      facts.push({
+        toolName: result.toolName,
+        ...(identity.sessionKey === undefined
+          ? {}
+          : { sessionKey: identity.sessionKey }),
+        ...(identity.agentId === undefined ? {} : { agentId: identity.agentId }),
+        finalContents: [historyEvidence],
+        browserRecoverySummaries: [],
+      });
+      continue;
+    }
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed || parsed.status !== "completed") {
+      continue;
+    }
+    const finalContent = readCompletedSessionEvidence(parsed);
+    if (!finalContent) {
+      continue;
+    }
+    const browserRecoverySummaries: string[] = [];
+    const payload = parsed.payload;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const browserRecoverySummary = readBrowserRecoverySummary(
+        payload as Record<string, unknown>,
+      );
+      if (browserRecoverySummary) {
+        browserRecoverySummaries.push(browserRecoverySummary);
+      }
+    }
+    const inlineBrowserRecoverySummary = readInlineBrowserRecoverySummary(
+      [parsed.evidence_summary, parsed.result, parsed.final_content].filter(
+        (item): item is string => typeof item === "string",
+      ),
+    );
+    if (inlineBrowserRecoverySummary) {
+      browserRecoverySummaries.push(inlineBrowserRecoverySummary);
+    }
+    facts.push({
+      toolName: result.toolName,
+      sessionKey: parsed.session_key,
+      agentId: parsed.agent_id,
+      finalContents: [finalContent],
+      browserRecoverySummaries,
+    });
+  }
+  return facts;
+}
+
+function readSessionHistoryIdentity(content: string): {
+  sessionKey?: string;
+  agentId?: string;
+} {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const sessionKey = parsed["session_key"];
+    const agentId = parsed["agent_id"];
+    return {
+      ...(typeof sessionKey === "string" ? { sessionKey } : {}),
+      ...(typeof agentId === "string" ? { agentId } : {}),
+    };
+  } catch {
+    return {};
+  }
 }
 
 export function readSessionHistoryEvidence(content: string): string | null {

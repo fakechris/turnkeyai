@@ -23,11 +23,14 @@ import {
   collectSourceBoundedEvidenceText,
 } from "../tool-loop-shared";
 import {
+  collectCompletedSessionEvidenceFacts,
+  collectSubAgentTimeoutFacts,
   collectToolResultContentText,
   collectToolTraceResultContent,
-  findCompletedSessionEvidence,
-  findSubAgentToolTimeout,
   hasUsableEvidence,
+  type CompletedSessionEvidenceSummary,
+  type CompletedSessionEvidenceFact,
+  type TimeoutEvidenceFact,
 } from "../tool-result-evidence";
 
 export const EVIDENCE_LEDGER_MODULE = "evidence-ledger" as const;
@@ -54,9 +57,11 @@ export interface EvidenceSnapshot {
 
 export interface EvidenceRoundSnapshot {
   toolResultContentText: string;
-  completedSession: ReturnType<typeof findCompletedSessionEvidence>;
+  completedSession: CompletedSessionEvidenceSummary | null;
+  completedSessions: readonly CompletedSessionEvidenceFact[];
   completedSessionFinalContents: readonly string[] | null;
-  timeoutSignal: ReturnType<typeof findSubAgentToolTimeout>;
+  timeoutSignal: TimeoutEvidenceFact | null;
+  timeoutSignals: readonly TimeoutEvidenceFact[];
 }
 
 export interface EvidenceRunSnapshotter {
@@ -82,14 +87,16 @@ export class EvidenceLedger {
 
   completedSessionEvidence(
     results: RoleToolExecutionResult[],
-  ): ReturnType<typeof findCompletedSessionEvidence> {
-    return findCompletedSessionEvidence(results);
+  ): CompletedSessionEvidenceSummary | null {
+    return summarizeCompletedSessionFacts(
+      collectCompletedSessionEvidenceFacts(results),
+    );
   }
 
   subAgentToolTimeout(
     results: RoleToolExecutionResult[],
-  ): ReturnType<typeof findSubAgentToolTimeout> {
-    return findSubAgentToolTimeout(results);
+  ): TimeoutEvidenceFact | null {
+    return collectSubAgentTimeoutFacts(results)[0] ?? null;
   }
 }
 
@@ -148,11 +155,33 @@ export function buildToolResultContentText(
 export function buildEvidenceRoundSnapshot(
   results: RoleToolExecutionResult[],
 ): EvidenceRoundSnapshot {
-  const completedSession = findCompletedSessionEvidence(results);
+  const completedSessions = collectCompletedSessionEvidenceFacts(results);
+  const completedSession = summarizeCompletedSessionFacts(completedSessions);
+  const timeoutSignals = collectSubAgentTimeoutFacts(results);
   return {
     toolResultContentText: buildToolResultContentText(results),
     completedSession,
+    completedSessions,
     completedSessionFinalContents: completedSession?.finalContents ?? null,
-    timeoutSignal: findSubAgentToolTimeout(results),
+    timeoutSignal: timeoutSignals[0] ?? null,
+    timeoutSignals,
+  };
+}
+
+export type { CompletedSessionEvidenceFact, TimeoutEvidenceFact };
+
+function summarizeCompletedSessionFacts(
+  facts: readonly CompletedSessionEvidenceFact[],
+): CompletedSessionEvidenceSummary | null {
+  const finalContents = facts.flatMap((fact) => fact.finalContents);
+  if (facts.length === 0 || finalContents.length === 0) {
+    return null;
+  }
+  return {
+    toolName: facts[0]?.toolName ?? "sessions_spawn",
+    finalContents,
+    browserRecoverySummaries: facts.flatMap(
+      (fact) => fact.browserRecoverySummaries,
+    ),
   };
 }

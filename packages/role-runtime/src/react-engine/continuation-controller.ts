@@ -28,6 +28,10 @@ import {
   shouldRepairMissingApprovalGate,
   type SubAgentToolTimeoutSignal,
 } from "../tool-loop-shared";
+import type {
+  CompletedSessionEvidenceFact,
+  TimeoutEvidenceFact,
+} from "./evidence-ledger";
 import type { EngineContinueAction } from "./types";
 
 // Stage 8 engine cleanup — ContinuationController.
@@ -118,8 +122,8 @@ export interface AfterExecuteContinuationInput {
 }
 
 export interface AfterExecuteContinuationEvidenceSnapshot {
-  timeoutSignal: SubAgentToolTimeoutSignal | null;
-  completedSessionFinalContents: readonly string[] | null;
+  timeoutSignals: readonly TimeoutEvidenceFact[];
+  completedSessions: readonly CompletedSessionEvidenceFact[];
   toolResultContentText: string;
 }
 
@@ -628,9 +632,9 @@ export class ContinuationController {
         messages: input.messages,
         taskPrompt: input.taskPrompt,
         toolTrace: input.toolTrace,
-        timeoutSignal: roundEvidence.timeoutSignal,
+        timeoutSignal: roundEvidence.timeoutSignals[0] ?? null,
         completedSessionFinalContents:
-          roundEvidence.completedSessionFinalContents,
+          collectCompletedSessionFinalContents(roundEvidence.completedSessions),
         currentRoundEvidenceText: roundEvidence.toolResultContentText,
         results: input.results,
         repairMarkers: input.repairMarkers,
@@ -651,4 +655,11 @@ function hasToolDefinition(
   name: string,
 ): boolean {
   return (tools ?? []).some((tool) => tool.name === name);
+}
+
+function collectCompletedSessionFinalContents(
+  completedSessions: readonly CompletedSessionEvidenceFact[],
+): readonly string[] | null {
+  const finalContents = completedSessions.flatMap((session) => session.finalContents);
+  return finalContents.length > 0 ? finalContents : null;
 }

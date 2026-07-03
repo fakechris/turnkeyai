@@ -323,4 +323,85 @@ test("EvidenceLedger owns current round evidence snapshot for hook handoffs", ()
   });
   assert.match(snapshot.toolResultContentText, /delegated final evidence/);
   assert.match(snapshot.toolResultContentText, /standalone source evidence/);
+  assert.deepEqual(snapshot.completedSessions, [
+    {
+      toolName: "sessions_spawn",
+      sessionKey: "worker:explore:task-1",
+      agentId: "explore",
+      finalContents: ["delegated final evidence"],
+      browserRecoverySummaries: [],
+    },
+  ]);
+  assert.deepEqual(snapshot.timeoutSignals, [
+    {
+      toolName: "sessions_send",
+      sessionKey: "worker:explore:task-2",
+      agentId: "explore",
+      timeoutSeconds: 90,
+      evidenceAvailable: true,
+    },
+  ]);
+});
+
+test("EvidenceLedger produces typed completed-session facts", () => {
+  const ledger = createEvidenceLedger();
+  const snapshot = ledger.currentRound([
+    {
+      toolCallId: "toolu-completed",
+      toolName: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: SESSION_TOOL_RESULT_PROTOCOL,
+        task_id: "task-typed-completed",
+        session_key: "worker:browser:task-typed-completed",
+        agent_id: "browser",
+        status: "completed",
+        tool_chain: [],
+        result: "Observed checkout total: $42",
+        final_content: "Observed checkout total: $42",
+        payload: null,
+      }),
+    },
+  ]);
+
+  assert.equal(snapshot.completedSessions.length, 1);
+  assert.equal(
+    snapshot.completedSessions[0]?.sessionKey,
+    "worker:browser:task-typed-completed",
+  );
+  assert.equal(snapshot.completedSessions[0]?.agentId, "browser");
+  assert.deepEqual(snapshot.completedSessions[0]?.finalContents, [
+    "Observed checkout total: $42",
+  ]);
+});
+
+test("EvidenceLedger produces typed timeout facts", () => {
+  const ledger = createEvidenceLedger();
+  const snapshot = ledger.currentRound([
+    {
+      toolCallId: "toolu-timeout",
+      toolName: "sessions_send",
+      content: JSON.stringify({
+        protocol: SESSION_TOOL_RESULT_PROTOCOL,
+        task_id: "task-typed-timeout",
+        session_key: "worker:source:task-typed-timeout",
+        agent_id: "source",
+        status: "timeout",
+        tool_chain: [],
+        timeout_seconds: 30,
+        evidence_available: true,
+        result: "partial source evidence",
+        final_content: null,
+        payload: null,
+      }),
+    },
+  ]);
+
+  assert.equal(snapshot.timeoutSignals.length, 1);
+  assert.equal(
+    snapshot.timeoutSignals[0]?.sessionKey,
+    "worker:source:task-typed-timeout",
+  );
+  assert.equal(snapshot.timeoutSignals[0]?.agentId, "source");
+  assert.equal(snapshot.timeoutSignals[0]?.timeoutSeconds, 30);
+  assert.equal(snapshot.timeoutSignals[0]?.evidenceAvailable, true);
 });

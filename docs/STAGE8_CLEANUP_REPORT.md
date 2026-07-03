@@ -1396,4 +1396,41 @@ The remaining architecture work is now tracked in
 Stage 1 inventory lock is complete; subsequent work should follow that staged
 plan instead of resuming open-ended adapter thinning.
 
+### Stage 2 Evidence Producer Checkpoint
+
+Landed:
+
+- `tool-result-evidence.ts` now exposes typed completed-session and timeout
+  fact producers for structured session tool results.
+- `EvidenceLedger.currentRound()` now produces `completedSessions[]` and
+  `timeoutSignals[]`; its legacy singular fields are compatibility values
+  derived from those typed facts.
+- `ContinuationController.applyAfterExecuteContinuationHook` and
+  `CloseoutPolicyRegistry.applyPostExecuteCloseoutHook` consume the typed
+  EvidenceLedger arrays rather than raw completed/timeout finder helpers.
+- `architecture-guard.test.ts` now blocks engine policy owners from reintroducing
+  `findCompletedSessionEvidence` or `findSubAgentToolTimeout`, and pins the
+  installed hooks to typed completed/timeout evidence fields.
+
+Still remaining for later stages:
+
+- Permission facts remain text/runtime-progress backed until Stage 3 moves
+  approval wait-timeout, pending, applied, and denied state into `PermissionFacts`.
+- Task intent facts remain detector-backed except the already extracted
+  requested table/provider-schema path; Stage 4 owns that migration.
+- `legacy-text-detectors.ts` is still a shell until Stage 5 adds the registry
+  metadata and no-new-regex guard.
+
+Stage 2 gates:
+
+| Gate | Result |
+| --- | --- |
+| `npm run typecheck` | pass |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 278 / 278 |
+| `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
+| `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
+| `npm run parity:inline` | 272 / 272 |
+| `npm run parity:engine` | 272 / 272, all 14 chunks |
+| `git diff --check` | clean |
+
 The branch has been pushed to `origin/feat/stage8-engine-cleanup`.
