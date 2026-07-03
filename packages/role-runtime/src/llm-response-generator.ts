@@ -18,11 +18,12 @@ import type {
   RoleResponseGenerator,
 } from "./deterministic-response-generator";
 import {
+  buildFinalSynthesisSourceMessages,
   buildGatewayInput,
+  buildToolCallArtifactCleanupMessages,
   buildToolFreeGatewayInput,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
-  finalSynthesisFormatContract,
   hasToolDefinition,
   replaceInitialPromptMessages,
 } from "./gateway-input-builder";
@@ -3630,20 +3631,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
     try {
-      const finalSourceMessages: LLMMessage[] = [
-        ...input.messages,
-        {
-          role: "user",
-          content: [
-            ...finalSynthesisFormatContract(input.packet.taskPrompt, input.messages),
-            ...(input.reasonLines ?? [
-              `Tool-use round limit reached (${input.maxRounds}).`,
-              "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-              "State uncertainties and missing verification explicitly instead of trying another lookup.",
-            ]),
-          ].join("\n"),
-        },
-      ];
+      const finalSourceMessages = buildFinalSynthesisSourceMessages({
+        packet: input.packet,
+        messages: input.messages,
+        maxRounds: input.maxRounds,
+        ...(input.reasonLines === undefined
+          ? {}
+          : { reasonLines: input.reasonLines }),
+      });
       const finalMessages = prepareToolHistoryForGateway(finalSourceMessages);
       await this.recordToolResultPruningBoundarySafely(
         input.activation,
@@ -3729,21 +3724,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (!containsAnyToolCallForm(generated.result)) {
         return generated;
       }
-      const repairSourceMessages: LLMMessage[] = [
-        ...finalMessages,
-        {
-          role: "assistant",
-          content: generated.result.text,
-        },
-        {
-          role: "user",
-          content: [
-            "The previous response attempted to emit a tool call even though tools are disabled for final synthesis.",
-            "Do not write XML, JSON, or pseudo tool-call markup.",
-            "Produce only the final user-facing answer from the evidence already present in the conversation.",
-          ].join("\n"),
-        },
-      ];
+      const repairSourceMessages = buildToolCallArtifactCleanupMessages({
+        messages: finalMessages,
+        resultText: generated.result.text,
+      });
       const repairedMessages =
         prepareToolHistoryForGateway(repairSourceMessages);
       await this.recordToolResultPruningBoundarySafely(

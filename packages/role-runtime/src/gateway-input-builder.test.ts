@@ -6,7 +6,9 @@ import type { GenerateTextInput, LLMMessage } from "@turnkeyai/llm-adapter/index
 
 import type { RolePromptPacket } from "./prompt-policy";
 import {
+  buildFinalSynthesisSourceMessages,
   buildGatewayInput,
+  buildToolCallArtifactCleanupMessages,
   buildToolFreeGatewayInput,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
@@ -146,6 +148,58 @@ test("buildToolFreeGatewayInput strips tools, replaces messages, and recomputes 
   assert.equal(gatewayInput.envelope?.toolResultCount, 1);
   assert.ok((gatewayInput.envelope?.toolResultBytes ?? 0) > 0);
   assert.deepEqual(gatewayInput.envelope?.artifactIds, ["artifact-1"]);
+});
+
+test("buildFinalSynthesisSourceMessages appends format contract and default closeout guidance", () => {
+  const messages: LLMMessage[] = [{ role: "user", content: "Compare plans." }];
+
+  const finalMessages = buildFinalSynthesisSourceMessages({
+    packet: packet(),
+    messages,
+    maxRounds: 4,
+  });
+
+  assert.equal(finalMessages.length, 2);
+  assert.equal(finalMessages[0], messages[0]);
+  const guidance = String(finalMessages[1]?.content);
+  assert.match(guidance, /Final synthesis format contract:/);
+  assert.match(guidance, /Tool-use round limit reached \(4\)\./);
+  assert.match(
+    guidance,
+    /Do not call more tools\. Produce the best final answer/,
+  );
+
+  const customMessages = buildFinalSynthesisSourceMessages({
+    packet: packet(),
+    messages,
+    maxRounds: 4,
+    reasonLines: ["custom closeout reason"],
+  });
+  assert.match(String(customMessages[1]?.content), /custom closeout reason/);
+  assert.doesNotMatch(
+    String(customMessages[1]?.content),
+    /Tool-use round limit reached/,
+  );
+});
+
+test("buildToolCallArtifactCleanupMessages appends assistant text and cleanup prompt", () => {
+  const messages: LLMMessage[] = [{ role: "user", content: "Finish." }];
+
+  const repairMessages = buildToolCallArtifactCleanupMessages({
+    messages,
+    resultText: "<tool_call>{}</tool_call>",
+  });
+
+  assert.deepEqual(repairMessages.slice(0, 1), messages);
+  assert.deepEqual(repairMessages[1], {
+    role: "assistant",
+    content: "<tool_call>{}</tool_call>",
+  });
+  assert.match(
+    String(repairMessages[2]?.content),
+    /attempted to emit a tool call/,
+  );
+  assert.match(String(repairMessages[2]?.content), /Produce only the final/);
 });
 
 test("replaceInitialPromptMessages swaps prompt messages and preserves tool-loop history", () => {

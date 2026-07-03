@@ -169,6 +169,52 @@ export function finalSynthesisFormatContract(
   ];
 }
 
+export function buildFinalSynthesisSourceMessages(input: {
+  packet: RolePromptPacket;
+  messages: LLMMessage[];
+  maxRounds: number;
+  reasonLines?: string[];
+}): LLMMessage[] {
+  return [
+    ...input.messages,
+    {
+      role: "user",
+      content: [
+        ...finalSynthesisFormatContract(
+          input.packet.taskPrompt,
+          input.messages,
+        ),
+        ...(input.reasonLines ?? [
+          `Tool-use round limit reached (${input.maxRounds}).`,
+          "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+          "State uncertainties and missing verification explicitly instead of trying another lookup.",
+        ]),
+      ].join("\n"),
+    },
+  ];
+}
+
+export function buildToolCallArtifactCleanupMessages(input: {
+  messages: LLMMessage[];
+  resultText: string;
+}): LLMMessage[] {
+  return [
+    ...input.messages,
+    {
+      role: "assistant",
+      content: input.resultText,
+    },
+    {
+      role: "user",
+      content: [
+        "The previous response attempted to emit a tool call even though tools are disabled for final synthesis.",
+        "Do not write XML, JSON, or pseudo tool-call markup.",
+        "Produce only the final user-facing answer from the evidence already present in the conversation.",
+      ].join("\n"),
+    },
+  ];
+}
+
 export function withoutToolUse(input: GenerateTextInput): GenerateTextInput {
   const { tools: _tools, toolChoice: _toolChoice, ...rest } = input;
   return {
