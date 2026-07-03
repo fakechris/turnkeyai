@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RoleActivationInput, TeamMessage } from "@turnkeyai/core-types/team";
+import type {
+  RoleActivationInput,
+  RuntimeProgressEvent,
+  TeamMessage,
+} from "@turnkeyai/core-types/team";
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
-import { createEngineRuntimeForcedToolRoundRunner } from "./engine-forced-tool-round-runner";
+import {
+  createEngineRuntimeForcedToolRoundRunner,
+  createRoleEngineRuntimeForcedToolRoundRunner,
+} from "./engine-forced-tool-round-runner";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
 
@@ -69,6 +76,61 @@ test("createEngineRuntimeForcedToolRoundRunner wires forced-round persistence an
         progress !== null &&
         (progress as { metadata?: { boundaryKind?: string } }).metadata
           ?.boundaryKind === "provider_tool_protocol_round",
+    ),
+    true,
+  );
+});
+
+test("createRoleEngineRuntimeForcedToolRoundRunner selects tool-loop recorder for provider protocol", async () => {
+  const toolTrace: NativeToolRoundTrace[] = [];
+  const rootProgress: RuntimeProgressEvent[] = [];
+  const toolLoopProgress: RuntimeProgressEvent[] = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "permission_result",
+    input: { approved: true },
+  };
+  const runner = createRoleEngineRuntimeForcedToolRoundRunner({
+    toolLoop: {
+      runtimeProgressRecorder: {
+        async record(progress) {
+          toolLoopProgress.push(progress);
+        },
+      },
+      executor: {
+        definitions: () => [],
+        async execute() {
+          return {
+            toolCallId: "call-1",
+            toolName: "permission_result",
+            content: "approved",
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: {
+      async record(progress) {
+        rootProgress.push(progress);
+      },
+    },
+    deferToolObservability: false,
+    now: () => 1234,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    toolTrace,
+    toolLoopStartedAtMs: 1200,
+  });
+
+  await runner({
+    messages: [{ role: "user", content: "Force permission result." }],
+    toolCalls: [call],
+    assistantText: "Recording permission result.",
+  });
+
+  assert.equal(rootProgress.length, 0);
+  assert.equal(
+    toolLoopProgress.some(
+      (progress) => progress.metadata?.boundaryKind === "provider_tool_protocol_round",
     ),
     true,
   );

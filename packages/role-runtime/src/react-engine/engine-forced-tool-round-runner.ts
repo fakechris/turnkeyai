@@ -36,6 +36,12 @@ export interface CreateEngineRuntimeForcedToolRoundRunnerInput {
   signal?: AbortSignal | undefined;
 }
 
+export interface CreateRoleEngineRuntimeForcedToolRoundRunnerInput
+  extends Omit<
+    CreateEngineRuntimeForcedToolRoundRunnerInput,
+    "providerRuntimeProgressRecorder"
+  > {}
+
 export interface EngineRuntimeForcedToolRoundRunnerInput {
   messages: LLMMessage[];
   toolCalls: LLMToolCall[];
@@ -88,4 +94,14 @@ export function createEngineRuntimeForcedToolRoundRunner(
           ...protocolRound,
         }),
     });
+}
+
+export function createRoleEngineRuntimeForcedToolRoundRunner(
+  input: CreateRoleEngineRuntimeForcedToolRoundRunnerInput,
+): EngineRuntimeForcedToolRoundRunner {
+  return createEngineRuntimeForcedToolRoundRunner({
+    ...input,
+    providerRuntimeProgressRecorder:
+      input.toolLoop?.runtimeProgressRecorder ?? input.runtimeProgressRecorder,
+  });
 }

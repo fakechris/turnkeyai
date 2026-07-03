@@ -246,7 +246,7 @@ import {
   createContinuationController,
   createEngineFinalResponseBuilder,
   createRoleEngineModelClient,
-  createEngineRuntimeForcedToolRoundRunner,
+  createRoleEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
   createEngineRoleToolkit,
   createRoleEngineRunState,
@@ -2593,11 +2593,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       activation,
     });
     const executeForcedRuntimeToolRound =
-      createEngineRuntimeForcedToolRoundRunner({
+      createRoleEngineRuntimeForcedToolRoundRunner({
         toolLoop: this.toolLoop,
         runtimeProgressRecorder: this.runtimeProgressRecorder,
-        providerRuntimeProgressRecorder:
-          this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
         nativeToolMessageStore: this.nativeToolMessageStore,
         deferToolObservability: this.deferToolObservability,
         now: () => this.clock.now(),

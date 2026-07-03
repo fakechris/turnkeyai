@@ -135,9 +135,43 @@ test("engine forced runtime tool-round executor wiring routes through runner own
     "engine forced-round execution wiring must not stay inline in runViaReActEngine",
   );
   assert.equal(
-    engineSource.includes("createEngineRuntimeForcedToolRoundRunner({"),
+    engineSource.includes("createRoleEngineRuntimeForcedToolRoundRunner({"),
     true,
-    "runViaReActEngine should create forced-round runners through the react-engine owner",
+    "runViaReActEngine should create role-engine forced-round runners through the react-engine owner",
+  );
+});
+
+test("engine forced runtime tool-round role wiring routes through runner owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const runnerSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-forced-tool-round-runner.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    engineSource.includes("createEngineRuntimeForcedToolRoundRunner({"),
+    false,
+    "engine forced-round role wiring must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("providerRuntimeProgressRecorder:"),
+    false,
+    "engine forced-round provider-recorder selection must live with the runner owner",
+  );
+  assert.equal(
+    engineSource.includes("createRoleEngineRuntimeForcedToolRoundRunner({"),
+    true,
+    "runViaReActEngine should create role-engine forced-round runners through the owner",
+  );
+  assert.equal(
+    runnerSource.includes("providerRuntimeProgressRecorder:"),
+    true,
+    "forced-round runner owner should bind provider protocol recorder selection",
   );
 });
 
