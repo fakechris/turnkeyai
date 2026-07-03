@@ -1,4 +1,7 @@
-import type { RoleActivationInput } from "@turnkeyai/core-types/team";
+import type {
+  RoleActivationInput,
+  RuntimeProgressRecorder,
+} from "@turnkeyai/core-types/team";
 import type {
   ModelClient,
   ReActToolChoice,
@@ -18,7 +21,10 @@ import { buildToolRoundGatewayRequest } from "../gateway-input-builder";
 import type { ModelCallBoundaryTrace } from "../model-call-trace";
 import type { PreCompactionMemoryFlusher } from "../pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "../prompt-policy";
-import type { ToolResultPruningSnapshot } from "../tool-history-pruning";
+import {
+  recordToolResultPruningBoundarySafely,
+  type ToolResultPruningSnapshot,
+} from "../tool-history-pruning";
 import type { FinalToolRoundWarningInput } from "./execution-budget-controller";
 
 type EngineModelReduction = NonNullable<GenerateWithEnvelopeRetryResult["reduction"]>;
@@ -54,6 +60,11 @@ export interface CreateEngineModelClientInput {
   executionBudget: EngineModelExecutionBudget;
   runState: EngineModelRunState;
   recordPruning(snapshot: ToolResultPruningSnapshot | undefined): Promise<void> | void;
+}
+
+export interface CreateRoleEngineModelClientInput
+  extends Omit<CreateEngineModelClientInput, "recordPruning"> {
+  runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
 }
 
 export interface EngineModelClient {
@@ -121,6 +132,22 @@ export function createEngineModelClient(
     model,
     lastResult: () => lastResult,
   };
+}
+
+export function createRoleEngineModelClient(
+  input: CreateRoleEngineModelClientInput,
+): EngineModelClient {
+  const { runtimeProgressRecorder, ...engineInput } = input;
+  return createEngineModelClient({
+    ...engineInput,
+    recordPruning: (snapshot) =>
+      recordToolResultPruningBoundarySafely({
+        activation: input.activation,
+        runtimeProgressRecorder,
+        selection: input.selection,
+        snapshot,
+      }),
+  });
 }
 
 function mapReActToolChoice(

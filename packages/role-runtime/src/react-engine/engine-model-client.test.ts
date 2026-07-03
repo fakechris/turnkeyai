@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RoleActivationInput } from "@turnkeyai/core-types/team";
+import type {
+  RoleActivationInput,
+  RuntimeProgressEvent,
+} from "@turnkeyai/core-types/team";
 import type { GenerateTextInput, LLMMessage } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
-import { createEngineModelClient } from "./engine-model-client";
+import {
+  createEngineModelClient,
+  createRoleEngineModelClient,
+} from "./engine-model-client";
 import type { ModelCallBoundaryTrace } from "../model-call-trace";
 import type { RolePromptPacket } from "../prompt-policy";
 
@@ -97,6 +103,83 @@ test("createEngineModelClient builds tool-round gateway requests and records mod
   assert.equal(trace[0]?.toolChoice, "tool:web_search");
   assert.equal(engineModel.lastResult()?.text, "engine answer");
 });
+
+test("createRoleEngineModelClient records pruning boundaries through role-runtime recorder", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => ({
+    text: "engine answer",
+    modelId: "model-1",
+    providerId: "provider",
+    protocol: "openai-compatible",
+    adapterName: "test",
+    raw: {},
+  });
+  const events: RuntimeProgressEvent[] = [];
+  const trace: ModelCallBoundaryTrace[] = [];
+  const engineModel = createRoleEngineModelClient({
+    gateway,
+    now: () => 4000,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    selection: { modelId: "model-1", modelChainId: "chain-1" },
+    baseGatewayInput: {
+      modelId: "model-1",
+      tools: [{ name: "web_search", description: "", inputSchema: {} }],
+      messages: [{ role: "user", content: "Base prompt." }],
+    },
+    modelCallTrace: trace,
+    maxRounds: 2,
+    activeToolLoop: true,
+    runtimeProgressRecorder: {
+      async record(event) {
+        events.push(event);
+      },
+    },
+    executionBudget: {
+      applyFinalToolRoundWarning(input) {
+        return input.messages;
+      },
+    },
+    runState: {
+      recordReduction() {},
+      recordMemoryFlush() {},
+    },
+  });
+
+  await engineModel.model.generate({
+    messages: buildPruningMessages(),
+    tools: [{ name: "web_search", description: "", inputSchema: {} }],
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.metadata?.boundaryKind, "tool_result_pruning");
+  assert.equal(events[0]?.metadata?.modelId, "model-1");
+  assert.equal(events[0]?.metadata?.modelChainId, "chain-1");
+  assert.equal(
+    typeof events[0]?.metadata?.toolResultCountBefore,
+    "number",
+  );
+  assert.equal(
+    typeof events[0]?.metadata?.toolResultCountAfter,
+    "number",
+  );
+  assert.ok(
+    Number(events[0]?.metadata?.toolResultCountBefore) >
+      Number(events[0]?.metadata?.toolResultCountAfter),
+  );
+});
+
+function buildPruningMessages(): LLMMessage[] {
+  return [
+    { role: "user", content: "summarize the tool evidence" },
+    ...Array.from({ length: 20 }, (_, index) => ({
+      role: "tool" as const,
+      toolCallId: `call-${index}`,
+      name: "web_search",
+      content: `tool result ${index}\n${"x".repeat(5000)}`,
+    })),
+  ];
+}
 
 function buildActivation(): RoleActivationInput {
   return {

@@ -245,7 +245,7 @@ import {
   createCompletedCloseoutController,
   createContinuationController,
   createEngineFinalResponseBuilder,
-  createEngineModelClient,
+  createRoleEngineModelClient,
   createEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
   createEngineRoleToolkit,
@@ -2608,7 +2608,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolLoopStartedAtMs,
         ...(signal ? { signal } : {}),
       });
-    const engineModel = createEngineModelClient({
+    const engineModel = createRoleEngineModelClient({
       gateway: this.gateway,
       now: () => this.clock.now(),
       preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
@@ -2619,15 +2619,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       modelCallTrace,
       maxRounds,
       activeToolLoop: Boolean(activeToolLoop),
+      runtimeProgressRecorder: this.runtimeProgressRecorder,
       executionBudget,
       runState,
-      recordPruning: (snapshot) =>
-        recordToolResultPruningBoundarySafely({
-          activation,
-          runtimeProgressRecorder: this.runtimeProgressRecorder,
-          selection,
-          snapshot,
-        }),
     });
     const agent = createReActAgent<RoleToolContext>({
       model: engineModel.model,

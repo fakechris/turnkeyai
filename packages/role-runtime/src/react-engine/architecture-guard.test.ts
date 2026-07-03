@@ -430,9 +430,9 @@ test("engine model gateway request construction routes through neutral gateway b
     "engine model client wrapper must not stay inline in the adapter",
   );
   assert.equal(
-    source.includes("createEngineModelClient({"),
+    source.includes("createRoleEngineModelClient({"),
     true,
-    "adapter should create the engine model client through the react-engine owner",
+    "adapter should create the role-engine model client through the react-engine owner",
   );
   const modelSource = readFileSync(path.join(ENGINE_DIR, "engine-model-client.ts"), "utf8");
 
@@ -455,6 +455,45 @@ test("engine model gateway request construction routes through neutral gateway b
     modelSource.includes("buildToolRoundGatewayRequest"),
     true,
     "engine model gateway request construction must route through the neutral gateway builder",
+  );
+});
+
+test("engine model client role-runtime wiring routes through model owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const modelSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-model-client.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    engineSource.includes("createEngineModelClient({"),
+    false,
+    "engine model client dependency wiring must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("recordPruning: (snapshot) =>"),
+    false,
+    "engine model pruning callback wiring must live with the model owner",
+  );
+  assert.equal(
+    engineSource.includes("recordToolResultPruningBoundarySafely({"),
+    false,
+    "engine model pruning boundary recorder call must live with the model owner",
+  );
+  assert.equal(
+    engineSource.includes("createRoleEngineModelClient({"),
+    true,
+    "runViaReActEngine should create role-engine model clients through the owner",
+  );
+  assert.equal(
+    modelSource.includes("recordToolResultPruningBoundarySafely({"),
+    true,
+    "engine model owner should bind role-runtime pruning boundary recording",
   );
 });
 
