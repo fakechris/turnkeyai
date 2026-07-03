@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `cfb2fded9e4776082f5cb483247285da7c3bd69c`
+**Code HEAD before this docs-only report:** `517897353c3cee3814b766f81f8e704266b42049`
 **Date:** 2026-07-02
 
 ## Summary
@@ -157,6 +157,10 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/engine-role-toolkit.ts`: the owner exposes the filtered tool
   definitions, `has()` lookup, active tool-loop execution delegation, and
   no-active-loop unknown-tool fallback used by the ReAct agent.
+  Role-engine run-state value typing now also lives in
+  `react-engine/engine-run-state.ts`: the adapter calls
+  `createRoleEngineRunState()` instead of declaring the role-runtime state value
+  map locally inside `runViaReActEngine`.
   The full `onAfterExecuteContinue` hook flow now enters through
   `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
   owns provider tool-protocol round recording before current-round evidence
@@ -516,13 +520,16 @@ outside the terminal completion path.
 | `239395c` | Move engine final response assembly into `react-engine/engine-final-response.ts`; adapter passes final run-state snapshots into the owner builder. |
 | `f918140` | Move engine ReAct event consumption into `react-engine/engine-agent-runner.ts`; adapter receives final text from the owner runner. |
 | `cfb2fde` | Move engine role toolkit wiring into `react-engine/engine-role-toolkit.ts`; adapter passes tool definitions and active loop into the owner. |
+| `5178973` | Move role-engine run-state value typing/factory into `react-engine/engine-run-state.ts`; adapter calls `createRoleEngineRunState()`. |
 
 ## Current Extracted Implementation
 
 Real implementation now exists in:
 
 - `react-engine/types.ts`
-- `react-engine/engine-run-state.ts`
+- `react-engine/engine-run-state.ts` for generic engine run state plus the
+  role-runtime-specific run-state value map and `createRoleEngineRunState()`
+  factory used by `runViaReActEngine`.
 - `react-engine/policy-trace.ts` for trace recording, the no-op trace, and the
   engine policy-trace debug env gate.
 - `react-engine/hook-policy-trace.ts`
@@ -796,13 +803,13 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine role toolkit wiring slice:
+Fresh gates run for this role-engine run-state typing slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/engine-role-toolkit.test.ts packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 28 / 28 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 237 / 237 |
+| `npx tsx --test packages/role-runtime/src/react-engine/engine-run-state.test.ts packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 31 / 31 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 241 / 241 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -1007,6 +1014,9 @@ Stage 8 boundaries/slices are now real:
   `react-engine/engine-role-toolkit.ts`; `runViaReActEngine` passes filtered tool
   definitions and the active tool loop instead of declaring the toolkit methods
   inline.
+- role-engine run-state value typing now routes through
+  `react-engine/engine-run-state.ts`; `runViaReActEngine` calls
+  `createRoleEngineRunState()` instead of declaring the state value map locally.
 - request-envelope overflow retry orchestration now routes through neutral
   `gateway-envelope-retry.ts`; the adapter injects gateway, clock, and
   pre-compaction memory flusher instead of owning `generateWithEnvelopeRetry`.
@@ -1260,7 +1270,8 @@ Continue with the remaining high-risk pieces:
   response assembly delegates to
   `react-engine/engine-final-response.ts`; engine ReAct event consumption
   delegates to `react-engine/engine-agent-runner.ts`; engine role toolkit
-  wiring delegates to `react-engine/engine-role-toolkit.ts`; keep thinning the adapter. The only
+  wiring delegates to `react-engine/engine-role-toolkit.ts`; role-engine
+  run-state typing delegates to `react-engine/engine-run-state.ts`; keep thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
 
