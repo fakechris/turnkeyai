@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `acba8b628e8470f71add45fe542710151e89689d`
+**Code HEAD before this docs-only report:** `e2d29074f7387c0a94d060c2a6c785ba523087a6`
 **Date:** 2026-07-02
 
 ## Summary
@@ -535,6 +535,7 @@ outside the terminal completion path.
 | `e0c356e` | Move engine forced-round runner dependency wiring into `react-engine/engine-forced-tool-round-runner.ts`; adapter calls `createRoleEngineRuntimeForcedToolRoundRunner()`. |
 | `3aaecb7` | Move engine ReAct agent creation and boundary-round adjustment into `react-engine/engine-agent-runner.ts`; adapter calls `createRoleEngineAgentRunner()`. |
 | `acba8b6` | Move engine request-envelope reduction boundary wiring into `react-engine/engine-final-response.ts`; adapter calls `recordEngineReductionBoundary()`. |
+| `e2d2907` | Move the engine `onToolCalls` hook flow into `react-engine/tool-call-normalizer.ts`; adapter delegates normalization context construction and recovery-budget truncation. |
 
 ## Current Extracted Implementation
 
@@ -552,7 +553,9 @@ Real implementation now exists in:
 - `react-engine/tool-call-normalizer.ts` for engine tool-call normalization
   order/pipeline and live normalization context construction, including session
   continuation context/directive resolution, continuation lookup directive
-  resolution, and browser/explore worker availability derivation.
+  resolution, browser/explore worker availability derivation, and the full
+  `onToolCalls` hook flow that normalizes before applying final-recovery
+  budget truncation.
 - `react-engine/permission-policy.ts` for approval-gate normalization,
   read-only permission-query suppression selection, and read-only suppression
   context construction / hook-result application, plus the
@@ -824,14 +827,14 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine reduction boundary wiring slice:
+Fresh gates run for this engine onToolCalls hook-flow slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 31 / 31 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-final-response.test.ts` | 3 / 3 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 251 / 251 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 32 / 32 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/tool-call-normalizer.test.ts` | 6 / 6 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 254 / 254 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -848,10 +851,10 @@ No. `runViaReActEngine` still begins at
 root plus several policy-heavy hook bodies. The main improvement is that more than sixty
 Stage 8 boundaries/slices are now real:
 
-- `onToolCalls` delegates normalization to `normalizeEngineToolCalls`, and no
-  longer builds normalizer context locally; `ToolCallNormalizer` now owns live
-  continuation context/directive lookup and browser/explore availability
-  construction.
+- `onToolCalls` delegates to `applyEngineToolCallsHook`; `ToolCallNormalizer`
+  now owns live continuation context/directive lookup, browser/explore
+  availability construction, normalization order, and final-recovery budget
+  truncation after normalization.
 - engine policy-trace debug gating routes through `policy-trace.ts`; the adapter
   imports the owner-owned helper instead of carrying the env check locally.
 - approval-gate normalizer steps and read-only suppression selection/application
@@ -1303,7 +1306,8 @@ Continue with the remaining high-risk pieces:
   wiring delegates to `react-engine/engine-role-toolkit.ts`; role-engine
   run-state typing delegates to `react-engine/engine-run-state.ts`; engine run
   observer dependency wiring delegates to
-  `react-engine/engine-run-observer.ts`; keep thinning the adapter. The only
+  `react-engine/engine-run-observer.ts`; engine `onToolCalls` hook flow
+  delegates to `react-engine/tool-call-normalizer.ts`; keep thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
 
