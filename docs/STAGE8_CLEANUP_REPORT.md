@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `ca2e7e89287c064e031f5e18bed358f3b4d7dabb`
+**Code HEAD before this docs-only report:** `173272273478cf2838c06a6ec95102c87d8a8646`
 **Date:** 2026-07-02
 
 ## Summary
@@ -280,7 +280,9 @@ could not move the normalizer without making the inline parity reference import 
   pruning metadata for inline, engine, and final-synthesis gateway calls.
   Provider tool protocol boundary recording now also lives there, so inline and
   engine use the same neutral `provider_tool_protocol_round` runtime progress
-  metadata construction.
+  metadata construction. The forced runtime tool-round no-observer fallback now
+  also routes through a `tool-history-pruning.ts` owner wrapper instead of an
+  adapter-private provider-protocol helper.
   Tool-definition filtering for permission tools, task-tracking tools, and
   focused durable-memory recall now lives in neutral `tool-definition-filter.ts`.
   Model-call boundary trace construction and model-use summary aggregation now
@@ -463,6 +465,7 @@ outside the terminal completion path.
 | `f36fb67` | Move runtime tool-progress safe recording into `tool-use.ts`; adapter passes recorder/defer inputs instead of owning the safe recorder wrapper. |
 | `6d06ac0` | Move native tool trace persistence into `native-tool-messages.ts`; adapter passes store/clock/defer inputs instead of owning the safe persister wrapper. |
 | `ca2e7e8` | Move runtime tool-progress observer emission into `tool-use.ts`; adapter passes recorder/defer/observer inputs instead of owning the safe emitter wrapper. |
+| `1732722` | Move forced runtime provider-protocol fallback recording into `tool-history-pruning.ts`; adapter passes recorder/clock/defer inputs instead of owning the private wrapper. |
 
 ## Current Extracted Implementation
 
@@ -631,7 +634,8 @@ Real implementation now exists in:
 - `tool-history-pruning.ts` for request-envelope tool-result pruning, older
   tool-history compaction, tool-result envelope accounting, pruning trace
   snapshots, assistant/tool block indexing helpers, and runtime pruning boundary
-  progress recording, plus provider tool protocol boundary progress recording.
+  progress recording, plus provider tool protocol boundary progress recording
+  and the forced runtime tool-round provider-protocol fallback wrapper.
 - `tool-definition-filter.ts` for permission-tool suppression, source-check
   task-tracking suppression, focused durable-memory recall narrowing, and
   tool-definition filter prompt/message context construction.
@@ -712,21 +716,21 @@ All gates below passed on the current code before the report update:
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/prompt-policy.test.ts` | 31 / 31 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
-| `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 8 / 8 |
+| `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 9 / 9 |
 | `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 100 / 100 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 15 / 15 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 16 / 16 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 220 / 220 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 221 / 221 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
-| `npm run parity:inline` | 264 / 264, 0 fail |
+| `npm run parity:inline` | 272 / 272, 0 fail |
 | `npm run parity:engine` | 272 / 272, 0 fail; all 14 chunks completed |
 
-Note: this latest parity run reported 264 inline test points and discovered 272
+Note: this latest parity run reported 272 inline test points and discovered 272
 engine test points. Engine chunks completed without individual recovery.
 
 ## Is The Adapter Thin?
@@ -870,7 +874,9 @@ Stage 8 boundaries/slices are now real:
 - provider tool protocol boundary recording now also routes through
   `tool-history-pruning.ts`; the adapter passes activation, recorder, clock, defer
   mode, messages, calls, and results instead of owning the
-  `provider_tool_protocol_round` progress metadata shape.
+  `provider_tool_protocol_round` progress metadata shape. The forced runtime
+  tool-round no-observer fallback now also calls a `tool-history-pruning.ts`
+  owner wrapper instead of an adapter-private helper.
 - runtime tool-progress safe recording and observer emission now route through
   `tool-use.ts`; the adapter passes recorder/defer/observer inputs instead of
   keeping adapter-private safe recorder/emitter wrappers.
@@ -1129,7 +1135,8 @@ Continue with the remaining high-risk pieces:
   and model-error fallback / flow-selection / hook-application /
   forced-round-result boundary slices; forced runtime tool-round execution still
   enters through an adapter-supplied executor callback, while runtime progress
-  recorder/observer emission now delegates to `tool-use.ts`; keep thinning the
+  recorder/observer emission delegates to `tool-use.ts` and provider-protocol
+  fallback recording delegates to `tool-history-pruning.ts`; keep thinning the
   adapter.
 
 The branch is **not pushed**.
