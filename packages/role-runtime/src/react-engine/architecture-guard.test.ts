@@ -254,3 +254,23 @@ test("engine model gateway request construction routes through neutral gateway b
     "engine model gateway request construction must route through the neutral gateway builder",
   );
 });
+
+test("tool-result pruning boundary recording routes through neutral pruning owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async recordToolResultPruningBoundary"),
+    false,
+    "tool-result pruning boundary recording must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes('boundaryKind: "tool_result_pruning"'),
+    false,
+    "tool-result pruning boundary metadata construction must live in tool-history-pruning",
+  );
+  assert.equal(
+    source.includes("recordToolResultPruningBoundarySafely({"),
+    true,
+    "adapter should call the neutral safe pruning boundary recorder",
+  );
+});

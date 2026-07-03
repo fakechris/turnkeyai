@@ -1,4 +1,8 @@
 import type {
+  RoleActivationInput,
+  RuntimeProgressRecorder,
+} from "@turnkeyai/core-types/team";
+import type {
   LLMContentBlock,
   LLMMessage,
 } from "@turnkeyai/llm-adapter/index";
@@ -126,6 +130,77 @@ export function summarizeToolResultPruning(
     messageCountAfter: afterMessages.length,
     limits,
   };
+}
+
+export async function recordToolResultPruningBoundarySafely(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  snapshot?: ToolResultPruningSnapshot | undefined;
+}): Promise<void> {
+  try {
+    await recordToolResultPruningBoundary(input);
+  } catch (error) {
+    console.error("runtime tool-result pruning boundary recording failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      error,
+    });
+  }
+}
+
+async function recordToolResultPruningBoundary(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  snapshot?: ToolResultPruningSnapshot | undefined;
+}): Promise<void> {
+  const { activation, runtimeProgressRecorder, selection, snapshot } = input;
+  if (!runtimeProgressRecorder || !snapshot) {
+    return;
+  }
+  await runtimeProgressRecorder.record({
+    progressId: `progress:tool-result-pruning:${activation.handoff.taskId}:${Date.now()}`,
+    threadId: activation.thread.threadId,
+    chainId: `flow:${activation.flow.flowId}`,
+    spanId: `role:${activation.runState.runKey}`,
+    ...(activation.runState.lastDequeuedTaskId
+      ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
+      : {}),
+    subjectKind: "role_run",
+    subjectId: activation.runState.runKey,
+    phase: "degraded",
+    progressKind: "boundary",
+    heartbeatSource: "control_path",
+    continuityState: "alive",
+    summary: `Tool result history pruned for prompt input (${snapshot.prunedToolResults} result(s)).`,
+    recordedAt: Date.now(),
+    flowId: activation.flow.flowId,
+    taskId: activation.handoff.taskId,
+    roleId: activation.runState.roleId,
+    metadata: {
+      boundaryKind: "tool_result_pruning",
+      ...(selection.modelId ? { modelId: selection.modelId } : {}),
+      ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+      prunedToolResults: snapshot.prunedToolResults,
+      pruningReasons: snapshot.reasons,
+      compactedHistory: snapshot.compactedHistory,
+      toolResultCountBefore: snapshot.toolResultCountBefore,
+      toolResultCountAfter: snapshot.toolResultCountAfter,
+      toolResultBytesBefore: snapshot.toolResultBytesBefore,
+      toolResultBytesAfter: snapshot.toolResultBytesAfter,
+      messageCountBefore: snapshot.messageCountBefore,
+      messageCountAfter: snapshot.messageCountAfter,
+      pruningLimits: snapshot.limits,
+    },
+  });
 }
 
 export function pruneToolResultMessagesForGateway(

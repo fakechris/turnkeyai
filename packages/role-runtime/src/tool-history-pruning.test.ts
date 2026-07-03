@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import {
@@ -12,6 +13,7 @@ import {
   pruneToolResultMessagesForGateway,
   readToolResultContentText,
   readToolResultPruningLimits,
+  recordToolResultPruningBoundarySafely,
   summarizeToolResultPruning,
   type ToolResultPruningLimits,
 } from "./tool-history-pruning";
@@ -132,4 +134,110 @@ test("tool history block counters find the latest assistant call and following r
   assert.deepEqual(toolIndexes, [5]);
   assert.equal(countToolUseBlocks(messages[assistantIndex]), 1);
   assert.equal(countToolResultBlocks(messages, toolIndexes), 0);
+});
+
+test("recordToolResultPruningBoundarySafely records pruning metadata", async () => {
+  const events: Array<{
+    progressId: string;
+    summary: string;
+    recordedAt: number;
+    metadata?: Record<string, unknown>;
+  }> = [];
+  const activation = {
+    thread: { threadId: "thread-1" },
+    flow: { flowId: "flow-1" },
+    handoff: { taskId: "task-1" },
+    runState: {
+      runKey: "run-1",
+      roleId: "role:researcher",
+      lastDequeuedTaskId: "dispatch-task-1",
+    },
+  } as unknown as RoleActivationInput;
+  const snapshot = {
+    prunedToolResults: 2,
+    reasons: ["older_than_recent_window"],
+    compactedHistory: true,
+    toolResultCountBefore: 3,
+    toolResultCountAfter: 2,
+    toolResultBytesBefore: 300,
+    toolResultBytesAfter: 120,
+    messageCountBefore: 8,
+    messageCountAfter: 6,
+    limits: baseLimits,
+  };
+
+  await recordToolResultPruningBoundarySafely({
+    activation,
+    runtimeProgressRecorder: {
+      async record(event) {
+        events.push(event as (typeof events)[number]);
+      },
+    },
+    selection: {
+      modelId: "model-a",
+      modelChainId: "chain-a",
+    },
+    snapshot,
+  });
+
+  assert.equal(events.length, 1);
+  assert.match(
+    events[0]!.progressId,
+    /^progress:tool-result-pruning:task-1:/,
+  );
+  assert.match(events[0]!.summary, /Tool result history pruned/);
+  assert.equal(typeof events[0]!.recordedAt, "number");
+  assert.deepEqual(events[0]!.metadata, {
+    boundaryKind: "tool_result_pruning",
+    modelId: "model-a",
+    modelChainId: "chain-a",
+    prunedToolResults: 2,
+    pruningReasons: ["older_than_recent_window"],
+    compactedHistory: true,
+    toolResultCountBefore: 3,
+    toolResultCountAfter: 2,
+    toolResultBytesBefore: 300,
+    toolResultBytesAfter: 120,
+    messageCountBefore: 8,
+    messageCountAfter: 6,
+    pruningLimits: baseLimits,
+  });
+});
+
+test("recordToolResultPruningBoundarySafely is a no-op without recorder or snapshot", async () => {
+  const activation = {
+    thread: { threadId: "thread-1" },
+    flow: { flowId: "flow-1" },
+    handoff: { taskId: "task-1" },
+    runState: { runKey: "run-1", roleId: "role:researcher" },
+  } as unknown as RoleActivationInput;
+  let records = 0;
+
+  await recordToolResultPruningBoundarySafely({
+    activation,
+    runtimeProgressRecorder: {
+      async record() {
+        records += 1;
+      },
+    },
+    selection: {},
+  });
+  await recordToolResultPruningBoundarySafely({
+    activation,
+    selection: {},
+    snapshot: {
+      prunedToolResults: 1,
+      reasons: [],
+      compactedHistory: false,
+      toolResultCountBefore: 1,
+      toolResultCountAfter: 1,
+      toolResultBytesBefore: 10,
+      toolResultBytesAfter: 5,
+      messageCountBefore: 2,
+      messageCountAfter: 2,
+      limits: baseLimits,
+    },
+  });
+
+  assert.equal(records, 0);
 });
