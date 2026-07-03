@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `517897353c3cee3814b766f81f8e704266b42049`
+**Code HEAD before this docs-only report:** `1de02ca83f98b6f9872c033fe7c588a7b123861b`
 **Date:** 2026-07-02
 
 ## Summary
@@ -161,6 +161,11 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/engine-run-state.ts`: the adapter calls
   `createRoleEngineRunState()` instead of declaring the role-runtime state value
   map locally inside `runViaReActEngine`.
+  Engine run observer dependency wiring now also lives in
+  `react-engine/engine-run-observer.ts`: the adapter calls
+  `createRoleEngineRunObserver()` instead of declaring tool-progress,
+  provider-protocol, and native-trace persistence callbacks inline inside
+  `runViaReActEngine`.
   The full `onAfterExecuteContinue` hook flow now enters through
   `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
   owns provider tool-protocol round recording before current-round evidence
@@ -521,6 +526,7 @@ outside the terminal completion path.
 | `f918140` | Move engine ReAct event consumption into `react-engine/engine-agent-runner.ts`; adapter receives final text from the owner runner. |
 | `cfb2fde` | Move engine role toolkit wiring into `react-engine/engine-role-toolkit.ts`; adapter passes tool definitions and active loop into the owner. |
 | `5178973` | Move role-engine run-state value typing/factory into `react-engine/engine-run-state.ts`; adapter calls `createRoleEngineRunState()`. |
+| `1de02ca` | Move engine run observer dependency wiring into `react-engine/engine-run-observer.ts`; adapter calls `createRoleEngineRunObserver()`. |
 
 ## Current Extracted Implementation
 
@@ -550,7 +556,10 @@ Real implementation now exists in:
   forced runtime tool-round provider tool-protocol round recording through an
   injected recorder, plus engine-path forced runtime tool-round native
   trace/progress snapshot persistence and assistant/tool message append through
-  an injected executor callback.
+  an injected executor callback; it now also owns role-engine observer
+  dependency wiring through `createRoleEngineRunObserver()`, including recorder
+  selection, native tool-message store persistence, clock, defer mode, and
+  activation binding.
 - `react-engine/execution-budget-controller.ts` for final tool-round warning,
   final-recovery truncation, per-round tool-call admission, and engine tool-batch
   execution, plus budget closeout snapshot construction for recovery-budget,
@@ -803,12 +812,13 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this role-engine run-state typing slice:
+Fresh gates run for this engine observer wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/engine-run-state.test.ts packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 31 / 31 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 27 / 27 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-run-observer.test.ts` | 8 / 8 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 241 / 241 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
@@ -1017,6 +1027,11 @@ Stage 8 boundaries/slices are now real:
 - role-engine run-state value typing now routes through
   `react-engine/engine-run-state.ts`; `runViaReActEngine` calls
   `createRoleEngineRunState()` instead of declaring the state value map locally.
+- engine run observer dependency wiring now routes through
+  `react-engine/engine-run-observer.ts`; `runViaReActEngine` passes the
+  observer inputs to `createRoleEngineRunObserver()` instead of declaring
+  tool-progress, provider-protocol, and native-trace persistence callbacks
+  inline.
 - request-envelope overflow retry orchestration now routes through neutral
   `gateway-envelope-retry.ts`; the adapter injects gateway, clock, and
   pre-compaction memory flusher instead of owning `generateWithEnvelopeRetry`.
@@ -1271,7 +1286,9 @@ Continue with the remaining high-risk pieces:
   `react-engine/engine-final-response.ts`; engine ReAct event consumption
   delegates to `react-engine/engine-agent-runner.ts`; engine role toolkit
   wiring delegates to `react-engine/engine-role-toolkit.ts`; role-engine
-  run-state typing delegates to `react-engine/engine-run-state.ts`; keep thinning the adapter. The only
+  run-state typing delegates to `react-engine/engine-run-state.ts`; engine run
+  observer dependency wiring delegates to
+  `react-engine/engine-run-observer.ts`; keep thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
 
