@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `fdc813656cf3c3e77ac64e7da27a0ac500239478`
+**Code HEAD before this docs-only report:** `73e36ca5734ce881236342c06bd9af44c41d3e0b`
 **Date:** 2026-07-02
 
 ## Summary
@@ -131,6 +131,9 @@ could not move the normalizer without making the inline parity reference import 
   `gateway-envelope-retry.ts`; the adapter injects the gateway, clock, and
   pre-compaction memory flusher while the owner keeps overflow detection,
   memory-flush handoff, reduced retry sequencing, and model-call trace recording.
+  Terminal final synthesis gateway/pruning/retry callback wiring now lives in
+  neutral `terminal-final-synthesis.ts`; inline and engine closeout paths call
+  that helper instead of the adapter keeping a private final-synthesis method.
   The full `onAfterExecuteContinue` hook flow now enters through
   `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
   owns provider tool-protocol round recording before current-round evidence
@@ -483,6 +486,7 @@ outside the terminal completion path.
 | `e44d4af` | Move role tool-call execution into `tool-use.ts`; adapter passes tool-loop/recorder/clock inputs instead of owning the private execution runner. |
 | `d1bee4c` | Move forced runtime tool-round orchestration into `tool-use.ts`; adapter passes persistence/provider callbacks instead of owning the private forced-round runner. |
 | `fdc8136` | Move request-envelope overflow retry orchestration into neutral `gateway-envelope-retry.ts`; adapter injects gateway/clock/flusher instead of owning the private retry method. |
+| `73e36ca` | Move terminal final-synthesis gateway wrapper into neutral `terminal-final-synthesis.ts`; adapter call sites inject through local composition callbacks instead of a private method. |
 
 ## Current Extracted Implementation
 
@@ -683,6 +687,10 @@ Real implementation now exists in:
   successful/reduced model-call boundary recording, safe pre-compaction memory
   flush handoff, compact/minimal/reference-only retry sequencing, and reduced
   retry gateway input delegation.
+- `terminal-final-synthesis.ts` for terminal final-synthesis gateway wrapper
+  wiring: controller entrypoint invocation, pruning boundary recording,
+  tool-free final synthesis through request-envelope retry, and shared
+  gateway/clock/flusher injection for inline and engine closeout call sites.
 - `native-tool-messages.ts` for native tool-message construction and persistence
   safe/defer handling, session trace canonicalization from structured session
   results, and native tool-call counting.
@@ -745,6 +753,7 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/pre-compaction-memory-flusher.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/gateway-envelope-retry.test.ts` | 1 / 1 |
+| `npx tsx --test packages/role-runtime/src/terminal-final-synthesis.test.ts` | 1 / 1 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 9 / 9 |
 | `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 103 / 103 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts` | 6 / 6 |
@@ -957,9 +966,12 @@ Stage 8 boundaries/slices are now real:
 - final-after-tool-round-limit terminal synthesis orchestration now enters
   through `TerminalCloseoutController.synthesizeFinalAfterToolRoundLimit()`;
   provider-schema retry, tool-call cleanup retry, repair merge, and
-  gateway-error local fallback are controller-owned while the adapter supplies
-  only gateway and pruning callbacks. The controller now also builds the
-  tool-free `GenerateTextInput` for each initial/repair synthesis callback.
+  gateway-error local fallback are controller-owned while
+  `terminal-final-synthesis.ts` supplies gateway, pruning, and request-envelope
+  retry callbacks. The adapter injects dependencies through local composition
+  callbacks instead of owning a private final-synthesis method. The controller
+  now also builds the tool-free `GenerateTextInput` for each initial/repair
+  synthesis callback.
 - extraneous provider-schema repair-message construction for terminal final
   synthesis now routes through `TerminalCloseoutController`; the adapter no
   longer assembles that repair prompt message array locally.
@@ -1175,8 +1187,9 @@ Continue with the remaining high-risk pieces:
   now delegates to `tool-use.ts`, runtime progress recorder/observer emission
   delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
   to `tool-history-pruning.ts`; request-envelope retry orchestration now
-  delegates to `gateway-envelope-retry.ts`; keep thinning the adapter. Remaining
-  adapter-private methods at this checkpoint are `runViaReActEngine` and
-  `generateFinalAfterToolRoundLimit`.
+  delegates to `gateway-envelope-retry.ts`; terminal final-synthesis gateway
+  wrapper wiring delegates to `terminal-final-synthesis.ts`; keep thinning the
+  adapter. The only remaining adapter-private method at this checkpoint is
+  `runViaReActEngine`.
 
 The branch is **not pushed**.
