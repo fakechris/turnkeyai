@@ -478,6 +478,31 @@ export interface TerminalCompletedCloseoutInput<
   >;
 }
 
+export interface TerminalCompletedCloseoutStateSnapshotter {
+  completedSession(): CompletedCloseoutVisibilitySession | undefined;
+  completedSessionToolResults(): ToolResult[] | undefined;
+}
+
+export interface TerminalCompletedCloseoutHookContext {
+  repairMarkers?: LLMMessage[];
+}
+
+export interface TerminalCompletedCloseoutHookInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends Omit<
+    TerminalCompletedCloseoutInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+    "completedSession" | "completedSessionToolResults" | "repairMarkers"
+  > {
+  state: TerminalCompletedCloseoutStateSnapshotter;
+  hookContext: TerminalCompletedCloseoutHookContext;
+}
+
 export interface TerminalCloseoutDecisionInput {
   closeout: ToolLoopCloseoutMetadata;
   reasonLines?: string[];
@@ -510,6 +535,11 @@ export interface TerminalCloseoutHookInput<
   > {
   approvalWaitTimeoutFallback?: ApprovalWaitTimeoutFallbackInput;
   completedCloseout?: TerminalCompletedCloseoutInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+  completedCloseoutHook?: TerminalCompletedCloseoutHookInput<
     TReduction,
     TReductionSnapshot,
     TMemoryFlush
@@ -1228,6 +1258,30 @@ export class TerminalCloseoutController {
     };
   }
 
+  buildCompletedCloseoutHookInput<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalCompletedCloseoutHookInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): TerminalCompletedCloseoutInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+    const { state, hookContext, ...closeoutInput } = input;
+    return {
+      ...closeoutInput,
+      completedSession: state.completedSession() ?? null,
+      completedSessionToolResults: state.completedSessionToolResults() ?? [],
+      repairMarkers: (hookContext.repairMarkers ??= []),
+    };
+  }
+
   async completeTerminalCloseout<
     TReduction = unknown,
     TReductionSnapshot = unknown,
@@ -1345,11 +1399,16 @@ export class TerminalCloseoutController {
         ),
       };
     }
+    const completedCloseout =
+      input.completedCloseout ??
+      (input.completedCloseoutHook
+        ? this.buildCompletedCloseoutHookInput(input.completedCloseoutHook)
+        : undefined);
     const completed =
       input.completed ??
-      (input.reason === "completed_sub_agent_final" && input.completedCloseout
+      (input.reason === "completed_sub_agent_final" && completedCloseout
         ? this.buildCompletedCloseoutSynthesis({
-            completedCloseout: input.completedCloseout,
+            completedCloseout,
             messages: input.messages,
           })
         : undefined);

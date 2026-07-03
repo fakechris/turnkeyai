@@ -659,6 +659,55 @@ test("engine terminate decision hook routes through closeout-policy owner", () =
   );
 });
 
+test("engine completed terminal handoff routes through terminal closeout owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const hookStart = engineSource.indexOf("onTerminate: async (reason, state");
+  const hookEnd = engineSource.indexOf(
+    "          if (terminalCompletion.kind === \"rearm\")",
+    hookStart,
+  );
+  assert.notEqual(hookStart, -1, "onTerminate hook must exist");
+  assert.notEqual(hookEnd, -1, "onTerminate terminal handoff boundary must be found");
+  const hookSource = engineSource.slice(hookStart, hookEnd);
+  const terminalSource = readFileSync(
+    path.join(ENGINE_DIR, "terminal-closeout-controller.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    hookSource.includes("completedSession: runState.completedSession()"),
+    false,
+    "completed terminal handoff must not read completed session state in the adapter",
+  );
+  assert.equal(
+    hookSource.includes(
+      "completedSessionToolResults:\n                  runState.completedSessionToolResults()",
+    ),
+    false,
+    "completed terminal handoff must not read completed tool results in the adapter",
+  );
+  assert.equal(
+    hookSource.includes("repairMarkers: (ctx.repairMarkers ??= [])"),
+    false,
+    "completed terminal handoff must not initialize repair markers in the adapter",
+  );
+  assert.equal(
+    hookSource.includes("completedCloseoutHook: {"),
+    true,
+    "onTerminate should delegate completed terminal handoff assembly to TerminalCloseoutController",
+  );
+  assert.equal(
+    terminalSource.includes("buildCompletedCloseoutHookInput("),
+    true,
+    "terminal closeout owner should expose the completed handoff builder",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");
@@ -847,7 +896,7 @@ test("terminal completed closeout repair gateway input routes through terminal c
     "await terminalCloseout.handleTerminalCloseoutHook({",
   );
   assert.notEqual(hookStart, -1, "terminal closeout hook handoff must exist");
-  const start = source.indexOf("completedCloseout: {", hookStart);
+  const start = source.indexOf("completedCloseoutHook: {", hookStart);
   const end = source.indexOf("\n              },\n            });", start);
   assert.notEqual(start, -1, "completed closeout handoff must exist");
   assert.notEqual(end, -1, "completed closeout handoff boundary must be found");

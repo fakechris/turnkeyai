@@ -2935,15 +2935,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     ? { reasonLines: terminalReasonLines }
                     : {}),
                 }),
-              completedCloseout: {
+              completedCloseoutHook: {
                 completedCloseout,
-                completedSession: runState.completedSession() ?? null,
-                completedSessionToolResults:
-                  runState.completedSessionToolResults() ?? [],
+                state: runState,
+                hookContext: ctx,
                 evidence: evidenceLedger,
                 baseGatewayInput: initialGatewayInput,
                 packet,
-                repairMarkers: (ctx.repairMarkers ??= []),
                 ...(activation ? { activation } : {}),
                 ...(initialGatewayInput.tools === undefined
                   ? {}
