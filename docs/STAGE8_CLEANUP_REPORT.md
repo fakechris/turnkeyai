@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `3aaecb723fee0e5daaaf19d48ad21ea9c020531b`
+**Code HEAD before this docs-only report:** `acba8b628e8470f71add45fe542710151e89689d`
 **Date:** 2026-07-02
 
 ## Summary
@@ -149,8 +149,9 @@ could not move the normalizer without making the inline parity reference import 
   Engine final response assembly now lives in
   `react-engine/engine-final-response.ts`: finalization epilogue application,
   final content/mention extraction, model metadata selection, tool/model-use
-  metadata, reduction/memory closeout metadata, mission report construction, and
-  debug-only policy trace exposure are handled by the react-engine owner.
+  metadata, reduction/memory closeout metadata, request-envelope reduction
+  boundary recording, mission report construction, and debug-only policy trace
+  exposure are handled by the react-engine owner.
   Engine agent event consumption now lives in
   `react-engine/engine-agent-runner.ts`: the owner creates the ReAct agent,
   applies the boundary-round `maxRounds + 1` adjustment, consumes
@@ -533,6 +534,7 @@ outside the terminal completion path.
 | `75e6e08` | Move engine model client dependency wiring into `react-engine/engine-model-client.ts`; adapter calls `createRoleEngineModelClient()`. |
 | `e0c356e` | Move engine forced-round runner dependency wiring into `react-engine/engine-forced-tool-round-runner.ts`; adapter calls `createRoleEngineRuntimeForcedToolRoundRunner()`. |
 | `3aaecb7` | Move engine ReAct agent creation and boundary-round adjustment into `react-engine/engine-agent-runner.ts`; adapter calls `createRoleEngineAgentRunner()`. |
+| `acba8b6` | Move engine request-envelope reduction boundary wiring into `react-engine/engine-final-response.ts`; adapter calls `recordEngineReductionBoundary()`. |
 
 ## Current Extracted Implementation
 
@@ -758,8 +760,10 @@ Real implementation now exists in:
 - `react-engine/engine-final-response.ts` for engine final generated-reply
   assembly: finalization epilogue invocation, requested three-line label
   enforcement, mention extraction, closeout-vs-last-model metadata selection,
-  tool-use/model-use/reduction/memory metadata construction, runtime-derived
-  mission report construction, and debug-only policy trace metadata exposure.
+  tool-use/model-use/reduction/memory metadata construction, engine
+  request-envelope reduction boundary recording through the neutral reducer
+  recorder, runtime-derived mission report construction, and debug-only policy
+  trace metadata exposure.
 - `react-engine/engine-agent-runner.ts` for engine ReAct event consumption:
   creates the `ReActLoop`, applies the boundary-round `maxRounds + 1`
   adjustment, dispatches model/tool lifecycle events to `EngineRunObserver`, and
@@ -820,14 +824,14 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine agent creation wiring slice:
+Fresh gates run for this engine reduction boundary wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 30 / 30 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-agent-runner.test.ts` | 2 / 2 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 249 / 249 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 31 / 31 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-final-response.test.ts` | 3 / 3 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 251 / 251 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -1023,7 +1027,9 @@ Stage 8 boundaries/slices are now real:
 - engine final generated-reply assembly now routes through
   `react-engine/engine-final-response.ts`; `runViaReActEngine` passes final text,
   run-state snapshots, tool trace, model-call trace, and last model result into
-  the owner instead of assembling finalization output and metadata inline.
+  the owner instead of assembling finalization output and metadata inline. Engine
+  request-envelope reduction boundary recording now also goes through that owner
+  via `recordEngineReductionBoundary()`.
 - engine ReAct event consumption now routes through
   `react-engine/engine-agent-runner.ts`; `runViaReActEngine` passes model,
   toolkit, maxRounds, and hooks to `createRoleEngineAgentRunner()` instead of
@@ -1291,7 +1297,7 @@ Continue with the remaining high-risk pieces:
   `react-engine/engine-model-client.ts`; engine forced runtime tool-round
   runner wiring delegates to
   `react-engine/engine-forced-tool-round-runner.ts`; engine final generated
-  response assembly delegates to
+  response assembly and reduction boundary wiring delegate to
   `react-engine/engine-final-response.ts`; engine ReAct agent creation and event
   consumption delegate to `react-engine/engine-agent-runner.ts`; engine role toolkit
   wiring delegates to `react-engine/engine-role-toolkit.ts`; role-engine
