@@ -1388,4 +1388,12 @@ items are longer-term typed-facts / detector ownership work:
   flags, dependency injection, and final reply assembly in `runViaReActEngine`
   unless a future change identifies a concrete owner-bound policy decision.
 
-The branch is **not pushed**.
+## Typed Facts Follow-Up Plan
+
+The remaining architecture work is now tracked in
+`docs/STAGE8_TYPED_FACTS_INVENTORY.md` and
+`docs/superpowers/plans/2026-07-03-stage8-typed-facts-evidence-producer.md`.
+Stage 1 inventory lock is complete; subsequent work should follow that staged
+plan instead of resuming open-ended adapter thinning.
+
+The branch has been pushed to `origin/feat/stage8-engine-cleanup`.
