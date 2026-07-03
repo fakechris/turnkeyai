@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type { RoleActivationInput } from "@turnkeyai/core-types/team";
-import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
+import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import {
   compactOlderToolHistoryForGateway,
@@ -13,6 +14,7 @@ import {
   pruneToolResultMessagesForGateway,
   readToolResultContentText,
   readToolResultPruningLimits,
+  recordProviderToolProtocolRoundSafely,
   recordToolResultPruningBoundarySafely,
   summarizeToolResultPruning,
   type ToolResultPruningLimits,
@@ -134,6 +136,114 @@ test("tool history block counters find the latest assistant call and following r
   assert.deepEqual(toolIndexes, [5]);
   assert.equal(countToolUseBlocks(messages[assistantIndex]), 1);
   assert.equal(countToolResultBlocks(messages, toolIndexes), 0);
+});
+
+test("recordProviderToolProtocolRoundSafely records provider tool protocol metadata", async () => {
+  const events: Array<{
+    progressId: string;
+    summary: string;
+    recordedAt: number;
+    metadata?: Record<string, unknown>;
+  }> = [];
+  const activation = {
+    thread: { threadId: "thread-1" },
+    flow: { flowId: "flow-1" },
+    handoff: { taskId: "task-1" },
+    runState: {
+      runKey: "run-1",
+      roleId: "role:researcher",
+      lastDequeuedTaskId: "dispatch-task-1",
+    },
+  } as unknown as RoleActivationInput;
+  const toolCall: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: { workerType: "browser" },
+  };
+  const toolResult: ToolResult = {
+    toolCallId: "call-1",
+    toolName: "sessions_spawn",
+    content: "done",
+  };
+  const messages = [
+    { role: "user", content: "run it" },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "call-1",
+          name: "sessions_spawn",
+          input: { workerType: "browser" },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      toolCallId: "call-1",
+      name: "sessions_spawn",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "call-1",
+          content: "done",
+        },
+      ],
+    },
+  ] as unknown as LLMMessage[];
+
+  await recordProviderToolProtocolRoundSafely({
+    activation,
+    runtimeProgressRecorder: {
+      async record(event) {
+        events.push(event as (typeof events)[number]);
+      },
+    },
+    now: () => 1234,
+    round: 2,
+    toolCalls: [toolCall],
+    toolResults: [toolResult],
+    messages,
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(
+    events[0]!.progressId,
+    "progress:provider-tool-protocol:task-1:2:1234",
+  );
+  assert.match(events[0]!.summary, /Provider tool protocol round 2/);
+  assert.equal(events[0]!.recordedAt, 1234);
+  assert.deepEqual(events[0]!.metadata, {
+    boundaryKind: "provider_tool_protocol_round",
+    round: 2,
+    providerToolCallsReturned: 1,
+    assistantToolUseBlockCount: 1,
+    roleToolResultMessageCount: 1,
+    toolResultBlockCount: 1,
+    assistantBeforeToolResults: true,
+    allToolResultsMatchAssistantToolCalls: true,
+    nextProviderRequestWillIncludeToolResults: true,
+    toolCallIds: ["call-1"],
+    toolResultIds: ["call-1"],
+    matchingToolCallIds: ["call-1"],
+    toolNames: ["sessions_spawn"],
+  });
+});
+
+test("recordProviderToolProtocolRoundSafely is a no-op without recorder", async () => {
+  await recordProviderToolProtocolRoundSafely({
+    activation: {
+      thread: { threadId: "thread-1" },
+      flow: { flowId: "flow-1" },
+      handoff: { taskId: "task-1" },
+      runState: { runKey: "run-1", roleId: "role:researcher" },
+    } as unknown as RoleActivationInput,
+    now: () => 1,
+    round: 1,
+    toolCalls: [],
+    toolResults: [],
+    messages: [],
+  });
 });
 
 test("recordToolResultPruningBoundarySafely records pruning metadata", async () => {

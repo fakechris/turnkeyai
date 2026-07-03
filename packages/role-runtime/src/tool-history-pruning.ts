@@ -2,9 +2,11 @@ import type {
   RoleActivationInput,
   RuntimeProgressRecorder,
 } from "@turnkeyai/core-types/team";
+import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type {
   LLMContentBlock,
   LLMMessage,
+  LLMToolCall,
 } from "@turnkeyai/llm-adapter/index";
 
 import { sliceUtf8 } from "./tool-loop-shared";
@@ -199,6 +201,111 @@ async function recordToolResultPruningBoundary(input: {
       messageCountBefore: snapshot.messageCountBefore,
       messageCountAfter: snapshot.messageCountAfter,
       pruningLimits: snapshot.limits,
+    },
+  });
+}
+
+export async function recordProviderToolProtocolRoundSafely(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  now: () => number;
+  defer?: boolean | undefined;
+  round: number;
+  toolCalls: LLMToolCall[];
+  toolResults: ToolResult[];
+  messages: LLMMessage[];
+}): Promise<void> {
+  const work = () => recordProviderToolProtocolRound(input);
+  const onError = (error: unknown) => {
+    console.error("provider tool protocol progress recording failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      round: input.round,
+      error,
+    });
+  };
+  if (input.defer) {
+    void work().catch(onError);
+    return;
+  }
+  try {
+    await work();
+  } catch (error) {
+    onError(error);
+  }
+}
+
+async function recordProviderToolProtocolRound(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  now: () => number;
+  round: number;
+  toolCalls: LLMToolCall[];
+  toolResults: ToolResult[];
+  messages: LLMMessage[];
+}): Promise<void> {
+  const {
+    activation,
+    runtimeProgressRecorder,
+    now: readNow,
+    round,
+    toolCalls,
+    toolResults,
+    messages,
+  } = input;
+  if (!runtimeProgressRecorder) {
+    return;
+  }
+  const assistantMessageIndex = findLatestAssistantToolUseMessageIndex(messages);
+  const toolMessageIndexes = findFollowingToolMessageIndexes(
+    messages,
+    assistantMessageIndex,
+  );
+  const toolCallIds = toolCalls.map((call) => call.id);
+  const toolResultIds = toolResults.map((result) => result.toolCallId);
+  const now = readNow();
+  await runtimeProgressRecorder.record({
+    progressId: `progress:provider-tool-protocol:${activation.handoff.taskId}:${round}:${now}`,
+    threadId: activation.thread.threadId,
+    chainId: `flow:${activation.flow.flowId}`,
+    spanId: `role:${activation.runState.runKey}`,
+    ...(activation.runState.lastDequeuedTaskId
+      ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
+      : {}),
+    subjectKind: "role_run",
+    subjectId: activation.runState.runKey,
+    phase: "completed",
+    progressKind: "boundary",
+    heartbeatSource: "activity_echo",
+    continuityState: "resolved",
+    summary: `Provider tool protocol round ${round} appended assistant tool call(s) and matching tool result message(s).`,
+    recordedAt: now,
+    flowId: activation.flow.flowId,
+    taskId: activation.handoff.taskId,
+    roleId: activation.runState.roleId,
+    metadata: {
+      boundaryKind: "provider_tool_protocol_round",
+      round,
+      providerToolCallsReturned: toolCalls.length,
+      assistantToolUseBlockCount: countToolUseBlocks(
+        messages[assistantMessageIndex],
+      ),
+      roleToolResultMessageCount: toolMessageIndexes.length,
+      toolResultBlockCount: countToolResultBlocks(messages, toolMessageIndexes),
+      assistantBeforeToolResults:
+        assistantMessageIndex >= 0 &&
+        toolMessageIndexes.every((index) => index > assistantMessageIndex),
+      allToolResultsMatchAssistantToolCalls:
+        toolResultIds.length > 0 &&
+        toolResultIds.every((id) => toolCallIds.includes(id)),
+      nextProviderRequestWillIncludeToolResults: toolMessageIndexes.length > 0,
+      toolCallIds,
+      toolResultIds,
+      matchingToolCallIds: toolResultIds.filter((id) =>
+        toolCallIds.includes(id),
+      ),
+      toolNames: toolCalls.map((call) => call.name),
     },
   });
 }

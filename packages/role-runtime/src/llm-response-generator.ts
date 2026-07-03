@@ -62,11 +62,8 @@ import {
   filterToolDefinitionsForTask,
 } from "./tool-definition-filter";
 import {
-  countToolResultBlocks,
-  countToolUseBlocks,
-  findFollowingToolMessageIndexes,
-  findLatestAssistantToolUseMessageIndex,
   readToolResultContentText,
+  recordProviderToolProtocolRoundSafely,
   recordToolResultPruningBoundarySafely,
 } from "./tool-history-pruning";
 import {
@@ -1651,8 +1648,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           : {}),
       });
       messages = appendToolResultMessages(messages, toolResults);
-      await this.recordProviderToolProtocolRoundSafely({
+      await recordProviderToolProtocolRoundSafely({
         activation: input.activation,
+        runtimeProgressRecorder:
+          this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+        now: () => this.clock.now(),
+        defer: this.deferToolObservability,
         round: round + 1,
         toolCalls,
         toolResults,
@@ -2656,8 +2657,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       recordToolProgress: (call, progress) =>
         this.recordToolProgressSafely(activation, call, progress),
       recordProviderToolProtocolRound: (round) =>
-        this.recordProviderToolProtocolRoundSafely({
+        recordProviderToolProtocolRoundSafely({
           activation,
+          runtimeProgressRecorder:
+            this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+          now: () => this.clock.now(),
+          defer: this.deferToolObservability,
           round: round.round,
           toolCalls: round.toolCalls,
           toolResults: round.toolResults,
@@ -3772,8 +3777,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
       return;
     }
-    await this.recordProviderToolProtocolRoundSafely({
+    await recordProviderToolProtocolRoundSafely({
       activation: input.activation,
+      runtimeProgressRecorder:
+        this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+      now: () => this.clock.now(),
+      defer: this.deferToolObservability,
       round: input.round,
       toolCalls: input.toolCalls,
       toolResults: input.toolResults,
@@ -3952,107 +3961,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     } catch (error) {
       onError(error);
     }
-  }
-
-  private async recordProviderToolProtocolRoundSafely(input: {
-    activation: RoleActivationInput;
-    round: number;
-    toolCalls: LLMToolCall[];
-    toolResults: RoleToolExecutionResult[];
-    messages: LLMMessage[];
-  }): Promise<void> {
-    const work = () => this.recordProviderToolProtocolRound(input);
-    const onError = (error: unknown) => {
-      console.error("provider tool protocol progress recording failed", {
-        threadId: input.activation.thread.threadId,
-        flowId: input.activation.flow.flowId,
-        taskId: input.activation.handoff.taskId,
-        round: input.round,
-        error,
-      });
-    };
-    if (this.deferToolObservability) {
-      void work().catch(onError);
-      return;
-    }
-    try {
-      await work();
-    } catch (error) {
-      onError(error);
-    }
-  }
-
-  private async recordProviderToolProtocolRound(input: {
-    activation: RoleActivationInput;
-    round: number;
-    toolCalls: LLMToolCall[];
-    toolResults: RoleToolExecutionResult[];
-    messages: LLMMessage[];
-  }): Promise<void> {
-    const recorder =
-      this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder;
-    if (!recorder) {
-      return;
-    }
-    const assistantMessageIndex = findLatestAssistantToolUseMessageIndex(
-      input.messages,
-    );
-    const toolMessageIndexes = findFollowingToolMessageIndexes(
-      input.messages,
-      assistantMessageIndex,
-    );
-    const toolCallIds = input.toolCalls.map((call) => call.id);
-    const toolResultIds = input.toolResults.map((result) => result.toolCallId);
-    const now = this.clock.now();
-    await recorder.record({
-      progressId: `progress:provider-tool-protocol:${input.activation.handoff.taskId}:${input.round}:${now}`,
-      threadId: input.activation.thread.threadId,
-      chainId: `flow:${input.activation.flow.flowId}`,
-      spanId: `role:${input.activation.runState.runKey}`,
-      ...(input.activation.runState.lastDequeuedTaskId
-        ? {
-            parentSpanId: `dispatch:${input.activation.runState.lastDequeuedTaskId}`,
-          }
-        : {}),
-      subjectKind: "role_run",
-      subjectId: input.activation.runState.runKey,
-      phase: "completed",
-      progressKind: "boundary",
-      heartbeatSource: "activity_echo",
-      continuityState: "resolved",
-      summary: `Provider tool protocol round ${input.round} appended assistant tool call(s) and matching tool result message(s).`,
-      recordedAt: now,
-      flowId: input.activation.flow.flowId,
-      taskId: input.activation.handoff.taskId,
-      roleId: input.activation.runState.roleId,
-      metadata: {
-        boundaryKind: "provider_tool_protocol_round",
-        round: input.round,
-        providerToolCallsReturned: input.toolCalls.length,
-        assistantToolUseBlockCount: countToolUseBlocks(
-          input.messages[assistantMessageIndex],
-        ),
-        roleToolResultMessageCount: toolMessageIndexes.length,
-        toolResultBlockCount: countToolResultBlocks(
-          input.messages,
-          toolMessageIndexes,
-        ),
-        assistantBeforeToolResults:
-          assistantMessageIndex >= 0 &&
-          toolMessageIndexes.every((index) => index > assistantMessageIndex),
-        allToolResultsMatchAssistantToolCalls:
-          toolResultIds.length > 0 &&
-          toolResultIds.every((id) => toolCallIds.includes(id)),
-        nextProviderRequestWillIncludeToolResults:
-          toolMessageIndexes.length > 0,
-        toolCallIds,
-        toolResultIds,
-        matchingToolCallIds: toolResultIds.filter((id) =>
-          toolCallIds.includes(id),
-        ),
-        toolNames: input.toolCalls.map((call) => call.name),
-      },
-    });
   }
 
 }

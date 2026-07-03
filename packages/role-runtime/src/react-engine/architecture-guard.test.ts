@@ -339,3 +339,23 @@ test("prompt assembly compaction boundary recording routes through prompt owner"
     "adapter should call the prompt owner safe assembly boundary recorder",
   );
 });
+
+test("provider tool protocol boundary recording routes through neutral history owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async recordProviderToolProtocolRound"),
+    false,
+    "provider tool protocol boundary recording must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes('boundaryKind: "provider_tool_protocol_round"'),
+    false,
+    "provider tool protocol boundary metadata construction must live outside the adapter",
+  );
+  assert.equal(
+    source.includes("recordProviderToolProtocolRoundSafely({"),
+    true,
+    "adapter should call the neutral safe provider protocol boundary recorder",
+  );
+});
