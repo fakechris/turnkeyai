@@ -5,6 +5,7 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import {
   createEngineRunState,
+  createRoleEngineRunState,
   type DefaultEngineRunStateValues,
 } from "./engine-run-state";
 
@@ -100,4 +101,58 @@ test("EngineRunState records terminal signals and pending closeout payloads", ()
   });
   assert.deepEqual(state.completedSessionToolResults(), ["tool-result"]);
   assert.deepEqual(state.timeoutSignal(), { metadata: { id: "timeout" } });
+});
+
+test("createRoleEngineRunState provides the role-runtime typed run-state shape", () => {
+  const state = createRoleEngineRunState();
+
+  state.recordToolLoopCloseout({
+    reason: "round_limit",
+    toolCallCount: 3,
+    roundCount: 2,
+  });
+  state.recordReduction({
+    reduction: { level: "compact", omittedSections: ["tool_history"] },
+    reductionSnapshot: undefined,
+  });
+  state.recordMemoryFlush({
+    status: "written",
+    preferences: ["pref"],
+    constraints: [],
+    longTermNotes: [],
+  });
+  state.recordPendingCloseout({
+    reasonLines: ["Round limit reached."],
+    closeout: {
+      reason: "round_limit",
+      toolCallCount: 3,
+      roundCount: 2,
+    },
+  });
+
+  assert.deepEqual(state.toolLoopCloseout(), {
+    reason: "round_limit",
+    toolCallCount: 3,
+    roundCount: 2,
+  });
+  assert.deepEqual(state.reduction(), {
+    level: "compact",
+    omittedSections: ["tool_history"],
+  });
+  assert.deepEqual(state.memoryFlushes(), [
+    {
+      status: "written",
+      preferences: ["pref"],
+      constraints: [],
+      longTermNotes: [],
+    },
+  ]);
+  assert.deepEqual(state.pendingCloseout(), {
+    reasonLines: ["Round limit reached."],
+    closeout: {
+      reason: "round_limit",
+      toolCallCount: 3,
+      roundCount: 2,
+    },
+  });
 });

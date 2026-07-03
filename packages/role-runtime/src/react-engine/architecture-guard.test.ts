@@ -205,6 +205,26 @@ test("engine role toolkit wiring routes through toolkit owner", () => {
   );
 });
 
+test("engine run-state role value typing routes through run-state owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+
+  assert.equal(
+    engineSource.includes("type RoleEngineRunStateValues"),
+    false,
+    "role-engine run-state value typing must not stay local to runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("createRoleEngineRunState()"),
+    true,
+    "runViaReActEngine should create typed role-engine run state through the owner",
+  );
+});
+
 test("terminal final synthesis provider-schema repair request routes through terminal controller", () => {
   const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   assert.equal(

@@ -249,17 +249,16 @@ import {
   createEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
   createEngineRoleToolkit,
+  createRoleEngineRunState,
   runEngineAgent,
   enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
   createEvidenceLedger,
-  createEngineRunState,
   createEngineRunObserver,
   buildPermissionSuppressInput,
   createPermissionPolicy,
   createRepairPolicyRegistry,
   createTerminalCloseoutController,
-  type DefaultEngineRunStateValues,
   buildToolCallNormalizationContext,
   normalizeEngineToolCalls,
   traceEngineHooks,
@@ -2567,33 +2566,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const evidenceLedger = createEvidenceLedger();
     const toolLoopStartedAtMs = this.clock.now();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
-    type RoleEngineRunStateValues = DefaultEngineRunStateValues & {
-      ToolLoopCloseout: ToolLoopCloseoutMetadata;
-      CloseoutResult: GenerateTextResult;
-      Reduction: {
-        level: RequestEnvelopeReductionLevel;
-        omittedSections: string[];
-      };
-      ReductionSnapshot:
-        | RequestEnvelopeReductionSnapshot
-        | undefined;
-      MemoryFlush: PreCompactionMemoryFlushResult;
-      CompletedSession: NonNullable<
-        ReturnType<typeof findCompletedSessionEvidence>
-      >;
-      CompletedSessionToolResults: Parameters<
-        typeof collectToolResultContentText
-      >[0];
-      TimeoutSignal: NonNullable<ReturnType<typeof findSubAgentToolTimeout>>;
-      PendingCloseout: {
-        reasonLines: string[];
-        closeout: ToolLoopCloseoutMetadata;
-      };
-    };
     // Per-run closeout state: hooks fire across different engine callbacks, so a
     // single EngineRunState instance owns what the inline loop keeps as locals
     // (toolLoopCloseout/result/reduction/memoryFlushes/completed signals).
-    const runState = createEngineRunState<RoleEngineRunStateValues>();
+    const runState = createRoleEngineRunState();
     const toolTrace: NativeToolRoundTrace[] = [];
     const runEvidence = evidenceLedger.forRun({
       taskPrompt: packet.taskPrompt,

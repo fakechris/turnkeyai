@@ -4,7 +4,22 @@
 // run. Controllers and registries return typed decisions; the adapter applies
 // them here. This module must not import predicates or policy modules, must not
 // parse text, execute tools, or synthesize answers.
-import type { LLMMessage } from "./types";
+import type {
+  GenerateTextResult,
+  LLMMessage,
+} from "@turnkeyai/llm-adapter/index";
+
+import type { PreCompactionMemoryFlushResult } from "../pre-compaction-memory-flusher";
+import type {
+  RequestEnvelopeReductionLevel,
+  RequestEnvelopeReductionSnapshot,
+} from "../request-envelope-reducer";
+import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
+import type {
+  collectToolResultContentText,
+  findCompletedSessionEvidence,
+  findSubAgentToolTimeout,
+} from "../tool-result-evidence";
 
 export interface CompletedSessionSignal {
   /** Raw tool results from the round that completed the sub-agent session. */
@@ -36,6 +51,32 @@ export interface DefaultEngineRunStateValues {
   TimeoutSignal: TimeoutSignal;
   PendingCloseout: unknown;
 }
+
+export interface RoleEngineRunStateValues extends DefaultEngineRunStateValues {
+  ToolLoopCloseout: ToolLoopCloseoutMetadata;
+  CloseoutResult: GenerateTextResult;
+  Reduction: {
+    level: RequestEnvelopeReductionLevel;
+    omittedSections: string[];
+  } & ReductionSignal;
+  ReductionSnapshot: RequestEnvelopeReductionSnapshot | undefined;
+  MemoryFlush: PreCompactionMemoryFlushResult & MemoryFlushSignal;
+  CompletedSession: NonNullable<
+    ReturnType<typeof findCompletedSessionEvidence>
+  > &
+    CompletedSessionSignal;
+  CompletedSessionToolResults: Parameters<
+    typeof collectToolResultContentText
+  >[0];
+  TimeoutSignal: NonNullable<ReturnType<typeof findSubAgentToolTimeout>> &
+    TimeoutSignal;
+  PendingCloseout: {
+    reasonLines: string[];
+    closeout: ToolLoopCloseoutMetadata;
+  };
+}
+
+export type RoleEngineRunState = EngineRunState<RoleEngineRunStateValues>;
 
 export interface EngineRunStateSnapshot<
   TValues extends DefaultEngineRunStateValues = DefaultEngineRunStateValues,
@@ -244,4 +285,8 @@ export function createEngineRunState<
   TValues extends DefaultEngineRunStateValues = DefaultEngineRunStateValues,
 >(): EngineRunState<TValues> {
   return new DefaultEngineRunState<TValues>();
+}
+
+export function createRoleEngineRunState(): RoleEngineRunState {
+  return createEngineRunState<RoleEngineRunStateValues>();
 }
