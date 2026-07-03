@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `94797c7017cba01d232f93f657995b0537311666`
+**Code HEAD before this docs-only report:** `0346647db545c394c2eeeaa5dbe4040027961e67`
 **Date:** 2026-07-03
 
 ## Summary
@@ -270,6 +270,10 @@ could not move the normalizer without making the inline parity reference import 
   reads completed session/tool-result state, initializes the repair-marker
   ledger, and normalizes the completed-closeout input before building the
   completed synthesis callback.
+  Terminal synthesis callback wiring now also lives in that controller: it
+  binds max-round and reason-line handoff for terminal final synthesis and
+  builds the completed tool-call artifact cleanup callback, while the adapter
+  supplies only the final-synthesis runner.
   Terminal final synthesis provider-schema repair selection now also routes
   through the controller-owned repair-policy window, so the adapter no longer
   evaluates the registry directly for that final retry decision.
@@ -567,6 +571,7 @@ remaining adapter-side action application outside the terminal completion path.
 | `e84b9c0` | Move model-call-error hook wiring into `TerminalCloseoutController`; adapter delegates abort classification, evidence snapshotting, tool-count accounting, forced-permission flow selection, and hook-result application. |
 | `97e9ab5` | Move terminate closeout hook input assembly into `CloseoutPolicyRegistry`; adapter delegates state/evidence reads, tool-count accounting, round-limit budget callback wiring, and approval wait-timeout fallback payload construction. |
 | `94797c7` | Move completed terminal handoff wiring into `TerminalCloseoutController`; adapter delegates completed-session/tool-result reads and repair-marker ledger initialization. |
+| `0346647` | Move terminal synthesis callback wiring into `TerminalCloseoutController`; adapter delegates reason-line/max-round final-synthesis and completed cleanup callback adaptation. |
 
 ## Current Extracted Implementation
 
@@ -701,8 +706,10 @@ Real implementation now exists in:
   from completed session / ledger inputs, including completed reason and
   null-session guards and completed-closeout repair tool-free gateway input
   construction, plus completed terminal hook handoff assembly for completed
-  session/tool-result state reads and repair-marker initialization, plus the
-  model-call-error local-evidence
+  session/tool-result state reads and repair-marker initialization, plus
+  terminal synthesis callback builders for reason-line/max-round final-synthesis
+  and completed tool-call artifact cleanup handoffs, plus the model-call-error
+  local-evidence
   fallback/rethrow boundary and `completeModelCallErrorHook()` ownership of
   model-call-error abort classification, final-message capture, ledger
   snapshotting, tool-call accounting, active/usable-evidence gating, forced
@@ -874,14 +881,14 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this completed terminal handoff wiring slice:
+Fresh gates run for this terminal synthesis callback wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 39 / 39 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 35 / 35 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 270 / 270 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 40 / 40 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 37 / 37 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 273 / 273 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -1284,6 +1291,10 @@ Stage 8 boundaries/slices are now real:
   in the controller; the adapter receives a ready gateway input for the repair
   model call. The controller also owns the completed-reason and null-session
   guards, so the adapter passes that handoff data unconditionally.
+- terminal final-synthesis callback wiring now routes through
+  `TerminalCloseoutController`; the adapter passes the final-synthesis runner,
+  and the controller binds max-round/reason-line terminal synthesis inputs plus
+  the completed tool-call artifact cleanup callback.
 - terminal `onTerminate` decision input assembly now routes through
   `CloseoutPolicyRegistry.evaluateTerminateHook`; the adapter passes run state,
   run evidence, tool trace, and execution budget while the registry owns
@@ -1357,13 +1368,14 @@ Continue with the remaining high-risk pieces:
   synthesis-effect application, final response shaping, closeout write-mode
   selection, explicit state-effect application, sticky completed closeout
   pre-recording, completed initial-synthesis handoff, completed-closeout
-  callback/gateway-input/state handoffs, terminal path selection, final/re-arm
+  callback/gateway-input/state handoffs, terminal synthesis callback wiring,
+  terminal path selection, final/re-arm
   application, terminal entrypoint,
   terminal hook fallback entry,
   terminate decision/input assembly,
   completed terminal handoff assembly, and the model-error hook entrypoint; the
-  next terminal slice is likely remaining gateway callback wiring or broader
-  terminal hook composition beyond the current handoff builders.
+  next terminal slice is likely remaining repair gateway callback wiring or
+  broader terminal hook composition beyond the current handoff builders.
   Forced runtime tool-round orchestration
   now delegates to `tool-use.ts`, runtime progress recorder/observer emission
   delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
