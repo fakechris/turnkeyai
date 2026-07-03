@@ -1,4 +1,8 @@
 import type {
+  RoleActivationInput,
+  RuntimeProgressRecorder,
+} from "@turnkeyai/core-types/team";
+import type {
   GenerateTextResult,
   LLMMessage,
 } from "@turnkeyai/llm-adapter/index";
@@ -14,13 +18,18 @@ import {
 } from "../model-call-trace";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { PreCompactionMemoryFlushResult } from "../pre-compaction-memory-flusher";
-import type { RequestEnvelopeReductionLevel } from "../request-envelope-reducer";
+import {
+  recordReductionBoundarySafely,
+  type RequestEnvelopeReductionLevel,
+  type RequestEnvelopeReductionSnapshot,
+} from "../request-envelope-reducer";
 import {
   buildRuntimeDerivedMissionReport,
   type ToolLoopCloseoutMetadata,
 } from "../runtime-derived-mission-report";
 import { finalizeEngineAnswer } from "./finalization-pipeline";
 import type { EnginePolicyTrace } from "./types";
+import type { RolePromptPacket } from "../prompt-policy";
 
 export interface EngineFinalResponseReduction {
   level: RequestEnvelopeReductionLevel;
@@ -47,9 +56,35 @@ export interface EngineFinalResponseInput {
   toolLoopCloseout?: ToolLoopCloseoutMetadata | undefined;
 }
 
+export interface EngineReductionBoundaryInput {
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  reduction?: RequestEnvelopeReductionSnapshot | undefined;
+}
+
 export type EngineFinalResponseBuilder = (
   input: EngineFinalResponseInput,
 ) => GeneratedRoleReply;
+
+export async function recordEngineReductionBoundary(
+  input: EngineReductionBoundaryInput,
+): Promise<void> {
+  if (!input.reduction) {
+    return;
+  }
+  await recordReductionBoundarySafely({
+    activation: input.activation,
+    packet: input.packet,
+    runtimeProgressRecorder: input.runtimeProgressRecorder,
+    selection: input.selection,
+    reduction: input.reduction,
+  });
+}
 
 export function createEngineFinalResponseBuilder(
   input: CreateEngineFinalResponseBuilderInput,

@@ -244,6 +244,7 @@ import {
   createCompletedCloseoutController,
   createContinuationController,
   createEngineFinalResponseBuilder,
+  recordEngineReductionBoundary,
   createRoleEngineModelClient,
   createRoleEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
@@ -3203,19 +3204,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       observer,
     });
 
-    // Record the request-envelope reduction boundary before building metadata,
-    // matching the inline path's observability (a closeout's final synthesis may
-    // have overflowed and reduced).
-    const reductionSnapshot = runState.reductionSnapshot();
-    if (reductionSnapshot) {
-      await recordReductionBoundarySafely({
-        activation,
-        packet,
-        runtimeProgressRecorder: this.runtimeProgressRecorder,
-        selection,
-        reduction: reductionSnapshot,
-      });
-    }
+    await recordEngineReductionBoundary({
+      activation,
+      packet,
+      runtimeProgressRecorder: this.runtimeProgressRecorder,
+      selection,
+      reduction: runState.reductionSnapshot(),
+    });
 
     return buildEngineFinalResponse({
       finalText,

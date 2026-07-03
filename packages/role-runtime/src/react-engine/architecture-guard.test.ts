@@ -684,6 +684,40 @@ test("request-envelope reduction boundary recording routes through reducer owner
   );
 });
 
+test("engine request-envelope reduction boundary wiring routes through final response owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const finalResponseSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-final-response.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    engineSource.includes("recordReductionBoundarySafely({"),
+    false,
+    "engine reduction boundary recorder wiring must not stay in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("const reductionSnapshot = runState.reductionSnapshot();"),
+    false,
+    "engine reduction snapshot wiring must not stay in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("recordEngineReductionBoundary({"),
+    true,
+    "runViaReActEngine should record reduction boundaries through the final response owner",
+  );
+  assert.equal(
+    finalResponseSource.includes("recordReductionBoundarySafely({"),
+    true,
+    "engine final response owner should delegate to the neutral reduction recorder",
+  );
+});
+
 test("prompt assembly compaction boundary recording routes through prompt owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
 

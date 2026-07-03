@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type {
+  RoleActivationInput,
+  RuntimeProgressEvent,
+} from "@turnkeyai/core-types/team";
 import type { GenerateTextResult } from "@turnkeyai/llm-adapter/index";
 
-import { createEngineFinalResponseBuilder } from "./engine-final-response";
+import {
+  createEngineFinalResponseBuilder,
+  recordEngineReductionBoundary,
+} from "./engine-final-response";
 import type { EnginePolicyTrace } from "./types";
 import type { ModelCallBoundaryTrace } from "../model-call-trace";
+import type { RolePromptPacket } from "../prompt-policy";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
 
 test("createEngineFinalResponseBuilder assembles engine final metadata from selected run state", () => {
@@ -159,6 +167,41 @@ test("createEngineFinalResponseBuilder omits policy trace metadata when debug is
   assert.equal("enginePolicyTrace" in (reply.metadata ?? {}), false);
 });
 
+test("recordEngineReductionBoundary records request-envelope reduction snapshot", async () => {
+  const events: RuntimeProgressEvent[] = [];
+
+  await recordEngineReductionBoundary({
+    activation: activation(),
+    packet: packet(),
+    runtimeProgressRecorder: {
+      async record(event) {
+        events.push(event);
+      },
+    },
+    selection: {
+      modelId: "model-a",
+      modelChainId: "chain-a",
+    },
+    reduction: {
+      level: "compact",
+      omittedSections: ["tool_history"],
+      artifactIds: ["artifact-1"],
+      envelopeHint: { toolResultCount: 2 },
+    },
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(
+    events[0]?.metadata?.boundaryKind,
+    "request_envelope_reduction",
+  );
+  assert.equal(events[0]?.metadata?.modelId, "model-a");
+  assert.equal(events[0]?.metadata?.modelChainId, "chain-a");
+  assert.equal(events[0]?.metadata?.assemblyFingerprint, "fingerprint-1");
+  assert.equal(events[0]?.metadata?.reductionLevel, "compact");
+  assert.deepEqual(events[0]?.metadata?.omittedSections, ["tool_history"]);
+});
+
 function generateResult(
   overrides: Partial<GenerateTextResult>,
 ): GenerateTextResult {
@@ -171,4 +214,34 @@ function generateResult(
     raw: {},
     ...overrides,
   };
+}
+
+function activation(): RoleActivationInput {
+  return {
+    thread: { threadId: "thread-1" },
+    flow: { flowId: "flow-1" },
+    handoff: { taskId: "task-1" },
+    runState: {
+      runKey: "run-1",
+      roleId: "role:researcher",
+      lastDequeuedTaskId: "dispatch-task-1",
+    },
+  } as unknown as RoleActivationInput;
+}
+
+function packet(): RolePromptPacket {
+  return {
+    roleId: "role:researcher",
+    roleName: "Researcher",
+    seat: "member" as const,
+    systemPrompt: "system",
+    taskPrompt: "task",
+    outputContract: "answer",
+    suggestedMentions: [],
+    promptAssembly: {
+      assemblyFingerprint: "fingerprint-1",
+      sectionOrder: ["task", "memory"],
+      tokenEstimate: 1234,
+    },
+  } as unknown as RolePromptPacket;
 }
