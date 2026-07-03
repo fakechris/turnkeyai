@@ -259,6 +259,46 @@ test("TerminalCloseoutController gates and builds model-call-error local evidenc
   );
 });
 
+test("TerminalCloseoutController builds final synthesis tool-call artifact fallback results", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      name: "web_fetch",
+      content: "ACME pricing was verified at http://127.0.0.1:5173/pricing.",
+    } as LLMMessage,
+  ];
+
+  const localEvidence = controller.buildFinalSynthesisToolCallArtifactFallback({
+    messages,
+    packet: packet("Summarize the verified source fact.", "No links."),
+    selection: { modelId: "model-c" },
+    repairedResult: result("<tool_call>{}</tool_call>"),
+  });
+
+  assert.equal(localEvidence.modelId, "model-c");
+  assert.match(localEvidence.text, /Verified:/);
+  assert.doesNotMatch(localEvidence.text, /127\.0\.0\.1/);
+  assert.match(localEvidence.text, /local fixture source/);
+  assert.equal(
+    (localEvidence.raw as { message?: string } | null)?.message,
+    "final synthesis emitted a tool call after repair",
+  );
+
+  const generic = controller.buildFinalSynthesisToolCallArtifactFallback({
+    messages: [],
+    packet: packet("Return exactly one sentence."),
+    selection: {},
+    repairedResult: {
+      ...result("<tool_call>{}</tool_call>"),
+      stopReason: "stop",
+    } as GenerateTextResult,
+  });
+
+  assert.equal(generic.stopReason, "stop");
+  assert.match(generic.text, /model attempted to emit another tool call/);
+});
+
 test("TerminalCloseoutController applies model-call-error fallback through a target", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [

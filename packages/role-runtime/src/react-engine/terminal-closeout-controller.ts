@@ -69,6 +69,17 @@ export interface ModelCallErrorFallbackInput {
   roundCount: number;
 }
 
+export interface FinalSynthesisToolCallArtifactFallbackInput {
+  activation?: RoleActivationInput;
+  messages: LLMMessage[];
+  packet: RolePromptPacket;
+  selection: {
+    modelId?: string;
+    modelChainId?: string;
+  };
+  repairedResult: GenerateTextResult;
+}
+
 type ForcedModelCallErrorContinuation = Extract<
   EngineContinueAction,
   { kind: "forced_tool_round" }
@@ -486,6 +497,29 @@ export class TerminalCloseoutController {
       toolCallCount: input.toolCallCount,
       roundCount: input.roundCount,
       result: localResult,
+    });
+  }
+
+  buildFinalSynthesisToolCallArtifactFallback(
+    input: FinalSynthesisToolCallArtifactFallbackInput,
+  ): GenerateTextResult {
+    const localResult = buildLocalEvidenceCloseout({
+      ...(input.activation ? { activation: input.activation } : {}),
+      messages: input.messages,
+      packet: input.packet,
+      selection: input.selection,
+      error: new Error("final synthesis emitted a tool call after repair"),
+    }) ?? {
+      ...input.repairedResult,
+      text: [
+        "I can't safely complete the final answer from the current tool results.",
+        "The model attempted to emit another tool call after tools were disabled for final synthesis.",
+        "Please retry or continue the mission so the runtime can collect a clean final answer.",
+      ].join(" "),
+    };
+    return maybeRedactForbiddenLocalUrls({
+      result: localResult,
+      packet: input.packet,
     });
   }
 

@@ -3747,25 +3747,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         tracePhase: "final_synthesis_repair",
       });
       const repairedResult = containsAnyToolCallForm(repaired.result)
-        ? maybeRedactForbiddenLocalUrls({
-            result: buildLocalEvidenceCloseout({
+        ? createTerminalCloseoutController().buildFinalSynthesisToolCallArtifactFallback(
+            {
               activation: input.activation,
               messages: input.messages,
               packet: input.packet,
               selection: input.selection,
-              error: new Error(
-                "final synthesis emitted a tool call after repair",
-              ),
-            }) ?? {
-              ...repaired.result,
-              text: [
-                "I can't safely complete the final answer from the current tool results.",
-                "The model attempted to emit another tool call after tools were disabled for final synthesis.",
-                "Please retry or continue the mission so the runtime can collect a clean final answer.",
-              ].join(" "),
+              repairedResult: repaired.result,
             },
-            packet: input.packet,
-          })
+          )
         : repaired.result;
       return {
         result: repairedResult,
