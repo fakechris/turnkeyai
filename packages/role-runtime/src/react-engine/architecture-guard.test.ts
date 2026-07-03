@@ -27,6 +27,7 @@ const TERMINAL_FINAL_SYNTHESIS = path.join(
   "terminal-final-synthesis.ts",
 );
 const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
+const ENGINE_RUN_OBSERVER = path.join(ENGINE_DIR, "engine-run-observer.ts");
 
 /** Forbidden import specifiers: the composition root and any known re-exporter. */
 const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
@@ -222,6 +223,41 @@ test("engine run-state role value typing routes through run-state owner", () => 
     engineSource.includes("createRoleEngineRunState()"),
     true,
     "runViaReActEngine should create typed role-engine run state through the owner",
+  );
+});
+
+test("engine run observer wiring routes through observer owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+
+  assert.equal(
+    engineSource.includes("createEngineRunObserver(toolTrace, {"),
+    false,
+    "engine run observer dependency wiring must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("recordToolProgress: (call, progress) =>"),
+    false,
+    "engine run observer tool-progress callback wiring must live with the observer owner",
+  );
+  assert.equal(
+    engineSource.includes("recordProviderToolProtocolRound: (round) =>"),
+    false,
+    "engine run observer provider-protocol callback wiring must live with the observer owner",
+  );
+  assert.equal(
+    engineSource.includes("persistNativeToolTrace: (options) =>"),
+    false,
+    "engine run observer native-trace persistence callback wiring must live with the observer owner",
+  );
+  assert.equal(
+    engineSource.includes("createRoleEngineRunObserver({"),
+    true,
+    "runViaReActEngine should create observers through the react-engine owner",
   );
 });
 
@@ -578,6 +614,7 @@ test("provider tool protocol boundary recording routes through neutral history o
 
 test("runtime tool progress safe recording routes through tool-use owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const observerSource = readFileSync(ENGINE_RUN_OBSERVER, "utf8");
 
   assert.equal(
     source.includes("private async recordToolProgressSafely"),
@@ -585,9 +622,9 @@ test("runtime tool progress safe recording routes through tool-use owner", () =>
     "runtime tool progress safe recording must not stay as an adapter-private method",
   );
   assert.equal(
-    source.includes("recordRoleToolProgressSafely({"),
+    observerSource.includes("recordRoleToolProgressSafely({"),
     true,
-    "adapter should call the neutral safe runtime tool progress recorder",
+    "engine observer owner should call the neutral safe runtime tool progress recorder",
   );
 });
 

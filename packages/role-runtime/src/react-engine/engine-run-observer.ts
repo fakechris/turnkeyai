@@ -1,7 +1,16 @@
+import type {
+  RoleActivationInput,
+  RuntimeProgressRecorder,
+  TeamMessageStore,
+} from "@turnkeyai/core-types/team";
 import type { ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
-import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  persistNativeToolTraceSafely,
+  type NativeToolRoundTrace,
+} from "../native-tool-messages";
+import { recordProviderToolProtocolRoundSafely } from "../tool-history-pruning";
 import {
   toNativeToolProgressTrace,
   toNativeToolResultTrace,
@@ -9,6 +18,8 @@ import {
 import {
   appendAssistantToolCallMessage,
   appendToolResultMessages,
+  recordRoleToolProgressSafely,
+  type RoleToolLoopOptions,
 } from "../tool-use";
 
 // Stage 8 engine cleanup — EngineRunObserver.
@@ -29,6 +40,18 @@ export interface EngineRunObserverDependencies {
     input: EngineObservedProviderToolProtocolRound,
   ): Promise<void>;
   persistNativeToolTrace(options?: { forceBlocking?: boolean }): Promise<void>;
+}
+
+export interface RoleEngineRunObserverInput {
+  toolTrace: NativeToolRoundTrace[];
+  toolLoop:
+    | Pick<RoleToolLoopOptions, "runtimeProgressRecorder">
+    | undefined;
+  runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
+  nativeToolMessageStore?: Pick<TeamMessageStore, "append"> | undefined;
+  deferToolObservability?: boolean | undefined;
+  now(): number;
+  activation: RoleActivationInput;
 }
 
 export interface EngineObservedModelResponse {
@@ -237,4 +260,42 @@ export function createEngineRunObserver(
   deps: EngineRunObserverDependencies,
 ): EngineRunObserver {
   return new EngineRunObserver(toolTrace, deps);
+}
+
+export function createRoleEngineRunObserver(
+  input: RoleEngineRunObserverInput,
+): EngineRunObserver {
+  const selectRuntimeProgressRecorder = () =>
+    input.toolLoop?.runtimeProgressRecorder ?? input.runtimeProgressRecorder;
+  return createEngineRunObserver(input.toolTrace, {
+    now: input.now,
+    recordToolProgress: (call, progress) =>
+      recordRoleToolProgressSafely({
+        recorder: selectRuntimeProgressRecorder(),
+        activation: input.activation,
+        call,
+        progress,
+        defer: input.deferToolObservability,
+      }),
+    recordProviderToolProtocolRound: (round) =>
+      recordProviderToolProtocolRoundSafely({
+        activation: input.activation,
+        runtimeProgressRecorder: selectRuntimeProgressRecorder(),
+        now: input.now,
+        defer: input.deferToolObservability,
+        round: round.round,
+        toolCalls: round.toolCalls,
+        toolResults: round.toolResults,
+        messages: round.messages,
+      }),
+    persistNativeToolTrace: (options) =>
+      persistNativeToolTraceSafely({
+        activation: input.activation,
+        toolTrace: input.toolTrace,
+        nativeToolMessageStore: input.nativeToolMessageStore,
+        now: input.now,
+        defer: input.deferToolObservability,
+        ...options,
+      }),
+  });
 }

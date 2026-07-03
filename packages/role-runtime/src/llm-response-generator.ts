@@ -254,7 +254,7 @@ import {
   enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
   createEvidenceLedger,
-  createEngineRunObserver,
+  createRoleEngineRunObserver,
   buildPermissionSuppressInput,
   createPermissionPolicy,
   createRepairPolicyRegistry,
@@ -2583,38 +2583,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       policyTrace,
       enginePolicyTraceDebugEnabled,
     });
-    const observer = createEngineRunObserver(toolTrace, {
+    const observer = createRoleEngineRunObserver({
+      toolTrace,
+      toolLoop: this.toolLoop,
+      runtimeProgressRecorder: this.runtimeProgressRecorder,
+      nativeToolMessageStore: this.nativeToolMessageStore,
+      deferToolObservability: this.deferToolObservability,
       now: () => this.clock.now(),
-      recordToolProgress: (call, progress) =>
-        recordRoleToolProgressSafely({
-          recorder:
-            this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
-          activation,
-          call,
-          progress,
-          defer: this.deferToolObservability,
-        }),
-      recordProviderToolProtocolRound: (round) =>
-        recordProviderToolProtocolRoundSafely({
-          activation,
-          runtimeProgressRecorder:
-            this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
-          now: () => this.clock.now(),
-          defer: this.deferToolObservability,
-          round: round.round,
-          toolCalls: round.toolCalls,
-          toolResults: round.toolResults,
-          messages: round.messages,
-        }),
-      persistNativeToolTrace: (options) =>
-        persistNativeToolTraceSafely({
-          activation,
-          toolTrace,
-          nativeToolMessageStore: this.nativeToolMessageStore,
-          now: () => this.clock.now(),
-          defer: this.deferToolObservability,
-          ...options,
-        }),
+      activation,
     });
     const executeForcedRuntimeToolRound =
       createEngineRuntimeForcedToolRoundRunner({

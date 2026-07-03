@@ -2,10 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
+import type {
+  RoleActivationInput,
+  RuntimeProgressEvent,
+  RuntimeProgressRecorder,
+  TeamMessage,
+} from "@turnkeyai/core-types/team";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
-import { createEngineRunObserver } from "./engine-run-observer";
+import {
+  createEngineRunObserver,
+  createRoleEngineRunObserver,
+} from "./engine-run-observer";
 
 function call(overrides: Partial<LLMToolCall> = {}): LLMToolCall {
   return {
@@ -22,6 +31,36 @@ function result(overrides: Partial<ToolResult> = {}): ToolResult {
     toolName: "web_fetch",
     content: "ok",
     ...overrides,
+  };
+}
+
+function activation(): RoleActivationInput {
+  return {
+    thread: {
+      threadId: "thread-1",
+      roles: [
+        {
+          roleId: "role:researcher",
+          name: "Researcher",
+          seat: "member",
+        },
+      ],
+    },
+    flow: { flowId: "flow-1" },
+    handoff: { taskId: "task-1" },
+    runState: {
+      runKey: "run-1",
+      roleId: "role:researcher",
+      lastDequeuedTaskId: "dispatch-task-1",
+    },
+  } as unknown as RoleActivationInput;
+}
+
+function recorder(events: RuntimeProgressEvent[]): RuntimeProgressRecorder {
+  return {
+    async record(event) {
+      events.push(event);
+    },
   };
 }
 
@@ -50,6 +89,100 @@ function createHarness() {
   });
   return { observer, toolTrace, recorded, providerRounds, persists };
 }
+
+test("createRoleEngineRunObserver selects tool-loop recorder and persists native trace", async () => {
+  const toolTrace: NativeToolRoundTrace[] = [];
+  const rootEvents: RuntimeProgressEvent[] = [];
+  const toolLoopEvents: RuntimeProgressEvent[] = [];
+  const persisted: TeamMessage[] = [];
+  const toolCall = call();
+  const observer = createRoleEngineRunObserver({
+    toolTrace,
+    toolLoop: { runtimeProgressRecorder: recorder(toolLoopEvents) },
+    runtimeProgressRecorder: recorder(rootEvents),
+    nativeToolMessageStore: {
+      async append(message) {
+        persisted.push(message);
+      },
+    },
+    now: () => 1234,
+    activation: activation(),
+  });
+
+  observer.onModelResponse({ round: 0, toolCalls: [toolCall] });
+  await observer.onToolStarted({ round: 0, call: toolCall });
+
+  assert.equal(rootEvents.length, 0);
+  assert.equal(toolLoopEvents.length, 1);
+  assert.equal(toolLoopEvents[0]?.metadata?.toolCallId, "call-1");
+  assert.equal(toolLoopEvents[0]?.metadata?.toolName, "web_fetch");
+  assert.equal(persisted.length, 1);
+  assert.deepEqual(persisted[0]?.toolCalls, [
+    {
+      id: "call-1",
+      name: "web_fetch",
+      arguments: { url: "https://example.com" },
+    },
+  ]);
+});
+
+test("createRoleEngineRunObserver records provider protocol rounds with selected recorder", async () => {
+  const toolTrace: NativeToolRoundTrace[] = [];
+  const rootEvents: RuntimeProgressEvent[] = [];
+  const toolLoopEvents: RuntimeProgressEvent[] = [];
+  const toolCall = call({ id: "call-provider" });
+  const toolResult = result({
+    toolCallId: "call-provider",
+    content: "provider boundary result",
+  });
+  const messages: LLMMessage[] = [
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "I will call a tool." },
+        {
+          type: "tool_use",
+          id: "call-provider",
+          name: "web_fetch",
+          input: { url: "https://example.com" },
+        },
+      ],
+    } as LLMMessage,
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool_result",
+          toolUseId: "call-provider",
+          content: "provider boundary result",
+        },
+      ],
+    } as LLMMessage,
+  ];
+  const observer = createRoleEngineRunObserver({
+    toolTrace,
+    toolLoop: { runtimeProgressRecorder: recorder(toolLoopEvents) },
+    runtimeProgressRecorder: recorder(rootEvents),
+    now: () => 2000,
+    activation: activation(),
+  });
+
+  await observer.onProviderToolProtocolRound({
+    round: 4,
+    toolCalls: [toolCall],
+    toolResults: [toolResult],
+    messages,
+  });
+
+  assert.equal(rootEvents.length, 0);
+  assert.equal(toolLoopEvents.length, 1);
+  assert.equal(
+    toolLoopEvents[0]?.metadata?.boundaryKind,
+    "provider_tool_protocol_round",
+  );
+  assert.equal(toolLoopEvents[0]?.metadata?.round, 4);
+  assert.deepEqual(toolLoopEvents[0]?.metadata?.toolCallIds, ["call-provider"]);
+});
 
 test("EngineRunObserver opens a model-response round and does not duplicate started calls", async () => {
   const { observer, toolTrace, recorded, persists } = createHarness();
