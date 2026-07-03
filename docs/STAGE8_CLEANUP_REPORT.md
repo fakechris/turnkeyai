@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `e84b9c0811be17f3352e581e346c14815b7b0ed4`
+**Code HEAD before this docs-only report:** `97e9ab5c8cffef4bd600f42cbc129b92225f7bfd`
 **Date:** 2026-07-02
 
 ## Summary
@@ -259,6 +259,12 @@ could not move the normalizer without making the inline parity reference import 
   model-error fallback after gateway failure now also routes through the
   controller for local evidence fallback and URL redaction. The model-call-error
   usable-evidence read now also routes through `EvidenceLedger.snapshot()`.
+  Terminal terminate decision input assembly now enters through
+  `CloseoutPolicyRegistry.evaluateTerminateHook()`: the registry owns
+  pending/completed/timeout state reads, run-evidence snapshotting, native
+  tool-call and round accounting, round-limit budget snapshot callback wiring,
+  and the approval wait-timeout fallback payload while the adapter passes only
+  live run state, evidence, and budget collaborators.
   Terminal final synthesis provider-schema repair selection now also routes
   through the controller-owned repair-policy window, so the adapter no longer
   evaluates the registry directly for that final retry decision.
@@ -399,9 +405,8 @@ could not move the normalizer without making the inline parity reference import 
   `tool-result-evidence.ts`.
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
-still an adapter-heavy bridge and still owns remaining evidence behavior,
-terminal closeout gateway calls, and remaining adapter-side action application
-outside the terminal completion path.
+still an adapter-heavy bridge and still owns terminal closeout gateway calls and
+remaining adapter-side action application outside the terminal completion path.
 
 ## Commits Added After The Blocked Report
 
@@ -555,6 +560,7 @@ outside the terminal completion path.
 | `679dc2f` | Move lightweight suppress, post-execute, and round-empty hook entrypoints into their existing owners; update hook contract/golden names. |
 | `d3c0ed6` | Move natural-finish repair hook wiring into `RepairPolicyRegistry`; adapter delegates active gating, marker ledger persistence, and recovery-budget accounting. |
 | `e84b9c0` | Move model-call-error hook wiring into `TerminalCloseoutController`; adapter delegates abort classification, evidence snapshotting, tool-count accounting, forced-permission flow selection, and hook-result application. |
+| `97e9ab5` | Move terminate closeout hook input assembly into `CloseoutPolicyRegistry`; adapter delegates state/evidence reads, tool-count accounting, round-limit budget callback wiring, and approval wait-timeout fallback payload construction. |
 
 ## Current Extracted Implementation
 
@@ -620,7 +626,10 @@ Real implementation now exists in:
   pending-call closeout evaluation/application, and remaining pending-call
   closeout session context construction, plus the post-execute closeout
   hook entrypoint that owns current-round evidence lookup before applying the
-  completed/timeout closeout decision.
+  completed/timeout closeout decision, plus the terminal `onTerminate` decision
+  hook entrypoint that owns pending/completed/timeout state reads, run-evidence
+  snapshotting, native tool-call/round accounting, round-limit budget snapshot
+  callback wiring, and approval wait-timeout fallback payload construction.
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
   repair policies: `final_recovery_budget_closeout_repair`,
@@ -857,15 +866,15 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this model-call-error hook handoff slice:
+Fresh gates run for this terminate closeout hook handoff slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 37 / 37 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 34 / 34 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 38 / 38 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 38 / 38 |
 | `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts` | 7 / 7 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 266 / 266 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 268 / 268 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -954,10 +963,13 @@ Stage 8 boundaries/slices are now real:
   `RepairPolicyRegistry.applyNaturalFinishRepairHook`; the registry owns
   active-loop gating, repair-marker ledger persistence, final-recovery budget
   accounting, and natural-finish repair cascade application.
-- terminal closeout reasonLines and metadata construction routes through
-  `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
-  passthrough, completed session closeout, sub-agent timeout closeout,
-  round-limit closeout, and generic closeout fallback; terminal synthesis
+- terminal `onTerminate` now routes through
+  `CloseoutPolicyRegistry.evaluateTerminateHook`, which delegates closeout
+  reasonLines and metadata construction to `evaluateTerminate` for pending
+  closeout passthrough, completed session closeout, sub-agent timeout closeout,
+  round-limit closeout, and generic closeout fallback; the hook entrypoint also
+  assembles the terminate decision inputs by reading run state, evidence,
+  tool/round counts, and round-limit budget snapshots. Terminal synthesis
   context construction, non-completed synthesis invocation, and terminal
   state-effect application route through `TerminalCloseoutController`, while the
   adapter supplies the gateway callback.
@@ -1264,6 +1276,11 @@ Stage 8 boundaries/slices are now real:
   in the controller; the adapter receives a ready gateway input for the repair
   model call. The controller also owns the completed-reason and null-session
   guards, so the adapter passes that handoff data unconditionally.
+- terminal `onTerminate` decision input assembly now routes through
+  `CloseoutPolicyRegistry.evaluateTerminateHook`; the adapter passes run state,
+  run evidence, tool trace, and execution budget while the registry owns
+  state/evidence reads, native tool-call and round accounting, round-limit
+  snapshot callback wiring, and the approval wait-timeout fallback payload.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -1335,8 +1352,10 @@ Continue with the remaining high-risk pieces:
   callback/gateway-input handoffs, terminal path selection, final/re-arm
   application, terminal entrypoint,
   terminal hook fallback entry,
+  terminate decision/input assembly,
   and the model-error hook entrypoint; the next terminal slice is likely
-  `onTerminate` decision/input assembly and remaining gateway callback wiring.
+  remaining gateway callback wiring or completed terminal hook composition
+  beyond the decision assembly.
   Forced runtime tool-round orchestration
   now delegates to `tool-use.ts`, runtime progress recorder/observer emission
   delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
