@@ -374,6 +374,116 @@ test("TerminalCloseoutController evaluates final synthesis provider-schema repai
   );
 });
 
+test("TerminalCloseoutController builds final synthesis provider-schema repair requests", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "Compare pricing and tradeoffs." },
+  ];
+  const resultText = [
+    "| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+    "| --- | --- | --- | --- |",
+    "| A | 未验证 | 未验证 | 未验证 |",
+  ].join("\n");
+
+  const request = controller.buildFinalSynthesisProviderSchemaRepairRequest({
+    taskPrompt:
+      "Compare pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead.",
+    messages,
+    repairMarkers: messages,
+    resultText,
+  });
+
+  assert.equal(request?.policyId, "extraneous_provider_table_schema");
+  assert.equal(request?.sourceMessages.at(0), messages[0]);
+  const repairContent = request?.sourceMessages.at(-1)?.content;
+  if (typeof repairContent !== "string") {
+    assert.fail("provider schema repair request must append a text message");
+  }
+  assert.match(
+    repairContent,
+    /introduced provider\/search\/model-support columns/i,
+  );
+  assert.match(repairContent, /\| provider \|/);
+
+  assert.equal(
+    controller.buildFinalSynthesisProviderSchemaRepairRequest({
+      taskPrompt:
+        "Compare provider options for DeepSeek R1 search/web_search support, input price, and output price.",
+      messages,
+      repairMarkers: messages,
+      resultText,
+    }),
+    null,
+  );
+});
+
+test("TerminalCloseoutController builds final synthesis tool-call artifact cleanup requests", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "Use existing evidence only." },
+  ];
+
+  const request = controller.buildFinalSynthesisToolCallArtifactRepairRequest({
+    messages,
+    result: result('<tool_call name="web_search">query</tool_call>'),
+  });
+
+  assert.equal(request?.sourceMessages.at(0), messages[0]);
+  assert.equal(request?.sourceMessages.at(-2)?.content, request?.resultText);
+  const cleanupContent = request?.sourceMessages.at(-1)?.content;
+  if (typeof cleanupContent !== "string") {
+    assert.fail("tool-call cleanup request must append a text message");
+  }
+  assert.match(cleanupContent, /tools are disabled for final synthesis/i);
+
+  assert.equal(
+    controller.buildFinalSynthesisToolCallArtifactRepairRequest({
+      messages,
+      result: result("A clean final answer."),
+    }),
+    null,
+  );
+});
+
+test("TerminalCloseoutController completes final synthesis tool-call artifact repair", () => {
+  const controller = createTerminalCloseoutController();
+
+  const completed = controller.completeFinalSynthesisToolCallArtifactRepair({
+    initial: {
+      result: result("initial answer with tool markup"),
+      memoryFlush: "initial-memory",
+    },
+    repair: {
+      result: result('<tool_call name="web_search">still wrong</tool_call>'),
+    },
+    fallback: {
+      messages: [],
+      packet: packet("Return the final answer from available evidence."),
+      selection: {},
+    },
+  });
+
+  assert.match(
+    completed.result.text,
+    /attempted to emit another tool call after tools were disabled/i,
+  );
+  assert.equal(completed.memoryFlush, "initial-memory");
+
+  const clean = controller.completeFinalSynthesisToolCallArtifactRepair({
+    initial: { result: result("initial answer") },
+    repair: { result: result("clean repair answer") },
+    fallback: {
+      messages: [],
+      packet: packet("Return the final answer from available evidence."),
+      selection: {},
+    },
+  });
+
+  assert.equal(clean.result.text, "clean repair answer");
+});
+
 test("TerminalCloseoutController applies model-call-error fallback through a target", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [

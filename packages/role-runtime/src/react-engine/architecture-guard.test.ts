@@ -90,7 +90,7 @@ test("forced engine tool rounds delegate observer-owned trace persistence when a
   );
 });
 
-test("terminal final synthesis provider-schema repair decision routes through terminal controller", () => {
+test("terminal final synthesis provider-schema repair request routes through terminal controller", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf(
     "private async generateFinalAfterToolRoundLimit",
@@ -116,7 +116,37 @@ test("terminal final synthesis provider-schema repair decision routes through te
   );
   assert.equal(
     helperSource.includes("evaluateFinalSynthesisProviderSchemaRepair"),
+    false,
+    "terminal final synthesis provider-schema repair decisions must not be evaluated directly in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("buildExtraneousProviderTableSchemaRepairMessages"),
+    false,
+    "terminal final synthesis provider-schema repair message construction must not stay in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("buildFinalSynthesisProviderSchemaRepairRequest"),
     true,
-    "terminal final synthesis provider-schema repair decisions must route through TerminalCloseoutController",
+    "terminal final synthesis provider-schema repair message construction must route through TerminalCloseoutController",
+  );
+  assert.equal(
+    helperSource.includes("buildToolCallArtifactCleanupMessages"),
+    false,
+    "terminal final synthesis tool-call cleanup message construction must not stay in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("containsAnyToolCallForm"),
+    false,
+    "terminal final synthesis tool-call artifact decisions must not stay in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("buildFinalSynthesisToolCallArtifactRepairRequest"),
+    true,
+    "terminal final synthesis tool-call cleanup requests must route through TerminalCloseoutController",
+  );
+  assert.equal(
+    helperSource.includes("completeFinalSynthesisToolCallArtifactRepair"),
+    true,
+    "terminal final synthesis tool-call cleanup completion must route through TerminalCloseoutController",
   );
 });

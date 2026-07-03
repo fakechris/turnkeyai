@@ -18,10 +18,8 @@ import type {
   RoleResponseGenerator,
 } from "./deterministic-response-generator";
 import {
-  buildExtraneousProviderTableSchemaRepairMessages,
   buildFinalSynthesisSourceMessages,
   buildGatewayInput,
-  buildToolCallArtifactCleanupMessages,
   buildToolFreeGatewayInput,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
@@ -3646,6 +3644,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         input.selection,
         summarizeToolResultPruning(finalSourceMessages, finalMessages),
       );
+      const terminalCloseout = createTerminalCloseoutController();
       const generated = await this.generateWithEnvelopeRetry({
         activation: input.activation,
         packet: input.packet,
@@ -3659,29 +3658,20 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           : {}),
         tracePhase: "final_synthesis",
       });
-      const providerSchemaRepair =
-        createTerminalCloseoutController()
-          .evaluateFinalSynthesisProviderSchemaRepair({
-            activation: input.activation,
-            taskPrompt: input.packet.taskPrompt,
-            messages: finalMessages,
-            // Separate entry point (generateFinalAfterToolRoundLimit) outside the
-            // generate() loop: its idempotency ledger is finalMessages, which is
-            // where this method injects + scans its own repair prompt. Pass it as
-            // repairMarkers to preserve the pre-migration finalMessages scan.
-            repairMarkers: finalMessages,
-            resultText: generated.result.text,
-          });
-      if (
-        providerSchemaRepair?.policyId ===
-        "extraneous_provider_table_schema"
-      ) {
-        const repairSourceMessages =
-          buildExtraneousProviderTableSchemaRepairMessages({
-            messages: finalMessages,
-            resultText: generated.result.text,
-            repairPrompt: providerSchemaRepair.repairPrompt,
-          });
+      const providerSchemaRepairRequest =
+        terminalCloseout.buildFinalSynthesisProviderSchemaRepairRequest({
+          activation: input.activation,
+          taskPrompt: input.packet.taskPrompt,
+          messages: finalMessages,
+          // Separate entry point (generateFinalAfterToolRoundLimit) outside the
+          // generate() loop: its idempotency ledger is finalMessages, which is
+          // where this method injects + scans its own repair prompt. Pass it as
+          // repairMarkers to preserve the pre-migration finalMessages scan.
+          repairMarkers: finalMessages,
+          resultText: generated.result.text,
+        });
+      if (providerSchemaRepairRequest) {
+        const repairSourceMessages = providerSchemaRepairRequest.sourceMessages;
         const repairedMessages =
           prepareToolHistoryForGateway(repairSourceMessages);
         await this.recordToolResultPruningBoundarySafely(
@@ -3702,18 +3692,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             : {}),
           tracePhase: "final_synthesis_repair",
         });
-        return createTerminalCloseoutController().mergeFinalSynthesisRepairResult({
+        return terminalCloseout.mergeFinalSynthesisRepairResult({
           initial: generated,
           repair: repaired,
         });
       }
-      if (!containsAnyToolCallForm(generated.result)) {
+      const toolCallArtifactRepairRequest =
+        terminalCloseout.buildFinalSynthesisToolCallArtifactRepairRequest({
+          messages: finalMessages,
+          result: generated.result,
+        });
+      if (!toolCallArtifactRepairRequest) {
         return generated;
       }
-      const repairSourceMessages = buildToolCallArtifactCleanupMessages({
-        messages: finalMessages,
-        resultText: generated.result.text,
-      });
+      const repairSourceMessages =
+        toolCallArtifactRepairRequest.sourceMessages;
       const repairedMessages =
         prepareToolHistoryForGateway(repairSourceMessages);
       await this.recordToolResultPruningBoundarySafely(
@@ -3734,22 +3727,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           : {}),
         tracePhase: "final_synthesis_repair",
       });
-      const repairedResult = containsAnyToolCallForm(repaired.result)
-        ? createTerminalCloseoutController().buildFinalSynthesisToolCallArtifactFallback(
-            {
-              activation: input.activation,
-              messages: input.messages,
-              packet: input.packet,
-              selection: input.selection,
-              repairedResult: repaired.result,
-            },
-          )
-        : repaired.result;
-      return createTerminalCloseoutController().mergeFinalSynthesisRepairResult({
+      return terminalCloseout.completeFinalSynthesisToolCallArtifactRepair({
         initial: generated,
-        repair: {
-          ...repaired,
-          result: repairedResult,
+        repair: repaired,
+        fallback: {
+          activation: input.activation,
+          messages: input.messages,
+          packet: input.packet,
+          selection: input.selection,
         },
       });
     } catch (error) {

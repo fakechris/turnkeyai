@@ -6,12 +6,17 @@ import type {
 } from "@turnkeyai/llm-adapter/index";
 import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 
+import {
+  buildExtraneousProviderTableSchemaRepairMessages,
+  buildToolCallArtifactCleanupMessages,
+} from "../gateway-input-builder";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
 import {
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
+  containsAnyToolCallForm,
   maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
 } from "../tool-loop-shared";
@@ -102,6 +107,34 @@ export interface FinalSynthesisProviderSchemaRepairInput {
   resultText: string;
   taskPrompt: string;
   repairPolicy?: RepairPolicyRegistry;
+}
+
+export interface FinalSynthesisProviderSchemaRepairRequest {
+  policyId: "extraneous_provider_table_schema";
+  repairPrompt: string;
+  sourceMessages: LLMMessage[];
+}
+
+export interface FinalSynthesisToolCallArtifactRepairInput {
+  messages: LLMMessage[];
+  result: GenerateTextResult;
+}
+
+export interface FinalSynthesisToolCallArtifactRepairRequest {
+  resultText: string;
+  sourceMessages: LLMMessage[];
+}
+
+export interface FinalSynthesisToolCallArtifactRepairCompletionInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends FinalSynthesisRepairMergeInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+  fallback: Omit<FinalSynthesisToolCallArtifactFallbackInput, "repairedResult">;
 }
 
 type ForcedModelCallErrorContinuation = Extract<
@@ -600,6 +633,39 @@ export class TerminalCloseoutController {
     });
   }
 
+  buildFinalSynthesisProviderSchemaRepairRequest(
+    input: FinalSynthesisProviderSchemaRepairInput,
+  ): FinalSynthesisProviderSchemaRepairRequest | null {
+    const decision = this.evaluateFinalSynthesisProviderSchemaRepair(input);
+    if (decision?.policyId !== "extraneous_provider_table_schema") {
+      return null;
+    }
+    return {
+      policyId: decision.policyId,
+      repairPrompt: decision.repairPrompt,
+      sourceMessages: buildExtraneousProviderTableSchemaRepairMessages({
+        messages: input.messages,
+        resultText: input.resultText,
+        repairPrompt: decision.repairPrompt,
+      }),
+    };
+  }
+
+  buildFinalSynthesisToolCallArtifactRepairRequest(
+    input: FinalSynthesisToolCallArtifactRepairInput,
+  ): FinalSynthesisToolCallArtifactRepairRequest | null {
+    if (!containsAnyToolCallForm(input.result)) {
+      return null;
+    }
+    return {
+      resultText: input.result.text,
+      sourceMessages: buildToolCallArtifactCleanupMessages({
+        messages: input.messages,
+        resultText: input.result.text,
+      }),
+    };
+  }
+
   applyModelCallErrorFallback<
     TReduction = unknown,
     TReductionSnapshot = unknown,
@@ -1051,6 +1117,36 @@ export class TerminalCloseoutController {
       ...(reductionSnapshot === undefined ? {} : { reductionSnapshot }),
       ...(memoryFlush === undefined ? {} : { memoryFlush }),
     };
+  }
+
+  completeFinalSynthesisToolCallArtifactRepair<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: FinalSynthesisToolCallArtifactRepairCompletionInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): NonCompletedTerminalSynthesis<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+    const repairedResult = containsAnyToolCallForm(input.repair.result)
+      ? this.buildFinalSynthesisToolCallArtifactFallback({
+          ...input.fallback,
+          repairedResult: input.repair.result,
+        })
+      : input.repair.result;
+    return this.mergeFinalSynthesisRepairResult({
+      initial: input.initial,
+      repair: {
+        ...input.repair,
+        result: repairedResult,
+      },
+    });
   }
 
   closeoutRecordMode(reason: EngineCloseoutReason): TerminalCloseoutRecordMode {
