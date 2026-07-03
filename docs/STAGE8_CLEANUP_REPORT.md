@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `4073d09dadf456a86c4f7ff513b1cd11fed72707`
+**Code HEAD before this docs-only report:** `1655a090339c70adc1aab6b5ef322d1586da04a3`
 **Date:** 2026-07-02
 
 ## Summary
@@ -305,6 +305,9 @@ could not move the normalizer without making the inline parity reference import 
   Request-envelope reduction boundary recording now lives in
   `request-envelope-reducer.ts`, so the adapter no longer owns
   `request_envelope_reduction` runtime progress metadata construction.
+  Prompt assembly compaction boundary recording now lives in `prompt-policy.ts`,
+  so the adapter no longer owns `prompt_compaction` runtime progress metadata
+  construction.
   Runtime-derived mission terminal reports now live in
   `runtime-derived-mission-report.ts`, and the supplemental browser-probe
   capability check now lives in neutral `tool-loop-shared.ts`.
@@ -448,6 +451,7 @@ outside the terminal completion path.
 | `4b7772f` | Move tool-result pruning boundary recording into neutral `tool-history-pruning.ts`; adapter passes activation/selection/recorder instead of owning runtime progress metadata construction. |
 | `f532943` | Centralize request-envelope reduced retry gateway input construction in `gateway-input-builder`; adapter no longer hand-builds reduced prompt replacement or retry envelope recomputation. |
 | `4073d09` | Move request-envelope reduction boundary recording into `request-envelope-reducer.ts`; adapter passes activation/packet/selection/recorder instead of owning runtime progress metadata construction. |
+| `1655a09` | Move prompt assembly compaction boundary recording into `prompt-policy.ts`; adapter passes activation/packet/selection/recorder instead of owning runtime progress metadata construction. |
 
 ## Current Extracted Implementation
 
@@ -626,6 +630,8 @@ Real implementation now exists in:
 - `request-envelope-reducer.ts` for prompt packet reduction levels/results,
   reduction snapshot typing, and request-envelope reduction runtime boundary
   progress recording.
+- `prompt-policy.ts` for prompt packet construction and prompt assembly
+  compaction runtime boundary progress recording.
 - `gateway-input-builder.ts` for gateway input construction, runtime session
   continuation directive prompt injection, final synthesis format-contract
   lines, no-tool gateway transforms, mention extraction, tool-definition lookup,
@@ -690,10 +696,11 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
+| `npx tsx --test packages/role-runtime/src/prompt-policy.test.ts` | 31 / 31 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 10 / 10 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 11 / 11 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 215 / 215 |
@@ -872,6 +879,9 @@ Stage 8 boundaries/slices are now real:
 - request-envelope reduction boundary recording now routes through
   `request-envelope-reducer.ts`; the adapter no longer owns the
   `request_envelope_reduction` runtime progress metadata shape.
+- prompt assembly compaction boundary recording now routes through
+  `prompt-policy.ts`; the adapter no longer owns the `prompt_compaction`
+  runtime progress metadata shape.
 - final synthesis source-message construction, gateway-history preparation, and
   pruning summary construction now enter through `TerminalCloseoutController`;
   the controller uses neutral gateway-input/tool-history helpers internally and
