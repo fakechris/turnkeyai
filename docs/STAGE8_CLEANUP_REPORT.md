@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `1b3f51191f9ad080d52ee3a48bb96464281964ed`
+**Code HEAD before this docs-only report:** `a0acc5626244e7521d2d3c63064026830a90c92a`
 **Date:** 2026-07-02
 
 ## Summary
@@ -242,7 +242,10 @@ could not move the normalizer without making the inline parity reference import 
   Gateway input construction, final synthesis format-contract lines, no-tool
   gateway transforms, mention extraction, and requested three-line label
   normalization now live in neutral `gateway-input-builder.ts`; request-envelope
-  reduced prompt replacement now lives there too.
+  reduced prompt replacement now lives there too. Tool-free gateway input
+  construction now also lives there, including tool stripping, message
+  replacement, and tool-result envelope recomputation for inline and engine
+  final/repair synthesis paths.
   Session trace canonicalization from structured session results and native
   tool-call counting now live in `native-tool-messages.ts`.
   Shared JSON object parsing and the stable `AbortError` guard now live in
@@ -373,6 +376,7 @@ outside the terminal completion path.
 | `58624f9` | Move the full `onAfterExecuteContinue` observer / current-round evidence / continuation cascade flow into `ContinuationController.applyAfterExecuteContinuationHook`; update the hook contract and policy-trace golden. |
 | `ecc9aa3` | Move completed-closeout synthesis callback construction into `TerminalCloseoutController.handleTerminalCloseoutHook`; adapter supplies completed controller, ledger, and gateway callbacks. |
 | `1b3f511` | Move completed-closeout reason/null-session guards into `TerminalCloseoutController`; adapter passes completed-closeout handoff data unconditionally. |
+| `a0acc56` | Centralize tool-free gateway input construction in `gateway-input-builder`; adapter reuses it for inline/engine no-tool rounds and terminal final/repair synthesis. |
 
 ## Current Extracted Implementation
 
@@ -541,7 +545,8 @@ Real implementation now exists in:
   continuation directive prompt injection, final synthesis format-contract
   lines, no-tool gateway transforms, mention extraction, tool-definition lookup,
   requested three-line label normalization, and request-envelope prompt-message
-  replacement.
+  replacement, plus tool-free gateway input construction with tool stripping,
+  message replacement, and tool-result envelope recomputation.
 - `native-tool-messages.ts` for native tool-message construction, session trace
   canonicalization from structured session results, and native tool-call
   counting.
@@ -593,6 +598,7 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
+| `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 7 / 7 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 22 / 22 |
 | `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 198 / 198 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
@@ -752,6 +758,10 @@ Stage 8 boundaries/slices are now real:
   mention extraction, tool-definition lookup, and requested three-line label
   normalization now live in neutral `gateway-input-builder.ts`; the adapter
   calls the module instead of owning those context-construction helpers.
+- tool-free gateway input construction now also routes through
+  `gateway-input-builder.ts`; inline/engine no-tool rounds and terminal
+  final/repair synthesis paths reuse the same helper for tool stripping,
+  message replacement, and tool-result envelope recomputation.
 - request-envelope reduced prompt replacement now lives in
   `gateway-input-builder.ts`; the adapter calls the module instead of owning the
   prompt/history splice helper.
