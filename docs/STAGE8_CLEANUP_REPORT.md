@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `4b6eb72f32ec79593d7186216bdd97f970671e06`
+**Code HEAD before this docs-only report:** `59d1e192ddecbc2c87d12aca42521d9a69ad0bf9`
 **Date:** 2026-07-02
 
 ## Summary
@@ -180,7 +180,9 @@ could not move the normalizer without making the inline parity reference import 
   `TerminalCloseoutController`, including local evidence fallback, generic
   fallback text, and URL redaction. Final-synthesis repair effect merging now
   also lives there, preserving repair-over-initial precedence for result,
-  reduction, reduction snapshot, and memory flush metadata. The model-call-error
+  reduction, reduction snapshot, and memory flush metadata. Final-synthesis
+  model-error fallback after gateway failure now also routes through the
+  controller for local evidence fallback and URL redaction. The model-call-error
   usable-evidence read now also routes through `EvidenceLedger.snapshot()`.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
@@ -394,6 +396,7 @@ outside the terminal completion path.
 | `2e4c312` | Route terminal final synthesis provider-schema repair selection through `RepairPolicyRegistry`; add an architecture guard against direct predicate drift. |
 | `047befd` | Move final-synthesis tool-call artifact fallback result construction into `TerminalCloseoutController`; adapter delegates the local/generic fallback shaping. |
 | `4b6eb72` | Move final-synthesis repair effect merging into `TerminalCloseoutController`; adapter delegates repair-over-initial reduction and memory-flush precedence. |
+| `59d1e19` | Move final-synthesis gateway-error local evidence fallback construction into `TerminalCloseoutController`; adapter rethrows only when no local fallback exists. |
 
 ## Current Extracted Implementation
 
@@ -621,8 +624,8 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 10 / 10 |
 | `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 24 / 24 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 201 / 201 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 25 / 25 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 202 / 202 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -876,6 +879,9 @@ Stage 8 boundaries/slices are now real:
   `TerminalCloseoutController`; the adapter passes initial and repair synthesis
   results instead of coalescing reduction, reduction snapshot, and memory flush
   metadata itself.
+- final-synthesis gateway-error local evidence fallback construction now lives
+  in `TerminalCloseoutController`; the adapter delegates fallback creation and
+  only rethrows when the controller returns no local fallback.
 - completed-closeout post-synthesis visibility routes through
   `CompletedCloseoutController`, preserving the original browser recovery,
   browser failure-bucket, recovered-timeout/continuation, and forbidden local
