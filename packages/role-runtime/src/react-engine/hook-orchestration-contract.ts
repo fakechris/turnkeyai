@@ -121,7 +121,7 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     installed: true,
     moduleOps: [
       "EngineRunState.captureFinalMessages",
-      "CloseoutPolicyRegistry.evaluateTerminate",
+      "CloseoutPolicyRegistry.evaluateTerminateHook",
       "TerminalCloseoutController.handleTerminalCloseoutHook",
     ],
   },

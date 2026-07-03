@@ -1312,3 +1312,105 @@ test("CloseoutPolicyRegistry builds generic terminate closeout", () => {
     evidenceAvailable: false,
   });
 });
+
+test("CloseoutPolicyRegistry owns terminate hook state and evidence assembly", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const messages = [{ role: "user" as const, content: "Summarize evidence." }];
+  const toolTrace = [
+    traceRound(1, [toolCall("call-1", "web_fetch")], []),
+    traceRound(2, [
+      toolCall("call-2", "sessions_spawn"),
+      toolCall("call-3", "permission_query"),
+    ], []),
+  ];
+  const calls: string[] = [];
+  let evidenceMessages: unknown;
+  let roundLimitInput: unknown;
+
+  const result = registry.evaluateTerminateHook({
+    reason: "round_limit",
+    taskPrompt: "Summarize the gathered evidence.",
+    messages,
+    toolTrace,
+    maxRounds: 5,
+    state: {
+      pendingCloseout: () => {
+        calls.push("pending");
+        return undefined;
+      },
+      completedSession: () => {
+        calls.push("completed");
+        return {
+          toolName: "sessions_spawn",
+          finalContents: ["ignored for round limit"],
+          browserRecoverySummaries: [],
+        };
+      },
+      timeoutSignal: () => {
+        calls.push("timeout");
+        return undefined;
+      },
+    },
+    evidence: {
+      snapshot: (capturedMessages) => {
+        calls.push("evidence");
+        evidenceMessages = capturedMessages;
+        return {
+          usableEvidence: true,
+          approvalWaitTimeoutRuntimeEvidence: "permission_result pending",
+        };
+      },
+    },
+    executionBudget: {
+      buildRoundLimitCloseoutSnapshot: (input) => {
+        calls.push("round-limit");
+        roundLimitInput = input;
+        return {
+          reasonLines: ["Tool-use round limit reached (5)."],
+          closeout: {
+            reason: "round_limit",
+            maxRounds: 5,
+            toolCallCount: input.usedToolCalls,
+            roundCount: input.roundCount,
+            evidenceAvailable: input.evidenceAvailable,
+          },
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(calls, [
+    "evidence",
+    "pending",
+    "completed",
+    "timeout",
+    "round-limit",
+  ]);
+  assert.equal(evidenceMessages, messages);
+  assert.deepEqual(roundLimitInput, {
+    maxRounds: 5,
+    usedToolCalls: 3,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+  assert.deepEqual(result, {
+    decision: {
+      kind: "closeout",
+      policyId: "round_limit",
+      reason: "round_limit",
+      reasonLines: ["Tool-use round limit reached (5)."],
+      closeout: {
+        reason: "round_limit",
+        maxRounds: 5,
+        toolCallCount: 3,
+        roundCount: 2,
+        evidenceAvailable: true,
+      },
+    },
+    approvalWaitTimeoutFallback: {
+      toolCallCount: 3,
+      roundCount: 2,
+      evidenceText: "permission_result pending",
+    },
+  });
+});

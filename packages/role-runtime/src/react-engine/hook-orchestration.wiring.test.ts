@@ -89,7 +89,7 @@ test("wiring guard: wrong cross-module order inside a hook FAILS", () => {
   assert.ok(contract);
   const wrong = [
     "TerminalCloseoutController.handleTerminalCloseoutHook",
-    "CloseoutPolicyRegistry.evaluateTerminate",
+    "CloseoutPolicyRegistry.evaluateTerminateHook",
     "EngineRunState.captureFinalMessages",
   ];
   // Sanity: the wrong order is genuinely a reordering of the real contract ops.

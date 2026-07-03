@@ -26,7 +26,7 @@
     "ContinuationController.applyRoundEmptyHook",
     "RepairPolicyRegistry.applyNaturalFinishRepairHook",
     "EngineRunState.captureFinalMessages",
-    "CloseoutPolicyRegistry.evaluateTerminate",
+    "CloseoutPolicyRegistry.evaluateTerminateHook",
     "TerminalCloseoutController.handleTerminalCloseoutHook",
     "EngineRunState.captureFinalMessages",
     "TerminalCloseoutController.completeModelCallErrorHook",

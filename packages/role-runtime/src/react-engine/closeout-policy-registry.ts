@@ -260,6 +260,51 @@ export interface TerminateCloseoutInput {
   buildRoundLimitCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
 }
 
+export interface TerminateCloseoutEvidenceSnapshot {
+  usableEvidence: boolean;
+  approvalWaitTimeoutRuntimeEvidence: string;
+}
+
+export interface TerminateCloseoutEvidenceSnapshotter {
+  snapshot(messages: LLMMessage[]): TerminateCloseoutEvidenceSnapshot;
+}
+
+export interface TerminateCloseoutStateSnapshotter {
+  pendingCloseout():
+    | {
+        reasonLines: string[];
+        closeout: { reason: EngineCloseoutReason };
+      }
+    | undefined;
+  completedSession(): CompletedSessionTerminateSignal | undefined;
+  timeoutSignal(): SubAgentTimeoutTerminateSignal | undefined;
+}
+
+export interface TerminateCloseoutHookInput {
+  reason: EngineCloseoutReason;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  maxRounds: number;
+  state: TerminateCloseoutStateSnapshotter;
+  evidence: TerminateCloseoutEvidenceSnapshotter;
+  executionBudget: Pick<
+    ExecutionBudgetController,
+    "buildRoundLimitCloseoutSnapshot"
+  >;
+}
+
+export interface TerminateApprovalWaitTimeoutFallbackInput {
+  toolCallCount: number;
+  roundCount: number;
+  evidenceText: string;
+}
+
+export interface TerminateCloseoutHookResult {
+  decision: TerminateCloseoutDecision;
+  approvalWaitTimeoutFallback: TerminateApprovalWaitTimeoutFallbackInput;
+}
+
 export interface TerminateCloseoutDecision {
   kind: "closeout";
   policyId: EngineCloseoutReason;
@@ -452,6 +497,8 @@ export interface CloseoutPolicyRegistry {
   ): EngineCloseoutReason | null;
 
   evaluateTerminate(input: TerminateCloseoutInput): TerminateCloseoutDecision;
+
+  evaluateTerminateHook(input: TerminateCloseoutHookInput): TerminateCloseoutHookResult;
 }
 
 class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
@@ -1045,6 +1092,50 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         toolCallCount: input.usedToolCalls,
         roundCount: input.roundCount,
         evidenceAvailable: input.evidenceAvailable,
+      },
+    };
+  }
+
+  evaluateTerminateHook(input: TerminateCloseoutHookInput): TerminateCloseoutHookResult {
+    const usedToolCalls = countNativeToolCalls(input.toolTrace);
+    const roundCount = input.toolTrace.length;
+    const terminateEvidence = input.evidence.snapshot(input.messages);
+    const evidenceAvailable = terminateEvidence.usableEvidence;
+    const pendingCloseout = input.state.pendingCloseout();
+    const completedSession = input.state.completedSession() ?? null;
+    const timeoutSignal = input.state.timeoutSignal() ?? null;
+
+    return {
+      decision: this.evaluateTerminate({
+        reason: input.reason,
+        pendingCloseout: pendingCloseout
+          ? {
+              reason: pendingCloseout.closeout.reason,
+              reasonLines: pendingCloseout.reasonLines,
+              closeout: pendingCloseout.closeout,
+            }
+          : null,
+        completedSession,
+        timeoutSignal,
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        toolTrace: input.toolTrace,
+        maxRounds: input.maxRounds,
+        usedToolCalls,
+        roundCount,
+        evidenceAvailable,
+        buildRoundLimitCloseoutSnapshot: () =>
+          input.executionBudget.buildRoundLimitCloseoutSnapshot({
+            maxRounds: input.maxRounds,
+            usedToolCalls,
+            roundCount,
+            evidenceAvailable,
+          }),
+      }),
+      approvalWaitTimeoutFallback: {
+        toolCallCount: usedToolCalls,
+        roundCount,
+        evidenceText: terminateEvidence.approvalWaitTimeoutRuntimeEvidence,
       },
     };
   }

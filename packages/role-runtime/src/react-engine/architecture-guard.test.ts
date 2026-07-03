@@ -602,6 +602,63 @@ test("engine model-call-error hook routes through terminal closeout owner", () =
   );
 });
 
+test("engine terminate decision hook routes through closeout-policy owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const hookStart = engineSource.indexOf("onTerminate: async (reason, state");
+  const hookEnd = engineSource.indexOf(
+    "          const terminalCompletion =",
+    hookStart,
+  );
+  assert.notEqual(hookStart, -1, "onTerminate hook must exist");
+  assert.notEqual(hookEnd, -1, "onTerminate decision boundary must be found");
+  const decisionSource = engineSource.slice(hookStart, hookEnd);
+  const registrySource = readFileSync(
+    path.join(ENGINE_DIR, "closeout-policy-registry.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    decisionSource.includes("countNativeToolCalls(toolTrace)"),
+    false,
+    "terminate hook tool-count accounting must live with CloseoutPolicyRegistry",
+  );
+  assert.equal(
+    decisionSource.includes("runEvidence.snapshot(state.messages)"),
+    false,
+    "terminate hook evidence snapshot reads must live with CloseoutPolicyRegistry",
+  );
+  assert.equal(
+    decisionSource.includes("runState.pendingCloseout()"),
+    false,
+    "terminate hook pending-closeout reads must live with CloseoutPolicyRegistry",
+  );
+  assert.equal(
+    decisionSource.includes("runState.timeoutSignal()"),
+    false,
+    "terminate hook timeout-signal reads must live with CloseoutPolicyRegistry",
+  );
+  assert.equal(
+    decisionSource.includes("closeoutPolicy.evaluateTerminate({"),
+    false,
+    "terminate hook must not call the lower-level terminate evaluator directly",
+  );
+  assert.equal(
+    decisionSource.includes("closeoutPolicy.evaluateTerminateHook({"),
+    true,
+    "onTerminate should delegate decision input assembly to CloseoutPolicyRegistry",
+  );
+  assert.equal(
+    registrySource.includes("evaluateTerminateHook("),
+    true,
+    "closeout-policy owner should expose the terminate hook entrypoint",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

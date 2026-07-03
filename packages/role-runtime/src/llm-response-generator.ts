@@ -2865,38 +2865,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // metadata it produced inline; the round_limit defaults remain the
           // fallback for any reason without a bespoke branch. completed/timeout
           // read the signal onAfterExecute stashed on `run`.
-          const usedToolCalls = countNativeToolCalls(toolTrace);
-          const roundCount = toolTrace.length;
-          const terminateEvidence = runEvidence.snapshot(state.messages);
-          const evidenceAvailable = terminateEvidence.usableEvidence;
-          const pendingCloseout = runState.pendingCloseout();
-          const completedSessionSignal = runState.completedSession();
-          const timeoutSignal = runState.timeoutSignal();
-          const terminateCloseout = closeoutPolicy.evaluateTerminate({
+          const terminateCloseout = closeoutPolicy.evaluateTerminateHook({
             reason: reason as EngineCloseoutReason,
-            pendingCloseout: pendingCloseout
-              ? {
-                  reason: pendingCloseout.closeout.reason,
-                  reasonLines: pendingCloseout.reasonLines,
-                  closeout: pendingCloseout.closeout,
-                }
-              : null,
-            completedSession: completedSessionSignal ?? null,
-            timeoutSignal: timeoutSignal ?? null,
             taskPrompt: packet.taskPrompt,
             messages: state.messages,
             toolTrace,
             maxRounds,
-            usedToolCalls,
-            roundCount,
-            evidenceAvailable,
-            buildRoundLimitCloseoutSnapshot: () =>
-              executionBudget.buildRoundLimitCloseoutSnapshot({
-                maxRounds,
-                usedToolCalls,
-                roundCount,
-                evidenceAvailable,
-              }),
+            state: runState,
+            evidence: runEvidence,
+            executionBudget,
           });
           // Sticky completed-closeout metadata (inline `toolLoopCloseout ??=`, :1729):
           // captured on the FIRST completed session, BEFORE the S10 browser-evidence
@@ -2915,13 +2892,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               reason: reason as EngineCloseoutReason,
               decision: {
                 closeout:
-                  terminateCloseout.closeout as ToolLoopCloseoutMetadata,
-                ...(terminateCloseout.reasonLines === undefined
+                  terminateCloseout.decision.closeout as ToolLoopCloseoutMetadata,
+                ...(terminateCloseout.decision.reasonLines === undefined
                   ? {}
-                  : { reasonLines: terminateCloseout.reasonLines }),
-                ...(terminateCloseout.sticky === undefined
+                  : { reasonLines: terminateCloseout.decision.reasonLines }),
+                ...(terminateCloseout.decision.sticky === undefined
                   ? {}
-                  : { sticky: terminateCloseout.sticky }),
+                  : { sticky: terminateCloseout.decision.sticky }),
               },
               messages: state.messages,
               lastText: state.lastText,
@@ -2937,10 +2914,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                       selection,
                       packet,
                       maxRounds,
-                      toolCallCount: usedToolCalls,
-                      roundCount,
-                      evidenceText:
-                        terminateEvidence.approvalWaitTimeoutRuntimeEvidence,
+                      ...terminateCloseout.approvalWaitTimeoutFallback,
                       error: new Error(
                         "approval wait-timeout repair omitted required pending evidence",
                       ),
