@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `173272273478cf2838c06a6ec95102c87d8a8646`
+**Code HEAD before this docs-only report:** `5193d4f00316c14754e9a379227a3345fb69d096`
 **Date:** 2026-07-02
 
 ## Summary
@@ -311,6 +311,9 @@ could not move the normalizer without making the inline parity reference import 
   Request-envelope reduction boundary recording now lives in
   `request-envelope-reducer.ts`, so the adapter no longer owns
   `request_envelope_reduction` runtime progress metadata construction.
+  Pre-compaction memory flush safe handling now lives in
+  `pre-compaction-memory-flusher.ts`; the adapter passes the configured flusher,
+  model selection, and overflow diagnostics instead of owning the wrapper.
   Prompt assembly compaction boundary recording now lives in `prompt-policy.ts`,
   so the adapter no longer owns `prompt_compaction` runtime progress metadata
   construction.
@@ -466,6 +469,7 @@ outside the terminal completion path.
 | `6d06ac0` | Move native tool trace persistence into `native-tool-messages.ts`; adapter passes store/clock/defer inputs instead of owning the safe persister wrapper. |
 | `ca2e7e8` | Move runtime tool-progress observer emission into `tool-use.ts`; adapter passes recorder/defer/observer inputs instead of owning the safe emitter wrapper. |
 | `1732722` | Move forced runtime provider-protocol fallback recording into `tool-history-pruning.ts`; adapter passes recorder/clock/defer inputs instead of owning the private wrapper. |
+| `5193d4f` | Move pre-compaction memory flush safety into `pre-compaction-memory-flusher.ts`; adapter passes flusher/selection/diagnostics instead of owning the safe wrapper. |
 
 ## Current Extracted Implementation
 
@@ -645,6 +649,8 @@ Real implementation now exists in:
 - `request-envelope-reducer.ts` for prompt packet reduction levels/results,
   reduction snapshot typing, and request-envelope reduction runtime boundary
   progress recording.
+- `pre-compaction-memory-flusher.ts` for durable memory flush execution and
+  safe pre-compaction flush handling around request-envelope overflow.
 - `prompt-policy.ts` for prompt packet construction and prompt assembly
   compaction runtime boundary progress recording.
 - `gateway-input-builder.ts` for gateway input construction, runtime session
@@ -715,15 +721,16 @@ All gates below passed on the current code before the report update:
 | --- | --- |
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/prompt-policy.test.ts` | 31 / 31 |
+| `npx tsx --test packages/role-runtime/src/pre-compaction-memory-flusher.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 9 / 9 |
 | `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 100 / 100 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 16 / 16 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 17 / 17 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 221 / 221 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 222 / 222 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -908,6 +915,9 @@ Stage 8 boundaries/slices are now real:
 - request-envelope reduction boundary recording now routes through
   `request-envelope-reducer.ts`; the adapter no longer owns the
   `request_envelope_reduction` runtime progress metadata shape.
+- pre-compaction memory flush safety now routes through
+  `pre-compaction-memory-flusher.ts`; the adapter passes the configured flusher,
+  model selection, and overflow diagnostics instead of owning the safe wrapper.
 - prompt assembly compaction boundary recording now routes through
   `prompt-policy.ts`; the adapter no longer owns the `prompt_compaction`
   runtime progress metadata shape.
