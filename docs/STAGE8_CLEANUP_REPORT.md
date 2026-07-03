@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `73e36ca5734ce881236342c06bd9af44c41d3e0b`
+**Code HEAD before this docs-only report:** `014abe7846a135010a36ff1d1ef46a469e4c10c8`
 **Date:** 2026-07-02
 
 ## Summary
@@ -134,6 +134,8 @@ could not move the normalizer without making the inline parity reference import 
   Terminal final synthesis gateway/pruning/retry callback wiring now lives in
   neutral `terminal-final-synthesis.ts`; inline and engine closeout paths call
   that helper instead of the adapter keeping a private final-synthesis method.
+  The repeated inline/engine dependency-injection callback shape now also lives
+  in that owner as `createTerminalFinalSynthesisRunner()`.
   The full `onAfterExecuteContinue` hook flow now enters through
   `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
   owns provider tool-protocol round recording before current-round evidence
@@ -487,6 +489,7 @@ outside the terminal completion path.
 | `d1bee4c` | Move forced runtime tool-round orchestration into `tool-use.ts`; adapter passes persistence/provider callbacks instead of owning the private forced-round runner. |
 | `fdc8136` | Move request-envelope overflow retry orchestration into neutral `gateway-envelope-retry.ts`; adapter injects gateway/clock/flusher instead of owning the private retry method. |
 | `73e36ca` | Move terminal final-synthesis gateway wrapper into neutral `terminal-final-synthesis.ts`; adapter call sites inject through local composition callbacks instead of a private method. |
+| `014abe7` | Centralize terminal final-synthesis runner wiring in `terminal-final-synthesis.ts`; adapter creates shared runners instead of declaring duplicate inline/engine injection types. |
 
 ## Current Extracted Implementation
 
@@ -690,7 +693,9 @@ Real implementation now exists in:
 - `terminal-final-synthesis.ts` for terminal final-synthesis gateway wrapper
   wiring: controller entrypoint invocation, pruning boundary recording,
   tool-free final synthesis through request-envelope retry, and shared
-  gateway/clock/flusher injection for inline and engine closeout call sites.
+  gateway/clock/flusher injection for inline and engine closeout call sites,
+  including `createTerminalFinalSynthesisRunner()` for the repeated adapter
+  dependency-injection shape.
 - `native-tool-messages.ts` for native tool-message construction and persistence
   safe/defer handling, session trace canonicalization from structured session
   results, and native tool-call counting.
@@ -753,7 +758,7 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/pre-compaction-memory-flusher.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/gateway-envelope-retry.test.ts` | 1 / 1 |
-| `npx tsx --test packages/role-runtime/src/terminal-final-synthesis.test.ts` | 1 / 1 |
+| `npx tsx --test packages/role-runtime/src/terminal-final-synthesis.test.ts` | 2 / 2 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 9 / 9 |
 | `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 103 / 103 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts` | 6 / 6 |
@@ -968,10 +973,10 @@ Stage 8 boundaries/slices are now real:
   provider-schema retry, tool-call cleanup retry, repair merge, and
   gateway-error local fallback are controller-owned while
   `terminal-final-synthesis.ts` supplies gateway, pruning, and request-envelope
-  retry callbacks. The adapter injects dependencies through local composition
-  callbacks instead of owning a private final-synthesis method. The controller
-  now also builds the tool-free `GenerateTextInput` for each initial/repair
-  synthesis callback.
+  retry callbacks. The adapter now creates neutral final-synthesis runners
+  instead of owning a private final-synthesis method or duplicate inline/engine
+  injection input types. The controller now also builds the tool-free
+  `GenerateTextInput` for each initial/repair synthesis callback.
 - extraneous provider-schema repair-message construction for terminal final
   synthesis now routes through `TerminalCloseoutController`; the adapter no
   longer assembles that repair prompt message array locally.
@@ -1188,8 +1193,8 @@ Continue with the remaining high-risk pieces:
   delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
   to `tool-history-pruning.ts`; request-envelope retry orchestration now
   delegates to `gateway-envelope-retry.ts`; terminal final-synthesis gateway
-  wrapper wiring delegates to `terminal-final-synthesis.ts`; keep thinning the
-  adapter. The only remaining adapter-private method at this checkpoint is
-  `runViaReActEngine`.
+  wrapper and runner wiring delegate to `terminal-final-synthesis.ts`; keep
+  thinning the adapter. The only remaining adapter-private method at this
+  checkpoint is `runViaReActEngine`.
 
 The branch is **not pushed**.
