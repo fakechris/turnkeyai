@@ -3185,6 +3185,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 completedSessionToolResults:
                   runState.completedSessionToolResults() ?? [],
                 evidence: evidenceLedger,
+                baseGatewayInput: initialGatewayInput,
                 packet,
                 repairMarkers: (ctx.repairMarkers ??= []),
                 ...(activation ? { activation } : {}),
@@ -3192,21 +3193,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   ? {}
                   : { tools: initialGatewayInput.tools }),
                 repairPolicy,
-                synthesizeRepair: async ({ messages }) => {
-                  const repairGatewayMessages =
-                    prepareToolHistoryForGateway(messages);
-                  return this.generateWithEnvelopeRetry({
+                synthesizeRepair: async ({ gatewayInput }) =>
+                  this.generateWithEnvelopeRetry({
                     activation,
                     packet,
                     selection,
-                    gatewayInput: buildToolFreeGatewayInput({
-                      baseGatewayInput: initialGatewayInput,
-                      messages: repairGatewayMessages,
-                    }),
+                    gatewayInput,
                     modelCallTrace,
                     tracePhase: "final_synthesis_repair",
-                  });
-                },
+                  }),
                 synthesizeToolCallArtifactCleanup: async ({ messages }) =>
                   this.generateFinalAfterToolRoundLimit({
                     activation,

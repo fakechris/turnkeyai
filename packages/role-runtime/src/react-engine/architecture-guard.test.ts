@@ -190,3 +190,37 @@ test("terminal final synthesis provider-schema repair request routes through ter
     "terminal final synthesis orchestration must route through TerminalCloseoutController",
   );
 });
+
+test("terminal completed closeout repair gateway input routes through terminal controller", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const hookStart = source.indexOf(
+    "await terminalCloseout.handleTerminalCloseoutHook({",
+  );
+  assert.notEqual(hookStart, -1, "terminal closeout hook handoff must exist");
+  const start = source.indexOf("completedCloseout: {", hookStart);
+  const end = source.indexOf("\n              },\n            });", start);
+  assert.notEqual(start, -1, "completed closeout handoff must exist");
+  assert.notEqual(end, -1, "completed closeout handoff boundary must be found");
+  const handoffSource = source.slice(start, end);
+
+  assert.equal(
+    handoffSource.includes("prepareToolHistoryForGateway"),
+    false,
+    "completed closeout repair gateway message preparation must not stay in the adapter",
+  );
+  assert.equal(
+    handoffSource.includes("buildToolFreeGatewayInput"),
+    false,
+    "completed closeout repair tool-free gateway input construction must not stay in the adapter",
+  );
+  assert.equal(
+    handoffSource.includes("baseGatewayInput: initialGatewayInput"),
+    true,
+    "completed closeout handoff must pass the base gateway input into TerminalCloseoutController",
+  );
+  assert.equal(
+    handoffSource.includes("synthesizeRepair: async ({ gatewayInput })"),
+    true,
+    "completed closeout repair synthesis must receive controller-built gateway input",
+  );
+});

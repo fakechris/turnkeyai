@@ -404,6 +404,7 @@ export interface TerminalCompletedCloseoutInput<
     TReductionSnapshot,
     TMemoryFlush
   >;
+  baseGatewayInput: GenerateTextInput;
   completedSession?: CompletedCloseoutVisibilitySession | null;
   completedSessionToolResults?: ToolResult[];
   evidence: TerminalCompletedCloseoutEvidence;
@@ -414,6 +415,7 @@ export interface TerminalCompletedCloseoutInput<
   tools?: readonly { name: string }[];
   repairPolicy?: RepairPolicyRegistry;
   synthesizeRepair(input: {
+    gatewayInput: GenerateTextInput;
     messages: LLMMessage[];
   }): Promise<
     CompletedCloseoutSynthesis<TReduction, TReductionSnapshot, TMemoryFlush>
@@ -1116,7 +1118,16 @@ export class TerminalCloseoutController {
           ...(closeout.repairPolicy === undefined
             ? {}
             : { repairPolicy: closeout.repairPolicy }),
-          synthesizeRepair: closeout.synthesizeRepair,
+          synthesizeRepair: async ({ messages }) => {
+            const gatewayMessages = prepareToolHistoryForGateway(messages);
+            return closeout.synthesizeRepair({
+              gatewayInput: buildToolFreeGatewayInput({
+                baseGatewayInput: closeout.baseGatewayInput,
+                messages: gatewayMessages,
+              }),
+              messages: gatewayMessages,
+            });
+          },
           synthesizeToolCallArtifactCleanup:
             closeout.synthesizeToolCallArtifactCleanup,
           toolTrace: closeout.toolTrace,

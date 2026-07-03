@@ -1553,9 +1553,13 @@ test("TerminalCloseoutController owns completed closeout synthesis callback cons
         },
       },
       packet: packet("Summarize completed evidence."),
+      baseGatewayInput: baseGatewayInput(),
       repairMarkers,
       toolTrace: [],
-      synthesizeRepair: async () => {
+      synthesizeRepair: async ({ gatewayInput }) => {
+        assert.equal(gatewayInput.tools, undefined);
+        assert.equal(gatewayInput.toolChoice, "none");
+        assert.equal(gatewayInput.envelope?.toolCount, 0);
         calls.push("repair");
         return { result: result("repair synthesis") };
       },
@@ -1598,6 +1602,7 @@ test("TerminalCloseoutController owns completed closeout reason and session guar
         throw new Error("completed closeout should not run");
       },
     },
+    baseGatewayInput: baseGatewayInput(),
     evidence: {
       toolResultContentText: () => {
         throw new Error("completed evidence should not be read");
