@@ -96,6 +96,21 @@ test("forced engine tool rounds delegate observer-owned trace persistence when a
   );
 });
 
+test("forced runtime provider protocol fallback routes through tool-history owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async recordRuntimeForcedToolRoundProviderProtocol"),
+    false,
+    "adapter must not keep a private forced-round provider protocol wrapper",
+  );
+  assert.equal(
+    source.includes("recordRuntimeForcedToolRoundProviderProtocolSafely({"),
+    true,
+    "adapter should call the neutral forced-round provider protocol recorder",
+  );
+});
+
 test("terminal final synthesis provider-schema repair request routes through terminal controller", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf(

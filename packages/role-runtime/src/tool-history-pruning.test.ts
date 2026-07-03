@@ -15,6 +15,7 @@ import {
   readToolResultContentText,
   readToolResultPruningLimits,
   recordProviderToolProtocolRoundSafely,
+  recordRuntimeForcedToolRoundProviderProtocolSafely,
   recordToolResultPruningBoundarySafely,
   summarizeToolResultPruning,
   type ToolResultPruningLimits,
@@ -244,6 +245,58 @@ test("recordProviderToolProtocolRoundSafely is a no-op without recorder", async 
     toolResults: [],
     messages: [],
   });
+});
+
+test("recordRuntimeForcedToolRoundProviderProtocolSafely records forced-round provider protocol metadata", async () => {
+  const events: Array<{
+    progressId: string;
+    metadata?: Record<string, unknown>;
+  }> = [];
+  const activation = {
+    thread: { threadId: "thread-1" },
+    flow: { flowId: "flow-1" },
+    handoff: { taskId: "task-1" },
+    runState: {
+      runKey: "run-1",
+      roleId: "role:researcher",
+    },
+  } as unknown as RoleActivationInput;
+  const toolCall: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: { workerType: "browser" },
+  };
+  const toolResult: ToolResult = {
+    toolCallId: "call-1",
+    toolName: "sessions_spawn",
+    content: "done",
+  };
+
+  await recordRuntimeForcedToolRoundProviderProtocolSafely({
+    activation,
+    runtimeProgressRecorder: {
+      async record(event) {
+        events.push(event as (typeof events)[number]);
+      },
+    },
+    now: () => 2345,
+    round: 3,
+    toolCalls: [toolCall],
+    toolResults: [toolResult],
+    messages: [
+      { role: "user", content: "run it" },
+      assistantToolUse("call-1", "sessions_spawn"),
+      toolMessage("call-1", "done", "sessions_spawn"),
+    ],
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(
+    events[0]!.progressId,
+    "progress:provider-tool-protocol:task-1:3:2345",
+  );
+  assert.equal(events[0]!.metadata?.boundaryKind, "provider_tool_protocol_round");
+  assert.equal(events[0]!.metadata?.round, 3);
 });
 
 test("recordToolResultPruningBoundarySafely records pruning metadata", async () => {

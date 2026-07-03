@@ -236,6 +236,19 @@ export async function recordProviderToolProtocolRoundSafely(input: {
   }
 }
 
+export async function recordRuntimeForcedToolRoundProviderProtocolSafely(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  now: () => number;
+  defer?: boolean | undefined;
+  round: number;
+  toolCalls: LLMToolCall[];
+  toolResults: ToolResult[];
+  messages: LLMMessage[];
+}): Promise<void> {
+  await recordProviderToolProtocolRoundSafely(input);
+}
+
 async function recordProviderToolProtocolRound(input: {
   activation: RoleActivationInput;
   runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;

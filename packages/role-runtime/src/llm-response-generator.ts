@@ -64,6 +64,7 @@ import {
 import {
   readToolResultContentText,
   recordProviderToolProtocolRoundSafely,
+  recordRuntimeForcedToolRoundProviderProtocolSafely,
   recordToolResultPruningBoundarySafely,
 } from "./tool-history-pruning";
 import {
@@ -3780,36 +3781,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     return results;
   }
 
-  private async recordRuntimeForcedToolRoundProviderProtocol(input: {
-    activation: RoleActivationInput;
-    observer?: EngineRunObserver;
-    round: number;
-    toolCalls: LLMToolCall[];
-    toolResults: RoleToolExecutionResult[];
-    messages: LLMMessage[];
-  }): Promise<void> {
-    if (input.observer) {
-      await input.observer.onProviderToolProtocolRound({
-        round: input.round,
-        toolCalls: input.toolCalls,
-        toolResults: input.toolResults,
-        messages: input.messages,
-      });
-      return;
-    }
-    await recordProviderToolProtocolRoundSafely({
-      activation: input.activation,
-      runtimeProgressRecorder:
-        this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
-      now: () => this.clock.now(),
-      defer: this.deferToolObservability,
-      round: input.round,
-      toolCalls: input.toolCalls,
-      toolResults: input.toolResults,
-      messages: input.messages,
-    });
-  }
-
   private async executeRuntimeForcedToolRound(input: {
     activation: RoleActivationInput;
     packet: RolePromptPacket;
@@ -3887,9 +3858,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       toolCalls: input.toolCalls,
     });
     messages = appendToolResultMessages(messages, toolResults);
-    await this.recordRuntimeForcedToolRoundProviderProtocol({
+    await recordRuntimeForcedToolRoundProviderProtocolSafely({
       activation: input.activation,
-      ...(input.observer === undefined ? {} : { observer: input.observer }),
+      runtimeProgressRecorder:
+        this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+      now: () => this.clock.now(),
+      defer: this.deferToolObservability,
       round: input.round,
       toolCalls: input.toolCalls,
       toolResults,
