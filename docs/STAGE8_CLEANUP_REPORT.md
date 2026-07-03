@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `679dc2ff7413655c3e5272b52c0b8a346f1fa4c6`
+**Code HEAD before this docs-only report:** `d3c0ed68e1c0e20949020f8cd8e435916c286fb1`
 **Date:** 2026-07-02
 
 ## Summary
@@ -49,7 +49,10 @@ could not move the normalizer without making the inline parity reference import 
   closeout hook now also enters through
   `CloseoutPolicyRegistry.applyPostExecuteCloseoutHook()`, so current-round
   evidence lookup, completed-vs-timeout selection, and state writes are one
-  registry-owned application boundary.
+  registry-owned application boundary. The natural-finish repair hook now
+  enters through `RepairPolicyRegistry.applyNaturalFinishRepairHook()`, so
+  active-loop gating, repair-marker persistence, and final-recovery budget
+  accounting are registry-owned.
   The first natural-finish repair policies,
   `final_recovery_budget_closeout_repair`, `missing_approval_gate`, and
   the approval-state repair sequence through
@@ -546,6 +549,7 @@ outside the terminal completion path.
 | `14a7aa9` | Move the engine `onBeforeExecute` and `runToolBatch` hook wiring into `ExecutionBudgetController`; adapter delegates admission and role tool-batch execution entrypoints. |
 | `aa6d0d8` | Move engine pending-call closeout hook wiring into `CloseoutPolicyRegistry`; adapter delegates used-call/evidence calculation and budget/continuation callback assembly. |
 | `679dc2f` | Move lightweight suppress, post-execute, and round-empty hook entrypoints into their existing owners; update hook contract/golden names. |
+| `d3c0ed6` | Move natural-finish repair hook wiring into `RepairPolicyRegistry`; adapter delegates active gating, marker ledger persistence, and recovery-budget accounting. |
 
 ## Current Extracted Implementation
 
@@ -636,7 +640,9 @@ Real implementation now exists in:
   ReAct repair hook application for assistant candidate carry-forward,
   repair-marker recording, force-tool-choice, consumes-round, and local closeout
   shapes, plus natural-finish cascade evaluation/application through one
-  registry entrypoint, plus
+  registry entrypoint, plus the `onRepairRound` hook entrypoint that owns
+  active-loop gating, repair-marker persistence, and final-recovery budget
+  accounting, plus
   `ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER` and the completed-only
   repair policies `timeout_followup_final_guidance`,
   `missing_requested_next_action`, `missing_required_final_deliverables`,
@@ -844,23 +850,21 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this lightweight hook-entrypoint handoff slice:
+Fresh gates run for this natural-finish repair hook handoff slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 35 / 35 |
-| `npx tsx --test packages/role-runtime/src/react-engine/permission-policy.test.ts` | 4 / 4 |
-| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 25 / 25 |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 37 / 37 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 262 / 262 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 36 / 36 |
+| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 47 / 47 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 264 / 264 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
 | `npm run parity:inline` | 272 / 272, 0 fail |
-| `npm run parity:engine` | 262 / 262, 0 fail; all 14 chunks completed |
+| `npm run parity:engine` | 272 / 272, 0 fail; all 14 chunks completed |
 
-Note: this latest parity run reported 272 inline test points and discovered 262
+Note: this latest parity run reported 272 inline test points and discovered 272
 engine test points. Engine chunks completed without individual recovery.
 
 ## Is The Adapter Thin?
@@ -938,6 +942,10 @@ Stage 8 boundaries/slices are now real:
   the adapter passes tool results, evidence ledger, and run-state target through
   a single registry hook entrypoint, while the registry reads the round's
   completed/timeout signals from `EvidenceLedger.currentRound()`.
+- natural-finish repair hook application now enters through
+  `RepairPolicyRegistry.applyNaturalFinishRepairHook`; the registry owns
+  active-loop gating, repair-marker ledger persistence, final-recovery budget
+  accounting, and natural-finish repair cascade application.
 - terminal closeout reasonLines and metadata construction routes through
   `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
   passthrough, completed session closeout, sub-agent timeout closeout,
@@ -1338,7 +1346,8 @@ Continue with the remaining high-risk pieces:
   suppress, post-execute, and round-empty hook entrypoints delegate to
   `react-engine/permission-policy.ts`,
   `react-engine/closeout-policy-registry.ts`, and
-  `react-engine/continuation-controller.ts`; keep
+  `react-engine/continuation-controller.ts`; engine natural-finish repair hook
+  wiring delegates to `react-engine/repair-policy-registry.ts`; keep
   thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
