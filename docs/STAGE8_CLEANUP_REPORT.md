@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `f36fb674ba99471f912262abc9cb584badb0eec5`
+**Code HEAD before this docs-only report:** `6d06ac07d529281f4fe26df71c68d3cf0628958f`
 **Date:** 2026-07-02
 
 ## Summary
@@ -301,8 +301,9 @@ could not move the normalizer without making the inline parity reference import 
   construction, and tool-call artifact cleanup repair-message construction now
   also live there, so terminal final synthesis and cleanup repair share the
   neutral owner instead of adapter-local message arrays.
-  Session trace canonicalization from structured session results and native
-  tool-call counting now live in `native-tool-messages.ts`.
+  Session trace canonicalization from structured session results, native
+  tool-call counting, and native tool-message persistence safe/defer handling
+  now live in `native-tool-messages.ts`.
   Shared JSON object parsing and the stable `AbortError` guard now live in
   neutral `tool-loop-shared.ts`.
   Request-envelope reduction boundary recording now lives in
@@ -459,6 +460,7 @@ outside the terminal completion path.
 | `1655a09` | Move prompt assembly compaction boundary recording into `prompt-policy.ts`; adapter passes activation/packet/selection/recorder instead of owning runtime progress metadata construction. |
 | `7baee8b` | Move provider tool protocol boundary recording into `tool-history-pruning.ts`; inline and engine pass recorder/clock/defer inputs instead of owning runtime progress metadata construction in the adapter. |
 | `f36fb67` | Move runtime tool-progress safe recording into `tool-use.ts`; adapter passes recorder/defer inputs instead of owning the safe recorder wrapper. |
+| `6d06ac0` | Move native tool trace persistence into `native-tool-messages.ts`; adapter passes store/clock/defer inputs instead of owning the safe persister wrapper. |
 
 ## Current Extracted Implementation
 
@@ -652,9 +654,9 @@ Real implementation now exists in:
   synthesis source-message construction, extraneous provider-schema
   repair-message construction, and tool-call artifact cleanup repair-message
   construction for terminal final/repair synthesis.
-- `native-tool-messages.ts` for native tool-message construction, session trace
-  canonicalization from structured session results, and native tool-call
-  counting.
+- `native-tool-messages.ts` for native tool-message construction and persistence
+  safe/defer handling, session trace canonicalization from structured session
+  results, and native tool-call counting.
 - `runtime-derived-mission-report.ts` for runtime-derived mission terminal
   status mapping and report construction shared by the engine adapter.
 - `tool-result-evidence.ts` for completed-session evidence summaries,
@@ -709,11 +711,12 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 8 / 8 |
 | `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 98 / 98 |
+| `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 13 / 13 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 14 / 14 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 218 / 218 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 219 / 219 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -919,6 +922,10 @@ Stage 8 boundaries/slices are now real:
 - session tool-trace canonicalization and native tool-call counting now live in
   `native-tool-messages.ts`; the adapter calls the module instead of owning
   trace mutation/counting helpers.
+- native tool-message persistence now also routes through
+  `native-tool-messages.ts`; the adapter passes the store, clock, defer mode, and
+  optional force-blocking flag instead of keeping an adapter-private safe
+  persister wrapper.
 - shared JSON object parsing and the stable abort guard now live in
   `tool-loop-shared.ts`; the adapter imports them instead of keeping local
   copies.
