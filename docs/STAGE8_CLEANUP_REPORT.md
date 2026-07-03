@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `d3c0ed68e1c0e20949020f8cd8e435916c286fb1`
+**Code HEAD before this docs-only report:** `e84b9c0811be17f3352e581e346c14815b7b0ed4`
 **Date:** 2026-07-02
 
 ## Summary
@@ -242,11 +242,15 @@ could not move the normalizer without making the inline parity reference import 
   local-evidence fallback/rethrow boundary now also returns a typed controller
   result instead of adapter-local null handling. Model-call-error abort,
   active/usable-evidence gating, forced pending-approval `permission_result`,
-  fallback/rethrow selection, and hook-result application now enter through
-  `TerminalCloseoutController.completeModelCallErrorFlow`; the adapter supplies
-  only the forced-result builder callback and forced-round executor, and the
-  controller trims raw forced-round execution results down to the hook
-  continuation shape. Final-synthesis tool-call artifact fallback result
+  fallback/rethrow selection, and hook-result application live in the
+  controller's lower-level `completeModelCallErrorFlow()` path. The full
+  `onModelCallError` hook now enters through
+  `TerminalCloseoutController.completeModelCallErrorHook()`: the controller owns
+  abort classification, non-abort final-message capture, ledger evidence
+  snapshotting, tool-call accounting, forced permission-result flow selection,
+  and hook-result application. The adapter supplies only the forced-result
+  builder callback and forced-round executor. Final-synthesis tool-call artifact
+  fallback result
   construction after a failed cleanup repair now also lives in
   `TerminalCloseoutController`, including local evidence fallback, generic
   fallback text, and URL redaction. Final-synthesis repair effect merging now
@@ -550,6 +554,7 @@ outside the terminal completion path.
 | `aa6d0d8` | Move engine pending-call closeout hook wiring into `CloseoutPolicyRegistry`; adapter delegates used-call/evidence calculation and budget/continuation callback assembly. |
 | `679dc2f` | Move lightweight suppress, post-execute, and round-empty hook entrypoints into their existing owners; update hook contract/golden names. |
 | `d3c0ed6` | Move natural-finish repair hook wiring into `RepairPolicyRegistry`; adapter delegates active gating, marker ledger persistence, and recovery-budget accounting. |
+| `e84b9c0` | Move model-call-error hook wiring into `TerminalCloseoutController`; adapter delegates abort classification, evidence snapshotting, tool-count accounting, forced-permission flow selection, and hook-result application. |
 
 ## Current Extracted Implementation
 
@@ -681,12 +686,14 @@ Real implementation now exists in:
   from completed session / ledger inputs, including completed reason and
   null-session guards and completed-closeout repair tool-free gateway input
   construction, plus the model-call-error local-evidence
-  fallback/rethrow boundary and `completeModelCallErrorFlow` ownership of
-  model-call-error abort, active/usable-evidence gating, forced
+  fallback/rethrow boundary and `completeModelCallErrorHook()` ownership of
+  model-call-error abort classification, final-message capture, ledger
+  snapshotting, tool-call accounting, active/usable-evidence gating, forced
   pending-approval continuation selection, fallback flow selection, and
   hook-result application through injected forced-result builder /
   forced-round executor callbacks, including raw forced-round execution result
-  trimming, plus terminal final synthesis provider-schema repair selection
+  trimming through the lower-level `completeModelCallErrorFlow()` path, plus
+  terminal final synthesis provider-schema repair selection
   through a controller-owned `RepairPolicyRegistry` single-policy window, plus
   terminal final synthesis provider-schema repair request construction,
   tool-call artifact cleanup request construction, and post-repair tool-call
@@ -850,16 +857,17 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this natural-finish repair hook handoff slice:
+Fresh gates run for this model-call-error hook handoff slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 36 / 36 |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 47 / 47 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 264 / 264 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
-| `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 37 / 37 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 34 / 34 |
+| `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts` | 7 / 7 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 266 / 266 |
+| `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
+| `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
 | `npm run parity:inline` | 272 / 272, 0 fail |
 | `npm run parity:engine` | 272 / 272, 0 fail; all 14 chunks completed |
@@ -973,6 +981,11 @@ Stage 8 boundaries/slices are now real:
   controller-owned entrypoint that consumes the terminate decision and applies
   sticky pre-recording plus final/re-arm effects. Model-call-error local
   evidence fallback now returns a controller-owned typed final/rethrow result.
+  The full model-call-error hook now enters through
+  `TerminalCloseoutController.completeModelCallErrorHook()`, so abort
+  classification, final-message capture, ledger evidence snapshotting, tool-call
+  accounting, forced-permission flow selection, and hook-result application live
+  with the terminal closeout owner.
   The hard approval wait-timeout deterministic fallback now also enters through
   `TerminalCloseoutController.handleTerminalCloseoutHook`, so `onTerminate`
   no longer carries a separate adapter-local early return before terminal
@@ -1234,11 +1247,12 @@ Stage 8 boundaries/slices are now real:
 - engine continuation and post-execute closeout hooks now read current
   completed-session and sub-agent timeout result signals through
   `EvidenceLedger`.
-- model-call-error abort handling, active/usable-evidence gating, forced
-  pending-approval `permission_result` continuation selection, local evidence
-  fallback/rethrow selection, hook-result application, and raw forced-round
-  result trimming enter through
-  `TerminalCloseoutController.completeModelCallErrorFlow`; the adapter supplies
+- model-call-error abort classification, non-abort final-message capture,
+  active/usable-evidence gating, ledger snapshotting, tool-call accounting,
+  forced pending-approval `permission_result` continuation selection, local
+  evidence fallback/rethrow selection, hook-result application, and raw
+  forced-round result trimming enter through
+  `TerminalCloseoutController.completeModelCallErrorHook`; the adapter supplies
   only the forced-result builder callback and forced tool-round executor, and
   the usable-evidence input comes from `EvidenceLedger.snapshot()`.
 - completed-closeout synthesis callback construction for terminal closeouts now
@@ -1321,8 +1335,9 @@ Continue with the remaining high-risk pieces:
   callback/gateway-input handoffs, terminal path selection, final/re-arm
   application, terminal entrypoint,
   terminal hook fallback entry,
-  and model-error fallback / flow-selection / hook-application /
-  forced-round-result boundary slices; forced runtime tool-round orchestration
+  and the model-error hook entrypoint; the next terminal slice is likely
+  `onTerminate` decision/input assembly and remaining gateway callback wiring.
+  Forced runtime tool-round orchestration
   now delegates to `tool-use.ts`, runtime progress recorder/observer emission
   delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
   to `tool-history-pruning.ts`; request-envelope retry orchestration now
