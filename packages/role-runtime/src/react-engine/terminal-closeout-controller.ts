@@ -1,10 +1,12 @@
 import type { ReActReArm } from "@turnkeyai/agent-core/react-loop";
+import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type {
   GenerateTextResult,
   LLMMessage,
 } from "@turnkeyai/llm-adapter/index";
 import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 
+import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
 import {
@@ -13,7 +15,13 @@ import {
   maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
 } from "../tool-loop-shared";
-import type { CompletedCloseoutTerminalResult } from "./completed-closeout-controller";
+import type {
+  CompletedCloseoutSynthesis,
+  CompletedCloseoutTerminalInput,
+  CompletedCloseoutTerminalResult,
+  CompletedCloseoutVisibilitySession,
+} from "./completed-closeout-controller";
+import type { RepairPolicyRegistry } from "./repair-policy-registry";
 import type { EngineCloseoutReason, EngineContinueAction } from "./types";
 
 // Stage 8 engine cleanup — TerminalCloseoutController.
@@ -217,6 +225,61 @@ export interface TerminalCloseoutCompletionInput<
   };
 }
 
+export interface TerminalCompletedCloseoutEvidence {
+  toolResultContentText(results: ToolResult[]): string;
+}
+
+export interface TerminalCompletedCloseoutSynthesizer<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  synthesizeTerminalCloseout(
+    input: CompletedCloseoutTerminalInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<
+    CompletedCloseoutTerminalResult<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  >;
+}
+
+export interface TerminalCompletedCloseoutInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  completedCloseout: TerminalCompletedCloseoutSynthesizer<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+  completedSession?: CompletedCloseoutVisibilitySession | null;
+  completedSessionToolResults?: ToolResult[];
+  evidence: TerminalCompletedCloseoutEvidence;
+  packet: RolePromptPacket;
+  repairMarkers: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  activation?: RoleActivationInput;
+  tools?: readonly { name: string }[];
+  repairPolicy?: RepairPolicyRegistry;
+  synthesizeRepair(input: {
+    messages: LLMMessage[];
+  }): Promise<
+    CompletedCloseoutSynthesis<TReduction, TReductionSnapshot, TMemoryFlush>
+  >;
+  synthesizeToolCallArtifactCleanup(input: {
+    messages: LLMMessage[];
+  }): Promise<
+    CompletedCloseoutSynthesis<TReduction, TReductionSnapshot, TMemoryFlush>
+  >;
+}
+
 export interface TerminalCloseoutDecisionInput {
   closeout: ToolLoopCloseoutMetadata;
   reasonLines?: string[];
@@ -248,6 +311,11 @@ export interface TerminalCloseoutHookInput<
     TMemoryFlush
   > {
   approvalWaitTimeoutFallback?: ApprovalWaitTimeoutFallbackInput;
+  completedCloseout?: TerminalCompletedCloseoutInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
 }
 
 export type TerminalCloseoutCompletionResult =
@@ -622,6 +690,59 @@ export class TerminalCloseoutController {
     return input.synthesizeCompleted({ initialSynthesis });
   }
 
+  buildCompletedCloseoutSynthesis<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: {
+      completedCloseout: TerminalCompletedCloseoutInput<
+        TReduction,
+        TReductionSnapshot,
+        TMemoryFlush
+      >;
+      messages: LLMMessage[];
+    },
+  ):
+    | NonNullable<
+        TerminalCloseoutCompletionInput<
+          TReduction,
+          TReductionSnapshot,
+          TMemoryFlush
+        >["completed"]
+      >
+    | undefined {
+    const closeout = input.completedCloseout;
+    const completedSession = closeout.completedSession;
+    if (!completedSession) {
+      return undefined;
+    }
+    return {
+      synthesize: async ({ initialSynthesis }) =>
+        closeout.completedCloseout.synthesizeTerminalCloseout({
+          packet: closeout.packet,
+          messages: input.messages,
+          repairMarkers: closeout.repairMarkers,
+          completedSession,
+          completedSessionToolResultText: closeout.evidence.toolResultContentText(
+            closeout.completedSessionToolResults ?? [],
+          ),
+          initialSynthesis,
+          ...(closeout.activation === undefined
+            ? {}
+            : { activation: closeout.activation }),
+          ...(closeout.tools === undefined ? {} : { tools: closeout.tools }),
+          ...(closeout.repairPolicy === undefined
+            ? {}
+            : { repairPolicy: closeout.repairPolicy }),
+          synthesizeRepair: closeout.synthesizeRepair,
+          synthesizeToolCallArtifactCleanup:
+            closeout.synthesizeToolCallArtifactCleanup,
+          toolTrace: closeout.toolTrace,
+        }),
+    };
+  }
+
   async completeTerminalCloseout<
     TReduction = unknown,
     TReductionSnapshot = unknown,
@@ -739,7 +860,18 @@ export class TerminalCloseoutController {
         ),
       };
     }
-    return this.handleTerminalCloseout(input);
+    const completed =
+      input.completed ??
+      (input.reason === "completed_sub_agent_final" && input.completedCloseout
+        ? this.buildCompletedCloseoutSynthesis({
+            completedCloseout: input.completedCloseout,
+            messages: input.messages,
+          })
+        : undefined);
+    return this.handleTerminalCloseout({
+      ...input,
+      ...(completed === undefined ? {} : { completed }),
+    });
   }
 
   finalizeGeneratedResult(input: TerminalGeneratedResultInput): GenerateTextResult {

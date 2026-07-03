@@ -3180,62 +3180,55 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               ...(reason === "completed_sub_agent_final" &&
               completedSessionForRepair
                 ? {
-                    completed: {
-                      synthesize: async ({ initialSynthesis }) => {
-                        const repairMarkers = (ctx.repairMarkers ??= []);
-                        return completedCloseout.synthesizeTerminalCloseout({
+                    completedCloseout: {
+                      completedCloseout,
+                      completedSession: completedSessionForRepair,
+                      completedSessionToolResults:
+                        runState.completedSessionToolResults() ?? [],
+                      evidence: evidenceLedger,
+                      packet,
+                      repairMarkers: (ctx.repairMarkers ??= []),
+                      ...(activation ? { activation } : {}),
+                      ...(initialGatewayInput.tools === undefined
+                        ? {}
+                        : { tools: initialGatewayInput.tools }),
+                      repairPolicy,
+                      synthesizeRepair: async ({ messages }) => {
+                        const repairGatewayMessages =
+                          prepareToolHistoryForGateway(messages);
+                        return this.generateWithEnvelopeRetry({
+                          activation,
                           packet,
-                          messages: state.messages,
-                          repairMarkers,
-                          completedSession: completedSessionForRepair,
-                          completedSessionToolResultText:
-                            evidenceLedger.toolResultContentText(
-                              runState.completedSessionToolResults() ?? [],
-                            ),
-                          initialSynthesis,
-                          ...(activation ? { activation } : {}),
-                          ...(initialGatewayInput.tools === undefined
-                            ? {}
-                            : { tools: initialGatewayInput.tools }),
-                          repairPolicy,
-                          synthesizeRepair: async ({ messages }) => {
-                            const repairGatewayMessages =
-                              prepareToolHistoryForGateway(messages);
-                            return this.generateWithEnvelopeRetry({
-                              activation,
-                              packet,
-                              selection,
-                              gatewayInput: {
-                                ...withoutToolUse(initialGatewayInput),
-                                messages: repairGatewayMessages,
-                                envelope: {
-                                  ...(initialGatewayInput.envelope ?? {}),
-                                  toolCount: 0,
-                                  toolSchemaBytes: 0,
-                                  ...deriveToolResultEnvelope(
-                                    repairGatewayMessages,
-                                  ),
-                                },
-                              },
-                              modelCallTrace,
-                              tracePhase: "final_synthesis_repair",
-                            });
+                          selection,
+                          gatewayInput: {
+                            ...withoutToolUse(initialGatewayInput),
+                            messages: repairGatewayMessages,
+                            envelope: {
+                              ...(initialGatewayInput.envelope ?? {}),
+                              toolCount: 0,
+                              toolSchemaBytes: 0,
+                              ...deriveToolResultEnvelope(
+                                repairGatewayMessages,
+                              ),
+                            },
                           },
-                          synthesizeToolCallArtifactCleanup: async ({
-                            messages,
-                          }) =>
-                            this.generateFinalAfterToolRoundLimit({
-                              activation,
-                              packet,
-                              selection,
-                              baseGatewayInput: initialGatewayInput,
-                              messages,
-                              maxRounds,
-                              modelCallTrace,
-                            }),
-                          toolTrace,
+                          modelCallTrace,
+                          tracePhase: "final_synthesis_repair",
                         });
                       },
+                      synthesizeToolCallArtifactCleanup: async ({
+                        messages,
+                      }) =>
+                        this.generateFinalAfterToolRoundLimit({
+                          activation,
+                          packet,
+                          selection,
+                          baseGatewayInput: initialGatewayInput,
+                          messages,
+                          maxRounds,
+                          modelCallTrace,
+                        }),
+                      toolTrace,
                     },
                   }
                 : {}),

@@ -1055,6 +1055,120 @@ test("TerminalCloseoutController owns terminal closeout entrypoint from decision
   ]);
 });
 
+test("TerminalCloseoutController owns completed closeout synthesis callback construction", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [{ role: "user", content: "Investigate." }];
+  const repairMarkers: LLMMessage[] = [];
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 4,
+    toolCallCount: 2,
+    roundCount: 3,
+    evidenceAvailable: true,
+  };
+  const completedSession = {
+    finalContents: ["Delegated final evidence."],
+    browserRecoverySummaries: ["Browser recovery metadata: warm resume."],
+  };
+  const completedToolResults = [
+    {
+      toolCallId: "call-completed",
+      toolName: "sessions_spawn",
+      content: "raw completed tool result",
+    },
+  ];
+  const { events, target } = recordingTarget();
+  const calls: string[] = [];
+
+  const completion = await controller.handleTerminalCloseoutHook<
+    string,
+    string,
+    string
+  >({
+    reason: "completed_sub_agent_final",
+    decision: {
+      closeout,
+      reasonLines: ["completed evidence"],
+      sticky: true,
+    },
+    messages,
+    lastText: "unused",
+    target,
+    synthesize: async () => ({
+      result: result("initial completed synthesis"),
+      memoryFlush: "initial-flush",
+    }),
+    completedCloseout: {
+      completedCloseout: {
+        synthesizeTerminalCloseout: async (input) => {
+          calls.push("completed");
+          assert.equal(input.messages, messages);
+          assert.equal(input.repairMarkers, repairMarkers);
+          assert.equal(input.completedSession, completedSession);
+          assert.equal(
+            input.completedSessionToolResultText,
+            "ledger completed result text",
+          );
+          assert.equal(
+            input.initialSynthesis.result.text,
+            "initial completed synthesis",
+          );
+          const repair = await input.synthesizeRepair({ messages });
+          assert.equal(repair.result.text, "repair synthesis");
+          const cleanup = await input.synthesizeToolCallArtifactCleanup({
+            messages,
+          });
+          assert.equal(cleanup.result.text, "cleanup synthesis");
+          return {
+            kind: "final" as const,
+            result: result("completed final"),
+            memoryFlushes: ["initial-flush", "repair-flush"],
+            reduction: "completed-reduction",
+            reductionSnapshot: "completed-snapshot",
+          };
+        },
+      },
+      completedSession,
+      completedSessionToolResults: completedToolResults,
+      evidence: {
+        toolResultContentText: (results: typeof completedToolResults) => {
+          calls.push("evidence");
+          assert.equal(results, completedToolResults);
+          return "ledger completed result text";
+        },
+      },
+      packet: packet("Summarize completed evidence."),
+      repairMarkers,
+      toolTrace: [],
+      synthesizeRepair: async () => {
+        calls.push("repair");
+        return { result: result("repair synthesis") };
+      },
+      synthesizeToolCallArtifactCleanup: async () => {
+        calls.push("cleanup");
+        return { result: result("cleanup synthesis") };
+      },
+    },
+  });
+
+  assert.equal(completion.kind, "final");
+  assert.deepEqual(calls, ["evidence", "completed", "repair", "cleanup"]);
+  assert.deepEqual(events, [
+    ["if_absent", closeout],
+    ["memory_flush", "initial-flush"],
+    ["memory_flush", "repair-flush"],
+    ["if_absent", closeout],
+    ["result", result("completed final")],
+    [
+      "reduction",
+      {
+        reduction: "completed-reduction",
+        reductionSnapshot: "completed-snapshot",
+      },
+    ],
+  ]);
+});
+
 test("TerminalCloseoutController owns terminal closeout write mode and final response shape", () => {
   const controller = createTerminalCloseoutController();
 
