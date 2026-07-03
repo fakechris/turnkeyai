@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `aa6d0d855baa8256a0f66d8aa832675efe75c8e5`
+**Code HEAD before this docs-only report:** `679dc2ff7413655c3e5272b52c0b8a346f1fa4c6`
 **Date:** 2026-07-02
 
 ## Summary
@@ -43,10 +43,13 @@ could not move the normalizer without making the inline parity reference import 
   suppression pre-emption, recovery-budget-before-continuation ordering,
   empty-round continuation preview handoff, budget callback wiring, and the
   remaining pending-call closeout cascade, while the adapter supplies only live
-  state and module-owned collaborators. The post-execute closeout hook now also
-  enters through
-  `CloseoutPolicyRegistry.applyPostExecuteCloseout()`, so completed-vs-timeout
-  selection and state writes are one registry-owned application boundary.
+  state and module-owned collaborators. The suppress-tool-calls hook now passes
+  active state into `PermissionPolicy`, and the round-empty hook now enters
+  through `ContinuationController.applyRoundEmptyHook()`. The post-execute
+  closeout hook now also enters through
+  `CloseoutPolicyRegistry.applyPostExecuteCloseoutHook()`, so current-round
+  evidence lookup, completed-vs-timeout selection, and state writes are one
+  registry-owned application boundary.
   The first natural-finish repair policies,
   `final_recovery_budget_closeout_repair`, `missing_approval_gate`, and
   the approval-state repair sequence through
@@ -542,6 +545,7 @@ outside the terminal completion path.
 | `e2d2907` | Move the engine `onToolCalls` hook flow into `react-engine/tool-call-normalizer.ts`; adapter delegates normalization context construction and recovery-budget truncation. |
 | `14a7aa9` | Move the engine `onBeforeExecute` and `runToolBatch` hook wiring into `ExecutionBudgetController`; adapter delegates admission and role tool-batch execution entrypoints. |
 | `aa6d0d8` | Move engine pending-call closeout hook wiring into `CloseoutPolicyRegistry`; adapter delegates used-call/evidence calculation and budget/continuation callback assembly. |
+| `679dc2f` | Move lightweight suppress, post-execute, and round-empty hook entrypoints into their existing owners; update hook contract/golden names. |
 
 ## Current Extracted Implementation
 
@@ -566,7 +570,8 @@ Real implementation now exists in:
   read-only permission-query suppression selection, and read-only suppression
   context construction / hook-result application, plus the
   `onSuppressToolCalls` hook entrypoint that applies read-only permission-query
-  pre-emption before awaiting-context setup-only no-tool suppression.
+  pre-emption before awaiting-context setup-only no-tool suppression, including
+  active-loop and empty-call gating.
 - `react-engine/finalization-pipeline.ts`
 - `react-engine/engine-run-observer.ts` for model/tool lifecycle observation,
   runtime progress/native trace persistence, and normal post-execute plus
@@ -605,7 +610,8 @@ Real implementation now exists in:
   used-call/evidence snapshot calculation, budget callback wiring, remaining
   pending-call closeout evaluation/application, and remaining pending-call
   closeout session context construction, plus the post-execute closeout
-  application entrypoint used by `onAfterExecute`.
+  hook entrypoint that owns current-round evidence lookup before applying the
+  completed/timeout closeout decision.
 - `react-engine/repair-policy-registry.ts` for
   `ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER` and the first natural-finish
   repair policies: `final_recovery_budget_closeout_repair`,
@@ -704,7 +710,9 @@ Real implementation now exists in:
   `continue` action hook-result application with repair-marker recording
   callback support, and empty-round action hook-result application for
   injected-call and terminate decisions, plus post-execute continuation cascade
-  precedence/application through one controller entrypoint, plus the full
+  precedence/application through one controller entrypoint, plus the round-empty
+  hook entrypoint that owns action selection and hook-decision application, plus
+  the full
   `onAfterExecuteContinue` hook entrypoint that records provider protocol
   rounds, reads the current-round evidence snapshot, and then applies the
   cascade.
@@ -836,21 +844,23 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine pending-closeout hook wiring slice:
+Fresh gates run for this lightweight hook-entrypoint handoff slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 34 / 34 |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 36 / 36 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 259 / 259 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 35 / 35 |
+| `npx tsx --test packages/role-runtime/src/react-engine/permission-policy.test.ts` | 4 / 4 |
+| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 25 / 25 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 37 / 37 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 262 / 262 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
 | `npm run parity:inline` | 272 / 272, 0 fail |
-| `npm run parity:engine` | 272 / 272, 0 fail; all 14 chunks completed |
+| `npm run parity:engine` | 262 / 262, 0 fail; all 14 chunks completed |
 
-Note: this latest parity run reported 272 inline test points and discovered 272
+Note: this latest parity run reported 272 inline test points and discovered 262
 engine test points. Engine chunks completed without individual recovery.
 
 ## Is The Adapter Thin?
@@ -870,9 +880,9 @@ Stage 8 boundaries/slices are now real:
   route through `PermissionPolicy` in the engine path; the full
   `onSuppressToolCalls` hook now enters
   `PermissionPolicy.applySuppressToolCallsHook()` for read-only suppression
-  pre-emption before awaiting-context setup-only suppression, and read-only
-  suppression context construction for closeout pre-emption now lives there as
-  well.
+  pre-emption before awaiting-context setup-only suppression, including active
+  state and empty-call gating, and read-only suppression context construction
+  for closeout pre-emption now lives there as well.
 - the unconditional engine finalization epilogue routes through
   `finalizeEngineAnswer`.
 - model/tool lifecycle observability routes through `EngineRunObserver`, including
@@ -925,9 +935,9 @@ Stage 8 boundaries/slices are now real:
   session context construction also lives in the registry owner.
 - post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
   selection and state-effect application route through `CloseoutPolicyRegistry`;
-  the adapter passes the hook input and run-state target through a single
-  registry application entrypoint, and reads the round's completed/timeout
-  signals from `EvidenceLedger.currentRound()`.
+  the adapter passes tool results, evidence ledger, and run-state target through
+  a single registry hook entrypoint, while the registry reads the round's
+  completed/timeout signals from `EvidenceLedger.currentRound()`.
 - terminal closeout reasonLines and metadata construction routes through
   `CloseoutPolicyRegistry.evaluateTerminate`, covering pending closeout
   passthrough, completed session closeout, sub-agent timeout closeout,
@@ -1324,7 +1334,11 @@ Continue with the remaining high-risk pieces:
   delegates to `react-engine/tool-call-normalizer.ts`; engine
   `onBeforeExecute` / `runToolBatch` hook wiring delegates to
   `react-engine/execution-budget-controller.ts`; engine pending-call closeout
-  hook wiring delegates to `react-engine/closeout-policy-registry.ts`; keep
+  hook wiring delegates to `react-engine/closeout-policy-registry.ts`; engine
+  suppress, post-execute, and round-empty hook entrypoints delegate to
+  `react-engine/permission-policy.ts`,
+  `react-engine/closeout-policy-registry.ts`, and
+  `react-engine/continuation-controller.ts`; keep
   thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
