@@ -120,6 +120,26 @@ test("forced runtime provider protocol fallback routes through tool-history owne
   );
 });
 
+test("engine forced runtime tool-round executor wiring routes through runner owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+
+  assert.equal(
+    engineSource.includes("executeRuntimeForcedToolRound({"),
+    false,
+    "engine forced-round execution wiring must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("createEngineRuntimeForcedToolRoundRunner({"),
+    true,
+    "runViaReActEngine should create forced-round runners through the react-engine owner",
+  );
+});
+
 test("terminal final synthesis provider-schema repair request routes through terminal controller", () => {
   const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   assert.equal(

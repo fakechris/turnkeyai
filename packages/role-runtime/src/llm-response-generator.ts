@@ -245,6 +245,7 @@ import {
   createCompletedCloseoutController,
   createContinuationController,
   createEngineModelClient,
+  createEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
   enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
@@ -2645,6 +2646,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ...options,
         }),
     });
+    const executeForcedRuntimeToolRound =
+      createEngineRuntimeForcedToolRoundRunner({
+        toolLoop: this.toolLoop,
+        runtimeProgressRecorder: this.runtimeProgressRecorder,
+        providerRuntimeProgressRecorder:
+          this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+        nativeToolMessageStore: this.nativeToolMessageStore,
+        deferToolObservability: this.deferToolObservability,
+        now: () => this.clock.now(),
+        activation,
+        packet,
+        toolTrace,
+        observer,
+        toolLoopStartedAtMs,
+        ...(signal ? { signal } : {}),
+      });
     const engineModel = createEngineModelClient({
       gateway: this.gateway,
       now: () => this.clock.now(),
@@ -2932,42 +2949,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               evidence: evidenceLedger,
             },
             async (forcedRoundAction) => {
-              const forcedRound = await executeRuntimeForcedToolRound({
-                toolLoop: this.toolLoop,
-                runtimeProgressRecorder: this.runtimeProgressRecorder,
-                deferToolObservability: this.deferToolObservability,
-                now: () => this.clock.now(),
-                activation,
-                packet,
+              const forcedRound = await executeForcedRuntimeToolRound({
                 messages: state.messages,
-                toolTrace,
-                observer,
                 toolCalls: forcedRoundAction.calls,
-                round: toolTrace.length + 1,
-                toolLoopStartedAtMs,
-                ...(signal ? { signal } : {}),
                 assistantText: forcedRoundAction.assistantText,
-                persistNativeToolTrace: (options) =>
-                  persistNativeToolTraceSafely({
-                    activation,
-                    toolTrace,
-                    nativeToolMessageStore: this.nativeToolMessageStore,
-                    now: () => this.clock.now(),
-                    defer: this.deferToolObservability,
-                    ...(options?.forceBlocking === undefined
-                      ? {}
-                      : { forceBlocking: options.forceBlocking }),
-                  }),
-                recordProviderToolProtocolRound: (roundInput) =>
-                  recordRuntimeForcedToolRoundProviderProtocolSafely({
-                    activation,
-                    runtimeProgressRecorder:
-                      this.toolLoop?.runtimeProgressRecorder ??
-                      this.runtimeProgressRecorder,
-                    now: () => this.clock.now(),
-                    defer: this.deferToolObservability,
-                    ...roundInput,
-                  }),
               });
               return { messages: forcedRound.messages };
             },
@@ -3261,42 +3246,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
             runState,
             async (modelErrorResult) => {
-              return executeRuntimeForcedToolRound({
-                toolLoop: this.toolLoop,
-                runtimeProgressRecorder: this.runtimeProgressRecorder,
-                deferToolObservability: this.deferToolObservability,
-                now: () => this.clock.now(),
-                activation,
-                packet,
+              return executeForcedRuntimeToolRound({
                 messages: state.messages,
-                toolTrace,
-                observer,
                 toolCalls: modelErrorResult.calls,
-                round: toolTrace.length + 1,
-                toolLoopStartedAtMs,
-                ...(signal ? { signal } : {}),
                 assistantText: modelErrorResult.assistantText,
-                persistNativeToolTrace: (options) =>
-                  persistNativeToolTraceSafely({
-                    activation,
-                    toolTrace,
-                    nativeToolMessageStore: this.nativeToolMessageStore,
-                    now: () => this.clock.now(),
-                    defer: this.deferToolObservability,
-                    ...(options?.forceBlocking === undefined
-                      ? {}
-                      : { forceBlocking: options.forceBlocking }),
-                  }),
-                recordProviderToolProtocolRound: (roundInput) =>
-                  recordRuntimeForcedToolRoundProviderProtocolSafely({
-                    activation,
-                    runtimeProgressRecorder:
-                      this.toolLoop?.runtimeProgressRecorder ??
-                      this.runtimeProgressRecorder,
-                    now: () => this.clock.now(),
-                    defer: this.deferToolObservability,
-                    ...roundInput,
-                  }),
               });
             },
           );

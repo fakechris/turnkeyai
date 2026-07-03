@@ -15,6 +15,7 @@ export * from "./policy-trace-characterization";
 export * from "./engine-run-state";
 export * from "./engine-run-observer";
 export * from "./engine-model-client";
+export * from "./engine-forced-tool-round-runner";
 export * from "./permission-policy";
 export * from "./tool-call-normalizer";
 export * from "./finalization-pipeline";
