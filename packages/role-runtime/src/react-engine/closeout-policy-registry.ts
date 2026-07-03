@@ -22,11 +22,21 @@ import {
   sliceUtf8,
 } from "../tool-loop-shared";
 import { findRepeatedFailedToolCall } from "../react/predicates";
-import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  countNativeToolCalls,
+  type NativeToolRoundTrace,
+} from "../native-tool-messages";
 import type {
+  ExecutionBudgetController,
   ExecutionBudgetCloseoutSnapshot,
   WallClockBudgetCloseoutSignal,
 } from "./execution-budget-controller";
+import type {
+  ContinuationController,
+  ContinuationToolDefinition,
+} from "./continuation-controller";
+import type { EvidenceRunSnapshotter } from "./evidence-ledger";
+import type { PermissionPolicy } from "./permission-policy";
 import type {
   CloseoutDecision,
   CloseoutDeferDecision,
@@ -166,6 +176,36 @@ export interface PendingCallsCloseoutInput {
     input: PendingCallsWallClockBudgetSignalInput,
   ): WallClockBudgetCloseoutSignal | null;
   buildRoundLimitCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
+}
+
+export interface PendingCallsCloseoutHookInput {
+  active: boolean;
+  pendingCalls: LLMToolCall[];
+  lastText: string;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  round: number;
+  maxRounds: number;
+  recoveryToolCallsBeforeActivation: number;
+  recoveryToolBudget: RecoveryToolBudgetSignal | null;
+  permissionPolicy: Pick<
+    PermissionPolicy,
+    "wouldSuppressReadOnlyPermissionQuery"
+  >;
+  continuation: Pick<ContinuationController, "previewEmptyRoundContinuation">;
+  executionBudget: Pick<
+    ExecutionBudgetController,
+    | "buildRecoveryToolBudgetCloseoutSnapshot"
+    | "buildPendingCallsWallClockBudgetCloseoutSignal"
+    | "buildRoundLimitCloseoutSnapshot"
+  >;
+  evidence: EvidenceRunSnapshotter;
+  now(): number;
+  toolLoopStartedAtMs: number;
+  activeMaxWallClockMs?: number;
+  tools?: readonly ContinuationToolDefinition[];
 }
 
 export interface RemainingPendingCallsSessionContextInput {
@@ -326,6 +366,11 @@ export interface CloseoutPolicyRegistry {
 
   applyPendingCallsCloseout(
     input: PendingCallsCloseoutInput,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null;
+
+  applyPendingCallsCloseoutHook(
+    input: PendingCallsCloseoutHookInput,
     target: PendingCloseoutApplicationTarget,
   ): EngineCloseoutReason | null;
 
@@ -655,6 +700,90 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         roundCount: input.roundCount,
         evidenceAvailable: input.evidenceAvailable,
         buildRoundLimitCloseoutSnapshot: input.buildRoundLimitCloseoutSnapshot,
+      },
+      target,
+    );
+  }
+
+  applyPendingCallsCloseoutHook(
+    input: PendingCallsCloseoutHookInput,
+    target: PendingCloseoutApplicationTarget,
+  ): EngineCloseoutReason | null {
+    if (!input.active) {
+      return null;
+    }
+
+    const roundCount = input.toolTrace.length;
+    const usedToolCalls = countNativeToolCalls(input.toolTrace);
+    const evidence = input.evidence.snapshot(input.messages);
+    return this.applyPendingCallsCloseout(
+      {
+        pendingCalls: input.pendingCalls,
+        lastText: input.lastText,
+        taskPrompt: input.taskPrompt,
+        messages: input.messages,
+        repairMarkers: input.repairMarkers,
+        toolTrace: input.toolTrace,
+        maxRounds: input.maxRounds,
+        usedToolCalls,
+        recoveryUsedToolCalls:
+          input.recoveryToolCallsBeforeActivation + usedToolCalls,
+        roundCount,
+        evidenceAvailable: evidence.usableEvidence,
+        recoveryToolBudget: input.recoveryToolBudget,
+        shouldSuppressReadOnlyPermissionQuery: () =>
+          input.permissionPolicy.wouldSuppressReadOnlyPermissionQuery({
+            calls: input.pendingCalls,
+            taskPrompt: input.taskPrompt,
+            sessionContext: buildContinuationDirectiveContext(
+              input.taskPrompt,
+              input.messages,
+            ),
+          }),
+        previewEmptyRoundContinuation: () =>
+          input.continuation.previewEmptyRoundContinuation({
+            active: input.active,
+            messages: input.messages,
+            round: input.round,
+            taskPrompt: input.taskPrompt,
+            toolTrace: input.toolTrace,
+            ...(input.tools === undefined ? {} : { tools: input.tools }),
+          }),
+        buildRecoveryToolBudgetCloseoutSnapshot: () =>
+          input.executionBudget.buildRecoveryToolBudgetCloseoutSnapshot({
+            maxRounds: input.maxRounds,
+            maxToolCalls: input.recoveryToolBudget?.maxToolCalls ?? 0,
+            pendingToolCallCount: input.pendingCalls.length,
+            usedToolCalls:
+              input.recoveryToolCallsBeforeActivation + usedToolCalls,
+            roundCount,
+            evidenceAvailable: evidence.usableEvidence,
+          }),
+        buildWallClockBudgetCloseoutSignal: (wallClockInput) =>
+          input.executionBudget.buildPendingCallsWallClockBudgetCloseoutSignal({
+            pendingCalls: wallClockInput.pendingCalls,
+            pendingContinuation: wallClockInput.pendingContinuation,
+            taskPrompt: input.taskPrompt,
+            messages: input.messages,
+            toolTrace: input.toolTrace,
+            maxRounds: input.maxRounds,
+            usedToolCalls,
+            roundCount,
+            evidenceAvailable: evidence.usableEvidence,
+            now: input.now,
+            toolLoopStartedAtMs: input.toolLoopStartedAtMs,
+            ...(input.activeMaxWallClockMs === undefined
+              ? {}
+              : { maxWallClockMs: input.activeMaxWallClockMs }),
+          }),
+        buildRoundLimitCloseoutSnapshot: () =>
+          input.executionBudget.buildRoundLimitCloseoutSnapshot({
+            maxRounds: input.maxRounds,
+            pendingToolCallCount: input.pendingCalls.length,
+            usedToolCalls,
+            roundCount,
+            evidenceAvailable: evidence.usableEvidence,
+          }),
       },
       target,
     );

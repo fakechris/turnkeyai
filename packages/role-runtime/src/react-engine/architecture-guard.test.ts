@@ -367,6 +367,53 @@ test("engine execution budget hooks route through execution-budget owner", () =>
   );
 });
 
+test("engine pending-call closeout hook routes through closeout-policy owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const hookStart = engineSource.indexOf("onToolCallsClose: (calls, state)");
+  const hookEnd = engineSource.indexOf(
+    "        // Stage 7 S7 + S5:",
+    hookStart,
+  );
+  assert.notEqual(hookStart, -1, "onToolCallsClose hook must exist");
+  assert.notEqual(hookEnd, -1, "onToolCallsClose hook boundary must be found");
+  const hookSource = engineSource.slice(hookStart, hookEnd);
+  const registrySource = readFileSync(
+    path.join(ENGINE_DIR, "closeout-policy-registry.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    hookSource.includes("applyPendingCallsCloseout("),
+    false,
+    "engine pending-call closeout flow must not call the generic registry application inline",
+  );
+  assert.equal(
+    hookSource.includes("countNativeToolCalls(toolTrace)"),
+    false,
+    "engine pending-call closeout hook must not compute used tool calls inline",
+  );
+  assert.equal(
+    hookSource.includes("runEvidence.snapshot(state.messages)"),
+    false,
+    "engine pending-call closeout hook must not read evidence snapshots inline",
+  );
+  assert.equal(
+    hookSource.includes("applyPendingCallsCloseoutHook("),
+    true,
+    "runViaReActEngine should delegate onToolCallsClose to the closeout-policy owner",
+  );
+  assert.equal(
+    registrySource.includes("applyPendingCallsCloseout("),
+    true,
+    "closeout-policy owner should keep generic pending-closeout application",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

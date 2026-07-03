@@ -255,7 +255,6 @@ import {
   createExecutionBudgetController,
   createEvidenceLedger,
   createRoleEngineRunObserver,
-  buildPermissionSuppressInput,
   createPermissionPolicy,
   createRepairPolicyRegistry,
   createTerminalCloseoutController,
@@ -2713,84 +2712,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // closeout cascade. The adapter supplies live hook state plus the module
         // callbacks that own each sub-decision.
         onToolCallsClose: (calls, state) => {
-          if (!activeToolLoop) {
-            return null;
-          }
-          const roundCount = toolTrace.length;
-          const usedToolCalls = countNativeToolCalls(toolTrace);
-          const stateEvidence = runEvidence.snapshot(state.messages);
-          return closeoutPolicy.applyPendingCallsCloseout(
+          return closeoutPolicy.applyPendingCallsCloseoutHook(
             {
+              active: Boolean(activeToolLoop),
               pendingCalls: calls,
               lastText: state.lastText,
               taskPrompt: packet.taskPrompt,
               messages: state.messages,
               repairMarkers: ctx.repairMarkers ?? [],
               toolTrace,
+              round: state.round,
               maxRounds,
-              usedToolCalls,
-              recoveryUsedToolCalls:
-                recoveryToolCallsBeforeActivation + usedToolCalls,
-              roundCount,
-              evidenceAvailable: stateEvidence.usableEvidence,
+              recoveryToolCallsBeforeActivation,
               recoveryToolBudget,
-              shouldSuppressReadOnlyPermissionQuery: () =>
-                permissionPolicy.wouldSuppressReadOnlyPermissionQuery(
-                  buildPermissionSuppressInput({
-                    calls,
-                    taskPrompt: packet.taskPrompt,
-                    messages: state.messages,
-                  }),
-                ),
-              previewEmptyRoundContinuation: () =>
-                continuation.previewEmptyRoundContinuation({
-                  active: Boolean(activeToolLoop),
-                  messages: state.messages,
-                  round: state.round,
-                  taskPrompt: packet.taskPrompt,
-                  toolTrace,
-                  ...(initialGatewayInput.tools === undefined
-                    ? {}
-                    : { tools: initialGatewayInput.tools }),
-                }),
-              buildRecoveryToolBudgetCloseoutSnapshot: () =>
-                executionBudget.buildRecoveryToolBudgetCloseoutSnapshot({
-                  maxRounds,
-                  maxToolCalls: recoveryToolBudget?.maxToolCalls ?? 0,
-                  pendingToolCallCount: calls.length,
-                  usedToolCalls:
-                    recoveryToolCallsBeforeActivation + usedToolCalls,
-                  roundCount,
-                  evidenceAvailable: stateEvidence.usableEvidence,
-                }),
-              buildWallClockBudgetCloseoutSignal: ({
-                pendingCalls,
-                pendingContinuation,
-              }) =>
-                executionBudget.buildPendingCallsWallClockBudgetCloseoutSignal({
-                  pendingCalls,
-                  pendingContinuation,
-                  taskPrompt: packet.taskPrompt,
-                  messages: state.messages,
-                  toolTrace,
-                  maxRounds,
-                  usedToolCalls,
-                  roundCount,
-                  evidenceAvailable: stateEvidence.usableEvidence,
-                  now: () => this.clock.now(),
-                  toolLoopStartedAtMs,
-                  ...(activeToolLoop.maxWallClockMs === undefined
-                    ? {}
-                    : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
-                }),
-              buildRoundLimitCloseoutSnapshot: () =>
-                executionBudget.buildRoundLimitCloseoutSnapshot({
-                  maxRounds,
-                  pendingToolCallCount: calls.length,
-                  usedToolCalls,
-                  roundCount,
-                  evidenceAvailable: stateEvidence.usableEvidence,
-                }),
+              permissionPolicy,
+              continuation,
+              executionBudget,
+              evidence: runEvidence,
+              now: () => this.clock.now(),
+              toolLoopStartedAtMs,
+              ...(activeToolLoop?.maxWallClockMs === undefined
+                ? {}
+                : { activeMaxWallClockMs: activeToolLoop.maxWallClockMs }),
+              ...(initialGatewayInput.tools === undefined
+                ? {}
+                : { tools: initialGatewayInput.tools }),
             },
             runState,
           );

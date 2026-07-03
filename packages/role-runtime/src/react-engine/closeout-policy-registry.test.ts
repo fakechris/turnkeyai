@@ -449,6 +449,122 @@ test("CloseoutPolicyRegistry pending-call flow applies recovery before continuat
   ]);
 });
 
+test("CloseoutPolicyRegistry pending-call hook computes live budget and evidence inputs", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const pendingCalls = [toolCall("pending-1", "sessions_spawn")];
+  const priorCall = toolCall("prior-1", "sessions_spawn");
+  const messages = [{ role: "user" as const, content: "Summarize status." }];
+  let permissionInput: unknown;
+  let evidenceMessages: unknown;
+  let recoveryInput: unknown;
+  let previewCalls = 0;
+  let wallClockCalls = 0;
+  let roundLimitCalls = 0;
+  const writes: unknown[] = [];
+  const target = {
+    recordPendingCloseout(input: unknown) {
+      writes.push(input);
+    },
+  };
+
+  const reason = registry.applyPendingCallsCloseoutHook(
+    {
+      active: true,
+      pendingCalls,
+      lastText: "still checking",
+      taskPrompt: "Summarize the gathered evidence.",
+      messages,
+      repairMarkers: [],
+      toolTrace: [
+        traceRound(1, [priorCall], [
+          {
+            toolCallId: priorCall.id,
+            toolName: priorCall.name,
+            isError: false,
+            contentBytes: 12,
+          },
+        ]),
+      ],
+      round: 4,
+      maxRounds: 3,
+      recoveryToolBudget: { maxToolCalls: 2 },
+      recoveryToolCallsBeforeActivation: 1,
+      permissionPolicy: {
+        wouldSuppressReadOnlyPermissionQuery(input: unknown) {
+          permissionInput = input;
+          return false;
+        },
+      },
+      continuation: {
+        previewEmptyRoundContinuation() {
+          previewCalls += 1;
+          return null;
+        },
+      },
+      executionBudget: {
+        buildRecoveryToolBudgetCloseoutSnapshot(input: unknown) {
+          recoveryInput = input;
+          return recoverySnapshot();
+        },
+        buildPendingCallsWallClockBudgetCloseoutSignal() {
+          wallClockCalls += 1;
+          return null;
+        },
+        buildRoundLimitCloseoutSnapshot() {
+          roundLimitCalls += 1;
+          return roundLimitSnapshot();
+        },
+      },
+      evidence: {
+        snapshot(inputMessages: unknown) {
+          evidenceMessages = inputMessages;
+          return {
+            sourceBoundedEvidenceText: "",
+            completedSessionEvidenceText: "",
+            naturalFinishEvidenceText: "",
+            toolTraceResultContent: "",
+            approvalWaitTimeoutRuntimeEvidence: "",
+            usableEvidence: false,
+          };
+        },
+      },
+      now: () => 100,
+      toolLoopStartedAtMs: 10,
+      activeMaxWallClockMs: 90_000,
+      tools: [{ name: "sessions_send" }],
+    },
+    target,
+  );
+
+  assert.equal(reason, "recovery_tool_budget");
+  assert.deepEqual(
+    (permissionInput as { calls: unknown; taskPrompt: unknown }).calls,
+    pendingCalls,
+  );
+  assert.equal(
+    (permissionInput as { taskPrompt: unknown }).taskPrompt,
+    "Summarize the gathered evidence.",
+  );
+  assert.equal(evidenceMessages, messages);
+  assert.deepEqual(recoveryInput, {
+    maxRounds: 3,
+    maxToolCalls: 2,
+    pendingToolCallCount: 1,
+    usedToolCalls: 2,
+    roundCount: 1,
+    evidenceAvailable: false,
+  });
+  assert.equal(previewCalls, 0);
+  assert.equal(wallClockCalls, 0);
+  assert.equal(roundLimitCalls, 0);
+  assert.deepEqual(writes, [
+    {
+      reasonLines: ["Final recovery tool budget reached (2 tool calls)."],
+      closeout: recoverySnapshot().closeout,
+    },
+  ]);
+});
+
 test("CloseoutPolicyRegistry pending-call flow passes continuation preview into remaining closeouts", () => {
   const registry = createCloseoutPolicyRegistry();
   const order: string[] = [];
