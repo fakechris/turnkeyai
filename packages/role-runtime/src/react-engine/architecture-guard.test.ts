@@ -18,6 +18,10 @@ const LLM_RESPONSE_GENERATOR = path.join(
   ROLE_RUNTIME_DIR,
   "llm-response-generator.ts",
 );
+const GATEWAY_ENVELOPE_RETRY = path.join(
+  ROLE_RUNTIME_DIR,
+  "gateway-envelope-retry.ts",
+);
 const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
 
 /** Forbidden import specifiers: the composition root and any known re-exporter. */
@@ -303,45 +307,76 @@ test("tool-result pruning boundary recording routes through neutral pruning owne
 });
 
 test("request-envelope reduced retry gateway input routes through neutral gateway builder", () => {
-  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async generateWithEnvelopeRetry");
-  const end =
-    source.indexOf("\n  private async flushPreCompactionMemorySafely", start) >= 0
-      ? source.indexOf("\n  private async flushPreCompactionMemorySafely", start)
-      : source.indexOf("\n  private async generateFinalAfterToolRoundLimit", start);
-  assert.notEqual(start, -1, "generateWithEnvelopeRetry must exist");
-  assert.notEqual(end, -1, "generateWithEnvelopeRetry boundary must be found");
-  const helperSource = source.slice(start, end);
+  const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  assert.equal(
+    adapterSource.includes("private async generateWithEnvelopeRetry"),
+    false,
+    "request-envelope retry orchestration must not stay as an adapter-private method",
+  );
+  const source = readFileSync(GATEWAY_ENVELOPE_RETRY, "utf8");
 
   assert.equal(
-    helperSource.includes("replaceInitialPromptMessages"),
+    source.includes("replaceInitialPromptMessages"),
     false,
-    "request-envelope retry prompt-message replacement must not stay in the adapter",
+    "request-envelope retry prompt-message replacement must not stay in the retry owner",
   );
   assert.equal(
-    helperSource.includes("deriveToolResultEnvelope"),
+    source.includes("deriveToolResultEnvelope"),
     false,
-    "request-envelope retry tool-result envelope recomputation must not stay in the adapter",
+    "request-envelope retry tool-result envelope recomputation must not stay in the retry owner",
   );
   assert.equal(
-    helperSource.includes("buildReducedRetryGatewayInput"),
+    source.includes("buildReducedRetryGatewayInput"),
     true,
     "request-envelope retry gateway input construction must route through the neutral gateway builder",
   );
 });
 
-test("pre-compaction memory flush routes through flusher owner", () => {
-  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+test("request-envelope retry orchestration routes through neutral gateway owner", () => {
+  const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
 
   assert.equal(
-    source.includes("private async flushPreCompactionMemorySafely"),
+    adapterSource.includes("private async generateWithEnvelopeRetry"),
+    false,
+    "adapter must not keep request-envelope retry orchestration as a private method",
+  );
+  assert.equal(
+    adapterSource.includes("generateWithEnvelopeRetry({"),
+    true,
+    "adapter should call the neutral request-envelope retry owner",
+  );
+
+  const ownerSource = readFileSync(GATEWAY_ENVELOPE_RETRY, "utf8");
+  assert.equal(
+    ownerSource.includes("buildReducedRetryGatewayInput({"),
+    true,
+    "request-envelope retry owner should delegate reduced gateway input construction",
+  );
+});
+
+test("pre-compaction memory flush routes through flusher owner", () => {
+  const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const retrySource = readFileSync(GATEWAY_ENVELOPE_RETRY, "utf8");
+
+  assert.equal(
+    adapterSource.includes("private async flushPreCompactionMemorySafely"),
     false,
     "pre-compaction memory flush safety must not stay as an adapter-private method",
   );
   assert.equal(
-    source.includes("flushPreCompactionMemorySafely({"),
+    adapterSource.includes("flushPreCompactionMemorySafely({"),
+    false,
+    "adapter should not call the pre-compaction memory owner after retry orchestration moves out",
+  );
+  assert.equal(
+    adapterSource.includes("preCompactionMemoryFlusher: this.preCompactionMemoryFlusher"),
     true,
-    "adapter should call the pre-compaction memory owner safe flusher",
+    "adapter should inject the memory flusher into the request-envelope retry owner",
+  );
+  assert.equal(
+    retrySource.includes("flushPreCompactionMemorySafely({"),
+    true,
+    "request-envelope retry owner should call the pre-compaction memory owner safe flusher",
   );
 });
 

@@ -11,7 +11,6 @@ import type {
   LLMToolCall,
 } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
-import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 
 import type {
   GeneratedRoleReply,
@@ -19,12 +18,16 @@ import type {
 } from "./deterministic-response-generator";
 import {
   buildGatewayInput,
-  buildReducedRetryGatewayInput,
   buildToolRoundGatewayRequest,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
   hasToolDefinition,
 } from "./gateway-input-builder";
+import {
+  generateWithEnvelopeRetry,
+  type GenerateWithEnvelopeRetryInput,
+  type GenerateWithEnvelopeRetryResult,
+} from "./gateway-envelope-retry";
 import {
   collectToolResultContentText,
   collectToolTraceResultContent,
@@ -35,7 +38,6 @@ import {
   shouldAllowRequiredTimeoutContinuationPastWallClock,
 } from "./tool-result-evidence";
 import {
-  appendModelCallBoundary,
   summarizeModelUseTrace,
   type ModelCallBoundaryTrace,
 } from "./model-call-trace";
@@ -51,7 +53,6 @@ import {
 } from "./prompt-policy";
 import {
   recordReductionBoundarySafely,
-  reducePromptPacketForRequestEnvelope,
   type RequestEnvelopeReductionLevel,
   type RequestEnvelopeReductionSnapshot,
 } from "./request-envelope-reducer";
@@ -270,7 +271,6 @@ import {
 } from "./task-facts-shared";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import {
-  flushPreCompactionMemorySafely,
   type PreCompactionMemoryFlusher,
   type PreCompactionMemoryFlushResult,
 } from "./pre-compaction-memory-flusher";
@@ -462,11 +462,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         selection,
         snapshot: gatewayRequest.pruning,
       });
-      let generated: Awaited<
-        ReturnType<LLMRoleResponseGenerator["generateWithEnvelopeRetry"]>
-      >;
+      let generated: GenerateWithEnvelopeRetryResult;
       try {
-        generated = await this.generateWithEnvelopeRetry({
+        generated = await generateWithEnvelopeRetry({
+          gateway: this.gateway,
+          now: () => this.clock.now(),
+          preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
           activation: input.activation,
           packet: input.packet,
           selection,
@@ -2546,7 +2547,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
    */
   private async runViaReActEngine(args: {
     input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal };
-    selection: Parameters<LLMRoleResponseGenerator["generateWithEnvelopeRetry"]>[0]["selection"];
+    selection: GenerateWithEnvelopeRetryInput["selection"];
     activeToolLoop: RoleToolLoopOptions | undefined;
     initialGatewayInput: GenerateTextInput;
     modelCallTrace: ModelCallBoundaryTrace[];
@@ -2621,7 +2622,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           selection,
           snapshot: gatewayRequest.pruning,
         });
-        const generated = await this.generateWithEnvelopeRetry({
+        const generated = await generateWithEnvelopeRetry({
+          gateway: this.gateway,
+          now: () => this.clock.now(),
+          preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
           activation,
           packet,
           selection,
@@ -3282,7 +3286,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   : { tools: initialGatewayInput.tools }),
                 repairPolicy,
                 synthesizeRepair: async ({ gatewayInput }) =>
-                  this.generateWithEnvelopeRetry({
+                  generateWithEnvelopeRetry({
+                    gateway: this.gateway,
+                    now: () => this.clock.now(),
+                    preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
                     activation,
                     packet,
                     selection,
@@ -3542,113 +3549,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     };
   }
 
-  private async generateWithEnvelopeRetry(input: {
-    activation: RoleActivationInput;
-    packet: RolePromptPacket;
-    selection: {
-      modelId?: string;
-      modelChainId?: string;
-    };
-    gatewayInput: GenerateTextInput;
-    modelCallTrace?: ModelCallBoundaryTrace[];
-    tracePhase?: ModelCallBoundaryTrace["phase"];
-    traceRound?: number;
-  }): Promise<{
-    result: GenerateTextResult;
-    reduction?: {
-      level: RequestEnvelopeReductionLevel;
-      omittedSections: string[];
-    };
-    reductionSnapshot?: RequestEnvelopeReductionSnapshot;
-    memoryFlush?: PreCompactionMemoryFlushResult;
-  }> {
-    const attempts: RequestEnvelopeReductionLevel[] = [
-      "compact",
-      "minimal",
-      "reference-only",
-    ];
-    try {
-      const startedAt = this.clock.now();
-      const result = await this.gateway.generate(input.gatewayInput);
-      appendModelCallBoundary(input.modelCallTrace, {
-        phase: input.tracePhase ?? "tool_round",
-        ...(input.traceRound !== undefined ? { round: input.traceRound } : {}),
-        startedAt,
-        completedAt: this.clock.now(),
-        gatewayInput: input.gatewayInput,
-        result,
-      });
-      return {
-        result,
-      };
-    } catch (error) {
-      if (!(error instanceof RequestEnvelopeOverflowError)) {
-        throw error;
-      }
-
-      let overflowError: RequestEnvelopeOverflowError = error;
-      const memoryFlush = await flushPreCompactionMemorySafely({
-        flusher: this.preCompactionMemoryFlusher,
-        activation: input.activation,
-        packet: input.packet,
-        selection: input.selection,
-        diagnostics: overflowError.details.diagnostics,
-      });
-      for (const level of attempts) {
-        const reduced = reducePromptPacketForRequestEnvelope(input.packet, {
-          level,
-        });
-        try {
-          const retryGatewayInput = buildReducedRetryGatewayInput({
-            activation: input.activation,
-            packet: input.packet,
-            selection: input.selection,
-            gatewayInput: input.gatewayInput,
-            reduction: reduced,
-          });
-          const startedAt = this.clock.now();
-          const result = await this.gateway.generate(retryGatewayInput);
-          const reduction = {
-            level,
-            omittedSections: reduced.omittedSections,
-          };
-          const reductionSnapshot = {
-            level,
-            omittedSections: reduced.omittedSections,
-            artifactIds: reduced.artifactIds,
-            ...(reduced.envelopeHint
-              ? { envelopeHint: reduced.envelopeHint }
-              : {}),
-          };
-          appendModelCallBoundary(input.modelCallTrace, {
-            phase: input.tracePhase ?? "tool_round",
-            ...(input.traceRound !== undefined
-              ? { round: input.traceRound }
-              : {}),
-            startedAt,
-            completedAt: this.clock.now(),
-            gatewayInput: retryGatewayInput,
-            result,
-            reductionLevel: level,
-          });
-          return {
-            result,
-            reduction,
-            reductionSnapshot,
-            ...(memoryFlush ? { memoryFlush } : {}),
-          };
-        } catch (retryError) {
-          if (!(retryError instanceof RequestEnvelopeOverflowError)) {
-            throw retryError;
-          }
-          overflowError = retryError;
-        }
-      }
-
-      throw overflowError;
-    }
-  }
-
   private async generateFinalAfterToolRoundLimit(input: {
     activation: RoleActivationInput;
     packet: RolePromptPacket;
@@ -3688,7 +3588,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           snapshot,
         }),
       synthesize: ({ gatewayInput, tracePhase }) =>
-        this.generateWithEnvelopeRetry({
+        generateWithEnvelopeRetry({
+          gateway: this.gateway,
+          now: () => this.clock.now(),
+          preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
           activation: input.activation,
           packet: input.packet,
           selection: input.selection,
