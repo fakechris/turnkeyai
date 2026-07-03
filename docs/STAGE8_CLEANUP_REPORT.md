@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `d42e6c796c58eea2eb6765671977f6b57ff40a04`
+**Code HEAD before this docs-only report:** `bf7e3f1bb738bb545077c20afc2fb18145c7ca65`
 **Date:** 2026-07-02
 
 ## Summary
@@ -150,9 +150,12 @@ could not move the normalizer without making the inline parity reference import 
   builds the completed callback from the terminate hook input, carries current
   messages into `CompletedCloseoutController`, asks the evidence ledger for
   completed tool-result text, and preserves the adapter-injected gateway repair
-  callbacks. The completed-reason and missing-session guards now also live in
-  that controller path, so the adapter passes the completed-closeout handoff
-  data unconditionally instead of branching on reason/session.
+  callbacks. The controller now also owns completed-closeout repair gateway
+  message preparation and tool-free gateway input construction; the adapter
+  passes the base gateway input and receives a ready `GenerateTextInput`.
+  The completed-reason and missing-session guards now also live in that
+  controller path, so the adapter passes the completed-closeout handoff data
+  unconditionally instead of branching on reason/session.
   Remaining pending-call closeout session context construction now lives in
   `react-engine/closeout-policy-registry.ts`; the adapter passes task/messages
   instead of concatenating the closeout session context locally.
@@ -431,6 +434,7 @@ outside the terminal completion path.
 | `da72abf` | Move terminal final synthesis gateway message preparation and pruning snapshots into `TerminalCloseoutController`; adapter records the snapshot and calls the gateway. |
 | `f5292d5` | Move final-after-tool-round-limit synthesis orchestration into `TerminalCloseoutController`; adapter supplies only gateway and pruning callbacks. |
 | `d42e6c7` | Move final-after-tool-round-limit tool-free gateway input construction into `TerminalCloseoutController`; adapter receives a ready gateway input. |
+| `bf7e3f1` | Move completed-closeout repair gateway-message preparation and tool-free gateway input construction into `TerminalCloseoutController`; adapter receives a ready gateway input. |
 
 ## Current Extracted Implementation
 
@@ -546,7 +550,8 @@ Real implementation now exists in:
   hook entrypoint that short-circuits deterministic approval wait-timeout
   fallback before synthesis and builds completed-closeout synthesis callbacks
   from completed session / ledger inputs, including completed reason and
-  null-session guards, plus the model-call-error local-evidence
+  null-session guards and completed-closeout repair tool-free gateway input
+  construction, plus the model-call-error local-evidence
   fallback/rethrow boundary and `completeModelCallErrorFlow` ownership of
   model-call-error abort, active/usable-evidence gating, forced
   pending-approval continuation selection, fallback flow selection, and
@@ -665,10 +670,10 @@ All gates below passed on the current code before the report update:
 | --- | --- |
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 10 / 10 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 5 / 5 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 210 / 210 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 211 / 211 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -971,9 +976,11 @@ Stage 8 boundaries/slices are now real:
   routes through `TerminalCloseoutController.handleTerminalCloseoutHook`; the
   adapter passes the completed controller, completed session, ledger, repair
   markers, tools, and gateway callbacks instead of constructing the completed
-  callback or completed tool-result text itself. The controller also owns the
-  completed-reason and null-session guards, so the adapter passes that handoff
-  data unconditionally.
+  callback or completed tool-result text itself. Completed-closeout repair
+  gateway message preparation and tool-free gateway input construction also live
+  in the controller; the adapter receives a ready gateway input for the repair
+  model call. The controller also owns the completed-reason and null-session
+  guards, so the adapter passes that handoff data unconditionally.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -1042,8 +1049,9 @@ Continue with the remaining high-risk pieces:
   synthesis-effect application, final response shaping, closeout write-mode
   selection, explicit state-effect application, sticky completed closeout
   pre-recording, completed initial-synthesis handoff, completed-closeout
-  callback construction, terminal path selection, final/re-arm application,
-  terminal entrypoint, terminal hook fallback entry,
+  callback/gateway-input handoffs, terminal path selection, final/re-arm
+  application, terminal entrypoint,
+  terminal hook fallback entry,
   and model-error fallback / flow-selection / hook-application /
   forced-round-result boundary slices; forced runtime tool-round execution and
   runtime progress emission still enter through an adapter-supplied executor
