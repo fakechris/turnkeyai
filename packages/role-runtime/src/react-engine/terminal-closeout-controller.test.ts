@@ -299,6 +299,44 @@ test("TerminalCloseoutController builds final synthesis tool-call artifact fallb
   assert.match(generic.text, /model attempted to emit another tool call/);
 });
 
+test("TerminalCloseoutController builds final synthesis error fallback results", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      name: "web_fetch",
+      content: "ACME pricing was verified at http://127.0.0.1:5173/pricing.",
+    } as LLMMessage,
+  ];
+
+  const fallback = controller.buildFinalSynthesisErrorFallback({
+    messages,
+    packet: packet("Summarize the verified source fact.", "No links."),
+    selection: { modelId: "model-d" },
+    error: new Error("final synthesis unavailable"),
+  });
+
+  assert.ok(fallback);
+  assert.equal(fallback.modelId, "model-d");
+  assert.match(fallback.text, /Verified:/);
+  assert.doesNotMatch(fallback.text, /127\.0\.0\.1/);
+  assert.match(fallback.text, /local fixture source/);
+  assert.equal(
+    (fallback.raw as { message?: string } | null)?.message,
+    "final synthesis unavailable",
+  );
+
+  assert.equal(
+    controller.buildFinalSynthesisErrorFallback({
+      messages: [],
+      packet: packet("Return exactly one sentence."),
+      selection: {},
+      error: new Error("no evidence"),
+    }),
+    null,
+  );
+});
+
 test("TerminalCloseoutController applies model-call-error fallback through a target", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [

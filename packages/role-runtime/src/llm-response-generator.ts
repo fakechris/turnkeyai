@@ -3754,22 +3754,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         },
       });
     } catch (error) {
-      const localResult = buildLocalEvidenceCloseout({
-        activation: input.activation,
-        messages: input.messages,
-        packet: input.packet,
-        selection: input.selection,
-        error,
-      });
+      const localResult =
+        createTerminalCloseoutController().buildFinalSynthesisErrorFallback({
+          activation: input.activation,
+          messages: input.messages,
+          packet: input.packet,
+          selection: input.selection,
+          error,
+        });
       if (!localResult) {
         throw error;
       }
-      return {
-        result: maybeRedactForbiddenLocalUrls({
-          result: localResult,
-          packet: input.packet,
-        }),
-      };
+      return { result: localResult };
     }
   }
 

@@ -80,6 +80,17 @@ export interface FinalSynthesisToolCallArtifactFallbackInput {
   repairedResult: GenerateTextResult;
 }
 
+export interface FinalSynthesisErrorFallbackInput {
+  activation?: RoleActivationInput;
+  messages: LLMMessage[];
+  packet: RolePromptPacket;
+  selection: {
+    modelId?: string;
+    modelChainId?: string;
+  };
+  error: unknown;
+}
+
 type ForcedModelCallErrorContinuation = Extract<
   EngineContinueAction,
   { kind: "forced_tool_round" }
@@ -534,6 +545,25 @@ export class TerminalCloseoutController {
         "Please retry or continue the mission so the runtime can collect a clean final answer.",
       ].join(" "),
     };
+    return maybeRedactForbiddenLocalUrls({
+      result: localResult,
+      packet: input.packet,
+    });
+  }
+
+  buildFinalSynthesisErrorFallback(
+    input: FinalSynthesisErrorFallbackInput,
+  ): GenerateTextResult | null {
+    const localResult = buildLocalEvidenceCloseout({
+      ...(input.activation ? { activation: input.activation } : {}),
+      messages: input.messages,
+      packet: input.packet,
+      selection: input.selection,
+      error: input.error,
+    });
+    if (!localResult) {
+      return null;
+    }
     return maybeRedactForbiddenLocalUrls({
       result: localResult,
       packet: input.packet,
