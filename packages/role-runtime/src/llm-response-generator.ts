@@ -29,8 +29,7 @@ import {
   type GenerateWithEnvelopeRetryResult,
 } from "./gateway-envelope-retry";
 import {
-  generateFinalAfterToolRoundLimit,
-  type GenerateFinalAfterToolRoundLimitInput,
+  createTerminalFinalSynthesisRunner,
 } from "./terminal-final-synthesis";
 import {
   collectToolResultContentText,
@@ -404,22 +403,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
     const toolTrace: NativeToolRoundTrace[] = [];
     const modelCallTrace: ModelCallBoundaryTrace[] = [];
-    type InlineFinalSynthesisInput = Omit<
-      GenerateFinalAfterToolRoundLimitInput,
-      | "gateway"
-      | "now"
-      | "runtimeProgressRecorder"
-      | "preCompactionMemoryFlusher"
-      | "activation"
-      | "packet"
-      | "selection"
-      | "baseGatewayInput"
-      | "modelCallTrace"
-    >;
-    const synthesizeFinalAfterToolRoundLimit = (
-      finalInput: InlineFinalSynthesisInput,
-    ) =>
-      generateFinalAfterToolRoundLimit({
+    const synthesizeFinalAfterToolRoundLimit =
+      createTerminalFinalSynthesisRunner({
         gateway: this.gateway,
         now: () => this.clock.now(),
         runtimeProgressRecorder: this.runtimeProgressRecorder,
@@ -429,7 +414,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         selection,
         baseGatewayInput: initialGatewayInput,
         modelCallTrace,
-        ...finalInput,
       });
     let messages: LLMMessage[] = initialGatewayInput.messages;
     const recoveryToolBudget = activeToolLoop
@@ -2552,22 +2536,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // method is engine-only) so a production-behind-flag failure is diagnosable.
     const policyTrace = createEnginePolicyTrace();
 
-    type EngineFinalSynthesisInput = Omit<
-      GenerateFinalAfterToolRoundLimitInput,
-      | "gateway"
-      | "now"
-      | "runtimeProgressRecorder"
-      | "preCompactionMemoryFlusher"
-      | "activation"
-      | "packet"
-      | "selection"
-      | "baseGatewayInput"
-      | "modelCallTrace"
-    >;
-    const synthesizeFinalAfterToolRoundLimit = (
-      finalInput: EngineFinalSynthesisInput,
-    ) =>
-      generateFinalAfterToolRoundLimit({
+    const synthesizeFinalAfterToolRoundLimit =
+      createTerminalFinalSynthesisRunner({
         gateway: this.gateway,
         now: () => this.clock.now(),
         runtimeProgressRecorder: this.runtimeProgressRecorder,
@@ -2577,7 +2547,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         selection,
         baseGatewayInput: initialGatewayInput,
         modelCallTrace,
-        ...finalInput,
       });
 
     let lastResult: GenerateTextResult | undefined;

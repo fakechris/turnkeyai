@@ -41,6 +41,33 @@ export interface GenerateFinalAfterToolRoundLimitInput {
 export type GenerateFinalAfterToolRoundLimitResult =
   GenerateWithEnvelopeRetryResult;
 
+export type TerminalFinalSynthesisRunnerInput = Omit<
+  GenerateFinalAfterToolRoundLimitInput,
+  | "gateway"
+  | "now"
+  | "runtimeProgressRecorder"
+  | "preCompactionMemoryFlusher"
+  | "activation"
+  | "packet"
+  | "selection"
+  | "baseGatewayInput"
+  | "modelCallTrace"
+>;
+
+export type TerminalFinalSynthesisRunner = (
+  input: TerminalFinalSynthesisRunnerInput,
+) => Promise<GenerateFinalAfterToolRoundLimitResult>;
+
+export function createTerminalFinalSynthesisRunner(
+  input: Omit<GenerateFinalAfterToolRoundLimitInput, "messages" | "maxRounds" | "reasonLines">,
+): TerminalFinalSynthesisRunner {
+  return (finalInput) =>
+    generateFinalAfterToolRoundLimit({
+      ...input,
+      ...finalInput,
+    });
+}
+
 export async function generateFinalAfterToolRoundLimit(
   input: GenerateFinalAfterToolRoundLimitInput,
 ): Promise<GenerateFinalAfterToolRoundLimitResult> {

@@ -128,9 +128,9 @@ test("terminal final synthesis provider-schema repair request routes through ter
     "terminal final synthesis gateway wrapper must not stay as an adapter-private method",
   );
   assert.equal(
-    adapterSource.includes("generateFinalAfterToolRoundLimit({"),
+    adapterSource.includes("createTerminalFinalSynthesisRunner({"),
     true,
-    "adapter should call the neutral terminal final synthesis owner",
+    "adapter should create neutral terminal final synthesis runners",
   );
   const helperSource = readFileSync(TERMINAL_FINAL_SYNTHESIS, "utf8");
 
@@ -218,6 +218,32 @@ test("terminal final synthesis provider-schema repair request routes through ter
     helperSource.includes("synthesizeFinalAfterToolRoundLimit"),
     true,
     "terminal final synthesis orchestration must route through TerminalCloseoutController",
+  );
+});
+
+test("terminal final synthesis dependency injection routes through neutral runner", () => {
+  const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const ownerSource = readFileSync(TERMINAL_FINAL_SYNTHESIS, "utf8");
+
+  assert.equal(
+    adapterSource.includes("type InlineFinalSynthesisInput"),
+    false,
+    "inline final-synthesis dependency-injection input type must not stay in the adapter",
+  );
+  assert.equal(
+    adapterSource.includes("type EngineFinalSynthesisInput"),
+    false,
+    "engine final-synthesis dependency-injection input type must not stay in the adapter",
+  );
+  assert.equal(
+    adapterSource.includes("createTerminalFinalSynthesisRunner({"),
+    true,
+    "adapter should create final-synthesis runners from the neutral owner",
+  );
+  assert.equal(
+    ownerSource.includes("generateFinalAfterToolRoundLimit({"),
+    true,
+    "terminal final synthesis runner should delegate to the neutral final-synthesis wrapper",
   );
 });
 

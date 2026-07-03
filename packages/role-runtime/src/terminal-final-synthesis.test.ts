@@ -5,7 +5,10 @@ import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 import type { GenerateTextInput } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
-import { generateFinalAfterToolRoundLimit } from "./terminal-final-synthesis";
+import {
+  createTerminalFinalSynthesisRunner,
+  generateFinalAfterToolRoundLimit,
+} from "./terminal-final-synthesis";
 import type { ModelCallBoundaryTrace } from "./model-call-trace";
 import type { RolePromptPacket } from "./prompt-policy";
 
@@ -54,6 +57,53 @@ test("generateFinalAfterToolRoundLimit invokes a tool-free final synthesis throu
   assert.equal(trace[0]?.phase, "final_synthesis");
   assert.equal(trace[0]?.toolSchemaCount, 0);
   assert.equal(trace[0]?.toolChoice, "none");
+});
+
+test("createTerminalFinalSynthesisRunner injects shared dependencies for closeout calls", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    return {
+      text: "runner final answer",
+      modelId: "model-1",
+      providerId: "provider",
+      protocol: "openai-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const trace: ModelCallBoundaryTrace[] = [];
+  const runner = createTerminalFinalSynthesisRunner({
+    gateway,
+    now: (() => {
+      let now = 20;
+      return () => ++now;
+    })(),
+    activation: buildActivation(),
+    packet: buildPacket(),
+    selection: { modelId: "model-1" },
+    baseGatewayInput: {
+      modelId: "model-1",
+      tools: [{ name: "web_search", description: "", inputSchema: {} }],
+      messages: [{ role: "user", content: "Use tools first." }],
+    },
+    modelCallTrace: trace,
+  });
+
+  const generated = await runner({
+    messages: [
+      { role: "assistant", content: "Gathered evidence from the tool trace." },
+    ],
+    maxRounds: 2,
+    reasonLines: ["Close out from available evidence."],
+  });
+
+  assert.equal(generated.result.text, "runner final answer");
+  assert.equal(gatewayInputs.length, 1);
+  assert.equal(gatewayInputs[0]?.toolChoice, "none");
+  assert.equal(trace.length, 1);
+  assert.equal(trace[0]?.phase, "final_synthesis");
 });
 
 function buildActivation(): RoleActivationInput {
