@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `d1bee4c8a304e8d8124174098f87eb23ef1bce5e`
+**Code HEAD before this docs-only report:** `fdc813656cf3c3e77ac64e7da27a0ac500239478`
 **Date:** 2026-07-02
 
 ## Summary
@@ -127,6 +127,10 @@ could not move the normalizer without making the inline parity reference import 
   provider protocol handoff to
   `EngineRunObserver.observeRuntimeForcedToolRound()`; the adapter supplies the
   actual tool-execution callback.
+  Request-envelope overflow retry orchestration now lives in neutral
+  `gateway-envelope-retry.ts`; the adapter injects the gateway, clock, and
+  pre-compaction memory flusher while the owner keeps overflow detection,
+  memory-flush handoff, reduced retry sequencing, and model-call trace recording.
   The full `onAfterExecuteContinue` hook flow now enters through
   `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
   owns provider tool-protocol round recording before current-round evidence
@@ -478,6 +482,7 @@ outside the terminal completion path.
 | `5193d4f` | Move pre-compaction memory flush safety into `pre-compaction-memory-flusher.ts`; adapter passes flusher/selection/diagnostics instead of owning the safe wrapper. |
 | `e44d4af` | Move role tool-call execution into `tool-use.ts`; adapter passes tool-loop/recorder/clock inputs instead of owning the private execution runner. |
 | `d1bee4c` | Move forced runtime tool-round orchestration into `tool-use.ts`; adapter passes persistence/provider callbacks instead of owning the private forced-round runner. |
+| `fdc8136` | Move request-envelope overflow retry orchestration into neutral `gateway-envelope-retry.ts`; adapter injects gateway/clock/flusher instead of owning the private retry method. |
 
 ## Current Extracted Implementation
 
@@ -674,6 +679,10 @@ Real implementation now exists in:
   synthesis source-message construction, extraneous provider-schema
   repair-message construction, and tool-call artifact cleanup repair-message
   construction for terminal final/repair synthesis.
+- `gateway-envelope-retry.ts` for request-envelope overflow retry orchestration:
+  successful/reduced model-call boundary recording, safe pre-compaction memory
+  flush handoff, compact/minimal/reference-only retry sequencing, and reduced
+  retry gateway input delegation.
 - `native-tool-messages.ts` for native tool-message construction and persistence
   safe/defer handling, session trace canonicalization from structured session
   results, and native tool-call counting.
@@ -735,14 +744,15 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/prompt-policy.test.ts` | 31 / 31 |
 | `npx tsx --test packages/role-runtime/src/pre-compaction-memory-flusher.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
+| `npx tsx --test packages/role-runtime/src/gateway-envelope-retry.test.ts` | 1 / 1 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 9 / 9 |
 | `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 103 / 103 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 19 / 19 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 20 / 20 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 224 / 224 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 225 / 225 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -924,16 +934,18 @@ Stage 8 boundaries/slices are now real:
   preparation, pruning snapshot construction, active/tool-free request shaping,
   and tool-result envelope recomputation instead of duplicating that branch in
   the adapter.
-- request-envelope reduced retry gateway input construction now also routes
-  through `gateway-input-builder.ts`; `generateWithEnvelopeRetry` keeps retry
-  control flow, while prompt-message replacement and retry envelope recomputation
-  live in the neutral gateway builder.
+- request-envelope overflow retry orchestration now routes through neutral
+  `gateway-envelope-retry.ts`; the adapter injects gateway, clock, and
+  pre-compaction memory flusher instead of owning `generateWithEnvelopeRetry`.
+  Prompt-message replacement and retry envelope recomputation still live in the
+  neutral `gateway-input-builder.ts`.
 - request-envelope reduction boundary recording now routes through
   `request-envelope-reducer.ts`; the adapter no longer owns the
   `request_envelope_reduction` runtime progress metadata shape.
 - pre-compaction memory flush safety now routes through
-  `pre-compaction-memory-flusher.ts`; the adapter passes the configured flusher,
-  model selection, and overflow diagnostics instead of owning the safe wrapper.
+  `pre-compaction-memory-flusher.ts`; the retry owner passes the configured
+  flusher, model selection, and overflow diagnostics instead of the adapter
+  owning the safe wrapper.
 - prompt assembly compaction boundary recording now routes through
   `prompt-policy.ts`; the adapter no longer owns the `prompt_compaction`
   runtime progress metadata shape.
@@ -1162,6 +1174,9 @@ Continue with the remaining high-risk pieces:
   forced-round-result boundary slices; forced runtime tool-round orchestration
   now delegates to `tool-use.ts`, runtime progress recorder/observer emission
   delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
-  to `tool-history-pruning.ts`; keep thinning the adapter.
+  to `tool-history-pruning.ts`; request-envelope retry orchestration now
+  delegates to `gateway-envelope-retry.ts`; keep thinning the adapter. Remaining
+  adapter-private methods at this checkpoint are `runViaReActEngine` and
+  `generateFinalAfterToolRoundLimit`.
 
 The branch is **not pushed**.
