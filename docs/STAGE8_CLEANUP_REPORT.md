@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `04be9f869e6c3d3efedd3e28aa3e58351e6662ae`
+**Code HEAD before this docs-only report:** `e12c9ba719d43d0205b32dcf19540b28b5dda4f5`
 **Date:** 2026-07-02
 
 ## Summary
@@ -140,6 +140,10 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/engine-model-client.ts`: final-round warning application,
   tool-round gateway request construction, pruning boundary callback, envelope
   retry invocation, last model result capture, and reduction/memory state writes.
+  Engine forced runtime tool-round runner wiring now lives in
+  `react-engine/engine-forced-tool-round-runner.ts`: the adapter creates one
+  runner for `runViaReActEngine`, and the continuation/model-error hooks pass
+  only messages, tool calls, and assistant text into it.
   The full `onAfterExecuteContinue` hook flow now enters through
   `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
   owns provider tool-protocol round recording before current-round evidence
@@ -495,6 +499,7 @@ outside the terminal completion path.
 | `73e36ca` | Move terminal final-synthesis gateway wrapper into neutral `terminal-final-synthesis.ts`; adapter call sites inject through local composition callbacks instead of a private method. |
 | `014abe7` | Centralize terminal final-synthesis runner wiring in `terminal-final-synthesis.ts`; adapter creates shared runners instead of declaring duplicate inline/engine injection types. |
 | `04be9f8` | Move the engine `ModelClient` wrapper into `react-engine/engine-model-client.ts`; adapter passes dependencies and consumes the owner model/last-result boundary. |
+| `e12c9ba` | Centralize engine forced runtime tool-round runner wiring in `react-engine/engine-forced-tool-round-runner.ts`; adapter reuses one runner from continuation and model-error hooks. |
 
 ## Current Extracted Implementation
 
@@ -705,6 +710,12 @@ Real implementation now exists in:
   final-round warning delegation, ReAct tool-choice mapping, tool-round gateway
   request construction, pruning boundary callback invocation, envelope retry,
   last-result capture, and reduction/memory flush writes into `EngineRunState`.
+- `react-engine/engine-forced-tool-round-runner.ts` for the engine forced
+  runtime tool-round executor wiring: tool-loop execution dependencies,
+  native trace persistence callback, provider protocol fallback recorder, clock,
+  defer mode, observer, and signal are bound once per engine run, while forced
+  continuation and model-error hooks pass only the round messages, calls, and
+  assistant text.
 - `native-tool-messages.ts` for native tool-message construction and persistence
   safe/defer handling, session trace canonicalization from structured session
   results, and native tool-call counting.
@@ -758,32 +769,20 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-All gates below passed on the current code before the report update:
+Fresh gates run for this forced-round runner slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/prompt-policy.test.ts` | 31 / 31 |
-| `npx tsx --test packages/role-runtime/src/pre-compaction-memory-flusher.test.ts` | 6 / 6 |
-| `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
-| `npx tsx --test packages/role-runtime/src/gateway-envelope-retry.test.ts` | 1 / 1 |
-| `npx tsx --test packages/role-runtime/src/terminal-final-synthesis.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 9 / 9 |
-| `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 103 / 103 |
-| `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts` | 6 / 6 |
-| `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/engine-model-client.test.ts` | 1 / 1 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 21 / 21 |
-| `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 227 / 227 |
+| `npx tsx --test packages/role-runtime/src/react-engine/engine-forced-tool-round-runner.test.ts packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 23 / 23 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 229 / 229 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
-| `npm run parity:inline` | 272 / 272, 0 fail |
-| `npm run parity:engine` | 272 / 272, 0 fail; all 14 chunks completed |
+| `npm run parity:inline` | 271 / 271, 0 fail |
+| `npm run parity:engine` | 251 / 251, 0 fail; all 13 chunks completed |
 
-Note: this latest parity run reported 272 inline test points and discovered 272
+Note: this latest parity run reported 271 inline test points and discovered 251
 engine test points. Engine chunks completed without individual recovery.
 
 ## Is The Adapter Thin?
@@ -963,6 +962,12 @@ Stage 8 boundaries/slices are now real:
   clock, execution-budget, run-state, and pruning callback dependencies instead
   of owning the model wrapper body, trace round counter, last-result slot, and
   reduction/memory state writes inline.
+- engine forced runtime tool-round runner wiring now routes through
+  `react-engine/engine-forced-tool-round-runner.ts`; `runViaReActEngine` binds
+  the tool-loop, recorder, native persistence, provider protocol fallback,
+  observer, clock, defer, and signal dependencies once, then continuation and
+  model-error hooks pass only each forced round's messages, calls, and assistant
+  text.
 - request-envelope overflow retry orchestration now routes through neutral
   `gateway-envelope-retry.ts`; the adapter injects gateway, clock, and
   pre-compaction memory flusher instead of owning `generateWithEnvelopeRetry`.
@@ -1210,7 +1215,9 @@ Continue with the remaining high-risk pieces:
   delegates to `gateway-envelope-retry.ts`; terminal final-synthesis gateway
   wrapper and runner wiring delegate to `terminal-final-synthesis.ts`; engine
   model-client wrapper behavior delegates to
-  `react-engine/engine-model-client.ts`; keep thinning the adapter. The only
+  `react-engine/engine-model-client.ts`; engine forced runtime tool-round
+  runner wiring delegates to
+  `react-engine/engine-forced-tool-round-runner.ts`; keep thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
 
