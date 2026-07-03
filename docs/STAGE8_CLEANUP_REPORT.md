@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `f9181404494b1928e8112dcc386313147a157b28`
+**Code HEAD before this docs-only report:** `cfb2fded9e4776082f5cb483247285da7c3bd69c`
 **Date:** 2026-07-02
 
 ## Summary
@@ -153,6 +153,10 @@ could not move the normalizer without making the inline parity reference import 
   `react-engine/engine-agent-runner.ts`: the adapter creates the ReAct agent and
   passes it to the owner, which consumes model/tool/final events, dispatches the
   engine observer callbacks, and returns the selected final text.
+  Engine role toolkit wiring now lives in
+  `react-engine/engine-role-toolkit.ts`: the owner exposes the filtered tool
+  definitions, `has()` lookup, active tool-loop execution delegation, and
+  no-active-loop unknown-tool fallback used by the ReAct agent.
   The full `onAfterExecuteContinue` hook flow now enters through
   `ContinuationController.applyAfterExecuteContinuationHook()`: the controller
   owns provider tool-protocol round recording before current-round evidence
@@ -511,6 +515,7 @@ outside the terminal completion path.
 | `e12c9ba` | Centralize engine forced runtime tool-round runner wiring in `react-engine/engine-forced-tool-round-runner.ts`; adapter reuses one runner from continuation and model-error hooks. |
 | `239395c` | Move engine final response assembly into `react-engine/engine-final-response.ts`; adapter passes final run-state snapshots into the owner builder. |
 | `f918140` | Move engine ReAct event consumption into `react-engine/engine-agent-runner.ts`; adapter receives final text from the owner runner. |
+| `cfb2fde` | Move engine role toolkit wiring into `react-engine/engine-role-toolkit.ts`; adapter passes tool definitions and active loop into the owner. |
 
 ## Current Extracted Implementation
 
@@ -735,6 +740,9 @@ Real implementation now exists in:
 - `react-engine/engine-agent-runner.ts` for engine ReAct event consumption:
   drives the created `ReActLoop`, dispatches model/tool lifecycle events to
   `EngineRunObserver`, and returns the final text.
+- `react-engine/engine-role-toolkit.ts` for engine ReAct toolkit wiring:
+  exposes the gateway-filtered tool definitions, name lookup, active role
+  tool-loop execution delegation, and no-active-loop unknown-tool fallback.
 - `native-tool-messages.ts` for native tool-message construction and persistence
   safe/defer handling, session trace canonicalization from structured session
   results, and native tool-call counting.
@@ -788,13 +796,13 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine-agent event runner slice:
+Fresh gates run for this engine role toolkit wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/engine-agent-runner.test.ts packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 25 / 25 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 234 / 234 |
+| `npx tsx --test packages/role-runtime/src/react-engine/engine-role-toolkit.test.ts packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 28 / 28 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 237 / 237 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -995,6 +1003,10 @@ Stage 8 boundaries/slices are now real:
   `react-engine/engine-agent-runner.ts`; `runViaReActEngine` creates the agent
   but delegates event iteration, observer dispatch, and final-text selection to
   the owner runner.
+- engine role toolkit wiring now routes through
+  `react-engine/engine-role-toolkit.ts`; `runViaReActEngine` passes filtered tool
+  definitions and the active tool loop instead of declaring the toolkit methods
+  inline.
 - request-envelope overflow retry orchestration now routes through neutral
   `gateway-envelope-retry.ts`; the adapter injects gateway, clock, and
   pre-compaction memory flusher instead of owning `generateWithEnvelopeRetry`.
@@ -1247,7 +1259,8 @@ Continue with the remaining high-risk pieces:
   `react-engine/engine-forced-tool-round-runner.ts`; engine final generated
   response assembly delegates to
   `react-engine/engine-final-response.ts`; engine ReAct event consumption
-  delegates to `react-engine/engine-agent-runner.ts`; keep thinning the adapter. The only
+  delegates to `react-engine/engine-agent-runner.ts`; engine role toolkit
+  wiring delegates to `react-engine/engine-role-toolkit.ts`; keep thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
 
