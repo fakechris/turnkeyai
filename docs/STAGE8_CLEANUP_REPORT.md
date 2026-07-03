@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `0346647db545c394c2eeeaa5dbe4040027961e67`
+**Code HEAD before this docs-only report:** `e84b1103674df1bbec3f20643c76f31777537f94`
 **Date:** 2026-07-03
 
 ## Summary
@@ -274,6 +274,10 @@ could not move the normalizer without making the inline parity reference import 
   binds max-round and reason-line handoff for terminal final synthesis and
   builds the completed tool-call artifact cleanup callback, while the adapter
   supplies only the final-synthesis runner.
+  Approval wait-timeout fallback hook input gating and deterministic fallback
+  error construction now also live in that controller, so `onTerminate` no
+  longer branches on `tool_evidence_fallback` or assembles that fallback payload
+  inline.
   Terminal final synthesis provider-schema repair selection now also routes
   through the controller-owned repair-policy window, so the adapter no longer
   evaluates the registry directly for that final retry decision.
@@ -413,9 +417,13 @@ could not move the normalizer without making the inline parity reference import 
   sessions, and usable-evidence detection now live in neutral
   `tool-result-evidence.ts`.
 
-The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
-still an adapter-heavy bridge and still owns terminal closeout gateway calls and
-remaining adapter-side action application outside the terminal completion path.
+The Stage 8 cleanup has reached the current landing line: `runViaReActEngine` is now
+acceptable as a composition/wiring layer for the installed ReAct hooks. It still
+owns dependency construction, live state threading, feature flags, injected
+gateway/forced-round execution callbacks, and final `GeneratedRoleReply`
+assembly, but product-policy decisions for installed hooks now route through
+the owning modules. The remaining work is typed-facts / legacy-detector debt,
+not additional adapter line-count reduction.
 
 ## Commits Added After The Blocked Report
 
@@ -572,6 +580,7 @@ remaining adapter-side action application outside the terminal completion path.
 | `97e9ab5` | Move terminate closeout hook input assembly into `CloseoutPolicyRegistry`; adapter delegates state/evidence reads, tool-count accounting, round-limit budget callback wiring, and approval wait-timeout fallback payload construction. |
 | `94797c7` | Move completed terminal handoff wiring into `TerminalCloseoutController`; adapter delegates completed-session/tool-result reads and repair-marker ledger initialization. |
 | `0346647` | Move terminal synthesis callback wiring into `TerminalCloseoutController`; adapter delegates reason-line/max-round final-synthesis and completed cleanup callback adaptation. |
+| `e84b110` | Move approval wait-timeout fallback hook input gating and deterministic fallback error construction into `TerminalCloseoutController`; adapter delegates the optional hook payload. |
 
 ## Current Extracted Implementation
 
@@ -875,20 +884,22 @@ Real implementation now exists in:
 
 Still shell/deferred or partial:
 
-- `evidence-ledger.ts` producer rewrite beyond the current facade
-- typed task facts beyond the current requested table/provider schema extraction
-- `legacy-text-detectors.ts`
+- `evidence-ledger.ts` producer rewrite beyond the current facade.
+- Typed task facts beyond the current requested table/provider schema extraction.
+- Legacy detector consolidation: `legacy-text-detectors.ts` and the remaining
+  regex-heavy detector helpers are intentionally documented debt, not silently
+  rewritten in this landing slice.
 
 ## Latest Gates
 
-Fresh gates run for this terminal synthesis callback wiring slice:
+Fresh gates run for this approval fallback hook landing slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 40 / 40 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 37 / 37 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 273 / 273 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 41 / 41 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 38 / 38 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 275 / 275 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -898,12 +909,17 @@ Fresh gates run for this terminal synthesis callback wiring slice:
 Note: this latest parity run reported 272 inline test points and discovered 272
 engine test points. Engine chunks completed without individual recovery.
 
-## Is The Adapter Thin?
+## Why The Adapter Is Now Acceptable
 
-No. `runViaReActEngine` still begins at
-`packages/role-runtime/src/llm-response-generator.ts:2478` and remains the composition
-root plus several policy-heavy hook bodies. The main improvement is that more than sixty
-Stage 8 boundaries/slices are now real:
+For this landing line, yes. `runViaReActEngine` still begins at
+`packages/role-runtime/src/llm-response-generator.ts:2478` and remains the
+composition root, but the remaining installed-hook bodies are owner calls plus
+dependency injection. The adapter still owns appropriate composition work:
+module construction, dependency wiring, live state threading, feature flags,
+gateway execution callbacks, forced tool-round execution callbacks, and final
+reply assembly. It no longer keeps product-policy decision bodies for installed
+hooks that reasonably belong to the existing owner modules. The concrete owner
+boundaries now include:
 
 - `onToolCalls` delegates to `applyEngineToolCallsHook`; `ToolCallNormalizer`
   now owns live continuation context/directive lookup, browser/explore
@@ -1357,53 +1373,19 @@ Stage 8 boundaries/slices are now real:
 
 ## Remaining Work
 
-Continue with the remaining high-risk pieces:
+This PR should not chase more adapter thinning for its own sake. The remaining
+items are longer-term typed-facts / detector ownership work:
 
-- continue expanding the evidence ledger beyond the current source/completed
-  evidence, current-round result snapshot,
-  approval-timeout-runtime evidence, tool-trace-result-content, and
-  usable-evidence snapshot facts; continue thinning terminal closeout gateway
-  callback wiring beyond the current deterministic/generic/model-error fallback
-  application, synthesis-context selection, synthesis invocation,
-  synthesis-effect application, final response shaping, closeout write-mode
-  selection, explicit state-effect application, sticky completed closeout
-  pre-recording, completed initial-synthesis handoff, completed-closeout
-  callback/gateway-input/state handoffs, terminal synthesis callback wiring,
-  terminal path selection, final/re-arm
-  application, terminal entrypoint,
-  terminal hook fallback entry,
-  terminate decision/input assembly,
-  completed terminal handoff assembly, and the model-error hook entrypoint; the
-  next terminal slice is likely remaining repair gateway callback wiring or
-  broader terminal hook composition beyond the current handoff builders.
-  Forced runtime tool-round orchestration
-  now delegates to `tool-use.ts`, runtime progress recorder/observer emission
-  delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
-  to `tool-history-pruning.ts`; request-envelope retry orchestration now
-  delegates to `gateway-envelope-retry.ts`; terminal final-synthesis gateway
-  wrapper and runner wiring delegate to `terminal-final-synthesis.ts`; engine
-  model-client wrapper and role-runtime wiring behavior delegate to
-  `react-engine/engine-model-client.ts`; engine forced runtime tool-round
-  runner wiring delegates to
-  `react-engine/engine-forced-tool-round-runner.ts`; engine final generated
-  response assembly and reduction boundary wiring delegate to
-  `react-engine/engine-final-response.ts`; engine ReAct agent creation and event
-  consumption delegate to `react-engine/engine-agent-runner.ts`; engine role toolkit
-  wiring delegates to `react-engine/engine-role-toolkit.ts`; role-engine
-  run-state typing delegates to `react-engine/engine-run-state.ts`; engine run
-  observer dependency wiring delegates to
-  `react-engine/engine-run-observer.ts`; engine `onToolCalls` hook flow
-  delegates to `react-engine/tool-call-normalizer.ts`; engine
-  `onBeforeExecute` / `runToolBatch` hook wiring delegates to
-  `react-engine/execution-budget-controller.ts`; engine pending-call closeout
-  hook wiring delegates to `react-engine/closeout-policy-registry.ts`; engine
-  suppress, post-execute, and round-empty hook entrypoints delegate to
-  `react-engine/permission-policy.ts`,
-  `react-engine/closeout-policy-registry.ts`, and
-  `react-engine/continuation-controller.ts`; engine natural-finish repair hook
-  wiring delegates to `react-engine/repair-policy-registry.ts`; keep
-  thinning the adapter. The only
-  remaining adapter-private method at this
-  checkpoint is `runViaReActEngine`.
+- Expand `EvidenceLedger` beyond the current facade if future work needs
+  producer-owned structured evidence, instead of adding new adapter-local
+  evidence reads.
+- Continue typed task-facts extraction beyond the current requested
+  table/provider-schema facts only when a concrete policy needs it.
+- Consolidate `legacy-text-detectors.ts` and the remaining regex-heavy shared
+  detector helpers behind typed fact producers. This landing intentionally
+  documents that debt instead of doing broad regex rewrites.
+- Keep gateway execution callbacks, forced-round executor callbacks, feature
+  flags, dependency injection, and final reply assembly in `runViaReActEngine`
+  unless a future change identifies a concrete owner-bound policy decision.
 
 The branch is **not pushed**.
