@@ -244,6 +244,7 @@ import {
   createCloseoutPolicyRegistry,
   createCompletedCloseoutController,
   createContinuationController,
+  createEngineFinalResponseBuilder,
   createEngineModelClient,
   createEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
@@ -259,7 +260,6 @@ import {
   type DefaultEngineRunStateValues,
   type EngineRunObserver,
   buildToolCallNormalizationContext,
-  finalizeEngineAnswer,
   normalizeEngineToolCalls,
   traceEngineHooks,
   type EngineCloseoutReason,
@@ -2613,6 +2613,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       taskPrompt: packet.taskPrompt,
       toolTrace,
     });
+    const buildEngineFinalResponse = createEngineFinalResponseBuilder({
+      taskPrompt: packet.taskPrompt,
+      initialMessages: initialGatewayInput.messages,
+      readToolTraceResultContent: (messages) =>
+        runEvidence.snapshot(messages).toolTraceResultContent,
+      policyTrace,
+      enginePolicyTraceDebugEnabled,
+    });
     const observer = createEngineRunObserver(toolTrace, {
       now: () => this.clock.now(),
       recordToolProgress: (call, progress) =>
@@ -3306,95 +3314,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
     }
 
-    // Stage 8C (Batch C — T10 finalization plane): mirror the inline generate()
-    // finalization epilogue (:2407-2433), which runs UNCONDITIONALLY at the end of
-    // the loop — for every closeout AND the plain natural-finish result — in this
-    // exact order, AFTER the per-reason onTerminate appenders/redaction:
-    //   1. recovered-timeout-closeout visibility   (inline :2407-2415)
-    //   2. required-timeout-followup visibility     (inline :2417-2422)
-    //   3. browser-recovery residual-risk visibility (inline :2423-2428)
-    //   4. browser-failure-bucket visibility (FULL-trace evidence) (inline :2429-2433)
-    // These are idempotent guarded appenders (no repair marker, append-at-most-once),
-    // so re-running #1/#4 after the completed-cascade pass is a no-op when they already
-    // fired. #2 (required-timeout-followup) and #3 (residual-risk) run ONLY here in
-    // inline (they never appear in the completed cascade), so this is where a resumed-
-    // timeout completion whose model final omitted the continuation-guidance / unverified-
-    // scope / residual-risk lines gets them deterministically appended. `finalMessages`
-    // was stashed by onTerminate/onModelCallError; fall back to the initial gateway
-    // messages if no closeout ran (the plain natural-finish result path).
-    const epilogueMessages = [
-      ...(runState.finalMessages() ?? initialGatewayInput.messages),
-    ];
-    const closeoutResult = runState.closeoutResult();
-    let finalResult: GenerateTextResult = {
-      ...(closeoutResult ?? engineModel.lastResult() ?? {}),
-      text: finalText,
-    } as GenerateTextResult;
-    finalResult = finalizeEngineAnswer({
-      result: finalResult,
-      taskPrompt: packet.taskPrompt,
-      messages: epilogueMessages,
+    return buildEngineFinalResponse({
+      finalText,
+      closeoutResult: runState.closeoutResult(),
+      lastModelResult: engineModel.lastResult(),
+      finalMessages: runState.finalMessages(),
       toolTrace,
-      evidenceText:
-        runEvidence.snapshot(epilogueMessages).toolTraceResultContent,
+      modelCallTrace,
+      reduction: runState.reduction(),
+      memoryFlushes: runState.memoryFlushes(),
+      toolLoopCloseout: runState.toolLoopCloseout(),
     });
-    finalText = finalResult.text;
-
-    const content = enforceRequestedThreeLineLabelShape({
-      taskPrompt: packet.taskPrompt,
-      resultText: finalText,
-    });
-    // On a closeout, metadata reflects the closeout-synthesis result (matching
-    // inline), falling back to the last tool-round result otherwise.
-    const metaResult = closeoutResult ?? engineModel.lastResult();
-    const toolLoopCloseout = runState.toolLoopCloseout();
-    const missionReport = buildRuntimeDerivedMissionReport(toolLoopCloseout);
-    const reduction = runState.reduction();
-    const memoryFlushes = runState.memoryFlushes();
-    return {
-      content,
-      mentions: extractMentions(content),
-      metadata: {
-        ...(metaResult
-          ? {
-              adapterName: metaResult.adapterName,
-              providerId: metaResult.providerId,
-              modelId: metaResult.modelId,
-              ...(metaResult.modelChainId ? { modelChainId: metaResult.modelChainId } : {}),
-              protocol: metaResult.protocol,
-              stopReason: metaResult.stopReason,
-            }
-          : {}),
-        ...(toolTrace.length
-          ? {
-              toolUse: {
-                rounds: toolTrace,
-                toolCallCount: toolTrace.reduce((sum, round) => sum + round.calls.length, 0),
-              },
-            }
-          : {}),
-        // Observability bridge (inline :2478): summarize the per-round model-call
-        // boundary trace generateWithEnvelopeRetry recorded into metadata.modelUse.
-        ...(modelCallTrace.length
-          ? { modelUse: summarizeModelUseTrace(modelCallTrace) }
-          : {}),
-        ...(reduction ? { requestEnvelopeReduction: reduction } : {}),
-        ...(memoryFlushes.length
-          ? { preCompactionMemoryFlushes: memoryFlushes }
-          : {}),
-        ...(toolLoopCloseout ? { toolLoopCloseout } : {}),
-        ...(missionReport ? { missionReport } : {}),
-        reactEngine: true,
-        // Stage 8 cleanup (Batch 0.5): surface the per-hook policy-decision
-        // sequence into debug metadata ONLY when the engine-policy-trace debug flag
-        // is set, so ordinary engine runs (including the parity suite, which asserts
-        // metadata shape) are byte-identical. The characterization runner sets this
-        // flag to capture the golden decision sequence.
-        ...(enginePolicyTraceDebugEnabled()
-          ? { enginePolicyTrace: policyTrace.snapshot() }
-          : {}),
-      },
-    };
   }
 
 }
