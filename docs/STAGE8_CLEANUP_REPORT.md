@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `7baee8b7ba86842e6fdb98a139df7bc6a0b98f25`
+**Code HEAD before this docs-only report:** `f36fb674ba99471f912262abc9cb584badb0eec5`
 **Date:** 2026-07-02
 
 ## Summary
@@ -311,6 +311,8 @@ could not move the normalizer without making the inline parity reference import 
   Prompt assembly compaction boundary recording now lives in `prompt-policy.ts`,
   so the adapter no longer owns `prompt_compaction` runtime progress metadata
   construction.
+  Runtime tool-progress safe recording now lives in `tool-use.ts`; the adapter
+  passes the selected recorder and defer mode instead of owning that wrapper.
   Runtime-derived mission terminal reports now live in
   `runtime-derived-mission-report.ts`, and the supplemental browser-probe
   capability check now lives in neutral `tool-loop-shared.ts`.
@@ -456,6 +458,7 @@ outside the terminal completion path.
 | `4073d09` | Move request-envelope reduction boundary recording into `request-envelope-reducer.ts`; adapter passes activation/packet/selection/recorder instead of owning runtime progress metadata construction. |
 | `1655a09` | Move prompt assembly compaction boundary recording into `prompt-policy.ts`; adapter passes activation/packet/selection/recorder instead of owning runtime progress metadata construction. |
 | `7baee8b` | Move provider tool protocol boundary recording into `tool-history-pruning.ts`; inline and engine pass recorder/clock/defer inputs instead of owning runtime progress metadata construction in the adapter. |
+| `f36fb67` | Move runtime tool-progress safe recording into `tool-use.ts`; adapter passes recorder/defer inputs instead of owning the safe recorder wrapper. |
 
 ## Current Extracted Implementation
 
@@ -658,6 +661,8 @@ Real implementation now exists in:
   sub-agent timeout signal extraction, session-history evidence extraction,
   required-timeout continuation allowance, resumable partial-session detection,
   tool-result/tool-trace text collection, and usable-evidence checks.
+- `tool-use.ts` for worker session tool execution and runtime tool-progress event
+  recording, including the safe recorder wrapper used by inline and engine paths.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
@@ -703,11 +708,12 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/prompt-policy.test.ts` | 31 / 31 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 8 / 8 |
+| `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 98 / 98 |
 | `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 12 / 12 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 215 / 215 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 218 / 218 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -859,6 +865,9 @@ Stage 8 boundaries/slices are now real:
   `tool-history-pruning.ts`; the adapter passes activation, recorder, clock, defer
   mode, messages, calls, and results instead of owning the
   `provider_tool_protocol_round` progress metadata shape.
+- runtime tool-progress safe recording now routes through `tool-use.ts`; the
+  adapter passes recorder/defer inputs instead of keeping an adapter-private
+  safe recorder wrapper.
 - tool-definition filtering for permission tools, task-tracking tools, and
   focused durable-memory recall now lives in neutral
   `tool-definition-filter.ts`; the adapter calls the module instead of owning
