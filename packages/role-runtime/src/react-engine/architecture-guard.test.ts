@@ -62,12 +62,12 @@ test("architecture guard actually scans real react-engine files", () => {
 });
 
 test("forced engine tool rounds do not record provider protocol rounds directly", () => {
-  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async executeRuntimeForcedToolRound");
-  const end =
-    source.indexOf("\n  private async emitToolProgressSafely", start) >= 0
-      ? source.indexOf("\n  private async emitToolProgressSafely", start)
-      : source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  const source = readFileSync(TOOL_USE, "utf8");
+  const start = source.indexOf("export async function executeRuntimeForcedToolRound");
+  const end = source.indexOf(
+    "\nexport function createWorkerSessionToolExecutor",
+    start,
+  );
   assert.notEqual(start, -1, "executeRuntimeForcedToolRound must exist");
   assert.notEqual(end, -1, "executeRuntimeForcedToolRound boundary must be found");
   const helperSource = source.slice(start, end);
@@ -80,12 +80,12 @@ test("forced engine tool rounds do not record provider protocol rounds directly"
 });
 
 test("forced engine tool rounds delegate observer-owned trace persistence when available", () => {
-  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async executeRuntimeForcedToolRound");
-  const end =
-    source.indexOf("\n  private async emitToolProgressSafely", start) >= 0
-      ? source.indexOf("\n  private async emitToolProgressSafely", start)
-      : source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  const source = readFileSync(TOOL_USE, "utf8");
+  const start = source.indexOf("export async function executeRuntimeForcedToolRound");
+  const end = source.indexOf(
+    "\nexport function createWorkerSessionToolExecutor",
+    start,
+  );
   assert.notEqual(start, -1, "executeRuntimeForcedToolRound must exist");
   assert.notEqual(end, -1, "executeRuntimeForcedToolRound boundary must be found");
   const helperSource = source.slice(start, end);
@@ -120,7 +120,9 @@ test("terminal final synthesis provider-schema repair request routes through ter
   const end =
     source.indexOf("\n  private async executeToolCalls", start) >= 0
       ? source.indexOf("\n  private async executeToolCalls", start)
-      : source.indexOf("\n  private async executeRuntimeForcedToolRound", start);
+      : source.indexOf("\n  private async executeRuntimeForcedToolRound", start) >= 0
+        ? source.indexOf("\n  private async executeRuntimeForcedToolRound", start)
+        : source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
   assert.notEqual(start, -1, "generateFinalAfterToolRoundLimit must exist");
   assert.notEqual(
     end,
@@ -466,5 +468,20 @@ test("role tool-call execution routes through tool-use owner", () => {
     source.includes("executeRoleToolCalls({"),
     true,
     "adapter should call the neutral role tool-call executor",
+  );
+});
+
+test("forced runtime tool-round orchestration routes through tool-use owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async executeRuntimeForcedToolRound"),
+    false,
+    "forced runtime tool-round orchestration must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes("executeRuntimeForcedToolRound({"),
+    true,
+    "adapter should call the neutral forced runtime tool-round runner",
   );
 });

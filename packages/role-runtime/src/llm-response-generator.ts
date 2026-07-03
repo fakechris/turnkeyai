@@ -72,6 +72,7 @@ import {
   appendToolResultMessages,
   DEFAULT_ROLE_TOOL_MAX_ROUNDS,
   executeRoleToolCalls,
+  executeRuntimeForcedToolRound,
   recordRoleToolProgressSafely,
   type RoleToolContext,
   type RoleToolExecutionResult,
@@ -489,7 +490,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               })
             : null;
         if (forcedPermissionResultCall) {
-          const forcedRound = await this.executeRuntimeForcedToolRound({
+          const forcedRound = await executeRuntimeForcedToolRound({
+            toolLoop: this.toolLoop,
+            runtimeProgressRecorder: this.runtimeProgressRecorder,
+            deferToolObservability: this.deferToolObservability,
+            now: () => this.clock.now(),
             activation: input.activation,
             packet: input.packet,
             messages,
@@ -499,6 +504,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolLoopStartedAtMs,
             ...(input.signal ? { signal: input.signal } : {}),
             assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
+            persistNativeToolTrace: (options) =>
+              persistNativeToolTraceSafely({
+                activation: input.activation,
+                toolTrace,
+                nativeToolMessageStore: this.nativeToolMessageStore,
+                now: () => this.clock.now(),
+                defer: this.deferToolObservability,
+                ...(options?.forceBlocking === undefined
+                  ? {}
+                  : { forceBlocking: options.forceBlocking }),
+              }),
+            recordProviderToolProtocolRound: (roundInput) =>
+              recordRuntimeForcedToolRoundProviderProtocolSafely({
+                activation: input.activation,
+                runtimeProgressRecorder:
+                  this.toolLoop?.runtimeProgressRecorder ??
+                  this.runtimeProgressRecorder,
+                now: () => this.clock.now(),
+                defer: this.deferToolObservability,
+                ...roundInput,
+              }),
           });
           messages = forcedRound.messages;
           continue;
@@ -1831,9 +1857,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ...(initialGatewayInput.tools === undefined
               ? {}
               : { tools: initialGatewayInput.tools }),
-          });
+        });
         if (forcedPermissionResultCall) {
-          const forcedRound = await this.executeRuntimeForcedToolRound({
+          const forcedRound = await executeRuntimeForcedToolRound({
+            toolLoop: this.toolLoop,
+            runtimeProgressRecorder: this.runtimeProgressRecorder,
+            deferToolObservability: this.deferToolObservability,
+            now: () => this.clock.now(),
             activation: input.activation,
             packet: input.packet,
             messages,
@@ -1843,6 +1873,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolLoopStartedAtMs,
             ...(input.signal ? { signal: input.signal } : {}),
             assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
+            persistNativeToolTrace: (options) =>
+              persistNativeToolTraceSafely({
+                activation: input.activation,
+                toolTrace,
+                nativeToolMessageStore: this.nativeToolMessageStore,
+                now: () => this.clock.now(),
+                defer: this.deferToolObservability,
+                ...(options?.forceBlocking === undefined
+                  ? {}
+                  : { forceBlocking: options.forceBlocking }),
+              }),
+            recordProviderToolProtocolRound: (roundInput) =>
+              recordRuntimeForcedToolRoundProviderProtocolSafely({
+                activation: input.activation,
+                runtimeProgressRecorder:
+                  this.toolLoop?.runtimeProgressRecorder ??
+                  this.runtimeProgressRecorder,
+                now: () => this.clock.now(),
+                defer: this.deferToolObservability,
+                ...roundInput,
+              }),
           });
           messages = forcedRound.messages;
           continue;
@@ -2972,7 +3023,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               evidence: evidenceLedger,
             },
             async (forcedRoundAction) => {
-              const forcedRound = await this.executeRuntimeForcedToolRound({
+              const forcedRound = await executeRuntimeForcedToolRound({
+                toolLoop: this.toolLoop,
+                runtimeProgressRecorder: this.runtimeProgressRecorder,
+                deferToolObservability: this.deferToolObservability,
+                now: () => this.clock.now(),
                 activation,
                 packet,
                 messages: state.messages,
@@ -2983,6 +3038,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 toolLoopStartedAtMs,
                 ...(signal ? { signal } : {}),
                 assistantText: forcedRoundAction.assistantText,
+                persistNativeToolTrace: (options) =>
+                  persistNativeToolTraceSafely({
+                    activation,
+                    toolTrace,
+                    nativeToolMessageStore: this.nativeToolMessageStore,
+                    now: () => this.clock.now(),
+                    defer: this.deferToolObservability,
+                    ...(options?.forceBlocking === undefined
+                      ? {}
+                      : { forceBlocking: options.forceBlocking }),
+                  }),
+                recordProviderToolProtocolRound: (roundInput) =>
+                  recordRuntimeForcedToolRoundProviderProtocolSafely({
+                    activation,
+                    runtimeProgressRecorder:
+                      this.toolLoop?.runtimeProgressRecorder ??
+                      this.runtimeProgressRecorder,
+                    now: () => this.clock.now(),
+                    defer: this.deferToolObservability,
+                    ...roundInput,
+                  }),
               });
               return { messages: forcedRound.messages };
             },
@@ -3283,7 +3359,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
             runState,
             async (modelErrorResult) => {
-              return this.executeRuntimeForcedToolRound({
+              return executeRuntimeForcedToolRound({
+                toolLoop: this.toolLoop,
+                runtimeProgressRecorder: this.runtimeProgressRecorder,
+                deferToolObservability: this.deferToolObservability,
+                now: () => this.clock.now(),
                 activation,
                 packet,
                 messages: state.messages,
@@ -3294,6 +3374,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 toolLoopStartedAtMs,
                 ...(signal ? { signal } : {}),
                 assistantText: modelErrorResult.assistantText,
+                persistNativeToolTrace: (options) =>
+                  persistNativeToolTraceSafely({
+                    activation,
+                    toolTrace,
+                    nativeToolMessageStore: this.nativeToolMessageStore,
+                    now: () => this.clock.now(),
+                    defer: this.deferToolObservability,
+                    ...(options?.forceBlocking === undefined
+                      ? {}
+                      : { forceBlocking: options.forceBlocking }),
+                  }),
+                recordProviderToolProtocolRound: (roundInput) =>
+                  recordRuntimeForcedToolRoundProviderProtocolSafely({
+                    activation,
+                    runtimeProgressRecorder:
+                      this.toolLoop?.runtimeProgressRecorder ??
+                      this.runtimeProgressRecorder,
+                    now: () => this.clock.now(),
+                    defer: this.deferToolObservability,
+                    ...roundInput,
+                  }),
               });
             },
           );
@@ -3598,105 +3699,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           tracePhase,
         }),
     });
-  }
-
-  private async executeRuntimeForcedToolRound(input: {
-    activation: RoleActivationInput;
-    packet: RolePromptPacket;
-    messages: LLMMessage[];
-    toolTrace: NativeToolRoundTrace[];
-    observer?: EngineRunObserver;
-    toolCalls: LLMToolCall[];
-    round: number;
-    toolLoopStartedAtMs: number;
-    signal?: AbortSignal;
-    assistantText: string;
-  }): Promise<{ messages: LLMMessage[]; toolResults: RoleToolExecutionResult[] }> {
-    if (input.observer) {
-      return input.observer.observeRuntimeForcedToolRound({
-        round: input.round,
-        messages: input.messages,
-        assistantText: input.assistantText,
-        toolCalls: input.toolCalls,
-        executeToolCalls: ({ onProgress, onResult }) =>
-          executeRoleToolCalls({
-            toolLoop: this.toolLoop,
-            runtimeProgressRecorder: this.runtimeProgressRecorder,
-            deferToolObservability: this.deferToolObservability,
-            now: () => this.clock.now(),
-            activation: input.activation,
-            packet: input.packet,
-            toolCalls: input.toolCalls,
-            toolLoopStartedAtMs: input.toolLoopStartedAtMs,
-            ...(input.signal ? { signal: input.signal } : {}),
-            onProgress,
-            onResult,
-          }),
-      });
-    }
-
-    const roundTrace: NativeToolRoundTrace = {
-      round: input.round,
-      calls: input.toolCalls.map((call) => ({
-        id: call.id,
-        name: call.name,
-        input: call.input,
-      })),
-      results: [],
-      progress: [],
-    };
-    input.toolTrace.push(roundTrace);
-    const toolResults = await executeRoleToolCalls({
-      toolLoop: this.toolLoop,
-      runtimeProgressRecorder: this.runtimeProgressRecorder,
-      deferToolObservability: this.deferToolObservability,
-      now: () => this.clock.now(),
-      activation: input.activation,
-      packet: input.packet,
-      toolCalls: input.toolCalls,
-      toolLoopStartedAtMs: input.toolLoopStartedAtMs,
-      ...(input.signal ? { signal: input.signal } : {}),
-      onProgress: async (call, progress) => {
-        roundTrace.progress?.push(
-          toNativeToolProgressTrace(call, progress, this.clock.now()),
-        );
-        await persistNativeToolTraceSafely({
-          activation: input.activation,
-          toolTrace: input.toolTrace,
-          nativeToolMessageStore: this.nativeToolMessageStore,
-          now: () => this.clock.now(),
-          defer: this.deferToolObservability,
-          forceBlocking: progress.phase === "started",
-        });
-      },
-      onResult: async (toolResult) => {
-        roundTrace.results.push(toNativeToolResultTrace(toolResult));
-        await persistNativeToolTraceSafely({
-          activation: input.activation,
-          toolTrace: input.toolTrace,
-          nativeToolMessageStore: this.nativeToolMessageStore,
-          now: () => this.clock.now(),
-          defer: this.deferToolObservability,
-        });
-      },
-    });
-    let messages = appendAssistantToolCallMessage(input.messages, {
-      text: input.assistantText,
-      toolCalls: input.toolCalls,
-    });
-    messages = appendToolResultMessages(messages, toolResults);
-    await recordRuntimeForcedToolRoundProviderProtocolSafely({
-      activation: input.activation,
-      runtimeProgressRecorder:
-        this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
-      now: () => this.clock.now(),
-      defer: this.deferToolObservability,
-      round: input.round,
-      toolCalls: input.toolCalls,
-      toolResults,
-      messages,
-    });
-    return { messages, toolResults };
   }
 
 }

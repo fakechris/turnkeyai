@@ -10,6 +10,7 @@ import type {
 } from "@turnkeyai/core-types/team";
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
+import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { TaskToolService } from "./task-tool-service";
 import type { RolePromptPacket } from "./prompt-policy";
 import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
@@ -17,6 +18,7 @@ import type { ToolPermissionService } from "./tool-permission-service";
 import {
   createWorkerSessionToolExecutor,
   executeRoleToolCalls,
+  executeRuntimeForcedToolRound,
   emitRoleToolProgressSafely,
   recordRoleToolProgressSafely,
   type RoleToolProgressEvent,
@@ -254,6 +256,66 @@ test("executeRoleToolCalls emits skipped results for calls over the per-round ca
       "Skipped web_fetch: per-turn tool call limit exceeded.",
     ],
   );
+});
+
+test("executeRuntimeForcedToolRound records native trace, appends messages, and records provider protocol", async () => {
+  const toolTrace: NativeToolRoundTrace[] = [];
+  const persistCalls: Array<{ forceBlocking?: boolean | undefined }> = [];
+  const providerRounds: Array<{ round: number; messagesLength: number }> = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: {},
+  };
+
+  const result = await executeRuntimeForcedToolRound({
+    toolLoop: {
+      executor: {
+        definitions: () => [],
+        async execute() {
+          return {
+            toolCallId: "call-1",
+            toolName: "sessions_spawn",
+            content: "done",
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    deferToolObservability: false,
+    now: () => 1234,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    messages: [{ role: "user", content: "run it" }],
+    toolTrace,
+    toolCalls: [call],
+    round: 4,
+    toolLoopStartedAtMs: 1200,
+    assistantText: "I'll run it.",
+    persistNativeToolTrace: async (options) => {
+      persistCalls.push(options ?? {});
+    },
+    recordProviderToolProtocolRound: async (input) => {
+      providerRounds.push({
+        round: input.round,
+        messagesLength: input.messages.length,
+      });
+    },
+  });
+
+  assert.equal(result.toolResults.length, 1);
+  assert.equal(result.messages.at(-2)?.role, "assistant");
+  assert.equal(result.messages.at(-1)?.role, "tool");
+  assert.equal(toolTrace.length, 1);
+  assert.equal(toolTrace[0]?.round, 4);
+  assert.equal(toolTrace[0]?.progress?.[0]?.phase, "started");
+  assert.equal(toolTrace[0]?.results[0]?.toolCallId, "call-1");
+  assert.deepEqual(persistCalls, [
+    { forceBlocking: true },
+    { forceBlocking: false },
+    {},
+  ]);
+  assert.deepEqual(providerRounds, [{ round: 4, messagesLength: 3 }]);
 });
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {
