@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `1655a090339c70adc1aab6b5ef322d1586da04a3`
+**Code HEAD before this docs-only report:** `7baee8b7ba86842e6fdb98a139df7bc6a0b98f25`
 **Date:** 2026-07-02
 
 ## Summary
@@ -278,6 +278,9 @@ could not move the normalizer without making the inline parity reference import 
   compaction, and pruning trace snapshots now live in neutral
   `tool-history-pruning.ts`, including the runtime boundary recorder that emits
   pruning metadata for inline, engine, and final-synthesis gateway calls.
+  Provider tool protocol boundary recording now also lives there, so inline and
+  engine use the same neutral `provider_tool_protocol_round` runtime progress
+  metadata construction.
   Tool-definition filtering for permission tools, task-tracking tools, and
   focused durable-memory recall now lives in neutral `tool-definition-filter.ts`.
   Model-call boundary trace construction and model-use summary aggregation now
@@ -452,6 +455,7 @@ outside the terminal completion path.
 | `f532943` | Centralize request-envelope reduced retry gateway input construction in `gateway-input-builder`; adapter no longer hand-builds reduced prompt replacement or retry envelope recomputation. |
 | `4073d09` | Move request-envelope reduction boundary recording into `request-envelope-reducer.ts`; adapter passes activation/packet/selection/recorder instead of owning runtime progress metadata construction. |
 | `1655a09` | Move prompt assembly compaction boundary recording into `prompt-policy.ts`; adapter passes activation/packet/selection/recorder instead of owning runtime progress metadata construction. |
+| `7baee8b` | Move provider tool protocol boundary recording into `tool-history-pruning.ts`; inline and engine pass recorder/clock/defer inputs instead of owning runtime progress metadata construction in the adapter. |
 
 ## Current Extracted Implementation
 
@@ -620,7 +624,7 @@ Real implementation now exists in:
 - `tool-history-pruning.ts` for request-envelope tool-result pruning, older
   tool-history compaction, tool-result envelope accounting, pruning trace
   snapshots, assistant/tool block indexing helpers, and runtime pruning boundary
-  progress recording.
+  progress recording, plus provider tool protocol boundary progress recording.
 - `tool-definition-filter.ts` for permission-tool suppression, source-check
   task-tracking suppression, focused durable-memory recall narrowing, and
   tool-definition filter prompt/message context construction.
@@ -698,9 +702,9 @@ All gates below passed on the current code before the report update:
 | `npm run typecheck` | exit 0 |
 | `npx tsx --test packages/role-runtime/src/prompt-policy.test.ts` | 31 / 31 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
-| `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 6 / 6 |
+| `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 8 / 8 |
 | `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 11 / 11 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 12 / 12 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 215 / 215 |
@@ -851,6 +855,10 @@ Stage 8 boundaries/slices are now real:
   calls the module instead of owning that pruning closure. Tool-result pruning
   runtime boundary recording now also lives there, so the adapter no longer owns
   the `tool_result_pruning` progress metadata shape.
+- provider tool protocol boundary recording now also routes through
+  `tool-history-pruning.ts`; the adapter passes activation, recorder, clock, defer
+  mode, messages, calls, and results instead of owning the
+  `provider_tool_protocol_round` progress metadata shape.
 - tool-definition filtering for permission tools, task-tracking tools, and
   focused durable-memory recall now lives in neutral
   `tool-definition-filter.ts`; the adapter calls the module instead of owning
