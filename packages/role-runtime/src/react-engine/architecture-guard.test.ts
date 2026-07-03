@@ -18,6 +18,7 @@ const LLM_RESPONSE_GENERATOR = path.join(
   ROLE_RUNTIME_DIR,
   "llm-response-generator.ts",
 );
+const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
 
 /** Forbidden import specifiers: the composition root and any known re-exporter. */
 const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
@@ -116,7 +117,10 @@ test("terminal final synthesis provider-schema repair request routes through ter
   const start = source.indexOf(
     "private async generateFinalAfterToolRoundLimit",
   );
-  const end = source.indexOf("\n  private async executeToolCalls", start);
+  const end =
+    source.indexOf("\n  private async executeToolCalls", start) >= 0
+      ? source.indexOf("\n  private async executeToolCalls", start)
+      : source.indexOf("\n  private async executeRuntimeForcedToolRound", start);
   assert.notEqual(start, -1, "generateFinalAfterToolRoundLimit must exist");
   assert.notEqual(
     end,
@@ -431,6 +435,7 @@ test("native tool trace persistence routes through native message owner", () => 
 
 test("runtime tool progress emission routes through tool-use owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const toolUseSource = readFileSync(TOOL_USE, "utf8");
 
   assert.equal(
     source.includes("private async emitToolProgressSafely"),
@@ -438,8 +443,28 @@ test("runtime tool progress emission routes through tool-use owner", () => {
     "runtime tool progress emission must not stay as an adapter-private method",
   );
   assert.equal(
-    source.includes("emitRoleToolProgressSafely({"),
+    source.includes("executeRoleToolCalls({"),
     true,
-    "adapter should call the neutral safe runtime tool progress emitter",
+    "adapter should call the neutral role tool-call executor",
+  );
+  assert.equal(
+    toolUseSource.includes("emitRoleToolProgressSafely({"),
+    true,
+    "role tool-call executor should own safe runtime progress emission",
+  );
+});
+
+test("role tool-call execution routes through tool-use owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async executeToolCalls"),
+    false,
+    "role tool-call execution must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes("executeRoleToolCalls({"),
+    true,
+    "adapter should call the neutral role tool-call executor",
   );
 });

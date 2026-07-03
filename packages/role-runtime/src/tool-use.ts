@@ -51,6 +51,14 @@ import {
   serializeWorkerHistoryEntry,
   summarizeWorkerSessionEvidence,
 } from "./worker-session-transcript";
+import {
+  buildToolCallLimitExceededResult,
+  createToolExecutionSignal,
+  isAbortError,
+  resolveEffectiveToolLoopWallClockMs,
+  throwIfAborted,
+} from "./tool-loop-shared";
+import { shouldSerializeToolBatch } from "./react/predicates";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -241,6 +249,162 @@ export async function emitRoleToolProgressSafely(input: {
       error,
     });
   }
+}
+
+export async function executeRoleToolCalls(input: {
+  toolLoop: RoleToolLoopOptions | undefined;
+  runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
+  deferToolObservability?: boolean | undefined;
+  now: () => number;
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  toolCalls: LLMToolCall[];
+  toolLoopStartedAtMs: number;
+  signal?: AbortSignal | undefined;
+  onProgress?:
+    | ((
+        call: LLMToolCall,
+        progress: RoleToolProgressEvent,
+      ) => Promise<void>)
+    | undefined;
+  onResult?: ((result: RoleToolExecutionResult) => Promise<void>) | undefined;
+}): Promise<RoleToolExecutionResult[]> {
+  const activeToolLoop =
+    input.packet.toolUseMode === "disabled" ? undefined : input.toolLoop;
+  if (!activeToolLoop) return [];
+  const maxParallelToolCalls =
+    typeof activeToolLoop.maxParallelToolCalls === "number" &&
+    Number.isFinite(activeToolLoop.maxParallelToolCalls) &&
+    activeToolLoop.maxParallelToolCalls > 0
+      ? Math.floor(activeToolLoop.maxParallelToolCalls)
+      : input.toolCalls.length;
+  const maxToolCallsPerRound =
+    typeof activeToolLoop.maxToolCallsPerRound === "number" &&
+    Number.isFinite(activeToolLoop.maxToolCallsPerRound) &&
+    activeToolLoop.maxToolCallsPerRound > 0
+      ? Math.floor(activeToolLoop.maxToolCallsPerRound)
+      : input.toolCalls.length;
+  const results: RoleToolExecutionResult[] = [];
+  const executableCalls = input.toolCalls.slice(0, maxToolCallsPerRound);
+  const rejectedCalls = input.toolCalls.slice(maxToolCallsPerRound);
+  const effectiveMaxParallelToolCalls = shouldSerializeToolBatch(
+    executableCalls,
+  )
+    ? 1
+    : maxParallelToolCalls;
+  const emitProgress = (
+    call: LLMToolCall,
+    progress: RoleToolProgressEvent,
+  ) =>
+    emitRoleToolProgressSafely({
+      recorder:
+        input.toolLoop?.runtimeProgressRecorder ?? input.runtimeProgressRecorder,
+      activation: input.activation,
+      call,
+      progress,
+      defer: input.deferToolObservability,
+      onProgress: input.onProgress,
+    });
+  for (
+    let index = 0;
+    index < executableCalls.length;
+    index += effectiveMaxParallelToolCalls
+  ) {
+    throwIfAborted(input.signal);
+    const chunk = executableCalls.slice(
+      index,
+      index + effectiveMaxParallelToolCalls,
+    );
+    const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+      ...(activeToolLoop.maxWallClockMs !== undefined
+        ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
+        : {}),
+      toolCalls: chunk,
+    });
+    const toolExecutionSignal = createToolExecutionSignal({
+      elapsedMs: input.now() - input.toolLoopStartedAtMs,
+      ...(input.signal ? { parentSignal: input.signal } : {}),
+      ...(maxWallClockMs ? { maxWallClockMs } : {}),
+    });
+    try {
+      const chunkResults = await Promise.all(
+        chunk.map(async (call) => {
+          throwIfAborted(input.signal);
+          await emitProgress(call, {
+            phase: "started",
+            toolName: call.name,
+            summary: `Tool call started: ${call.name}`,
+          });
+          try {
+            throwIfAborted(input.signal);
+            const result = await activeToolLoop.executor.execute({
+              call,
+              activation: input.activation,
+              packet: input.packet,
+              ...(toolExecutionSignal.signal
+                ? { signal: toolExecutionSignal.signal }
+                : {}),
+            });
+            throwIfAborted(input.signal);
+            for (const progress of result.progress ?? []) {
+              await emitProgress(call, progress);
+            }
+            await emitProgress(call, {
+              phase: result.cancelled
+                ? "cancelled"
+                : result.isError
+                  ? "failed"
+                  : "completed",
+              toolName: call.name,
+              summary: result.cancelled
+                ? `Tool call cancelled: ${call.name}`
+                : result.isError
+                  ? `Tool call failed: ${call.name}`
+                  : `Tool call completed: ${call.name}`,
+            });
+            await input.onResult?.(result);
+            return result;
+          } catch (error) {
+            if (isAbortError(error)) {
+              throw error;
+            }
+            const content =
+              error instanceof Error ? error.message : String(error);
+            await emitProgress(call, {
+              phase: "failed",
+              toolName: call.name,
+              summary: `Tool call failed: ${call.name}: ${content}`,
+            });
+            const result = {
+              toolCallId: call.id,
+              toolName: call.name,
+              content,
+              isError: true,
+            };
+            await input.onResult?.(result);
+            return result;
+          }
+        }),
+      );
+      results.push(...chunkResults);
+    } finally {
+      toolExecutionSignal.dispose();
+    }
+  }
+  for (const call of rejectedCalls) {
+    throwIfAborted(input.signal);
+    const result: RoleToolExecutionResult = buildToolCallLimitExceededResult(
+      call,
+      maxToolCallsPerRound,
+      input.toolCalls.length,
+    );
+    for (const progress of result.progress ?? []) {
+      await emitProgress(call, progress);
+    }
+    await input.onResult?.(result);
+    results.push(result);
+  }
+  return results;
 }
 
 export function createWorkerSessionToolExecutor(options: {

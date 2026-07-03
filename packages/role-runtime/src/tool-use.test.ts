@@ -16,6 +16,7 @@ import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
 import {
   createWorkerSessionToolExecutor,
+  executeRoleToolCalls,
   emitRoleToolProgressSafely,
   recordRoleToolProgressSafely,
   type RoleToolProgressEvent,
@@ -157,6 +158,102 @@ test("emitRoleToolProgressSafely swallows observer progress failures", async () 
 
   assert.equal(errors.length, 1);
   assert.equal(errors[0]?.[0], "native tool message progress persistence failed");
+});
+
+test("executeRoleToolCalls emits lifecycle progress and forwards tool results", async () => {
+  const forwarded: RoleToolProgressEvent[] = [];
+  const results: unknown[] = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: {},
+  };
+
+  const executed = await executeRoleToolCalls({
+    toolLoop: {
+      executor: {
+        definitions: () => [],
+        async execute() {
+          return {
+            toolCallId: "call-1",
+            toolName: "sessions_spawn",
+            content: "done",
+            progress: [
+              {
+                phase: "progress",
+                toolName: "sessions_spawn",
+                summary: "running",
+              },
+            ],
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    deferToolObservability: false,
+    now: () => 1000,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    toolCalls: [call],
+    toolLoopStartedAtMs: 900,
+    onProgress: async (_call, progress) => {
+      forwarded.push(progress);
+    },
+    onResult: async (result) => {
+      results.push(result);
+    },
+  });
+
+  assert.equal(executed.length, 1);
+  assert.equal(results.length, 1);
+  assert.deepEqual(
+    forwarded.map((progress) => progress.phase),
+    ["started", "progress", "completed"],
+  );
+});
+
+test("executeRoleToolCalls emits skipped results for calls over the per-round cap", async () => {
+  const forwarded: RoleToolProgressEvent[] = [];
+  const executed = await executeRoleToolCalls({
+    toolLoop: {
+      maxToolCallsPerRound: 1,
+      executor: {
+        definitions: () => [],
+        async execute(input) {
+          return {
+            toolCallId: input.call.id,
+            toolName: input.call.name,
+            content: "done",
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    deferToolObservability: false,
+    now: () => 1000,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    toolCalls: [
+      { id: "call-1", name: "sessions_spawn", input: {} },
+      { id: "call-2", name: "web_fetch", input: {} },
+    ],
+    toolLoopStartedAtMs: 900,
+    onProgress: async (_call, progress) => {
+      forwarded.push(progress);
+    },
+  });
+
+  assert.equal(executed.length, 2);
+  assert.equal(executed[1]?.skipped, true);
+  assert.equal(executed[1]?.isError, true);
+  assert.deepEqual(
+    forwarded.map((progress) => progress.summary),
+    [
+      "Tool call started: sessions_spawn",
+      "Tool call completed: sessions_spawn",
+      "Skipped web_fetch: per-turn tool call limit exceeded.",
+    ],
+  );
 });
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {
@@ -7287,6 +7384,18 @@ function buildActivation(): RoleActivationInput {
       },
       createdAt: 1,
     },
+  };
+}
+
+function buildPacket(): RolePromptPacket {
+  return {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead",
+    systemPrompt: "Lead role.",
+    taskPrompt: "Inspect history.",
+    outputContract: "Return a concise answer.",
+    suggestedMentions: [],
   };
 }
 
