@@ -235,7 +235,6 @@ import {
   buildRuntimeDerivedMissionReport,
   type ToolLoopCloseoutMetadata,
 } from "./runtime-derived-mission-report";
-import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
 // Stage 8 cleanup (Batch 0.5): engine policy-trace plumbing. The trace is a
 // behavior-neutral observability sink that records the per-hook decision sequence
 // so later batches can prove byte-identical behavior and so production-behind-flag
@@ -250,7 +249,7 @@ import {
   createEnginePolicyTrace,
   createEngineRoleToolkit,
   createRoleEngineRunState,
-  runEngineAgent,
+  createRoleEngineAgentRunner,
   enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
   createEvidenceLedger,
@@ -2621,20 +2620,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       executionBudget,
       runState,
     });
-    const agent = createReActAgent<RoleToolContext>({
+    const runAgent = createRoleEngineAgentRunner<RoleToolContext>({
       model: engineModel.model,
       toolkit,
-      // Stage 8B (Batch E — T7 execution budget plane): give the agent ONE extra
-      // round beyond the real budget so the model is still called on the round that
-      // hits the limit — inline's `for(;;)` loop makes that extra call, captures its
-      // pending calls, and closes out `round_limit` with them (see the round_limit
-      // branch in onToolCallsClose). Without the +1, agent-core's bounded loop exits
-      // one model call early and its line-368 fallback fires with no pending calls,
-      // diverging from inline (fewer gateway calls + a missing pendingToolCallCount).
-      // Every closeout, the final-round warning, and all metadata still key on the
-      // REAL `maxRounds`, so the +1 only reaches the boundary — onToolCallsClose fires
-      // round_limit at toolTrace.length >= maxRounds before the extra round executes.
-      maxRounds: maxRounds + 1,
+      maxRounds,
       // Stage 8 cleanup (Batch 0.5): wrap the hook bodies with the behavior-neutral
       // policy-trace boundary. traceEngineHooks records one EnginePolicyTraceEntry
       // per installed hook invocation (phase + coarse outcome derived from the
@@ -3207,8 +3196,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }, policyTrace),
     });
 
-    const finalText = await runEngineAgent({
-      agent,
+    const finalText = await runAgent({
       messages: initialGatewayInput.messages,
       ctx,
       ...(signal ? { signal } : {}),

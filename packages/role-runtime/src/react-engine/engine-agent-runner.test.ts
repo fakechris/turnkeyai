@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ReActEvent, ReActLoop } from "@turnkeyai/agent-core/react-loop";
+import type {
+  ModelClient,
+  ReActEvent,
+  ReActLoop,
+  ReActHooks,
+} from "@turnkeyai/agent-core/react-loop";
+import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import type { ToolContext, ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
-import { runEngineAgent } from "./engine-agent-runner";
+import {
+  createRoleEngineAgentRunner,
+  runEngineAgent,
+} from "./engine-agent-runner";
 
 interface TestContext extends ToolContext {
   activation: unknown;
@@ -63,3 +72,69 @@ test("runEngineAgent consumes ReAct events and dispatches engine observer callba
     "result:memory_search",
   ]);
 });
+
+test("createRoleEngineAgentRunner preserves the boundary model round for pending-call closeout", async () => {
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "memory_search",
+    input: { query: "status" },
+  };
+  const closeRounds: number[] = [];
+  const modelCalls: Array<{ toolChoice: unknown; toolCount: number }> = [];
+  const model: ModelClient = {
+    async generate(input) {
+      modelCalls.push({
+        toolChoice: input.toolChoice,
+        toolCount: input.tools?.length ?? 0,
+      });
+      return {
+        text: "Searching",
+        toolCalls: [call],
+      };
+    },
+  };
+  const toolkit: Toolkit<TestContext> = {
+    definitions: () => [
+      { name: "memory_search", description: "", inputSchema: {} },
+    ],
+    has: (name) => name === "memory_search",
+    async execute(toolCall) {
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "found",
+      };
+    },
+  };
+  const hooks: ReActHooks<TestContext> = {
+    onToolCallsClose: (_calls, state) => {
+      closeRounds.push(state.round);
+      return state.round === 1 ? "round_limit" : null;
+    },
+    onTerminate: (reason) => ({
+      text: `closed:${reason}`,
+    }),
+  };
+  const run = createRoleEngineAgentRunner<TestContext>({
+    model,
+    toolkit,
+    maxRounds,
+    hooks,
+  });
+
+  const finalText = await run({
+    messages: [{ role: "user", content: "Start." }],
+    ctx: { activation: "activation" },
+    observer: {
+      onModelResponse() {},
+      async onToolStarted() {},
+      async onToolResult() {},
+    },
+  });
+
+  assert.equal(finalText, "closed:round_limit");
+  assert.deepEqual(closeRounds, [0, 1]);
+  assert.equal(modelCalls.length, 2);
+});
+
+const maxRounds = 1;

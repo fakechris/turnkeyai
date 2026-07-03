@@ -214,9 +214,48 @@ test("engine agent event consumption routes through runner owner", () => {
     "engine ReAct event consumption must not stay inline in runViaReActEngine",
   );
   assert.equal(
-    engineSource.includes("runEngineAgent({"),
+    engineSource.includes("createRoleEngineAgentRunner"),
     true,
-    "runViaReActEngine should consume ReAct events through the react-engine runner",
+    "runViaReActEngine should consume ReAct events through the react-engine runner factory",
+  );
+});
+
+test("engine ReAct agent creation routes through runner owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const runnerSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-agent-runner.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    source.includes('from "@turnkeyai/agent-core/react-agent"'),
+    false,
+    "adapter must not import the ReAct agent factory directly",
+  );
+  assert.equal(
+    engineSource.includes("createReActAgent<RoleToolContext>({"),
+    false,
+    "engine ReAct agent construction must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    engineSource.includes("maxRounds: maxRounds + 1"),
+    false,
+    "engine ReAct agent boundary-round adjustment must live with the runner owner",
+  );
+  assert.equal(
+    engineSource.includes("createRoleEngineAgentRunner"),
+    true,
+    "runViaReActEngine should create the ReAct runner through the react-engine owner",
+  );
+  assert.equal(
+    runnerSource.includes("createReActAgent"),
+    true,
+    "engine agent runner owner should bind the agent-core factory",
   );
 });
 
