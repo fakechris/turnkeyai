@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `e2d29074f7387c0a94d060c2a6c785ba523087a6`
+**Code HEAD before this docs-only report:** `14a7aa9d6dc6a699f733ebeeb46a9a45e427b286`
 **Date:** 2026-07-02
 
 ## Summary
@@ -21,7 +21,9 @@ could not move the normalizer without making the inline parity reference import 
   `run` object. A narrow execution-budget admission slice now lives in
   `react-engine/execution-budget-controller.ts`, and the engine tool-batch runner
   now owns its wall-clock signal, serial/concurrent chunking, and per-tool error
-  shaping. Budget closeout snapshots for final-recovery exhaustion, wall-clock
+  shaping. The engine `onBeforeExecute` and `runToolBatch` hook entrypoints now
+  delegate through that controller instead of wiring budget calls inline in the
+  adapter. Budget closeout snapshots for final-recovery exhaustion, wall-clock
   exhaustion, and round-limit synthesis now route through that controller after
   the selected policy fires. The first closeout registry policies also landed:
   `recovery_tool_budget`, `operator_cancelled`, `pseudo_tool_call`,
@@ -536,6 +538,7 @@ outside the terminal completion path.
 | `3aaecb7` | Move engine ReAct agent creation and boundary-round adjustment into `react-engine/engine-agent-runner.ts`; adapter calls `createRoleEngineAgentRunner()`. |
 | `acba8b6` | Move engine request-envelope reduction boundary wiring into `react-engine/engine-final-response.ts`; adapter calls `recordEngineReductionBoundary()`. |
 | `e2d2907` | Move the engine `onToolCalls` hook flow into `react-engine/tool-call-normalizer.ts`; adapter delegates normalization context construction and recovery-budget truncation. |
+| `14a7aa9` | Move the engine `onBeforeExecute` and `runToolBatch` hook wiring into `ExecutionBudgetController`; adapter delegates admission and role tool-batch execution entrypoints. |
 
 ## Current Extracted Implementation
 
@@ -576,7 +579,9 @@ Real implementation now exists in:
   execution, plus budget closeout snapshot construction for recovery-budget,
   wall-clock, and round-limit terminal synthesis, plus wall-clock closeout
   signal construction for `onToolCallsClose`, including native pending-call vs
-  synthetic empty-round continuation selection.
+  synthetic empty-round continuation selection, plus the engine
+  `onBeforeExecute` and `runToolBatch` hook entrypoints used by
+  `runViaReActEngine`.
 - `react-engine/closeout-policy-registry.ts` for `ENGINE_CLOSEOUT_POLICY_ORDER`
   and the first pending-call closeout policies, `recovery_tool_budget`,
   `operator_cancelled`, `pseudo_tool_call`, `wall_clock_budget`, and
@@ -827,21 +832,21 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine onToolCalls hook-flow slice:
+Fresh gates run for this engine execution hook wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 32 / 32 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/tool-call-normalizer.test.ts` | 6 / 6 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 254 / 254 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 33 / 33 |
+| `npx tsx --test packages/role-runtime/src/react-engine/execution-budget-controller.test.ts` | 16 / 16 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 257 / 257 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
 | `npm run parity:inline` | 272 / 272, 0 fail |
-| `npm run parity:engine` | 272 / 272, 0 fail; all 14 chunks completed |
+| `npm run parity:engine` | 265 / 265, 0 fail; all 14 chunks completed |
 
-Note: this latest parity run reported 272 inline test points and discovered 272
+Note: this latest parity run reported 272 inline test points and discovered 265
 engine test points. Engine chunks completed without individual recovery.
 
 ## Is The Adapter Thin?
@@ -878,10 +883,14 @@ Stage 8 boundaries/slices are now real:
   result/metadata, completed/timeout signals, reductions, memory flushes, and final
   message snapshots.
 - execution-budget admission routes through `ExecutionBudgetController` for
-  final-recovery pending-call truncation and per-round over-cap skipped results.
-- engine tool-batch execution routes through `ExecutionBudgetController.runToolBatch`
-  for order-sensitive serialization, concurrency chunks, wall-clock signal setup,
-  and non-abort tool-error shaping.
+  final-recovery pending-call truncation and per-round over-cap skipped results;
+  the engine `onBeforeExecute` hook now delegates through
+  `applyEngineBeforeExecuteHook`.
+- engine `runToolBatch` hook wiring routes through
+  `ExecutionBudgetController.runEngineToolBatchHook`, which delegates to
+  `runToolBatch` for order-sensitive serialization, concurrency chunks,
+  wall-clock signal setup, active role-loop execution, and non-abort tool-error
+  shaping.
 - recovery-budget, wall-clock, and round-limit closeout snapshot construction
   routes through `ExecutionBudgetController`.
 - wall-clock closeout signal construction for `onToolCallsClose` routes through
@@ -1307,7 +1316,9 @@ Continue with the remaining high-risk pieces:
   run-state typing delegates to `react-engine/engine-run-state.ts`; engine run
   observer dependency wiring delegates to
   `react-engine/engine-run-observer.ts`; engine `onToolCalls` hook flow
-  delegates to `react-engine/tool-call-normalizer.ts`; keep thinning the adapter. The only
+  delegates to `react-engine/tool-call-normalizer.ts`; engine
+  `onBeforeExecute` / `runToolBatch` hook wiring delegates to
+  `react-engine/execution-budget-controller.ts`; keep thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
 
