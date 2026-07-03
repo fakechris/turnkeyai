@@ -1,8 +1,8 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `97e9ab5c8cffef4bd600f42cbc129b92225f7bfd`
-**Date:** 2026-07-02
+**Code HEAD before this docs-only report:** `94797c7017cba01d232f93f657995b0537311666`
+**Date:** 2026-07-03
 
 ## Summary
 
@@ -265,6 +265,11 @@ could not move the normalizer without making the inline parity reference import 
   tool-call and round accounting, round-limit budget snapshot callback wiring,
   and the approval wait-timeout fallback payload while the adapter passes only
   live run state, evidence, and budget collaborators.
+  Completed terminal handoff assembly now also lives in
+  `TerminalCloseoutController.handleTerminalCloseoutHook()`: the controller
+  reads completed session/tool-result state, initializes the repair-marker
+  ledger, and normalizes the completed-closeout input before building the
+  completed synthesis callback.
   Terminal final synthesis provider-schema repair selection now also routes
   through the controller-owned repair-policy window, so the adapter no longer
   evaluates the registry directly for that final retry decision.
@@ -561,6 +566,7 @@ remaining adapter-side action application outside the terminal completion path.
 | `d3c0ed6` | Move natural-finish repair hook wiring into `RepairPolicyRegistry`; adapter delegates active gating, marker ledger persistence, and recovery-budget accounting. |
 | `e84b9c0` | Move model-call-error hook wiring into `TerminalCloseoutController`; adapter delegates abort classification, evidence snapshotting, tool-count accounting, forced-permission flow selection, and hook-result application. |
 | `97e9ab5` | Move terminate closeout hook input assembly into `CloseoutPolicyRegistry`; adapter delegates state/evidence reads, tool-count accounting, round-limit budget callback wiring, and approval wait-timeout fallback payload construction. |
+| `94797c7` | Move completed terminal handoff wiring into `TerminalCloseoutController`; adapter delegates completed-session/tool-result reads and repair-marker ledger initialization. |
 
 ## Current Extracted Implementation
 
@@ -694,7 +700,9 @@ Real implementation now exists in:
   fallback before synthesis and builds completed-closeout synthesis callbacks
   from completed session / ledger inputs, including completed reason and
   null-session guards and completed-closeout repair tool-free gateway input
-  construction, plus the model-call-error local-evidence
+  construction, plus completed terminal hook handoff assembly for completed
+  session/tool-result state reads and repair-marker initialization, plus the
+  model-call-error local-evidence
   fallback/rethrow boundary and `completeModelCallErrorHook()` ownership of
   model-call-error abort classification, final-message capture, ledger
   snapshotting, tool-call accounting, active/usable-evidence gating, forced
@@ -866,15 +874,14 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this terminate closeout hook handoff slice:
+Fresh gates run for this completed terminal handoff wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 38 / 38 |
-| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 38 / 38 |
-| `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts` | 7 / 7 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 268 / 268 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 39 / 39 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 35 / 35 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 270 / 270 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -1269,9 +1276,10 @@ Stage 8 boundaries/slices are now real:
   the usable-evidence input comes from `EvidenceLedger.snapshot()`.
 - completed-closeout synthesis callback construction for terminal closeouts now
   routes through `TerminalCloseoutController.handleTerminalCloseoutHook`; the
-  adapter passes the completed controller, completed session, ledger, repair
-  markers, tools, and gateway callbacks instead of constructing the completed
-  callback or completed tool-result text itself. Completed-closeout repair
+  adapter passes the completed controller, run state, ledger, hook context,
+  tools, and gateway callbacks instead of constructing the completed callback,
+  reading completed session/tool-result state, initializing repair markers, or
+  constructing completed tool-result text itself. Completed-closeout repair
   gateway message preparation and tool-free gateway input construction also live
   in the controller; the adapter receives a ready gateway input for the repair
   model call. The controller also owns the completed-reason and null-session
@@ -1349,13 +1357,13 @@ Continue with the remaining high-risk pieces:
   synthesis-effect application, final response shaping, closeout write-mode
   selection, explicit state-effect application, sticky completed closeout
   pre-recording, completed initial-synthesis handoff, completed-closeout
-  callback/gateway-input handoffs, terminal path selection, final/re-arm
+  callback/gateway-input/state handoffs, terminal path selection, final/re-arm
   application, terminal entrypoint,
   terminal hook fallback entry,
   terminate decision/input assembly,
-  and the model-error hook entrypoint; the next terminal slice is likely
-  remaining gateway callback wiring or completed terminal hook composition
-  beyond the decision assembly.
+  completed terminal handoff assembly, and the model-error hook entrypoint; the
+  next terminal slice is likely remaining gateway callback wiring or broader
+  terminal hook composition beyond the current handoff builders.
   Forced runtime tool-round orchestration
   now delegates to `tool-use.ts`, runtime progress recorder/observer emission
   delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
