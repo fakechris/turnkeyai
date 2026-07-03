@@ -1080,6 +1080,131 @@ test("TerminalCloseoutController selects model-error forced permission result in
   assert.equal(builtForced, 0);
 });
 
+test("TerminalCloseoutController owns model-call-error hook state capture", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    { role: "user", content: "Summarize the approval-backed evidence." },
+    {
+      role: "tool",
+      name: "web_fetch",
+      content: "Verified source evidence.",
+    } as LLMMessage,
+  ];
+  const toolTrace = [
+    {
+      round: 1,
+      calls: [{ id: "call-1", name: "web_fetch", input: {} }],
+      results: [],
+    },
+    {
+      round: 2,
+      calls: [{ id: "call-2", name: "permission_query", input: {} }],
+      results: [],
+    },
+  ];
+  const forcedRound = {
+    kind: "forced_tool_round" as const,
+    calls: [
+      {
+        id: "call-3",
+        name: "permission_result",
+        input: { status: "pending" },
+      },
+    ],
+    assistantText: "Checking approval result.",
+    reason: "forced_pending_approval_wait_timeout_permission_result",
+  };
+  const forcedMessages = [
+    ...messages,
+    {
+      role: "tool",
+      name: "permission_result",
+      content: "pending",
+    } as LLMMessage,
+  ];
+  const { target } = recordingTarget();
+  const events: unknown[] = [];
+  const recordEvent = (event: unknown) => {
+    events.push(event);
+  };
+
+  const handled = await controller.completeModelCallErrorHook(
+    {
+      error: new Error("gateway unavailable"),
+      active: true,
+      messages,
+      packet: packet("Summarize the verified source fact."),
+      selection: { modelId: "model-b" },
+      maxRounds: 5,
+      toolTrace,
+      target: {
+        ...target,
+        captureFinalMessages: (captured) => {
+          recordEvent(["capture", captured]);
+        },
+      },
+      evidence: {
+        snapshot: (captured) => {
+          recordEvent(["evidence", captured]);
+          return { usableEvidence: true };
+        },
+      },
+      buildForcedPermissionResult: ({ toolTrace: capturedToolTrace }) => {
+        recordEvent(["forced", capturedToolTrace]);
+        return forcedRound;
+      },
+    },
+    async (round) => {
+      recordEvent(["execute", round]);
+      return { messages: forcedMessages };
+    },
+  );
+
+  assert.deepEqual(handled, { messages: forcedMessages });
+  assert.deepEqual(events, [
+    ["capture", messages],
+    ["evidence", messages],
+    ["forced", toolTrace],
+    ["execute", forcedRound],
+  ]);
+
+  events.length = 0;
+  assert.equal(
+    await controller.completeModelCallErrorHook(
+      {
+        error: Object.assign(new Error("aborted"), { name: "AbortError" }),
+        active: true,
+        messages,
+        packet: packet("Summarize the verified source fact."),
+        selection: { modelId: "model-b" },
+        maxRounds: 5,
+        toolTrace,
+        target: {
+          ...target,
+          captureFinalMessages: (captured) => {
+            recordEvent(["capture", captured]);
+          },
+        },
+        evidence: {
+          snapshot: (captured) => {
+            recordEvent(["evidence", captured]);
+            return { usableEvidence: true };
+          },
+        },
+        buildForcedPermissionResult: () => {
+          recordEvent(["forced"]);
+          return forcedRound;
+        },
+      },
+      async () => {
+        throw new Error("should not execute");
+      },
+    ),
+    "rethrow",
+  );
+  assert.deepEqual(events, []);
+});
+
 test("TerminalCloseoutController appends current assistant text for pseudo tool-call synthesis only", () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];

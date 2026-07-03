@@ -3015,26 +3015,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // no longer "permission_query" and the builder returns null on a repeat error
         // (idempotent — no loop). Aborts must rethrow.
         onModelCallError: async (error, state, _ctx) => {
-          const aborted = isAbortError(error);
-          if (!aborted) {
-            runState.captureFinalMessages(state.messages);
-          }
-          const errorEvidence = aborted
-            ? { usableEvidence: false }
-            : runEvidence.snapshot(state.messages);
-          return terminalCloseout.completeModelCallErrorFlow(
+          return terminalCloseout.completeModelCallErrorHook(
             {
-              aborted,
               active: Boolean(activeToolLoop),
-              usableEvidence: errorEvidence.usableEvidence,
               activation,
               messages: state.messages,
               packet,
               selection,
               error,
               maxRounds,
-              toolCallCount: countNativeToolCalls(toolTrace),
-              roundCount: toolTrace.length,
+              evidence: runEvidence,
+              toolTrace,
+              target: runState,
               buildForcedPermissionResult: () => {
                 const result =
                   continuation.forcePendingApprovalWaitTimeoutPermissionResult({
@@ -3049,7 +3041,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                   : { kind: "none" };
               },
             },
-            runState,
             async (modelErrorResult) => {
               return executeForcedRuntimeToolRound({
                 messages: state.messages,

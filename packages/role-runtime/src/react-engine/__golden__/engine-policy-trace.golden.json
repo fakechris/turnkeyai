@@ -29,7 +29,7 @@
     "CloseoutPolicyRegistry.evaluateTerminate",
     "TerminalCloseoutController.handleTerminalCloseoutHook",
     "EngineRunState.captureFinalMessages",
-    "TerminalCloseoutController.completeModelCallErrorFlow",
+    "TerminalCloseoutController.completeModelCallErrorHook",
     "EngineRunState.captureFinalMessagesIfAbsent"
   ],
   "decisionVocabulary": [

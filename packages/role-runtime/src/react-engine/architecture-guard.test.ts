@@ -543,6 +543,65 @@ test("engine natural-finish repair hook routes through repair-policy owner", () 
   );
 });
 
+test("engine model-call-error hook routes through terminal closeout owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const hookStart = engineSource.indexOf(
+    "onModelCallError: async (error, state",
+  );
+  const hookEnd = engineSource.indexOf(
+    "        // Capture the live message history",
+    hookStart,
+  );
+  assert.notEqual(hookStart, -1, "onModelCallError hook must exist");
+  assert.notEqual(hookEnd, -1, "onModelCallError boundary must be found");
+  const hookSource = engineSource.slice(hookStart, hookEnd);
+  const terminalSource = readFileSync(
+    path.join(ENGINE_DIR, "terminal-closeout-controller.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    hookSource.includes("isAbortError(error)"),
+    false,
+    "model-call-error abort classification must live with TerminalCloseoutController",
+  );
+  assert.equal(
+    hookSource.includes("runState.captureFinalMessages(state.messages)"),
+    false,
+    "model-call-error final-message capture must live with TerminalCloseoutController",
+  );
+  assert.equal(
+    hookSource.includes("runEvidence.snapshot(state.messages)"),
+    false,
+    "model-call-error evidence snapshot reads must live with TerminalCloseoutController",
+  );
+  assert.equal(
+    hookSource.includes("countNativeToolCalls(toolTrace)"),
+    false,
+    "model-call-error tool-count accounting must live with TerminalCloseoutController",
+  );
+  assert.equal(
+    hookSource.includes("completeModelCallErrorFlow("),
+    false,
+    "model-call-error hook must not call the lower-level flow directly",
+  );
+  assert.equal(
+    hookSource.includes("completeModelCallErrorHook("),
+    true,
+    "onModelCallError should delegate hook state capture to TerminalCloseoutController",
+  );
+  assert.equal(
+    terminalSource.includes("completeModelCallErrorFlow("),
+    true,
+    "terminal controller should keep the lower-level model-error flow",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

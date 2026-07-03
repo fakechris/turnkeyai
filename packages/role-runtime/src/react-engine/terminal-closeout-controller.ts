@@ -13,7 +13,10 @@ import {
   buildToolFreeGatewayInput,
   buildToolCallArtifactCleanupMessages,
 } from "../gateway-input-builder";
-import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  countNativeToolCalls,
+  type NativeToolRoundTrace,
+} from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
 import {
@@ -25,6 +28,7 @@ import {
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
   containsAnyToolCallForm,
+  isAbortError,
   maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
 } from "../tool-loop-shared";
@@ -215,6 +219,53 @@ export interface ModelCallErrorHandlingInput
 export interface ModelCallErrorFlowInput extends ModelCallErrorFallbackInput {
   aborted: boolean;
   buildForcedPermissionResult(): ForcedModelCallErrorContinuation | {
+    kind: "none";
+  };
+}
+
+export interface ModelCallErrorEvidenceSnapshot {
+  usableEvidence: boolean;
+}
+
+export interface ModelCallErrorEvidenceSnapshotter {
+  snapshot(messages: LLMMessage[]): ModelCallErrorEvidenceSnapshot;
+}
+
+export interface ModelCallErrorForcedPermissionInput {
+  toolTrace: NativeToolRoundTrace[];
+}
+
+export interface ModelCallErrorHookTarget<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends TerminalCloseoutApplicationTarget<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+  captureFinalMessages(messages: readonly LLMMessage[]): void;
+}
+
+export interface ModelCallErrorHookInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> extends Omit<
+    ModelCallErrorFallbackInput,
+    "usableEvidence" | "error" | "toolCallCount" | "roundCount"
+  > {
+  error: unknown;
+  evidence: ModelCallErrorEvidenceSnapshotter;
+  toolTrace: NativeToolRoundTrace[];
+  target: ModelCallErrorHookTarget<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+  buildForcedPermissionResult(
+    input: ModelCallErrorForcedPermissionInput,
+  ): ForcedModelCallErrorContinuation | {
     kind: "none";
   };
 }
@@ -985,6 +1036,48 @@ export class TerminalCloseoutController {
         forcedPermissionResult,
       },
       target,
+      executeForcedRound,
+    );
+  }
+
+  async completeModelCallErrorHook<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: ModelCallErrorHookInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+    executeForcedRound: ModelCallErrorForcedRoundExecutor,
+  ): Promise<TerminalModelCallErrorHookResult> {
+    const aborted = isAbortError(input.error);
+    if (!aborted) {
+      input.target.captureFinalMessages(input.messages);
+    }
+    const errorEvidence = aborted
+      ? { usableEvidence: false }
+      : input.evidence.snapshot(input.messages);
+    return this.completeModelCallErrorFlow(
+      {
+        active: input.active,
+        usableEvidence: errorEvidence.usableEvidence,
+        ...(input.activation === undefined
+          ? {}
+          : { activation: input.activation }),
+        messages: input.messages,
+        packet: input.packet,
+        selection: input.selection,
+        error: input.error,
+        maxRounds: input.maxRounds,
+        toolCallCount: countNativeToolCalls(input.toolTrace),
+        roundCount: input.toolTrace.length,
+        aborted,
+        buildForcedPermissionResult: () =>
+          input.buildForcedPermissionResult({ toolTrace: input.toolTrace }),
+      },
+      input.target,
       executeForcedRound,
     );
   }
