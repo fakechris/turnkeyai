@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `2e4c3127b4d758a4cadff977529b7dc8fac427d5`
+**Code HEAD before this docs-only report:** `047befdbeba34106884442d87fd5e23712c8ce32`
 **Date:** 2026-07-02
 
 ## Summary
@@ -175,8 +175,11 @@ could not move the normalizer without making the inline parity reference import 
   `TerminalCloseoutController.completeModelCallErrorFlow`; the adapter supplies
   only the forced-result builder callback and forced-round executor, and the
   controller trims raw forced-round execution results down to the hook
-  continuation shape. The model-call-error usable-evidence read now also routes
-  through `EvidenceLedger.snapshot()`.
+  continuation shape. Final-synthesis tool-call artifact fallback result
+  construction after a failed cleanup repair now also lives in
+  `TerminalCloseoutController`, including local evidence fallback, generic
+  fallback text, and URL redaction. The model-call-error usable-evidence read
+  now also routes through `EvidenceLedger.snapshot()`.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -387,6 +390,7 @@ outside the terminal completion path.
 | `37abf6c` | Centralize final synthesis source-message and tool-call artifact cleanup repair-message construction in `gateway-input-builder`; adapter reuses the neutral builder for terminal final/repair synthesis. |
 | `a1d8228` | Centralize extraneous provider-schema repair-message construction in `gateway-input-builder`; terminal final synthesis no longer builds that repair message array in the adapter. |
 | `2e4c312` | Route terminal final synthesis provider-schema repair selection through `RepairPolicyRegistry`; add an architecture guard against direct predicate drift. |
+| `047befd` | Move final-synthesis tool-call artifact fallback result construction into `TerminalCloseoutController`; adapter delegates the local/generic fallback shaping. |
 
 ## Current Extracted Implementation
 
@@ -614,8 +618,8 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 10 / 10 |
 | `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 22 / 22 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 199 / 199 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 23 / 23 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 200 / 200 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -862,6 +866,9 @@ Stage 8 boundaries/slices are now real:
   result boundary while the adapter injects model calls. Terminal run-state
   effects for final/re-arm completion now apply through
   `TerminalCloseoutController`.
+- final-synthesis tool-call artifact fallback result construction now lives in
+  `TerminalCloseoutController`; the adapter only calls the controller when the
+  cleanup repair still emits tool-call markup.
 - completed-closeout post-synthesis visibility routes through
   `CompletedCloseoutController`, preserving the original browser recovery,
   browser failure-bucket, recovered-timeout/continuation, and forbidden local
