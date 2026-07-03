@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `ecc9aa3caa9688650111c499d4762e64892619df`
+**Code HEAD before this docs-only report:** `1b3f51191f9ad080d52ee3a48bb96464281964ed`
 **Date:** 2026-07-02
 
 ## Summary
@@ -132,7 +132,9 @@ could not move the normalizer without making the inline parity reference import 
   builds the completed callback from the terminate hook input, carries current
   messages into `CompletedCloseoutController`, asks the evidence ledger for
   completed tool-result text, and preserves the adapter-injected gateway repair
-  callbacks.
+  callbacks. The completed-reason and missing-session guards now also live in
+  that controller path, so the adapter passes the completed-closeout handoff
+  data unconditionally instead of branching on reason/session.
   Remaining pending-call closeout session context construction now lives in
   `react-engine/closeout-policy-registry.ts`; the adapter passes task/messages
   instead of concatenating the closeout session context locally.
@@ -370,6 +372,7 @@ outside the terminal completion path.
 | `84b1ae9` | Move the full `onSuppressToolCalls` read-only / awaiting-context suppression flow into `PermissionPolicy.applySuppressToolCallsHook`; update the hook contract and policy-trace golden. |
 | `58624f9` | Move the full `onAfterExecuteContinue` observer / current-round evidence / continuation cascade flow into `ContinuationController.applyAfterExecuteContinuationHook`; update the hook contract and policy-trace golden. |
 | `ecc9aa3` | Move completed-closeout synthesis callback construction into `TerminalCloseoutController.handleTerminalCloseoutHook`; adapter supplies completed controller, ledger, and gateway callbacks. |
+| `1b3f511` | Move completed-closeout reason/null-session guards into `TerminalCloseoutController`; adapter passes completed-closeout handoff data unconditionally. |
 
 ## Current Extracted Implementation
 
@@ -484,9 +487,9 @@ Real implementation now exists in:
   closeout entrypoint from terminate decision to completion, plus the terminal
   hook entrypoint that short-circuits deterministic approval wait-timeout
   fallback before synthesis and builds completed-closeout synthesis callbacks
-  from completed session / ledger inputs, plus the model-call-error
-  local-evidence fallback/rethrow boundary and `completeModelCallErrorFlow`
-  ownership of
+  from completed session / ledger inputs, including completed reason and
+  null-session guards, plus the model-call-error local-evidence
+  fallback/rethrow boundary and `completeModelCallErrorFlow` ownership of
   model-call-error abort, active/usable-evidence gating, forced
   pending-approval continuation selection, fallback flow selection, and
   hook-result application through injected forced-result builder /
@@ -590,8 +593,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 21 / 21 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 197 / 197 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 22 / 22 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 198 / 198 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -862,7 +865,9 @@ Stage 8 boundaries/slices are now real:
   routes through `TerminalCloseoutController.handleTerminalCloseoutHook`; the
   adapter passes the completed controller, completed session, ledger, repair
   markers, tools, and gateway callbacks instead of constructing the completed
-  callback or completed tool-result text itself.
+  callback or completed tool-result text itself. The controller also owns the
+  completed-reason and null-session guards, so the adapter passes that handoff
+  data unconditionally.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
