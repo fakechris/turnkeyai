@@ -1,3 +1,8 @@
+import type {
+  RoleActivationInput,
+  RuntimeProgressRecorder,
+} from "@turnkeyai/core-types/team";
+
 import type { RolePromptPacket } from "./prompt-policy";
 
 export type RequestEnvelopeReductionLevel = "compact" | "minimal" | "reference-only";
@@ -18,6 +23,95 @@ export interface RequestEnvelopeReductionResult {
   };
   omittedSections: string[];
   level: RequestEnvelopeReductionLevel;
+}
+
+export interface RequestEnvelopeReductionSnapshot {
+  level: RequestEnvelopeReductionLevel;
+  omittedSections: string[];
+  artifactIds: string[];
+  envelopeHint?: RequestEnvelopeReductionResult["envelopeHint"] | undefined;
+}
+
+export async function recordReductionBoundarySafely(input: {
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  reduction: RequestEnvelopeReductionSnapshot;
+}): Promise<void> {
+  try {
+    await recordReductionBoundary(input);
+  } catch (error) {
+    console.error("runtime reduction boundary recording failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      reductionLevel: input.reduction.level,
+      error,
+    });
+  }
+}
+
+async function recordReductionBoundary(input: {
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  reduction: RequestEnvelopeReductionSnapshot;
+}): Promise<void> {
+  const { activation, packet, runtimeProgressRecorder, selection, reduction } =
+    input;
+  if (!runtimeProgressRecorder) {
+    return;
+  }
+  await runtimeProgressRecorder.record({
+    progressId: `progress:prompt-reduction:${activation.handoff.taskId}:${reduction.level}:${Date.now()}`,
+    threadId: activation.thread.threadId,
+    chainId: `flow:${activation.flow.flowId}`,
+    spanId: `role:${activation.runState.runKey}`,
+    ...(activation.runState.lastDequeuedTaskId
+      ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
+      : {}),
+    subjectKind: "role_run",
+    subjectId: activation.runState.runKey,
+    phase: "degraded",
+    progressKind: "boundary",
+    heartbeatSource: "control_path",
+    continuityState: "alive",
+    summary: `Prompt request envelope reduced to ${reduction.level}.`,
+    recordedAt: Date.now(),
+    flowId: activation.flow.flowId,
+    taskId: activation.handoff.taskId,
+    roleId: activation.runState.roleId,
+    metadata: {
+      boundaryKind: "request_envelope_reduction",
+      ...(selection.modelId ? { modelId: selection.modelId } : {}),
+      ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+      ...(packet.promptAssembly?.assemblyFingerprint
+        ? { assemblyFingerprint: packet.promptAssembly.assemblyFingerprint }
+        : {}),
+      ...(packet.promptAssembly?.sectionOrder
+        ? { sectionOrder: packet.promptAssembly.sectionOrder }
+        : {}),
+      ...(packet.promptAssembly?.tokenEstimate
+        ? { tokenEstimate: packet.promptAssembly.tokenEstimate }
+        : {}),
+      ...(packet.promptAssembly?.contextDiagnostics
+        ? { contextDiagnostics: packet.promptAssembly.contextDiagnostics }
+        : {}),
+      ...(reduction.envelopeHint ? { envelopeHint: reduction.envelopeHint } : {}),
+      reductionLevel: reduction.level,
+      omittedSections: reduction.omittedSections,
+      compactedSegments: packet.promptAssembly?.compactedSegments ?? [],
+      usedArtifacts: reduction.artifactIds,
+    },
+  });
 }
 
 const SECTION_SPLIT_RE = /\n{2,}/g;

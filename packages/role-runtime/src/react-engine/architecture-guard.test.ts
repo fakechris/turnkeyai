@@ -299,3 +299,23 @@ test("request-envelope reduced retry gateway input routes through neutral gatewa
     "request-envelope retry gateway input construction must route through the neutral gateway builder",
   );
 });
+
+test("request-envelope reduction boundary recording routes through reducer owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async recordReductionBoundary"),
+    false,
+    "request-envelope reduction boundary recording must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes('boundaryKind: "request_envelope_reduction"'),
+    false,
+    "request-envelope reduction boundary metadata construction must live in request-envelope-reducer",
+  );
+  assert.equal(
+    source.includes("recordReductionBoundarySafely({"),
+    true,
+    "adapter should call the neutral safe reduction boundary recorder",
+  );
+});

@@ -47,8 +47,10 @@ import {
 } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
 import {
+  recordReductionBoundarySafely,
   reducePromptPacketForRequestEnvelope,
   type RequestEnvelopeReductionLevel,
+  type RequestEnvelopeReductionSnapshot,
 } from "./request-envelope-reducer";
 import { getRoleModelSelection } from "./role-model-selection";
 import {
@@ -341,10 +343,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
       | undefined;
     let reductionSnapshot:
-      | ({
-          level: RequestEnvelopeReductionLevel;
-          omittedSections: string[];
-        } & ReductionEnvelopeSnapshot)
+      | RequestEnvelopeReductionSnapshot
       | undefined;
     const memoryFlushes: PreCompactionMemoryFlushResult[] = [];
 
@@ -2364,12 +2363,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     }
 
     if (reductionSnapshot) {
-      await this.recordReductionBoundarySafely(
-        input.activation,
-        input.packet,
+      await recordReductionBoundarySafely({
+        activation: input.activation,
+        packet: input.packet,
+        runtimeProgressRecorder: this.runtimeProgressRecorder,
         selection,
-        reductionSnapshot,
-      );
+        reduction: reductionSnapshot,
+      });
     }
 
     if (
@@ -2623,10 +2623,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         omittedSections: string[];
       };
       ReductionSnapshot:
-        | ({
-            level: RequestEnvelopeReductionLevel;
-            omittedSections: string[];
-          } & ReductionEnvelopeSnapshot)
+        | RequestEnvelopeReductionSnapshot
         | undefined;
       MemoryFlush: PreCompactionMemoryFlushResult;
       CompletedSession: NonNullable<
@@ -3300,12 +3297,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // have overflowed and reduced).
     const reductionSnapshot = runState.reductionSnapshot();
     if (reductionSnapshot) {
-      await this.recordReductionBoundarySafely(
+      await recordReductionBoundarySafely({
         activation,
         packet,
+        runtimeProgressRecorder: this.runtimeProgressRecorder,
         selection,
-        reductionSnapshot,
-      );
+        reduction: reductionSnapshot,
+      });
     }
 
     // Stage 8C (Batch C — T10 finalization plane): mirror the inline generate()
@@ -3416,10 +3414,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       level: RequestEnvelopeReductionLevel;
       omittedSections: string[];
     };
-    reductionSnapshot?: {
-      level: RequestEnvelopeReductionLevel;
-      omittedSections: string[];
-    } & ReductionEnvelopeSnapshot;
+    reductionSnapshot?: RequestEnvelopeReductionSnapshot;
     memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
     const attempts: RequestEnvelopeReductionLevel[] = [
@@ -3562,10 +3557,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       level: RequestEnvelopeReductionLevel;
       omittedSections: string[];
     };
-    reductionSnapshot?: {
-      level: RequestEnvelopeReductionLevel;
-      omittedSections: string[];
-    } & ReductionEnvelopeSnapshot;
+    reductionSnapshot?: RequestEnvelopeReductionSnapshot;
     memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
     return createTerminalCloseoutController().synthesizeFinalAfterToolRoundLimit({
@@ -4140,99 +4132,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     }
   }
 
-  private async recordReductionBoundary(
-    activation: RoleActivationInput,
-    packet: RolePromptPacket,
-    selection: {
-      modelId?: string;
-      modelChainId?: string;
-    },
-    reduction: {
-      level: RequestEnvelopeReductionLevel;
-      omittedSections: string[];
-    } & ReductionEnvelopeSnapshot,
-  ): Promise<void> {
-    if (!this.runtimeProgressRecorder) {
-      return;
-    }
-    await this.runtimeProgressRecorder.record({
-      progressId: `progress:prompt-reduction:${activation.handoff.taskId}:${reduction.level}:${Date.now()}`,
-      threadId: activation.thread.threadId,
-      chainId: `flow:${activation.flow.flowId}`,
-      spanId: `role:${activation.runState.runKey}`,
-      ...(activation.runState.lastDequeuedTaskId
-        ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
-        : {}),
-      subjectKind: "role_run",
-      subjectId: activation.runState.runKey,
-      phase: "degraded",
-      progressKind: "boundary",
-      heartbeatSource: "control_path",
-      continuityState: "alive",
-      summary: `Prompt request envelope reduced to ${reduction.level}.`,
-      recordedAt: Date.now(),
-      flowId: activation.flow.flowId,
-      taskId: activation.handoff.taskId,
-      roleId: activation.runState.roleId,
-      metadata: {
-        boundaryKind: "request_envelope_reduction",
-        ...(selection.modelId ? { modelId: selection.modelId } : {}),
-        ...(selection.modelChainId
-          ? { modelChainId: selection.modelChainId }
-          : {}),
-        ...(packet.promptAssembly?.assemblyFingerprint
-          ? { assemblyFingerprint: packet.promptAssembly.assemblyFingerprint }
-          : {}),
-        ...(packet.promptAssembly?.sectionOrder
-          ? { sectionOrder: packet.promptAssembly.sectionOrder }
-          : {}),
-        ...(packet.promptAssembly?.tokenEstimate
-          ? { tokenEstimate: packet.promptAssembly.tokenEstimate }
-          : {}),
-        ...(packet.promptAssembly?.contextDiagnostics
-          ? { contextDiagnostics: packet.promptAssembly.contextDiagnostics }
-          : {}),
-        ...(reduction.envelopeHint
-          ? { envelopeHint: reduction.envelopeHint }
-          : {}),
-        reductionLevel: reduction.level,
-        omittedSections: reduction.omittedSections,
-        compactedSegments: packet.promptAssembly?.compactedSegments ?? [],
-        usedArtifacts: reduction.artifactIds,
-      },
-    });
-  }
-
-  private async recordReductionBoundarySafely(
-    activation: RoleActivationInput,
-    packet: RolePromptPacket,
-    selection: {
-      modelId?: string;
-      modelChainId?: string;
-    },
-    reduction: {
-      level: RequestEnvelopeReductionLevel;
-      omittedSections: string[];
-    } & ReductionEnvelopeSnapshot,
-  ): Promise<void> {
-    try {
-      await this.recordReductionBoundary(
-        activation,
-        packet,
-        selection,
-        reduction,
-      );
-    } catch (error) {
-      console.error("runtime reduction boundary recording failed", {
-        threadId: activation.thread.threadId,
-        flowId: activation.flow.flowId,
-        taskId: activation.handoff.taskId,
-        reductionLevel: reduction.level,
-        error,
-      });
-    }
-  }
-
 }
 
 // ORDER_DEPENDENT_TOOL_NAMES, shouldSerializeToolBatch, findRepeatedFailedToolCall
@@ -4240,17 +4139,3 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
 // toolCallSignature, normalizeToolInputForSignature, stableJson
 // extracted to ./react/predicates (Phase 1 cutover, behavior-preserving).
-
-interface ReductionEnvelopeSnapshot {
-  artifactIds: string[];
-  envelopeHint?: {
-    toolResultCount?: number;
-    toolResultBytes?: number;
-    inlineAttachmentBytes?: number;
-    inlineImageCount?: number;
-    inlineImageBytes?: number;
-    inlinePdfCount?: number;
-    inlinePdfBytes?: number;
-    multimodalPartCount?: number;
-  };
-}
