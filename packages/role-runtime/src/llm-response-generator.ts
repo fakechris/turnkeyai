@@ -236,7 +236,6 @@ import {
   type ToolLoopCloseoutMetadata,
 } from "./runtime-derived-mission-report";
 import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
-import type { ModelClient } from "@turnkeyai/agent-core/react-loop";
 // Stage 8 cleanup (Batch 0.5): engine policy-trace plumbing. The trace is a
 // behavior-neutral observability sink that records the per-hook decision sequence
 // so later batches can prove byte-identical behavior and so production-behind-flag
@@ -245,6 +244,7 @@ import {
   createCloseoutPolicyRegistry,
   createCompletedCloseoutController,
   createContinuationController,
+  createEngineModelClient,
   createEnginePolicyTrace,
   enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
@@ -2549,100 +2549,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         modelCallTrace,
       });
 
-    let lastResult: GenerateTextResult | undefined;
-    let traceRound = 0;
-    const model: ModelClient = {
-      generate: async ({ messages: roundMessages, tools, toolChoice }) => {
-        // The current model-call round (0-based). generateWithEnvelopeRetry below
-        // post-increments traceRound, so this is the round this call belongs to —
-        // used to inject the final-allowed-round warning (see below).
-        const modelCallRound = traceRound;
-        // The engine omits `tools` for its tool-free synthesis round (round-limit
-        // closeout); honor that so the closeout can't emit a discarded tool call.
-        const noToolRound = toolChoice === "none" || tools === undefined;
-        const mappedToolChoice: GenerateTextInput["toolChoice"] | undefined =
-          toolChoice === undefined
-            ? undefined
-            : typeof toolChoice === "string"
-              ? toolChoice
-              : { type: "tool", name: toolChoice.name };
-        // Stage 8B (Batch D — C5 memory/compaction/envelope plane): inject the
-        // final-allowed-tool-round warning, mirroring the inline tool loop (:492-496).
-        // On the last permitted round (round === maxRounds - 1), inline appends a
-        // user message telling the model this is the final tool round so it answers
-        // from gathered evidence instead of asking for more tools. It is an
-        // append-only, side-effect-free message transform gated on the round, so
-        // porting it here keeps the engine's per-round gateway messages identical to
-        // inline (the compaction parity fixture asserts this warning lands on the
-        // final round). No-op unless this is an active tool round on the final round.
-        const warningMessages = executionBudget.applyFinalToolRoundWarning({
-          messages: roundMessages,
-          active: Boolean(activeToolLoop) && !noToolRound,
-          round: modelCallRound,
-          maxRounds,
-        });
-        const gatewayRequest = buildToolRoundGatewayRequest({
-          baseGatewayInput: initialGatewayInput,
-          messages: warningMessages,
-          noToolRound,
-          ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
-        });
-        // Stage 8B (Batch D — C5 memory/compaction/envelope plane): record the
-        // tool-result pruning + compaction boundary, mirroring the inline tool
-        // loop (:497-502). buildToolRoundGatewayRequest owns history preparation,
-        // pruning diffing, tool-free stripping, and envelope recomputation.
-        // Measured against warningMessages (the post-final-round-warning list),
-        // exactly as inline (:497-502), so the observability snapshot and outgoing
-        // gateway messages are derived from the same list.
-        await recordToolResultPruningBoundarySafely({
-          activation,
-          runtimeProgressRecorder: this.runtimeProgressRecorder,
-          selection,
-          snapshot: gatewayRequest.pruning,
-        });
-        const generated = await generateWithEnvelopeRetry({
-          gateway: this.gateway,
-          now: () => this.clock.now(),
-          preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
-          activation,
-          packet,
-          selection,
-          gatewayInput: gatewayRequest.gatewayInput,
-          modelCallTrace,
-          tracePhase: "tool_round",
-          traceRound: traceRound++,
-        });
-        lastResult = generated.result;
-        // Stage 8B (Batch D — C5 memory/compaction/envelope plane): carry the
-        // per-round request-envelope reduction + pre-compaction memory flush
-        // forward, mirroring the inline tool loop (:587-593). Each tool-round
-        // model call runs through generateWithEnvelopeRetry, so a round that
-        // overflowed and reduced must persist that fact into the run state (the
-        // final metadata assembly reads runState's reduction/memoryFlushes). Inline
-        // OVERWRITES reduction per round (last-wins, :587-590) and APPENDS every
-        // memory flush (:591-592); the no-tool-loop generate() path (envelope-retry
-        // + memory-flush parity tests) also flows through here, since the engine
-        // dispatch is unconditional — its single model call must surface reduction
-        // and flush metadata too.
-        if (generated.reduction) {
-          runState.recordReduction({
-            reduction: generated.reduction,
-            reductionSnapshot: generated.reductionSnapshot,
-          });
-        }
-        if (generated.memoryFlush) {
-          runState.recordMemoryFlush(generated.memoryFlush);
-        }
-        return {
-          text: generated.result.text,
-          ...(generated.result.toolCalls?.length
-            ? { toolCalls: generated.result.toolCalls }
-            : {}),
-          ...(generated.result.stopReason ? { stopReason: generated.result.stopReason } : {}),
-        };
-      },
-    };
-
     const toolDefinitions = initialGatewayInput.tools ?? [];
     const toolkit: Toolkit<RoleToolContext> = {
       definitions: () => toolDefinitions,
@@ -2739,8 +2645,29 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ...options,
         }),
     });
+    const engineModel = createEngineModelClient({
+      gateway: this.gateway,
+      now: () => this.clock.now(),
+      preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
+      activation,
+      packet,
+      selection,
+      baseGatewayInput: initialGatewayInput,
+      modelCallTrace,
+      maxRounds,
+      activeToolLoop: Boolean(activeToolLoop),
+      executionBudget,
+      runState,
+      recordPruning: (snapshot) =>
+        recordToolResultPruningBoundarySafely({
+          activation,
+          runtimeProgressRecorder: this.runtimeProgressRecorder,
+          selection,
+          snapshot,
+        }),
+    });
     const agent = createReActAgent<RoleToolContext>({
-      model,
+      model: engineModel.model,
       toolkit,
       // Stage 8B (Batch E — T7 execution budget plane): give the agent ONE extra
       // round beyond the real budget so the model is still called on the round that
@@ -3447,7 +3374,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     ];
     const closeoutResult = runState.closeoutResult();
     let finalResult: GenerateTextResult = {
-      ...(closeoutResult ?? lastResult ?? {}),
+      ...(closeoutResult ?? engineModel.lastResult() ?? {}),
       text: finalText,
     } as GenerateTextResult;
     finalResult = finalizeEngineAnswer({
@@ -3466,7 +3393,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     });
     // On a closeout, metadata reflects the closeout-synthesis result (matching
     // inline), falling back to the last tool-round result otherwise.
-    const metaResult = closeoutResult ?? lastResult;
+    const metaResult = closeoutResult ?? engineModel.lastResult();
     const toolLoopCloseout = runState.toolLoopCloseout();
     const missionReport = buildRuntimeDerivedMissionReport(toolLoopCloseout);
     const reduction = runState.reduction();
