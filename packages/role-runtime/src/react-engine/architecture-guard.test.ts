@@ -708,6 +708,63 @@ test("engine completed terminal handoff routes through terminal closeout owner",
   );
 });
 
+test("engine terminal synthesis callbacks route through terminal closeout owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const hookStart = engineSource.indexOf("onTerminate: async (reason, state");
+  const hookEnd = engineSource.indexOf(
+    "          if (terminalCompletion.kind === \"rearm\")",
+    hookStart,
+  );
+  assert.notEqual(hookStart, -1, "onTerminate hook must exist");
+  assert.notEqual(hookEnd, -1, "onTerminate terminal handoff boundary must be found");
+  const hookSource = engineSource.slice(hookStart, hookEnd);
+  const terminalSource = readFileSync(
+    path.join(ENGINE_DIR, "terminal-closeout-controller.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    hookSource.includes("synthesize: async ({"),
+    false,
+    "terminal synthesis callback wiring must not stay inline in the adapter",
+  );
+  assert.equal(
+    hookSource.includes("synthesizeToolCallArtifactCleanup: async ({ messages })"),
+    false,
+    "completed cleanup synthesis callback wiring must not stay inline in the adapter",
+  );
+  assert.equal(
+    hookSource.includes("synthesizeFinalAfterToolRoundLimit({"),
+    false,
+    "onTerminate must not call the final-synthesis runner directly inside callback wiring",
+  );
+  assert.equal(
+    hookSource.includes("terminalCloseout.buildTerminalSynthesisHook({"),
+    true,
+    "onTerminate should delegate terminal synthesis callback wiring to TerminalCloseoutController",
+  );
+  assert.equal(
+    hookSource.includes("terminalCloseout.buildCompletedToolCallArtifactCleanupHook({"),
+    true,
+    "onTerminate should delegate completed cleanup callback wiring to TerminalCloseoutController",
+  );
+  assert.equal(
+    terminalSource.includes("buildTerminalSynthesisHook"),
+    true,
+    "terminal closeout owner should expose terminal synthesis callback builder",
+  );
+  assert.equal(
+    terminalSource.includes("buildCompletedToolCallArtifactCleanupHook"),
+    true,
+    "terminal closeout owner should expose completed cleanup callback builder",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

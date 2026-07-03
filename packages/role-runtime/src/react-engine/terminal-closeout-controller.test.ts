@@ -1825,6 +1825,80 @@ test("TerminalCloseoutController owns completed terminal hook handoff assembly",
   ]);
 });
 
+test("TerminalCloseoutController owns terminal synthesis callback wiring", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [{ role: "user", content: "Finish." }];
+  const runnerCalls: unknown[] = [];
+  const synthesize = controller.buildTerminalSynthesisHook<string, string, string>({
+    maxRounds: 7,
+    synthesizeFinal: async (input) => {
+      runnerCalls.push(input);
+      return {
+        result: result("terminal final"),
+        reduction: "terminal-reduction",
+        reductionSnapshot: "terminal-snapshot",
+        memoryFlush: "terminal-flush",
+      };
+    },
+  });
+
+  const generated = await synthesize({
+    messages,
+    reasonLines: ["limit reached"],
+  });
+
+  assert.deepEqual(runnerCalls, [
+    {
+      messages,
+      maxRounds: 7,
+      reasonLines: ["limit reached"],
+    },
+  ]);
+  assert.deepEqual(generated, {
+    result: result("terminal final"),
+    reduction: "terminal-reduction",
+    reductionSnapshot: "terminal-snapshot",
+    memoryFlush: "terminal-flush",
+  });
+});
+
+test("TerminalCloseoutController owns completed cleanup synthesis callback wiring", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [{ role: "user", content: "Clean up." }];
+  const runnerCalls: unknown[] = [];
+  const cleanup = controller.buildCompletedToolCallArtifactCleanupHook<
+    string,
+    string,
+    string
+  >({
+    maxRounds: 5,
+    synthesizeFinal: async (input) => {
+      runnerCalls.push(input);
+      return {
+        result: result("cleanup final"),
+        reduction: "cleanup-reduction",
+        reductionSnapshot: "cleanup-snapshot",
+        memoryFlush: "cleanup-flush",
+      };
+    },
+  });
+
+  const generated = await cleanup({ messages });
+
+  assert.deepEqual(runnerCalls, [
+    {
+      messages,
+      maxRounds: 5,
+    },
+  ]);
+  assert.deepEqual(generated, {
+    result: result("cleanup final"),
+    reduction: "cleanup-reduction",
+    reductionSnapshot: "cleanup-snapshot",
+    memoryFlush: "cleanup-flush",
+  });
+});
+
 test("TerminalCloseoutController owns completed closeout reason and session guards", async () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Finish." }];

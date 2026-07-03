@@ -345,6 +345,39 @@ export interface TerminalSynthesisRequest {
   reasonLines?: string[];
 }
 
+export interface TerminalFinalSynthesisRunnerInput {
+  messages: LLMMessage[];
+  maxRounds: number;
+  reasonLines?: string[];
+}
+
+export type TerminalFinalSynthesisRunner<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> = (
+  input: TerminalFinalSynthesisRunnerInput,
+) => Promise<
+  NonCompletedTerminalSynthesis<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >
+>;
+
+export interface TerminalFinalSynthesisHookBuilderInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  maxRounds: number;
+  synthesizeFinal: TerminalFinalSynthesisRunner<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+}
+
 export interface TerminalSynthesisInput<
   TReduction = unknown,
   TReductionSnapshot = unknown,
@@ -1280,6 +1313,51 @@ export class TerminalCloseoutController {
       completedSessionToolResults: state.completedSessionToolResults() ?? [],
       repairMarkers: (hookContext.repairMarkers ??= []),
     };
+  }
+
+  buildTerminalSynthesisHook<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalFinalSynthesisHookBuilderInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): TerminalSynthesisInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >["synthesize"] {
+    return ({ messages, reasonLines }) =>
+      input.synthesizeFinal({
+        messages,
+        maxRounds: input.maxRounds,
+        ...(reasonLines === undefined ? {} : { reasonLines }),
+      });
+  }
+
+  buildCompletedToolCallArtifactCleanupHook<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalFinalSynthesisHookBuilderInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): TerminalCompletedCloseoutInput<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >["synthesizeToolCallArtifactCleanup"] {
+    return ({ messages }) =>
+      input.synthesizeFinal({
+        messages,
+        maxRounds: input.maxRounds,
+      });
   }
 
   async completeTerminalCloseout<

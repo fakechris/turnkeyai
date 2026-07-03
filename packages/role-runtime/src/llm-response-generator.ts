@@ -2921,20 +2921,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     },
                   }
                 : {}),
-              synthesize: async ({
-                messages,
-                reasonLines: terminalReasonLines,
-              }: {
-                messages: LLMMessage[];
-                reasonLines?: string[];
-              }) =>
-                synthesizeFinalAfterToolRoundLimit({
-                  messages,
-                  maxRounds,
-                  ...(terminalReasonLines
-                    ? { reasonLines: terminalReasonLines }
-                    : {}),
-                }),
+              synthesize: terminalCloseout.buildTerminalSynthesisHook({
+                maxRounds,
+                synthesizeFinal: synthesizeFinalAfterToolRoundLimit,
+              }),
               completedCloseoutHook: {
                 completedCloseout,
                 state: runState,
@@ -2959,10 +2949,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     modelCallTrace,
                     tracePhase: "final_synthesis_repair",
                   }),
-                synthesizeToolCallArtifactCleanup: async ({ messages }) =>
-                  synthesizeFinalAfterToolRoundLimit({
-                    messages,
+                synthesizeToolCallArtifactCleanup:
+                  terminalCloseout.buildCompletedToolCallArtifactCleanupHook({
                     maxRounds,
+                    synthesizeFinal: synthesizeFinalAfterToolRoundLimit,
                   }),
                 toolTrace,
               },
