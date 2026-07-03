@@ -152,8 +152,45 @@ export interface FinalSynthesisToolCallArtifactRepairCompletionInput<
     TReduction,
     TReductionSnapshot,
     TMemoryFlush
-  > {
+> {
   fallback: Omit<FinalSynthesisToolCallArtifactFallbackInput, "repairedResult">;
+}
+
+export type FinalSynthesisTracePhase =
+  | "final_synthesis"
+  | "final_synthesis_repair";
+
+export interface FinalSynthesisGatewayInvocationInput {
+  request: FinalSynthesisPreparedGatewayRequest;
+  tracePhase: FinalSynthesisTracePhase;
+}
+
+export interface FinalSynthesisAfterToolRoundLimitInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  packet: RolePromptPacket;
+  messages: LLMMessage[];
+  maxRounds: number;
+  selection: {
+    modelId?: string;
+    modelChainId?: string;
+  };
+  activation?: RoleActivationInput;
+  reasonLines?: string[];
+  recordPruning(
+    snapshot: ToolResultPruningSnapshot | undefined,
+  ): Promise<void> | void;
+  synthesize(
+    input: FinalSynthesisGatewayInvocationInput,
+  ): Promise<
+    NonCompletedTerminalSynthesis<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  >;
 }
 
 type ForcedModelCallErrorContinuation = Extract<
@@ -716,6 +753,105 @@ export class TerminalCloseoutController {
       resultText: input.result.text,
       ...prepared,
     };
+  }
+
+  async synthesizeFinalAfterToolRoundLimit<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: FinalSynthesisAfterToolRoundLimitInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): Promise<
+    NonCompletedTerminalSynthesis<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  > {
+    try {
+      const initialRequest = this.buildFinalSynthesisGatewayRequest({
+        packet: input.packet,
+        messages: input.messages,
+        maxRounds: input.maxRounds,
+        ...(input.reasonLines === undefined
+          ? {}
+          : { reasonLines: input.reasonLines }),
+      });
+      await input.recordPruning(initialRequest.pruning);
+      const generated = await input.synthesize({
+        request: initialRequest,
+        tracePhase: "final_synthesis",
+      });
+
+      const providerSchemaRepairRequest =
+        this.buildFinalSynthesisProviderSchemaRepairRequest({
+          ...(input.activation === undefined
+            ? {}
+            : { activation: input.activation }),
+          taskPrompt: input.packet.taskPrompt,
+          messages: initialRequest.gatewayMessages,
+          // Separate entry point outside the generate() loop: its idempotency
+          // ledger is the final gateway messages, where this method injects and
+          // scans its own repair prompt.
+          repairMarkers: initialRequest.gatewayMessages,
+          resultText: generated.result.text,
+        });
+      if (providerSchemaRepairRequest) {
+        await input.recordPruning(providerSchemaRepairRequest.pruning);
+        const repaired = await input.synthesize({
+          request: providerSchemaRepairRequest,
+          tracePhase: "final_synthesis_repair",
+        });
+        return this.mergeFinalSynthesisRepairResult({
+          initial: generated,
+          repair: repaired,
+        });
+      }
+
+      const toolCallArtifactRepairRequest =
+        this.buildFinalSynthesisToolCallArtifactRepairRequest({
+          messages: initialRequest.gatewayMessages,
+          result: generated.result,
+        });
+      if (!toolCallArtifactRepairRequest) {
+        return generated;
+      }
+      await input.recordPruning(toolCallArtifactRepairRequest.pruning);
+      const repaired = await input.synthesize({
+        request: toolCallArtifactRepairRequest,
+        tracePhase: "final_synthesis_repair",
+      });
+      return this.completeFinalSynthesisToolCallArtifactRepair({
+        initial: generated,
+        repair: repaired,
+        fallback: {
+          ...(input.activation === undefined
+            ? {}
+            : { activation: input.activation }),
+          messages: input.messages,
+          packet: input.packet,
+          selection: input.selection,
+        },
+      });
+    } catch (error) {
+      const localResult = this.buildFinalSynthesisErrorFallback({
+        ...(input.activation === undefined
+          ? {}
+          : { activation: input.activation }),
+        messages: input.messages,
+        packet: input.packet,
+        selection: input.selection,
+        error,
+      });
+      if (!localResult) {
+        throw error;
+      }
+      return { result: localResult };
+    }
   }
 
   applyModelCallErrorFallback<

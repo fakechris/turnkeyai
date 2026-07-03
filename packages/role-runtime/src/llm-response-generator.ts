@@ -3628,122 +3628,36 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     } & ReductionEnvelopeSnapshot;
     memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
-    try {
-      const terminalCloseout = createTerminalCloseoutController();
-      const finalSynthesisRequest =
-        terminalCloseout.buildFinalSynthesisGatewayRequest({
-          packet: input.packet,
-          messages: input.messages,
-          maxRounds: input.maxRounds,
-          ...(input.reasonLines === undefined
-            ? {}
-            : { reasonLines: input.reasonLines }),
-        });
-      await this.recordToolResultPruningBoundarySafely(
-        input.activation,
-        input.selection,
-        finalSynthesisRequest.pruning,
-      );
-      const finalMessages = finalSynthesisRequest.gatewayMessages;
-      const generated = await this.generateWithEnvelopeRetry({
-        activation: input.activation,
-        packet: input.packet,
-        selection: input.selection,
-        gatewayInput: buildToolFreeGatewayInput({
-          baseGatewayInput: input.baseGatewayInput,
-          messages: finalMessages,
-        }),
-        ...(input.modelCallTrace
-          ? { modelCallTrace: input.modelCallTrace }
-          : {}),
-        tracePhase: "final_synthesis",
-      });
-      const providerSchemaRepairRequest =
-        terminalCloseout.buildFinalSynthesisProviderSchemaRepairRequest({
-          activation: input.activation,
-          taskPrompt: input.packet.taskPrompt,
-          messages: finalMessages,
-          // Separate entry point (generateFinalAfterToolRoundLimit) outside the
-          // generate() loop: its idempotency ledger is finalMessages, which is
-          // where this method injects + scans its own repair prompt. Pass it as
-          // repairMarkers to preserve the pre-migration finalMessages scan.
-          repairMarkers: finalMessages,
-          resultText: generated.result.text,
-        });
-      if (providerSchemaRepairRequest) {
-        await this.recordToolResultPruningBoundarySafely(
+    return createTerminalCloseoutController().synthesizeFinalAfterToolRoundLimit({
+      activation: input.activation,
+      packet: input.packet,
+      messages: input.messages,
+      maxRounds: input.maxRounds,
+      selection: input.selection,
+      ...(input.reasonLines === undefined
+        ? {}
+        : { reasonLines: input.reasonLines }),
+      recordPruning: (snapshot) =>
+        this.recordToolResultPruningBoundarySafely(
           input.activation,
           input.selection,
-          providerSchemaRepairRequest.pruning,
-        );
-        const repaired = await this.generateWithEnvelopeRetry({
+          snapshot,
+        ),
+      synthesize: ({ request, tracePhase }) =>
+        this.generateWithEnvelopeRetry({
           activation: input.activation,
           packet: input.packet,
           selection: input.selection,
           gatewayInput: buildToolFreeGatewayInput({
             baseGatewayInput: input.baseGatewayInput,
-            messages: providerSchemaRepairRequest.gatewayMessages,
+            messages: request.gatewayMessages,
           }),
           ...(input.modelCallTrace
             ? { modelCallTrace: input.modelCallTrace }
             : {}),
-          tracePhase: "final_synthesis_repair",
-        });
-        return terminalCloseout.mergeFinalSynthesisRepairResult({
-          initial: generated,
-          repair: repaired,
-        });
-      }
-      const toolCallArtifactRepairRequest =
-        terminalCloseout.buildFinalSynthesisToolCallArtifactRepairRequest({
-          messages: finalMessages,
-          result: generated.result,
-        });
-      if (!toolCallArtifactRepairRequest) {
-        return generated;
-      }
-      await this.recordToolResultPruningBoundarySafely(
-        input.activation,
-        input.selection,
-        toolCallArtifactRepairRequest.pruning,
-      );
-      const repaired = await this.generateWithEnvelopeRetry({
-        activation: input.activation,
-        packet: input.packet,
-        selection: input.selection,
-        gatewayInput: buildToolFreeGatewayInput({
-          baseGatewayInput: input.baseGatewayInput,
-          messages: toolCallArtifactRepairRequest.gatewayMessages,
+          tracePhase,
         }),
-        ...(input.modelCallTrace
-          ? { modelCallTrace: input.modelCallTrace }
-          : {}),
-        tracePhase: "final_synthesis_repair",
-      });
-      return terminalCloseout.completeFinalSynthesisToolCallArtifactRepair({
-        initial: generated,
-        repair: repaired,
-        fallback: {
-          activation: input.activation,
-          messages: input.messages,
-          packet: input.packet,
-          selection: input.selection,
-        },
-      });
-    } catch (error) {
-      const localResult =
-        createTerminalCloseoutController().buildFinalSynthesisErrorFallback({
-          activation: input.activation,
-          messages: input.messages,
-          packet: input.packet,
-          selection: input.selection,
-          error,
-        });
-      if (!localResult) {
-        throw error;
-      }
-      return { result: localResult };
-    }
+    });
   }
 
   private async executeToolCalls(input: {

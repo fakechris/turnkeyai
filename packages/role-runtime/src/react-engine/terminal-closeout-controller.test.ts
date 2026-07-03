@@ -471,6 +471,105 @@ test("TerminalCloseoutController builds final synthesis tool-call artifact clean
   );
 });
 
+test("TerminalCloseoutController owns final synthesis provider repair orchestration", async () => {
+  const controller = createTerminalCloseoutController();
+  const phases: string[] = [];
+  const pruningCalls: unknown[] = [];
+  const requests: LLMMessage[][] = [];
+
+  const synthesis = await controller.synthesizeFinalAfterToolRoundLimit({
+    packet: packet(
+      "Compare pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead.",
+    ),
+    messages: [{ role: "user", content: "Compare pricing." }],
+    maxRounds: 2,
+    selection: {},
+    recordPruning: (snapshot) => {
+      pruningCalls.push(snapshot ?? null);
+    },
+    synthesize: async ({ request, tracePhase }) => {
+      phases.push(tracePhase);
+      requests.push(request.gatewayMessages);
+      if (tracePhase === "final_synthesis") {
+        return {
+          result: result(
+            [
+              "| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+              "| --- | --- | --- | --- |",
+              "| A | 未验证 | 未验证 | 未验证 |",
+            ].join("\n"),
+          ),
+          memoryFlush: "initial-memory",
+        };
+      }
+      return { result: result("clean provider repair") };
+    },
+  });
+
+  assert.deepEqual(phases, ["final_synthesis", "final_synthesis_repair"]);
+  assert.equal(pruningCalls.length, 2);
+  assert.match(
+    requests[1]?.at(-1)?.content as string,
+    /introduced provider\/search\/model-support columns/i,
+  );
+  assert.equal(synthesis.result.text, "clean provider repair");
+  assert.equal(synthesis.memoryFlush, "initial-memory");
+});
+
+test("TerminalCloseoutController owns final synthesis tool-call cleanup orchestration", async () => {
+  const controller = createTerminalCloseoutController();
+  const phases: string[] = [];
+  const requests: LLMMessage[][] = [];
+
+  const synthesis = await controller.synthesizeFinalAfterToolRoundLimit({
+    packet: packet("Summarize the verified evidence."),
+    messages: [{ role: "user", content: "Summarize evidence." }],
+    maxRounds: 2,
+    selection: {},
+    recordPruning: () => {},
+    synthesize: async ({ request, tracePhase }) => {
+      phases.push(tracePhase);
+      requests.push(request.gatewayMessages);
+      if (tracePhase === "final_synthesis") {
+        return { result: result('<tool_call name="web_search">query</tool_call>') };
+      }
+      return { result: result("clean tool-call repair") };
+    },
+  });
+
+  assert.deepEqual(phases, ["final_synthesis", "final_synthesis_repair"]);
+  assert.match(
+    requests[1]?.at(-1)?.content as string,
+    /tools are disabled for final synthesis/i,
+  );
+  assert.equal(synthesis.result.text, "clean tool-call repair");
+});
+
+test("TerminalCloseoutController owns final synthesis gateway-error fallback", async () => {
+  const controller = createTerminalCloseoutController();
+
+  const synthesis = await controller.synthesizeFinalAfterToolRoundLimit({
+    packet: packet("Summarize the verified source fact.", "No links."),
+    messages: [
+      {
+        role: "tool",
+        name: "web_fetch",
+        content: "ACME pricing was verified at http://127.0.0.1:5173/pricing.",
+      } as LLMMessage,
+    ],
+    maxRounds: 2,
+    selection: { modelId: "model-e" },
+    recordPruning: () => {},
+    synthesize: async () => {
+      throw new Error("final synthesis unavailable");
+    },
+  });
+
+  assert.equal(synthesis.result.modelId, "model-e");
+  assert.match(synthesis.result.text, /Verified:/);
+  assert.doesNotMatch(synthesis.result.text, /127\.0\.0\.1/);
+});
+
 test("TerminalCloseoutController completes final synthesis tool-call artifact repair", () => {
   const controller = createTerminalCloseoutController();
 

@@ -131,8 +131,8 @@ test("terminal final synthesis provider-schema repair request routes through ter
   );
   assert.equal(
     helperSource.includes("buildFinalSynthesisGatewayRequest"),
-    true,
-    "terminal final synthesis gateway message preparation must route through TerminalCloseoutController",
+    false,
+    "terminal final synthesis gateway request construction must not be orchestrated directly in the adapter",
   );
   assert.equal(
     helperSource.includes("evaluateFinalSynthesisProviderSchemaRepair"),
@@ -146,8 +146,8 @@ test("terminal final synthesis provider-schema repair request routes through ter
   );
   assert.equal(
     helperSource.includes("buildFinalSynthesisProviderSchemaRepairRequest"),
-    true,
-    "terminal final synthesis provider-schema repair message construction must route through TerminalCloseoutController",
+    false,
+    "terminal final synthesis provider-schema repair request construction must not be orchestrated directly in the adapter",
   );
   assert.equal(
     helperSource.includes("buildToolCallArtifactCleanupMessages"),
@@ -161,12 +161,27 @@ test("terminal final synthesis provider-schema repair request routes through ter
   );
   assert.equal(
     helperSource.includes("buildFinalSynthesisToolCallArtifactRepairRequest"),
-    true,
-    "terminal final synthesis tool-call cleanup requests must route through TerminalCloseoutController",
+    false,
+    "terminal final synthesis tool-call cleanup request construction must not be orchestrated directly in the adapter",
   );
   assert.equal(
     helperSource.includes("completeFinalSynthesisToolCallArtifactRepair"),
+    false,
+    "terminal final synthesis tool-call cleanup completion must not be orchestrated directly in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("mergeFinalSynthesisRepairResult"),
+    false,
+    "terminal final synthesis repair merging must not be orchestrated directly in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("buildFinalSynthesisErrorFallback"),
+    false,
+    "terminal final synthesis gateway-error fallback must not be orchestrated directly in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("synthesizeFinalAfterToolRoundLimit"),
     true,
-    "terminal final synthesis tool-call cleanup completion must route through TerminalCloseoutController",
+    "terminal final synthesis orchestration must route through TerminalCloseoutController",
   );
 });
