@@ -374,3 +374,18 @@ test("runtime tool progress safe recording routes through tool-use owner", () =>
     "adapter should call the neutral safe runtime tool progress recorder",
   );
 });
+
+test("native tool trace persistence routes through native message owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async persistNativeToolTraceSafely"),
+    false,
+    "native tool trace persistence must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes("persistNativeToolTraceSafely({"),
+    true,
+    "adapter should call the neutral safe native tool trace persister",
+  );
+});

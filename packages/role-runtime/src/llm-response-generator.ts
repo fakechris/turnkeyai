@@ -41,8 +41,8 @@ import {
 } from "./model-call-trace";
 import {
   canonicalizeSessionToolTraceCalls,
-  buildNativeToolMessages,
   countNativeToolCalls,
+  persistNativeToolTraceSafely,
   type NativeToolRoundTrace,
 } from "./native-tool-messages";
 import {
@@ -1627,17 +1627,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           roundTrace.progress?.push(
             toNativeToolProgressTrace(call, progress, this.clock.now()),
           );
-          await this.persistNativeToolTraceSafely(input.activation, toolTrace, {
+          await persistNativeToolTraceSafely({
+            activation: input.activation,
+            toolTrace,
+            nativeToolMessageStore: this.nativeToolMessageStore,
+            now: () => this.clock.now(),
+            defer: this.deferToolObservability,
             forceBlocking: progress.phase === "started",
           });
         },
         onResult: async (toolResult) => {
           roundTrace.results.push(toNativeToolResultTrace(toolResult));
-          await this.persistNativeToolTraceSafely(input.activation, toolTrace);
+          await persistNativeToolTraceSafely({
+            activation: input.activation,
+            toolTrace,
+            nativeToolMessageStore: this.nativeToolMessageStore,
+            now: () => this.clock.now(),
+            defer: this.deferToolObservability,
+          });
         },
       });
       if (canonicalizeSessionToolTraceCalls(roundTrace, toolResults)) {
-        await this.persistNativeToolTraceSafely(input.activation, toolTrace);
+        await persistNativeToolTraceSafely({
+          activation: input.activation,
+          toolTrace,
+          nativeToolMessageStore: this.nativeToolMessageStore,
+          now: () => this.clock.now(),
+          defer: this.deferToolObservability,
+        });
       }
       throwIfAborted(input.signal);
       messages = appendAssistantToolCallMessage(messages, {
@@ -2676,7 +2693,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           messages: round.messages,
         }),
       persistNativeToolTrace: (options) =>
-        this.persistNativeToolTraceSafely(activation, toolTrace, options),
+        persistNativeToolTraceSafely({
+          activation,
+          toolTrace,
+          nativeToolMessageStore: this.nativeToolMessageStore,
+          now: () => this.clock.now(),
+          defer: this.deferToolObservability,
+          ...options,
+        }),
     });
     const agent = createReActAgent<RoleToolContext>({
       model,
@@ -3849,13 +3873,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         roundTrace.progress?.push(
           toNativeToolProgressTrace(call, progress, this.clock.now()),
         );
-        await this.persistNativeToolTraceSafely(input.activation, input.toolTrace, {
+        await persistNativeToolTraceSafely({
+          activation: input.activation,
+          toolTrace: input.toolTrace,
+          nativeToolMessageStore: this.nativeToolMessageStore,
+          now: () => this.clock.now(),
+          defer: this.deferToolObservability,
           forceBlocking: progress.phase === "started",
         });
       },
       onResult: async (toolResult) => {
         roundTrace.results.push(toNativeToolResultTrace(toolResult));
-        await this.persistNativeToolTraceSafely(input.activation, input.toolTrace);
+        await persistNativeToolTraceSafely({
+          activation: input.activation,
+          toolTrace: input.toolTrace,
+          nativeToolMessageStore: this.nativeToolMessageStore,
+          now: () => this.clock.now(),
+          defer: this.deferToolObservability,
+        });
       },
     });
     let messages = appendAssistantToolCallMessage(input.messages, {
@@ -3903,42 +3938,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolName: call.name,
         error,
       });
-    }
-  }
-
-  private async persistNativeToolTraceSafely(
-    activation: RoleActivationInput,
-    toolTrace: NativeToolRoundTrace[],
-    options: { forceBlocking?: boolean } = {},
-  ): Promise<void> {
-    const nativeToolMessageStore = this.nativeToolMessageStore;
-    if (!nativeToolMessageStore) return;
-    const work = async () => {
-      const messages = buildNativeToolMessages(
-        activation,
-        { toolUse: { rounds: toolTrace } },
-        this.clock.now(),
-      );
-      for (const message of messages) {
-        await nativeToolMessageStore.append(message);
-      }
-    };
-    const onError = (error: unknown) => {
-      console.error("native tool message persistence failed", {
-        threadId: activation.thread.threadId,
-        flowId: activation.flow.flowId,
-        taskId: activation.handoff.taskId,
-        error,
-      });
-    };
-    if (this.deferToolObservability && !options.forceBlocking) {
-      void work().catch(onError);
-      return;
-    }
-    try {
-      await work();
-    } catch (error) {
-      onError(error);
     }
   }
 

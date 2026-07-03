@@ -5,8 +5,10 @@ import type { RoleToolExecutionResult } from "./tool-use";
 import {
   canonicalizeSessionToolTraceCalls,
   countNativeToolCalls,
+  persistNativeToolTraceSafely,
   type NativeToolRoundTrace,
 } from "./native-tool-messages";
+import type { RoleActivationInput, TeamMessage } from "@turnkeyai/core-types/team";
 
 function sessionResult(sessionKey: string): string {
   return JSON.stringify({
@@ -97,3 +99,107 @@ test("countNativeToolCalls counts calls across trace rounds", () => {
     3,
   );
 });
+
+test("persistNativeToolTraceSafely appends native tool messages", async () => {
+  const appended: TeamMessage[] = [];
+  const activation = buildActivation();
+  const toolTrace: NativeToolRoundTrace[] = [
+    {
+      round: 1,
+      calls: [{ id: "call-1", name: "web_fetch", input: { url: "https://e.test" } }],
+      results: [
+        {
+          toolCallId: "call-1",
+          toolName: "web_fetch",
+          isError: false,
+          contentBytes: 2,
+          content: "ok",
+        },
+      ],
+      progress: [
+        {
+          toolCallId: "call-1",
+          toolName: "web_fetch",
+          phase: "started",
+          summary: "Tool call started: web_fetch",
+          ts: 100,
+        },
+      ],
+    },
+  ];
+
+  await persistNativeToolTraceSafely({
+    activation,
+    toolTrace,
+    nativeToolMessageStore: {
+      async append(message) {
+        appended.push(message);
+      },
+    },
+    now: () => 1000,
+  });
+
+  assert.equal(appended.length, 2);
+  assert.equal(appended[0]?.id, "task-1:tool-round:1:assistant");
+  assert.equal(appended[0]?.metadata?.["nativeToolUse"], true);
+  assert.equal(appended[1]?.id, "task-1:tool-round:1:result:call-1");
+  assert.equal(appended[1]?.toolCallId, "call-1");
+});
+
+test("persistNativeToolTraceSafely is a no-op without a store", async () => {
+  await persistNativeToolTraceSafely({
+    activation: buildActivation(),
+    toolTrace: [],
+    now: () => 1,
+  });
+});
+
+test("persistNativeToolTraceSafely swallows store failures", async () => {
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    await persistNativeToolTraceSafely({
+      activation: buildActivation(),
+      toolTrace: [
+        {
+          round: 1,
+          calls: [{ id: "call-1", name: "web_fetch", input: {} }],
+          results: [],
+        },
+      ],
+      nativeToolMessageStore: {
+        async append() {
+          throw new Error("store unavailable");
+        },
+      },
+      now: () => 1,
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.[0], "native tool message persistence failed");
+});
+
+function buildActivation(): RoleActivationInput {
+  return {
+    thread: {
+      threadId: "thread-1",
+      leadRoleId: "role-lead",
+      roles: [{ roleId: "role-lead", name: "Lead", seat: "lead" }],
+    },
+    flow: { flowId: "flow-1" },
+    handoff: {
+      taskId: "task-1",
+      activationType: "user_request",
+    },
+    runState: {
+      runKey: "run-1",
+      roleId: "role-lead",
+    },
+  } as unknown as RoleActivationInput;
+}
