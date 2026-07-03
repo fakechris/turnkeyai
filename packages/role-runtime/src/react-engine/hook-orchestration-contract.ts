@@ -113,7 +113,7 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     hook: "onRepairRound",
     phase: "repair_round",
     installed: true,
-    moduleOps: ["RepairPolicyRegistry.evaluateNaturalFinish"],
+    moduleOps: ["RepairPolicyRegistry.applyNaturalFinishRepairHook"],
   },
   {
     hook: "onTerminate",

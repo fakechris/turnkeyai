@@ -45,7 +45,10 @@ import {
   shouldRepairTimeoutFollowupFinalGuidance,
   shouldRepairWeakEvidenceSynthesis,
 } from "../tool-loop-shared";
-import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  countNativeToolCalls,
+  type NativeToolRoundTrace,
+} from "../native-tool-messages";
 import { buildEvidenceSnapshot } from "./evidence-ledger";
 import {
   buildExtraneousProviderTableSchemaRepairPrompt,
@@ -106,6 +109,23 @@ export interface NaturalFinishRepairInput {
   toolTrace?: NativeToolRoundTrace[];
   tools?: readonly { name: string }[];
   evidenceText?: string;
+}
+
+export interface NaturalFinishRepairHookContext {
+  repairMarkers?: LLMMessage[];
+}
+
+export interface NaturalFinishRepairHookInput {
+  active: boolean;
+  activation?: RoleActivationInput;
+  hookContext: NaturalFinishRepairHookContext;
+  recoveryToolBudget: { maxToolCalls: number } | null;
+  recoveryToolCallsBeforeActivation: number;
+  messages: LLMMessage[];
+  resultText: string;
+  taskPrompt?: string;
+  toolTrace: NativeToolRoundTrace[];
+  tools?: readonly { name: string }[];
 }
 
 export interface CompletedSynthesisRepairInput {
@@ -293,6 +313,9 @@ export type CompletedSynthesisRepairDecision =
     };
 
 export interface RepairPolicyRegistry {
+  applyNaturalFinishRepairHook(
+    input: NaturalFinishRepairHookInput,
+  ): NaturalFinishRepairApplication | null;
   applyNaturalFinishRepair(
     input: NaturalFinishRepairInput,
   ): NaturalFinishRepairApplication | null;
@@ -309,6 +332,36 @@ export interface RepairPolicyRegistry {
 }
 
 class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
+  applyNaturalFinishRepairHook(
+    input: NaturalFinishRepairHookInput,
+  ): NaturalFinishRepairApplication | null {
+    if (!input.active) {
+      return null;
+    }
+    const repairMarkers = (input.hookContext.repairMarkers ??= []);
+    return this.applyNaturalFinishRepair({
+      ...(input.activation === undefined
+        ? {}
+        : { activation: input.activation }),
+      finalRecoveryBudget: input.recoveryToolBudget
+        ? {
+            maxToolCalls: input.recoveryToolBudget.maxToolCalls,
+            usedToolCalls:
+              input.recoveryToolCallsBeforeActivation +
+              countNativeToolCalls(input.toolTrace),
+          }
+        : null,
+      messages: input.messages,
+      repairMarkers,
+      resultText: input.resultText,
+      ...(input.taskPrompt === undefined
+        ? {}
+        : { taskPrompt: input.taskPrompt }),
+      toolTrace: input.toolTrace,
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
+    });
+  }
+
   applyNaturalFinishRepair(
     input: NaturalFinishRepairInput,
   ): NaturalFinishRepairApplication | null {

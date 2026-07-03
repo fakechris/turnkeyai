@@ -24,7 +24,7 @@
     "ContinuationController.applyAfterExecuteContinuationHook",
     "CloseoutPolicyRegistry.applyPostExecuteCloseoutHook",
     "ContinuationController.applyRoundEmptyHook",
-    "RepairPolicyRegistry.evaluateNaturalFinish",
+    "RepairPolicyRegistry.applyNaturalFinishRepairHook",
     "EngineRunState.captureFinalMessages",
     "CloseoutPolicyRegistry.evaluateTerminate",
     "TerminalCloseoutController.handleTerminalCloseoutHook",

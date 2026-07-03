@@ -496,6 +496,53 @@ test("engine lightweight hook entrypoints route through their owners", () => {
   );
 });
 
+test("engine natural-finish repair hook routes through repair-policy owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf("private async runViaReActEngine");
+  const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
+  assert.notEqual(start, -1, "runViaReActEngine must exist");
+  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  const engineSource = source.slice(start, end);
+  const hookStart = engineSource.indexOf("onRepairRound: (state, ctx)");
+  const hookEnd = engineSource.indexOf(
+    "        // Stage 5 closeout-answer producer.",
+    hookStart,
+  );
+  assert.notEqual(hookStart, -1, "onRepairRound hook must exist");
+  assert.notEqual(hookEnd, -1, "onRepairRound boundary must be found");
+  const hookSource = engineSource.slice(hookStart, hookEnd);
+  const repairSource = readFileSync(
+    path.join(ENGINE_DIR, "repair-policy-registry.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    hookSource.includes("if (!activeToolLoop)"),
+    false,
+    "natural-finish repair active-loop gating must live with RepairPolicyRegistry",
+  );
+  assert.equal(
+    hookSource.includes("countNativeToolCalls(toolTrace)"),
+    false,
+    "natural-finish repair recovery budget accounting must live with RepairPolicyRegistry",
+  );
+  assert.equal(
+    hookSource.includes("applyNaturalFinishRepair({"),
+    false,
+    "natural-finish repair application must not stay inline in runViaReActEngine",
+  );
+  assert.equal(
+    hookSource.includes("applyNaturalFinishRepairHook("),
+    true,
+    "onRepairRound should delegate hook flow to RepairPolicyRegistry",
+  );
+  assert.equal(
+    repairSource.includes("applyNaturalFinishRepair({"),
+    true,
+    "repair-policy owner should keep natural-finish repair application",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

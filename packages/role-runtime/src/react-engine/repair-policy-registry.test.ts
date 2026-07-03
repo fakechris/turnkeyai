@@ -283,6 +283,68 @@ test("RepairPolicyRegistry applies the first natural-finish repair from the casc
   assert.deepEqual(repairMarkers, [repair.messages.at(-1)]);
 });
 
+test("RepairPolicyRegistry owns natural-finish repair hook gating and budget accounting", () => {
+  const registry = createRepairPolicyRegistry();
+  const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];
+  const inactiveContext: { repairMarkers?: LLMMessage[] } = {};
+
+  assert.equal(
+    registry.applyNaturalFinishRepairHook({
+      active: false,
+      hookContext: inactiveContext,
+      recoveryToolBudget: { maxToolCalls: 2 },
+      recoveryToolCallsBeforeActivation: 1,
+      messages,
+      resultText: "@{role-explore} continue",
+      toolTrace: [
+        {
+          round: 1,
+          calls: [{ id: "call-1", name: "sessions_spawn", input: {} }],
+          results: [
+            {
+              toolCallId: "call-1",
+              toolName: "sessions_spawn",
+              isError: false,
+              contentBytes: 12,
+            },
+          ],
+        },
+      ],
+    }),
+    null,
+  );
+  assert.deepEqual(inactiveContext, {});
+
+  const hookContext: { repairMarkers?: LLMMessage[] } = {};
+  const repair = registry.applyNaturalFinishRepairHook({
+    active: true,
+    hookContext,
+    recoveryToolBudget: { maxToolCalls: 2 },
+    recoveryToolCallsBeforeActivation: 1,
+    messages,
+    resultText: "@{role-explore} continue",
+    toolTrace: [
+      {
+        round: 1,
+        calls: [{ id: "call-1", name: "sessions_spawn", input: {} }],
+        results: [
+          {
+            toolCallId: "call-1",
+            toolName: "sessions_spawn",
+            isError: false,
+            contentBytes: 12,
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.ok(repair && "messages" in repair);
+  assert.equal(repair.forceToolChoice, "none");
+  assert.ok(hookContext.repairMarkers);
+  assert.deepEqual(hookContext.repairMarkers, [repair.messages.at(-1)]);
+});
+
 test("RepairPolicyRegistry returns missing browser evidence repair decision", () => {
   const registry = createRepairPolicyRegistry();
 

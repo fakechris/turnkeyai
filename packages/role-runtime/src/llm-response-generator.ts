@@ -2838,31 +2838,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // browser-evidence-dimensions is intentionally closeout-only, not part of
         // the natural-finish cascade.)
         onRepairRound: (state, ctx) => {
-          // Inline only runs the post-synthesis repair cascade when a tool loop is
-          // active (the cascade lives inside `if (activeToolLoop)`); match that so
-          // a no-tool-loop engine request doesn't make an extra repair round.
-          if (!activeToolLoop) {
-            return null;
-          }
-          // Persist the ledger back onto ctx (??=, not ?? []) so the marker we add
-          // below survives into the next round's idempotency check — an ephemeral
-          // local array would let the same repair re-fire. The engine already seeds
-          // ctx.repairMarkers = []; this hardens against an unseeded ctx.
-          const repairMarkers = (ctx.repairMarkers ??= []);
-          return repairPolicy.applyNaturalFinishRepair({
+          return repairPolicy.applyNaturalFinishRepairHook({
+            active: Boolean(activeToolLoop),
             activation,
-            finalRecoveryBudget: recoveryToolBudget
-              ? {
-                  maxToolCalls: recoveryToolBudget.maxToolCalls,
-                  usedToolCalls:
-                    recoveryToolCallsBeforeActivation +
-                    countNativeToolCalls(toolTrace),
-                }
-              : null,
+            hookContext: ctx,
+            recoveryToolBudget,
+            recoveryToolCallsBeforeActivation,
             taskPrompt: packet.taskPrompt,
             resultText: state.lastText,
             messages: state.messages,
-            repairMarkers,
             toolTrace,
             ...(initialGatewayInput.tools === undefined
               ? {}
