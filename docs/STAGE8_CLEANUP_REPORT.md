@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `75e6e08d2280daf256cce904667dd459edf18e64`
+**Code HEAD before this docs-only report:** `e0c356e876ecf4abd8cd0ec237de0983abf3c95e`
 **Date:** 2026-07-02
 
 ## Summary
@@ -142,8 +142,9 @@ could not move the normalizer without making the inline parity reference import 
   envelope retry invocation, last model result capture, and reduction/memory
   state writes.
   Engine forced runtime tool-round runner wiring now lives in
-  `react-engine/engine-forced-tool-round-runner.ts`: the adapter creates one
-  runner for `runViaReActEngine`, and the continuation/model-error hooks pass
+  `react-engine/engine-forced-tool-round-runner.ts`: the owner now binds the
+  role-runtime provider recorder selection, native persistence, clock, defer
+  mode, observer, and signal once, and the continuation/model-error hooks pass
   only messages, tool calls, and assistant text into it.
   Engine final response assembly now lives in
   `react-engine/engine-final-response.ts`: finalization epilogue application,
@@ -529,6 +530,7 @@ outside the terminal completion path.
 | `5178973` | Move role-engine run-state value typing/factory into `react-engine/engine-run-state.ts`; adapter calls `createRoleEngineRunState()`. |
 | `1de02ca` | Move engine run observer dependency wiring into `react-engine/engine-run-observer.ts`; adapter calls `createRoleEngineRunObserver()`. |
 | `75e6e08` | Move engine model client dependency wiring into `react-engine/engine-model-client.ts`; adapter calls `createRoleEngineModelClient()`. |
+| `e0c356e` | Move engine forced-round runner dependency wiring into `react-engine/engine-forced-tool-round-runner.ts`; adapter calls `createRoleEngineRuntimeForcedToolRoundRunner()`. |
 
 ## Current Extracted Implementation
 
@@ -747,10 +749,10 @@ Real implementation now exists in:
   `EngineRunState`.
 - `react-engine/engine-forced-tool-round-runner.ts` for the engine forced
   runtime tool-round executor wiring: tool-loop execution dependencies,
-  native trace persistence callback, provider protocol fallback recorder, clock,
-  defer mode, observer, and signal are bound once per engine run, while forced
-  continuation and model-error hooks pass only the round messages, calls, and
-  assistant text.
+  native trace persistence callback, role-runtime provider protocol recorder
+  selection, clock, defer mode, observer, and signal are bound once per engine
+  run, while forced continuation and model-error hooks pass only the round
+  messages, calls, and assistant text.
 - `react-engine/engine-final-response.ts` for engine final generated-reply
   assembly: finalization epilogue invocation, requested three-line label
   enforcement, mention extraction, closeout-vs-last-model metadata selection,
@@ -815,14 +817,14 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine model client wiring slice:
+Fresh gates run for this engine forced-round runner wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 28 / 28 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-model-client.test.ts` | 2 / 2 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 245 / 245 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 29 / 29 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-forced-tool-round-runner.test.ts` | 2 / 2 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 247 / 247 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -1010,11 +1012,11 @@ Stage 8 boundaries/slices are now real:
   instead of owning the model wrapper body, pruning callback wiring, trace round
   counter, last-result slot, and reduction/memory state writes inline.
 - engine forced runtime tool-round runner wiring now routes through
-  `react-engine/engine-forced-tool-round-runner.ts`; `runViaReActEngine` binds
-  the tool-loop, recorder, native persistence, provider protocol fallback,
-  observer, clock, defer, and signal dependencies once, then continuation and
-  model-error hooks pass only each forced round's messages, calls, and assistant
-  text.
+  `react-engine/engine-forced-tool-round-runner.ts`; `runViaReActEngine` passes
+  the tool-loop, recorder, native persistence, observer, clock, defer, and
+  signal dependencies to `createRoleEngineRuntimeForcedToolRoundRunner()`, then
+  continuation and model-error hooks pass only each forced round's messages,
+  calls, and assistant text.
 - engine final generated-reply assembly now routes through
   `react-engine/engine-final-response.ts`; `runViaReActEngine` passes final text,
   run-state snapshots, tool trace, model-call trace, and last model result into
