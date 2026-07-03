@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `58624f9173fc522751a6e374bea8be64a792a487`
+**Code HEAD before this docs-only report:** `ecc9aa3caa9688650111c499d4762e64892619df`
 **Date:** 2026-07-02
 
 ## Summary
@@ -127,6 +127,12 @@ could not move the normalizer without making the inline parity reference import 
   permission-query pre-emption before awaiting-context setup-only no-tool
   suppression; the adapter passes only calls, task, messages, last text, and the
   repair-marker ledger.
+  Completed-closeout synthesis callback construction now lives in
+  `TerminalCloseoutController.handleTerminalCloseoutHook()`: the controller
+  builds the completed callback from the terminate hook input, carries current
+  messages into `CompletedCloseoutController`, asks the evidence ledger for
+  completed tool-result text, and preserves the adapter-injected gateway repair
+  callbacks.
   Remaining pending-call closeout session context construction now lives in
   `react-engine/closeout-policy-registry.ts`; the adapter passes task/messages
   instead of concatenating the closeout session context locally.
@@ -256,8 +262,8 @@ could not move the normalizer without making the inline parity reference import 
 
 The adapter is thinner, but the campaign is **not complete**. `runViaReActEngine` is
 still an adapter-heavy bridge and still owns remaining evidence behavior,
-terminal closeout gateway callback wiring, and remaining adapter-side action
-application outside the terminal completion path.
+terminal closeout gateway calls, and remaining adapter-side action application
+outside the terminal completion path.
 
 ## Commits Added After The Blocked Report
 
@@ -363,6 +369,7 @@ application outside the terminal completion path.
 | `d2afbb1` | Add `EvidenceLedger.forRun()` and route engine run evidence snapshots through the ledger-owned run snapshotter instead of an adapter-local closure. |
 | `84b1ae9` | Move the full `onSuppressToolCalls` read-only / awaiting-context suppression flow into `PermissionPolicy.applySuppressToolCallsHook`; update the hook contract and policy-trace golden. |
 | `58624f9` | Move the full `onAfterExecuteContinue` observer / current-round evidence / continuation cascade flow into `ContinuationController.applyAfterExecuteContinuationHook`; update the hook contract and policy-trace golden. |
+| `ecc9aa3` | Move completed-closeout synthesis callback construction into `TerminalCloseoutController.handleTerminalCloseoutHook`; adapter supplies completed controller, ledger, and gateway callbacks. |
 
 ## Current Extracted Implementation
 
@@ -476,8 +483,10 @@ Real implementation now exists in:
   application through an injected recorder target, plus the full terminal
   closeout entrypoint from terminate decision to completion, plus the terminal
   hook entrypoint that short-circuits deterministic approval wait-timeout
-  fallback before synthesis, plus the model-call-error local-evidence
-  fallback/rethrow boundary and `completeModelCallErrorFlow` ownership of
+  fallback before synthesis and builds completed-closeout synthesis callbacks
+  from completed session / ledger inputs, plus the model-call-error
+  local-evidence fallback/rethrow boundary and `completeModelCallErrorFlow`
+  ownership of
   model-call-error abort, active/usable-evidence gating, forced
   pending-approval continuation selection, fallback flow selection, and
   hook-result application through injected forced-result builder /
@@ -581,9 +590,8 @@ All gates below passed on the current code before the report update:
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test packages/role-runtime/src/react-engine/continuation-controller.test.ts` | 24 / 24 |
-| `npx tsx --test packages/role-runtime/src/react-engine/hook-orchestration.wiring.test.ts packages/role-runtime/src/react-engine/policy-trace-characterization.test.ts` | 10 / 10 |
-| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 196 / 196 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 21 / 21 |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 197 / 197 |
 | `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -850,6 +858,11 @@ Stage 8 boundaries/slices are now real:
   `TerminalCloseoutController.completeModelCallErrorFlow`; the adapter supplies
   only the forced-result builder callback and forced tool-round executor, and
   the usable-evidence input comes from `EvidenceLedger.snapshot()`.
+- completed-closeout synthesis callback construction for terminal closeouts now
+  routes through `TerminalCloseoutController.handleTerminalCloseoutHook`; the
+  adapter passes the completed controller, completed session, ledger, repair
+  markers, tools, and gateway callbacks instead of constructing the completed
+  callback or completed tool-result text itself.
 - final allowed tool-round warning injection routes through
   `ExecutionBudgetController.applyFinalToolRoundWarning` while sharing the inline
   message transform.
@@ -917,8 +930,9 @@ Continue with the remaining high-risk pieces:
   application, synthesis-context selection, synthesis invocation,
   synthesis-effect application, final response shaping, closeout write-mode
   selection, explicit state-effect application, sticky completed closeout
-  pre-recording, completed initial-synthesis handoff, terminal path selection,
-  final/re-arm application, terminal entrypoint, terminal hook fallback entry,
+  pre-recording, completed initial-synthesis handoff, completed-closeout
+  callback construction, terminal path selection, final/re-arm application,
+  terminal entrypoint, terminal hook fallback entry,
   and model-error fallback / flow-selection / hook-application /
   forced-round-result boundary slices; forced runtime tool-round execution and
   runtime progress emission still enter through an adapter-supplied executor
