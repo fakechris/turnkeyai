@@ -89,3 +89,29 @@ test("forced engine tool rounds delegate observer-owned trace persistence when a
     "engine forced tool rounds must delegate trace/progress/persistence to EngineRunObserver when present",
   );
 });
+
+test("terminal final synthesis provider-schema repair decision routes through repair registry", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const start = source.indexOf(
+    "private async generateFinalAfterToolRoundLimit",
+  );
+  const end = source.indexOf("\n  private async executeToolCalls", start);
+  assert.notEqual(start, -1, "generateFinalAfterToolRoundLimit must exist");
+  assert.notEqual(
+    end,
+    -1,
+    "generateFinalAfterToolRoundLimit boundary must be found",
+  );
+  const helperSource = source.slice(start, end);
+
+  assert.equal(
+    helperSource.includes("shouldRepairExtraneousProviderTableSchema"),
+    false,
+    "terminal final synthesis provider-schema repair decisions must use RepairPolicyRegistry instead of direct predicate calls",
+  );
+  assert.equal(
+    helperSource.includes("evaluateNaturalFinish"),
+    true,
+    "terminal final synthesis provider-schema repair decisions must evaluate through RepairPolicyRegistry",
+  );
+});

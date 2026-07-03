@@ -3659,8 +3659,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           : {}),
         tracePhase: "final_synthesis",
       });
-      if (
-        shouldRepairExtraneousProviderTableSchema({
+      const providerSchemaRepair =
+        createRepairPolicyRegistry().evaluateNaturalFinish({
+          enabledPolicies: ["extraneous_provider_table_schema"],
+          finalRecoveryBudget: null,
           activation: input.activation,
           taskPrompt: input.packet.taskPrompt,
           messages: finalMessages,
@@ -3670,13 +3672,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // repairMarkers to preserve the pre-migration finalMessages scan.
           repairMarkers: finalMessages,
           resultText: generated.result.text,
-        })
+        });
+      if (
+        providerSchemaRepair?.policyId ===
+        "extraneous_provider_table_schema"
       ) {
         const repairSourceMessages =
           buildExtraneousProviderTableSchemaRepairMessages({
             messages: finalMessages,
-            taskPrompt: input.packet.taskPrompt,
             resultText: generated.result.text,
+            repairPrompt: providerSchemaRepair.repairPrompt,
           });
         const repairedMessages =
           prepareToolHistoryForGateway(repairSourceMessages);

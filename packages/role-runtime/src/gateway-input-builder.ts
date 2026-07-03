@@ -218,8 +218,9 @@ export function buildToolCallArtifactCleanupMessages(input: {
 
 export function buildExtraneousProviderTableSchemaRepairMessages(input: {
   messages: LLMMessage[];
-  taskPrompt: string;
+  taskPrompt?: string;
   resultText: string;
+  repairPrompt?: string;
 }): LLMMessage[] {
   return [
     ...input.messages,
@@ -229,10 +230,12 @@ export function buildExtraneousProviderTableSchemaRepairMessages(input: {
     },
     {
       role: "user",
-      content: buildExtraneousProviderTableSchemaRepairPrompt({
-        taskPrompt: input.taskPrompt,
-        resultText: input.resultText,
-      }),
+      content:
+        input.repairPrompt ??
+        buildExtraneousProviderTableSchemaRepairPrompt({
+          taskPrompt: input.taskPrompt ?? "",
+          resultText: input.resultText,
+        }),
     },
   ];
 }
