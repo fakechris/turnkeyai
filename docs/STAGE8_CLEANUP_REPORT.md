@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `516a007428f6edac552cf35ff08d78e1afb1bc8e`
+**Code HEAD before this docs-only report:** `da72abf9b043d10bab52e5e4e7bcbfbca15af869`
 **Date:** 2026-07-02
 
 ## Summary
@@ -64,7 +64,10 @@ could not move the normalizer without making the inline parity reference import 
   controller, and the tool-call artifact cleanup request/completion path now
   routes through the same controller boundary; the adapter keeps the gateway
   call/pruning side effects but no longer owns those final-synthesis repair
-  decisions or message arrays.
+  decisions or message arrays. Initial final-synthesis source-message
+  construction, gateway-history preparation, and pruning summary construction
+  now also route through the controller; the adapter records the controller
+  snapshot and invokes the gateway.
   The forced `sessions_spawn` natural-finish repairs for missing
   browser-visible evidence and product-signal dashboard evidence now return
   typed decisions from the same registry, preserving their precedence before
@@ -196,6 +199,9 @@ could not move the normalizer without making the inline parity reference import 
   construction, tool-call artifact cleanup request construction, and
   post-repair tool-call fallback/merge completion; the adapter supplies the
   gateway callback inputs and records pruning only.
+  It also now owns final-synthesis gateway request preparation for initial and
+  repair synthesis: source messages, pruned gateway messages, and pruning
+  summaries are returned as typed controller requests.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -411,6 +417,7 @@ outside the terminal completion path.
 | `59d1e19` | Move final-synthesis gateway-error local evidence fallback construction into `TerminalCloseoutController`; adapter rethrows only when no local fallback exists. |
 | `460d460` | Move terminal final synthesis provider-schema repair selection into `TerminalCloseoutController`; adapter no longer evaluates the repair registry directly for that retry decision. |
 | `516a007` | Move terminal final synthesis provider-schema and tool-call artifact repair request/completion ownership into `TerminalCloseoutController`; adapter keeps only gateway/pruning side effects. |
+| `da72abf` | Move terminal final synthesis gateway message preparation and pruning snapshots into `TerminalCloseoutController`; adapter records the snapshot and calls the gateway. |
 
 ## Current Extracted Implementation
 
@@ -536,7 +543,9 @@ Real implementation now exists in:
   through a controller-owned `RepairPolicyRegistry` single-policy window, plus
   terminal final synthesis provider-schema repair request construction,
   tool-call artifact cleanup request construction, and post-repair tool-call
-  fallback/merge completion.
+  fallback/merge completion, plus typed initial/repair gateway request
+  preparation with source messages, pruned gateway messages, and pruning
+  snapshots.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -642,8 +651,8 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 10 / 10 |
 | `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 5 / 5 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
-| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 29 / 29 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 206 / 206 |
+| `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 30 / 30 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 207 / 207 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -805,12 +814,11 @@ Stage 8 boundaries/slices are now real:
   `gateway-input-builder.ts`; inline/engine no-tool rounds and terminal
   final/repair synthesis paths reuse the same helper for tool stripping,
   message replacement, and tool-result envelope recomputation.
-- final synthesis source-message construction routes through
-  `gateway-input-builder.ts`; terminal final provider-schema and tool-call
-  artifact repair request construction now enters through
-  `TerminalCloseoutController`, which uses the neutral gateway-input builders
-  internally while the adapter supplies only packet/messages/result text for
-  source synthesis and executes the retry gateway call.
+- final synthesis source-message construction, gateway-history preparation, and
+  pruning summary construction now enter through `TerminalCloseoutController`;
+  the controller uses neutral gateway-input/tool-history helpers internally and
+  returns typed source/gateway/pruning request data while the adapter records
+  the pruning snapshot and executes the gateway call.
 - extraneous provider-schema repair-message construction for terminal final
   synthesis now routes through `TerminalCloseoutController`; the adapter no
   longer assembles that repair prompt message array locally.
