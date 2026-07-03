@@ -3113,14 +3113,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           // synthesis (runState.closeoutResult below). TerminalCloseoutController
           // owns that pre-recording plus synthesis path selection and application;
           // the adapter only injects gateway callbacks.
-          const completedSessionForRepair = runState.completedSession();
-          // Reason-gated, matching inline: ONLY completed_sub_agent_final is sticky
-          // (`??=`, inline :1729) — the completed branch set it early so an S10 re-armed
-          // round keeps the first-completion metadata. Every OTHER reason OVERWRITES
-          // (`=`): if a re-armed round later ends in a different terminal closeout
-          // (sub_agent_timeout / round_limit / a pending-call closeout), that reason's
-          // metadata must replace the stale completed one, exactly as inline reassigns
-          // `toolLoopCloseout =` for non-completed reasons (codex #520 P2).
+          // The terminate decision keeps the inline sticky/overwrite split:
+          // completed_sub_agent_final is sticky (`??=`, inline :1729), while every
+          // later non-completed reason overwrites stale completed metadata.
           const terminalCompletion =
             await terminalCloseout.handleTerminalCloseoutHook({
               reason: reason as EngineCloseoutReason,
@@ -3177,61 +3172,52 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                     ? { reasonLines: terminalReasonLines }
                     : {}),
                 }),
-              ...(reason === "completed_sub_agent_final" &&
-              completedSessionForRepair
-                ? {
-                    completedCloseout: {
-                      completedCloseout,
-                      completedSession: completedSessionForRepair,
-                      completedSessionToolResults:
-                        runState.completedSessionToolResults() ?? [],
-                      evidence: evidenceLedger,
-                      packet,
-                      repairMarkers: (ctx.repairMarkers ??= []),
-                      ...(activation ? { activation } : {}),
-                      ...(initialGatewayInput.tools === undefined
-                        ? {}
-                        : { tools: initialGatewayInput.tools }),
-                      repairPolicy,
-                      synthesizeRepair: async ({ messages }) => {
-                        const repairGatewayMessages =
-                          prepareToolHistoryForGateway(messages);
-                        return this.generateWithEnvelopeRetry({
-                          activation,
-                          packet,
-                          selection,
-                          gatewayInput: {
-                            ...withoutToolUse(initialGatewayInput),
-                            messages: repairGatewayMessages,
-                            envelope: {
-                              ...(initialGatewayInput.envelope ?? {}),
-                              toolCount: 0,
-                              toolSchemaBytes: 0,
-                              ...deriveToolResultEnvelope(
-                                repairGatewayMessages,
-                              ),
-                            },
-                          },
-                          modelCallTrace,
-                          tracePhase: "final_synthesis_repair",
-                        });
+              completedCloseout: {
+                completedCloseout,
+                completedSession: runState.completedSession() ?? null,
+                completedSessionToolResults:
+                  runState.completedSessionToolResults() ?? [],
+                evidence: evidenceLedger,
+                packet,
+                repairMarkers: (ctx.repairMarkers ??= []),
+                ...(activation ? { activation } : {}),
+                ...(initialGatewayInput.tools === undefined
+                  ? {}
+                  : { tools: initialGatewayInput.tools }),
+                repairPolicy,
+                synthesizeRepair: async ({ messages }) => {
+                  const repairGatewayMessages =
+                    prepareToolHistoryForGateway(messages);
+                  return this.generateWithEnvelopeRetry({
+                    activation,
+                    packet,
+                    selection,
+                    gatewayInput: {
+                      ...withoutToolUse(initialGatewayInput),
+                      messages: repairGatewayMessages,
+                      envelope: {
+                        ...(initialGatewayInput.envelope ?? {}),
+                        toolCount: 0,
+                        toolSchemaBytes: 0,
+                        ...deriveToolResultEnvelope(repairGatewayMessages),
                       },
-                      synthesizeToolCallArtifactCleanup: async ({
-                        messages,
-                      }) =>
-                        this.generateFinalAfterToolRoundLimit({
-                          activation,
-                          packet,
-                          selection,
-                          baseGatewayInput: initialGatewayInput,
-                          messages,
-                          maxRounds,
-                          modelCallTrace,
-                        }),
-                      toolTrace,
                     },
-                  }
-                : {}),
+                    modelCallTrace,
+                    tracePhase: "final_synthesis_repair",
+                  });
+                },
+                synthesizeToolCallArtifactCleanup: async ({ messages }) =>
+                  this.generateFinalAfterToolRoundLimit({
+                    activation,
+                    packet,
+                    selection,
+                    baseGatewayInput: initialGatewayInput,
+                    messages,
+                    maxRounds,
+                    modelCallTrace,
+                  }),
+                toolTrace,
+              },
             });
           if (terminalCompletion.kind === "rearm") {
             return terminalCompletion.reArm;

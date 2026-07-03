@@ -1169,6 +1169,98 @@ test("TerminalCloseoutController owns completed closeout synthesis callback cons
   ]);
 });
 
+test("TerminalCloseoutController owns completed closeout reason and session guards", async () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [{ role: "user", content: "Finish." }];
+  const repairMarkers: LLMMessage[] = [];
+  const completedSession = {
+    finalContents: ["Delegated final evidence."],
+    browserRecoverySummaries: [],
+  };
+  const guardedCompletedCloseout = {
+    completedCloseout: {
+      synthesizeTerminalCloseout: async () => {
+        throw new Error("completed closeout should not run");
+      },
+    },
+    evidence: {
+      toolResultContentText: () => {
+        throw new Error("completed evidence should not be read");
+      },
+    },
+    packet: packet("Finish."),
+    repairMarkers,
+    toolTrace: [],
+    synthesizeRepair: async () => {
+      throw new Error("completed repair should not run");
+    },
+    synthesizeToolCallArtifactCleanup: async () => {
+      throw new Error("completed cleanup should not run");
+    },
+  };
+
+  const roundLimitCloseout: ToolLoopCloseoutMetadata = {
+    reason: "round_limit",
+    maxRounds: 2,
+    toolCallCount: 1,
+    roundCount: 2,
+    evidenceAvailable: true,
+  };
+  const roundLimit = await controller.handleTerminalCloseoutHook({
+    reason: "round_limit",
+    decision: {
+      closeout: roundLimitCloseout,
+      reasonLines: ["limit"],
+    },
+    messages,
+    lastText: "unused",
+    target: recordingTarget().target,
+    synthesize: async () => ({ result: result("round limit final") }),
+    completedCloseout: {
+      ...guardedCompletedCloseout,
+      completedSession,
+    },
+  });
+
+  assert.deepEqual(roundLimit, {
+    kind: "final",
+    response: { text: "round limit final" },
+  });
+
+  const completedCloseout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 2,
+    toolCallCount: 1,
+    roundCount: 1,
+    evidenceAvailable: true,
+  };
+  const { events, target } = recordingTarget();
+  const completedWithoutSession = await controller.handleTerminalCloseoutHook({
+    reason: "completed_sub_agent_final",
+    decision: {
+      closeout: completedCloseout,
+      reasonLines: ["completed"],
+    },
+    messages,
+    lastText: "unused",
+    target,
+    synthesize: async () => ({ result: result("completed fallback final") }),
+    completedCloseout: {
+      ...guardedCompletedCloseout,
+      completedSession: null,
+    },
+  });
+
+  assert.deepEqual(completedWithoutSession, {
+    kind: "final",
+    response: { text: "completed fallback final" },
+  });
+  assert.deepEqual(events, [
+    ["if_absent", completedCloseout],
+    ["result", result("completed fallback final")],
+  ]);
+});
+
 test("TerminalCloseoutController owns terminal closeout write mode and final response shape", () => {
   const controller = createTerminalCloseoutController();
 
