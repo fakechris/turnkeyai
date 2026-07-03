@@ -8,11 +8,17 @@ import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 
 import {
   buildExtraneousProviderTableSchemaRepairMessages,
+  buildFinalSynthesisSourceMessages,
   buildToolCallArtifactCleanupMessages,
 } from "../gateway-input-builder";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
+import {
+  prepareToolHistoryForGateway,
+  summarizeToolResultPruning,
+  type ToolResultPruningSnapshot,
+} from "../tool-history-pruning";
 import {
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
@@ -109,10 +115,23 @@ export interface FinalSynthesisProviderSchemaRepairInput {
   repairPolicy?: RepairPolicyRegistry;
 }
 
-export interface FinalSynthesisProviderSchemaRepairRequest {
+export interface FinalSynthesisPreparedGatewayRequest {
+  sourceMessages: LLMMessage[];
+  gatewayMessages: LLMMessage[];
+  pruning?: ToolResultPruningSnapshot;
+}
+
+export interface FinalSynthesisGatewayRequestInput {
+  packet: RolePromptPacket;
+  messages: LLMMessage[];
+  maxRounds: number;
+  reasonLines?: string[];
+}
+
+export interface FinalSynthesisProviderSchemaRepairRequest
+  extends FinalSynthesisPreparedGatewayRequest {
   policyId: "extraneous_provider_table_schema";
   repairPrompt: string;
-  sourceMessages: LLMMessage[];
 }
 
 export interface FinalSynthesisToolCallArtifactRepairInput {
@@ -120,9 +139,9 @@ export interface FinalSynthesisToolCallArtifactRepairInput {
   result: GenerateTextResult;
 }
 
-export interface FinalSynthesisToolCallArtifactRepairRequest {
+export interface FinalSynthesisToolCallArtifactRepairRequest
+  extends FinalSynthesisPreparedGatewayRequest {
   resultText: string;
-  sourceMessages: LLMMessage[];
 }
 
 export interface FinalSynthesisToolCallArtifactRepairCompletionInput<
@@ -640,14 +659,44 @@ export class TerminalCloseoutController {
     if (decision?.policyId !== "extraneous_provider_table_schema") {
       return null;
     }
-    return {
-      policyId: decision.policyId,
-      repairPrompt: decision.repairPrompt,
-      sourceMessages: buildExtraneousProviderTableSchemaRepairMessages({
+    const prepared = this.prepareFinalSynthesisGatewayRequest(
+      buildExtraneousProviderTableSchemaRepairMessages({
         messages: input.messages,
         resultText: input.resultText,
         repairPrompt: decision.repairPrompt,
       }),
+    );
+    return {
+      policyId: decision.policyId,
+      repairPrompt: decision.repairPrompt,
+      ...prepared,
+    };
+  }
+
+  buildFinalSynthesisGatewayRequest(
+    input: FinalSynthesisGatewayRequestInput,
+  ): FinalSynthesisPreparedGatewayRequest {
+    return this.prepareFinalSynthesisGatewayRequest(
+      buildFinalSynthesisSourceMessages({
+        packet: input.packet,
+        messages: input.messages,
+        maxRounds: input.maxRounds,
+        ...(input.reasonLines === undefined
+          ? {}
+          : { reasonLines: input.reasonLines }),
+      }),
+    );
+  }
+
+  prepareFinalSynthesisGatewayRequest(
+    sourceMessages: LLMMessage[],
+  ): FinalSynthesisPreparedGatewayRequest {
+    const gatewayMessages = prepareToolHistoryForGateway(sourceMessages);
+    const pruning = summarizeToolResultPruning(sourceMessages, gatewayMessages);
+    return {
+      sourceMessages,
+      gatewayMessages,
+      ...(pruning === undefined ? {} : { pruning }),
     };
   }
 
@@ -657,12 +706,15 @@ export class TerminalCloseoutController {
     if (!containsAnyToolCallForm(input.result)) {
       return null;
     }
-    return {
-      resultText: input.result.text,
-      sourceMessages: buildToolCallArtifactCleanupMessages({
+    const prepared = this.prepareFinalSynthesisGatewayRequest(
+      buildToolCallArtifactCleanupMessages({
         messages: input.messages,
         resultText: input.result.text,
       }),
+    );
+    return {
+      resultText: input.result.text,
+      ...prepared,
     };
   }
 

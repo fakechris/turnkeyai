@@ -18,7 +18,6 @@ import type {
   RoleResponseGenerator,
 } from "./deterministic-response-generator";
 import {
-  buildFinalSynthesisSourceMessages,
   buildGatewayInput,
   buildToolFreeGatewayInput,
   enforceRequestedThreeLineLabelShape,
@@ -3630,21 +3629,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
     try {
-      const finalSourceMessages = buildFinalSynthesisSourceMessages({
-        packet: input.packet,
-        messages: input.messages,
-        maxRounds: input.maxRounds,
-        ...(input.reasonLines === undefined
-          ? {}
-          : { reasonLines: input.reasonLines }),
-      });
-      const finalMessages = prepareToolHistoryForGateway(finalSourceMessages);
+      const terminalCloseout = createTerminalCloseoutController();
+      const finalSynthesisRequest =
+        terminalCloseout.buildFinalSynthesisGatewayRequest({
+          packet: input.packet,
+          messages: input.messages,
+          maxRounds: input.maxRounds,
+          ...(input.reasonLines === undefined
+            ? {}
+            : { reasonLines: input.reasonLines }),
+        });
       await this.recordToolResultPruningBoundarySafely(
         input.activation,
         input.selection,
-        summarizeToolResultPruning(finalSourceMessages, finalMessages),
+        finalSynthesisRequest.pruning,
       );
-      const terminalCloseout = createTerminalCloseoutController();
+      const finalMessages = finalSynthesisRequest.gatewayMessages;
       const generated = await this.generateWithEnvelopeRetry({
         activation: input.activation,
         packet: input.packet,
@@ -3671,13 +3671,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           resultText: generated.result.text,
         });
       if (providerSchemaRepairRequest) {
-        const repairSourceMessages = providerSchemaRepairRequest.sourceMessages;
-        const repairedMessages =
-          prepareToolHistoryForGateway(repairSourceMessages);
         await this.recordToolResultPruningBoundarySafely(
           input.activation,
           input.selection,
-          summarizeToolResultPruning(repairSourceMessages, repairedMessages),
+          providerSchemaRepairRequest.pruning,
         );
         const repaired = await this.generateWithEnvelopeRetry({
           activation: input.activation,
@@ -3685,7 +3682,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           selection: input.selection,
           gatewayInput: buildToolFreeGatewayInput({
             baseGatewayInput: input.baseGatewayInput,
-            messages: repairedMessages,
+            messages: providerSchemaRepairRequest.gatewayMessages,
           }),
           ...(input.modelCallTrace
             ? { modelCallTrace: input.modelCallTrace }
@@ -3705,14 +3702,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (!toolCallArtifactRepairRequest) {
         return generated;
       }
-      const repairSourceMessages =
-        toolCallArtifactRepairRequest.sourceMessages;
-      const repairedMessages =
-        prepareToolHistoryForGateway(repairSourceMessages);
       await this.recordToolResultPruningBoundarySafely(
         input.activation,
         input.selection,
-        summarizeToolResultPruning(repairSourceMessages, repairedMessages),
+        toolCallArtifactRepairRequest.pruning,
       );
       const repaired = await this.generateWithEnvelopeRetry({
         activation: input.activation,
@@ -3720,7 +3713,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         selection: input.selection,
         gatewayInput: buildToolFreeGatewayInput({
           baseGatewayInput: input.baseGatewayInput,
-          messages: repairedMessages,
+          messages: toolCallArtifactRepairRequest.gatewayMessages,
         }),
         ...(input.modelCallTrace
           ? { modelCallTrace: input.modelCallTrace }

@@ -115,6 +115,26 @@ test("terminal final synthesis provider-schema repair request routes through ter
     "terminal final synthesis provider-schema repair decisions must not evaluate the repair registry directly in the adapter",
   );
   assert.equal(
+    helperSource.includes("buildFinalSynthesisSourceMessages"),
+    false,
+    "terminal final synthesis source-message construction must not stay in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("prepareToolHistoryForGateway"),
+    false,
+    "terminal final synthesis gateway message preparation must not stay in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("summarizeToolResultPruning"),
+    false,
+    "terminal final synthesis pruning summary construction must not stay in the adapter",
+  );
+  assert.equal(
+    helperSource.includes("buildFinalSynthesisGatewayRequest"),
+    true,
+    "terminal final synthesis gateway message preparation must route through TerminalCloseoutController",
+  );
+  assert.equal(
     helperSource.includes("evaluateFinalSynthesisProviderSchemaRepair"),
     false,
     "terminal final synthesis provider-schema repair decisions must not be evaluated directly in the adapter",

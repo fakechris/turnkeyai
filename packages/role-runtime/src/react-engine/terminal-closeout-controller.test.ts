@@ -337,6 +337,28 @@ test("TerminalCloseoutController builds final synthesis error fallback results",
   );
 });
 
+test("TerminalCloseoutController builds prepared final synthesis gateway requests", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "Use existing evidence only." },
+  ];
+
+  const request = controller.buildFinalSynthesisGatewayRequest({
+    packet: packet("Summarize the evidence."),
+    messages,
+    maxRounds: 3,
+  });
+
+  assert.equal(request.sourceMessages.at(0), messages[0]);
+  assert.deepEqual(request.gatewayMessages, request.sourceMessages);
+  const finalPrompt = request.sourceMessages.at(-1)?.content;
+  if (typeof finalPrompt !== "string") {
+    assert.fail("final synthesis request must append text guidance");
+  }
+  assert.match(finalPrompt, /Tool-use round limit reached \(3\)/);
+});
+
 test("TerminalCloseoutController evaluates final synthesis provider-schema repair", () => {
   const controller = createTerminalCloseoutController();
 
@@ -396,6 +418,7 @@ test("TerminalCloseoutController builds final synthesis provider-schema repair r
 
   assert.equal(request?.policyId, "extraneous_provider_table_schema");
   assert.equal(request?.sourceMessages.at(0), messages[0]);
+  assert.deepEqual(request?.gatewayMessages, request?.sourceMessages);
   const repairContent = request?.sourceMessages.at(-1)?.content;
   if (typeof repairContent !== "string") {
     assert.fail("provider schema repair request must append a text message");
@@ -431,6 +454,7 @@ test("TerminalCloseoutController builds final synthesis tool-call artifact clean
   });
 
   assert.equal(request?.sourceMessages.at(0), messages[0]);
+  assert.deepEqual(request?.gatewayMessages, request?.sourceMessages);
   assert.equal(request?.sourceMessages.at(-2)?.content, request?.resultText);
   const cleanupContent = request?.sourceMessages.at(-1)?.content;
   if (typeof cleanupContent !== "string") {
