@@ -26,6 +26,41 @@ export interface PreCompactionMemoryFlusher {
   }): Promise<PreCompactionMemoryFlushResult>;
 }
 
+export async function flushPreCompactionMemorySafely(input: {
+  flusher?: PreCompactionMemoryFlusher | undefined;
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  diagnostics?: RequestEnvelopeDiagnostics | undefined;
+}): Promise<PreCompactionMemoryFlushResult | undefined> {
+  if (!input.flusher) {
+    return undefined;
+  }
+  try {
+    return await input.flusher.flush({
+      activation: input.activation,
+      packet: input.packet,
+      ...(input.selection.modelId ? { modelId: input.selection.modelId } : {}),
+      ...(input.selection.modelChainId
+        ? { modelChainId: input.selection.modelChainId }
+        : {}),
+      reason: "request_envelope_overflow",
+      ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
+    });
+  } catch (error) {
+    console.error("pre-compaction memory flush failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      error,
+    });
+    return undefined;
+  }
+}
+
 interface DefaultPreCompactionMemoryFlusherOptions {
   gateway: LLMGateway;
   threadMemoryStore: ThreadMemoryStore;

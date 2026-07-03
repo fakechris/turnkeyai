@@ -299,7 +299,10 @@ test("tool-result pruning boundary recording routes through neutral pruning owne
 test("request-envelope reduced retry gateway input routes through neutral gateway builder", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async generateWithEnvelopeRetry");
-  const end = source.indexOf("\n  private async flushPreCompactionMemorySafely", start);
+  const end =
+    source.indexOf("\n  private async flushPreCompactionMemorySafely", start) >= 0
+      ? source.indexOf("\n  private async flushPreCompactionMemorySafely", start)
+      : source.indexOf("\n  private async generateFinalAfterToolRoundLimit", start);
   assert.notEqual(start, -1, "generateWithEnvelopeRetry must exist");
   assert.notEqual(end, -1, "generateWithEnvelopeRetry boundary must be found");
   const helperSource = source.slice(start, end);
@@ -318,6 +321,21 @@ test("request-envelope reduced retry gateway input routes through neutral gatewa
     helperSource.includes("buildReducedRetryGatewayInput"),
     true,
     "request-envelope retry gateway input construction must route through the neutral gateway builder",
+  );
+});
+
+test("pre-compaction memory flush routes through flusher owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async flushPreCompactionMemorySafely"),
+    false,
+    "pre-compaction memory flush safety must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes("flushPreCompactionMemorySafely({"),
+    true,
+    "adapter should call the pre-compaction memory owner safe flusher",
   );
 });
 

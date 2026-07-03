@@ -271,9 +271,10 @@ import {
   shouldSuppressToolsForAwaitingContextSetup,
 } from "./task-facts-shared";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
-import type {
-  PreCompactionMemoryFlusher,
-  PreCompactionMemoryFlushResult,
+import {
+  flushPreCompactionMemorySafely,
+  type PreCompactionMemoryFlusher,
+  type PreCompactionMemoryFlushResult,
 } from "./pre-compaction-memory-flusher";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
@@ -3484,11 +3485,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       let overflowError: RequestEnvelopeOverflowError = error;
-      const memoryFlush = await this.flushPreCompactionMemorySafely({
+      const memoryFlush = await flushPreCompactionMemorySafely({
+        flusher: this.preCompactionMemoryFlusher,
         activation: input.activation,
         packet: input.packet,
         selection: input.selection,
-        overflowError,
+        diagnostics: overflowError.details.diagnostics,
       });
       for (const level of attempts) {
         const reduced = reducePromptPacketForRequestEnvelope(input.packet, {
@@ -3542,42 +3544,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       throw overflowError;
-    }
-  }
-
-  private async flushPreCompactionMemorySafely(input: {
-    activation: RoleActivationInput;
-    packet: RolePromptPacket;
-    selection: {
-      modelId?: string;
-      modelChainId?: string;
-    };
-    overflowError: RequestEnvelopeOverflowError;
-  }): Promise<PreCompactionMemoryFlushResult | undefined> {
-    if (!this.preCompactionMemoryFlusher) {
-      return undefined;
-    }
-    try {
-      return await this.preCompactionMemoryFlusher.flush({
-        activation: input.activation,
-        packet: input.packet,
-        ...(input.selection.modelId
-          ? { modelId: input.selection.modelId }
-          : {}),
-        ...(input.selection.modelChainId
-          ? { modelChainId: input.selection.modelChainId }
-          : {}),
-        reason: "request_envelope_overflow",
-        diagnostics: input.overflowError.details.diagnostics,
-      });
-    } catch (error) {
-      console.error("pre-compaction memory flush failed", {
-        threadId: input.activation.thread.threadId,
-        flowId: input.activation.flow.flowId,
-        taskId: input.activation.handoff.taskId,
-        error,
-      });
-      return undefined;
     }
   }
 
