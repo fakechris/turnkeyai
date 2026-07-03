@@ -319,3 +319,23 @@ test("request-envelope reduction boundary recording routes through reducer owner
     "adapter should call the neutral safe reduction boundary recorder",
   );
 });
+
+test("prompt assembly compaction boundary recording routes through prompt owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async recordAssemblyBoundary"),
+    false,
+    "prompt assembly boundary recording must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes('boundaryKind: "prompt_compaction"'),
+    false,
+    "prompt assembly compaction boundary metadata construction must live in prompt-policy",
+  );
+  assert.equal(
+    source.includes("recordPromptAssemblyBoundarySafely({"),
+    true,
+    "adapter should call the prompt owner safe assembly boundary recorder",
+  );
+});

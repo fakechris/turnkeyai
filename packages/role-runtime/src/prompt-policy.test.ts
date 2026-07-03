@@ -24,10 +24,115 @@ import { FileWorkerEvidenceDigestStore } from "@turnkeyai/team-store/context/fil
 import { DefaultContextBudgeter } from "./context/context-budgeter";
 import { DefaultRoleMemoryResolver } from "./context/role-memory-resolver";
 import { DefaultPromptAssembler } from "./prompt/prompt-assembler";
-import { DefaultRolePromptPolicy } from "./prompt-policy";
+import {
+  DefaultRolePromptPolicy,
+  recordPromptAssemblyBoundarySafely,
+  type RolePromptPacket,
+} from "./prompt-policy";
 import { DefaultRoleProfileRegistry } from "./role-profile";
 import { createNativeToolCapabilityRegistry } from "./tool-capability-registry";
 import { DefaultCapabilityDiscoveryService } from "@turnkeyai/worker-runtime/capability-discovery-service";
+
+function promptBoundaryActivation(): RoleActivationInput {
+  return {
+    thread: { threadId: "thread-1" },
+    flow: { flowId: "flow-1" },
+    handoff: { taskId: "task-1" },
+    runState: {
+      runKey: "run-1",
+      roleId: "role:researcher",
+      lastDequeuedTaskId: "dispatch-task-1",
+    },
+  } as unknown as RoleActivationInput;
+}
+
+function promptBoundaryPacket(
+  compactedSegments: unknown[] = [{ id: "segment-1", reason: "large" }],
+): RolePromptPacket {
+  return {
+    roleId: "role:researcher",
+    roleName: "Researcher",
+    seat: "member",
+    systemPrompt: "system prompt",
+    taskPrompt: "task prompt",
+    outputContract: "answer clearly",
+    suggestedMentions: [],
+    promptAssembly: {
+      usedArtifacts: ["artifact-1"],
+      assemblyFingerprint: "fingerprint-1",
+      sectionOrder: ["task", "memory"],
+      tokenEstimate: 1234,
+      contextDiagnostics: { source: "test" },
+      envelopeHint: { toolResultCount: 2 },
+      compactedSegments,
+    },
+  } as unknown as RolePromptPacket;
+}
+
+test("recordPromptAssemblyBoundarySafely records compacted prompt assembly metadata", async () => {
+  const events: Array<{
+    progressId: string;
+    summary: string;
+    recordedAt: number;
+    metadata?: Record<string, unknown>;
+  }> = [];
+
+  await recordPromptAssemblyBoundarySafely({
+    activation: promptBoundaryActivation(),
+    packet: promptBoundaryPacket(),
+    runtimeProgressRecorder: {
+      async record(event) {
+        events.push(event as (typeof events)[number]);
+      },
+    },
+    selection: {
+      modelId: "model-a",
+      modelChainId: "chain-a",
+    },
+  });
+
+  assert.equal(events.length, 1);
+  assert.match(events[0]!.progressId, /^progress:prompt-assembly:task-1:/);
+  assert.match(events[0]!.summary, /compact boundary with 1 compacted segment/);
+  assert.equal(typeof events[0]!.recordedAt, "number");
+  assert.deepEqual(events[0]!.metadata, {
+    boundaryKind: "prompt_compaction",
+    modelId: "model-a",
+    modelChainId: "chain-a",
+    assemblyFingerprint: "fingerprint-1",
+    sectionOrder: ["task", "memory"],
+    tokenEstimate: 1234,
+    contextDiagnostics: { source: "test" },
+    envelopeHint: { toolResultCount: 2 },
+    compactedSegments: [{ id: "segment-1", reason: "large" }],
+    usedArtifacts: ["artifact-1"],
+  });
+});
+
+test("recordPromptAssemblyBoundarySafely is a no-op without compacted segments", async () => {
+  const events: unknown[] = [];
+
+  await recordPromptAssemblyBoundarySafely({
+    activation: promptBoundaryActivation(),
+    packet: promptBoundaryPacket([]),
+    runtimeProgressRecorder: {
+      async record(event) {
+        events.push(event);
+      },
+    },
+    selection: {},
+  });
+
+  assert.deepEqual(events, []);
+});
+
+test("recordPromptAssemblyBoundarySafely is a no-op without recorder", async () => {
+  await recordPromptAssemblyBoundarySafely({
+    activation: promptBoundaryActivation(),
+    packet: promptBoundaryPacket(),
+    selection: {},
+  });
+});
 
 test("default role prompt policy assembles context from thread and worker stores", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "prompt-policy-"));

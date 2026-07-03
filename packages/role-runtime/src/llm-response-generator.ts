@@ -45,7 +45,10 @@ import {
   countNativeToolCalls,
   type NativeToolRoundTrace,
 } from "./native-tool-messages";
-import type { RolePromptPacket } from "./prompt-policy";
+import {
+  recordPromptAssemblyBoundarySafely,
+  type RolePromptPacket,
+} from "./prompt-policy";
 import {
   recordReductionBoundarySafely,
   reducePromptPacketForRequestEnvelope,
@@ -347,11 +350,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       | undefined;
     const memoryFlushes: PreCompactionMemoryFlushResult[] = [];
 
-    await this.recordAssemblyBoundarySafely(
-      input.activation,
-      input.packet,
+    await recordPromptAssemblyBoundarySafely({
+      activation: input.activation,
+      packet: input.packet,
+      runtimeProgressRecorder: this.runtimeProgressRecorder,
       selection,
-    );
+    });
     const baseSessionContinuationDirective = activeToolLoop
       ? findSessionContinuationDirective(input.packet.taskPrompt)
       : null;
@@ -4049,87 +4053,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolNames: input.toolCalls.map((call) => call.name),
       },
     });
-  }
-
-  private async recordAssemblyBoundary(
-    activation: RoleActivationInput,
-    packet: RolePromptPacket,
-    selection: {
-      modelId?: string;
-      modelChainId?: string;
-    },
-  ): Promise<void> {
-    if (!this.runtimeProgressRecorder) {
-      return;
-    }
-    const compactedSegments = packet.promptAssembly?.compactedSegments ?? [];
-    if (compactedSegments.length === 0) {
-      return;
-    }
-    await this.runtimeProgressRecorder.record({
-      progressId: `progress:prompt-assembly:${activation.handoff.taskId}:${Date.now()}`,
-      threadId: activation.thread.threadId,
-      chainId: `flow:${activation.flow.flowId}`,
-      spanId: `role:${activation.runState.runKey}`,
-      ...(activation.runState.lastDequeuedTaskId
-        ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
-        : {}),
-      subjectKind: "role_run",
-      subjectId: activation.runState.runKey,
-      phase: "degraded",
-      progressKind: "boundary",
-      heartbeatSource: "control_path",
-      continuityState: "alive",
-      summary: `Prompt assembly entered compact boundary with ${compactedSegments.length} compacted segment(s).`,
-      recordedAt: Date.now(),
-      flowId: activation.flow.flowId,
-      taskId: activation.handoff.taskId,
-      roleId: activation.runState.roleId,
-      metadata: {
-        boundaryKind: "prompt_compaction",
-        ...(selection.modelId ? { modelId: selection.modelId } : {}),
-        ...(selection.modelChainId
-          ? { modelChainId: selection.modelChainId }
-          : {}),
-        ...(packet.promptAssembly?.assemblyFingerprint
-          ? { assemblyFingerprint: packet.promptAssembly.assemblyFingerprint }
-          : {}),
-        ...(packet.promptAssembly?.sectionOrder
-          ? { sectionOrder: packet.promptAssembly.sectionOrder }
-          : {}),
-        ...(packet.promptAssembly?.tokenEstimate
-          ? { tokenEstimate: packet.promptAssembly.tokenEstimate }
-          : {}),
-        ...(packet.promptAssembly?.contextDiagnostics
-          ? { contextDiagnostics: packet.promptAssembly.contextDiagnostics }
-          : {}),
-        ...(packet.promptAssembly?.envelopeHint
-          ? { envelopeHint: packet.promptAssembly.envelopeHint }
-          : {}),
-        compactedSegments,
-        usedArtifacts: packet.promptAssembly?.usedArtifacts ?? [],
-      },
-    });
-  }
-
-  private async recordAssemblyBoundarySafely(
-    activation: RoleActivationInput,
-    packet: RolePromptPacket,
-    selection: {
-      modelId?: string;
-      modelChainId?: string;
-    },
-  ): Promise<void> {
-    try {
-      await this.recordAssemblyBoundary(activation, packet, selection);
-    } catch (error) {
-      console.error("runtime assembly boundary recording failed", {
-        threadId: activation.thread.threadId,
-        flowId: activation.flow.flowId,
-        taskId: activation.handoff.taskId,
-        error,
-      });
-    }
   }
 
 }
