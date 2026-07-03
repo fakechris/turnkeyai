@@ -18,6 +18,7 @@ import type {
   RoleResponseGenerator,
 } from "./deterministic-response-generator";
 import {
+  buildExtraneousProviderTableSchemaRepairMessages,
   buildFinalSynthesisSourceMessages,
   buildGatewayInput,
   buildToolCallArtifactCleanupMessages,
@@ -3671,20 +3672,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           resultText: generated.result.text,
         })
       ) {
-        const repairSourceMessages: LLMMessage[] = [
-          ...finalMessages,
-          {
-            role: "assistant",
-            content: generated.result.text,
-          },
-          {
-            role: "user",
-            content: buildExtraneousProviderTableSchemaRepairPrompt({
-              taskPrompt: input.packet.taskPrompt,
-              resultText: generated.result.text,
-            }),
-          },
-        ];
+        const repairSourceMessages =
+          buildExtraneousProviderTableSchemaRepairMessages({
+            messages: finalMessages,
+            taskPrompt: input.packet.taskPrompt,
+            resultText: generated.result.text,
+          });
         const repairedMessages =
           prepareToolHistoryForGateway(repairSourceMessages);
         await this.recordToolResultPruningBoundarySafely(

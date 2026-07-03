@@ -13,6 +13,7 @@ import {
 } from "./tool-loop-shared";
 import {
   requestedTableColumnMessageContext,
+  buildExtraneousProviderTableSchemaRepairPrompt,
   resolveRequestedTableColumns,
 } from "./task-facts-shared";
 import { deriveToolResultEnvelope } from "./tool-history-pruning";
@@ -211,6 +212,27 @@ export function buildToolCallArtifactCleanupMessages(input: {
         "Do not write XML, JSON, or pseudo tool-call markup.",
         "Produce only the final user-facing answer from the evidence already present in the conversation.",
       ].join("\n"),
+    },
+  ];
+}
+
+export function buildExtraneousProviderTableSchemaRepairMessages(input: {
+  messages: LLMMessage[];
+  taskPrompt: string;
+  resultText: string;
+}): LLMMessage[] {
+  return [
+    ...input.messages,
+    {
+      role: "assistant",
+      content: input.resultText,
+    },
+    {
+      role: "user",
+      content: buildExtraneousProviderTableSchemaRepairPrompt({
+        taskPrompt: input.taskPrompt,
+        resultText: input.resultText,
+      }),
     },
   ];
 }

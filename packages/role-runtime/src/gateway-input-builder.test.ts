@@ -6,6 +6,7 @@ import type { GenerateTextInput, LLMMessage } from "@turnkeyai/llm-adapter/index
 
 import type { RolePromptPacket } from "./prompt-policy";
 import {
+  buildExtraneousProviderTableSchemaRepairMessages,
   buildFinalSynthesisSourceMessages,
   buildGatewayInput,
   buildToolCallArtifactCleanupMessages,
@@ -200,6 +201,26 @@ test("buildToolCallArtifactCleanupMessages appends assistant text and cleanup pr
     /attempted to emit a tool call/,
   );
   assert.match(String(repairMessages[2]?.content), /Produce only the final/);
+});
+
+test("buildExtraneousProviderTableSchemaRepairMessages appends assistant text and provider schema repair prompt", () => {
+  const messages: LLMMessage[] = [{ role: "user", content: "Compare vendors." }];
+
+  const repairMessages = buildExtraneousProviderTableSchemaRepairMessages({
+    messages,
+    taskPrompt: "Compare vendors without provider-support columns.",
+    resultText: "| provider | free tier | api support | gdpr |\n| A | yes | yes | yes |",
+  });
+
+  assert.deepEqual(repairMessages.slice(0, 1), messages);
+  assert.deepEqual(repairMessages[1], {
+    role: "assistant",
+    content: "| provider | free tier | api support | gdpr |\n| A | yes | yes | yes |",
+  });
+  const prompt = String(repairMessages[2]?.content);
+  assert.match(prompt, /introduced provider\/search\/model-support columns/);
+  assert.match(prompt, /Compare vendors without provider-support columns/);
+  assert.match(prompt, /Rewrite the final answer/);
 });
 
 test("replaceInitialPromptMessages swaps prompt messages and preserves tool-loop history", () => {
