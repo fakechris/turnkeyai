@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `1de02ca83f98b6f9872c033fe7c588a7b123861b`
+**Code HEAD before this docs-only report:** `75e6e08d2280daf256cce904667dd459edf18e64`
 **Date:** 2026-07-02
 
 ## Summary
@@ -138,8 +138,9 @@ could not move the normalizer without making the inline parity reference import 
   in that owner as `createTerminalFinalSynthesisRunner()`.
   Engine model-client wrapper behavior now lives in
   `react-engine/engine-model-client.ts`: final-round warning application,
-  tool-round gateway request construction, pruning boundary callback, envelope
-  retry invocation, last model result capture, and reduction/memory state writes.
+  tool-round gateway request construction, role-runtime pruning boundary wiring,
+  envelope retry invocation, last model result capture, and reduction/memory
+  state writes.
   Engine forced runtime tool-round runner wiring now lives in
   `react-engine/engine-forced-tool-round-runner.ts`: the adapter creates one
   runner for `runViaReActEngine`, and the continuation/model-error hooks pass
@@ -527,6 +528,7 @@ outside the terminal completion path.
 | `cfb2fde` | Move engine role toolkit wiring into `react-engine/engine-role-toolkit.ts`; adapter passes tool definitions and active loop into the owner. |
 | `5178973` | Move role-engine run-state value typing/factory into `react-engine/engine-run-state.ts`; adapter calls `createRoleEngineRunState()`. |
 | `1de02ca` | Move engine run observer dependency wiring into `react-engine/engine-run-observer.ts`; adapter calls `createRoleEngineRunObserver()`. |
+| `75e6e08` | Move engine model client dependency wiring into `react-engine/engine-model-client.ts`; adapter calls `createRoleEngineModelClient()`. |
 
 ## Current Extracted Implementation
 
@@ -740,8 +742,9 @@ Real implementation now exists in:
   dependency-injection shape.
 - `react-engine/engine-model-client.ts` for the engine model port wrapper:
   final-round warning delegation, ReAct tool-choice mapping, tool-round gateway
-  request construction, pruning boundary callback invocation, envelope retry,
-  last-result capture, and reduction/memory flush writes into `EngineRunState`.
+  request construction, role-runtime pruning boundary recorder binding, envelope
+  retry, last-result capture, and reduction/memory flush writes into
+  `EngineRunState`.
 - `react-engine/engine-forced-tool-round-runner.ts` for the engine forced
   runtime tool-round executor wiring: tool-loop execution dependencies,
   native trace persistence callback, provider protocol fallback recorder, clock,
@@ -812,14 +815,14 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine observer wiring slice:
+Fresh gates run for this engine model client wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 27 / 27 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-run-observer.test.ts` | 8 / 8 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 241 / 241 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 28 / 28 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-model-client.test.ts` | 2 / 2 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 245 / 245 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -1003,9 +1006,9 @@ Stage 8 boundaries/slices are now real:
   the adapter.
 - engine model-client wrapper construction now routes through
   `react-engine/engine-model-client.ts`; `runViaReActEngine` passes gateway,
-  clock, execution-budget, run-state, and pruning callback dependencies instead
-  of owning the model wrapper body, trace round counter, last-result slot, and
-  reduction/memory state writes inline.
+  clock, execution-budget, run-state, and runtime progress recorder dependencies
+  instead of owning the model wrapper body, pruning callback wiring, trace round
+  counter, last-result slot, and reduction/memory state writes inline.
 - engine forced runtime tool-round runner wiring now routes through
   `react-engine/engine-forced-tool-round-runner.ts`; `runViaReActEngine` binds
   the tool-loop, recorder, native persistence, provider protocol fallback,
@@ -1278,7 +1281,7 @@ Continue with the remaining high-risk pieces:
   to `tool-history-pruning.ts`; request-envelope retry orchestration now
   delegates to `gateway-envelope-retry.ts`; terminal final-synthesis gateway
   wrapper and runner wiring delegate to `terminal-final-synthesis.ts`; engine
-  model-client wrapper behavior delegates to
+  model-client wrapper and role-runtime wiring behavior delegate to
   `react-engine/engine-model-client.ts`; engine forced runtime tool-round
   runner wiring delegates to
   `react-engine/engine-forced-tool-round-runner.ts`; engine final generated
