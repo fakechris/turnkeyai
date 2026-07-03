@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `f5292d57398a829cfe50c1252b212fa23c1306e7`
+**Code HEAD before this docs-only report:** `d42e6c796c58eea2eb6765671977f6b57ff40a04`
 **Date:** 2026-07-02
 
 ## Summary
@@ -72,7 +72,9 @@ could not move the normalizer without making the inline parity reference import 
   provider-schema retry selection, tool-call artifact cleanup retry,
   repair-over-initial merge precedence, and gateway-error local fallback now
   run through a single controller entrypoint with adapter-provided gateway and
-  pruning callbacks.
+  pruning callbacks. Tool-free gateway input construction for that final
+  synthesis path now also happens inside the controller, so the adapter callback
+  receives a ready `GenerateTextInput`.
   The forced `sessions_spawn` natural-finish repairs for missing
   browser-visible evidence and product-signal dashboard evidence now return
   typed decisions from the same registry, preserving their precedence before
@@ -209,7 +211,8 @@ could not move the normalizer without making the inline parity reference import 
   summaries are returned as typed controller requests.
   The full final-after-tool-round-limit synthesis sequence now enters through
   `TerminalCloseoutController.synthesizeFinalAfterToolRoundLimit()`, leaving the
-  adapter to supply only a gateway callback and pruning recorder.
+  adapter to supply only a gateway callback and pruning recorder. The controller
+  now builds the tool-free gateway input before invoking that callback.
   Terminal closeout reasonLines and metadata construction now routes through
   `CloseoutPolicyRegistry.evaluateTerminate()` for pending closeout passthrough,
   `completed_sub_agent_final`, `sub_agent_timeout`, `round_limit`, and generic
@@ -427,6 +430,7 @@ outside the terminal completion path.
 | `516a007` | Move terminal final synthesis provider-schema and tool-call artifact repair request/completion ownership into `TerminalCloseoutController`; adapter keeps only gateway/pruning side effects. |
 | `da72abf` | Move terminal final synthesis gateway message preparation and pruning snapshots into `TerminalCloseoutController`; adapter records the snapshot and calls the gateway. |
 | `f5292d5` | Move final-after-tool-round-limit synthesis orchestration into `TerminalCloseoutController`; adapter supplies only gateway and pruning callbacks. |
+| `d42e6c7` | Move final-after-tool-round-limit tool-free gateway input construction into `TerminalCloseoutController`; adapter receives a ready gateway input. |
 
 ## Current Extracted Implementation
 
@@ -556,7 +560,8 @@ Real implementation now exists in:
   preparation with source messages, pruned gateway messages, and pruning
   snapshots, plus the full final-after-tool-round-limit synthesis orchestration
   through `synthesizeFinalAfterToolRoundLimit()` with injected gateway/pruning
-  callbacks.
+  callbacks, including controller-owned tool-free gateway input construction for
+  the injected gateway callback.
 - `react-engine/evidence-ledger.ts` for the first behavior-neutral
   `EvidenceSnapshot` facade over source-bounded evidence, completed-session
   evidence, current tool-result content, current completed-session and timeout
@@ -834,7 +839,8 @@ Stage 8 boundaries/slices are now real:
   through `TerminalCloseoutController.synthesizeFinalAfterToolRoundLimit()`;
   provider-schema retry, tool-call cleanup retry, repair merge, and
   gateway-error local fallback are controller-owned while the adapter supplies
-  only gateway and pruning callbacks.
+  only gateway and pruning callbacks. The controller now also builds the
+  tool-free `GenerateTextInput` for each initial/repair synthesis callback.
 - extraneous provider-schema repair-message construction for terminal final
   synthesis now routes through `TerminalCloseoutController`; the adapter no
   longer assembles that repair prompt message array locally.
