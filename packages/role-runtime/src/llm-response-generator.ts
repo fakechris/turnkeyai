@@ -70,6 +70,7 @@ import {
   appendAssistantToolCallMessage,
   appendToolResultMessages,
   DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+  emitRoleToolProgressSafely,
   recordRoleToolProgressSafely,
   type RoleToolContext,
   type RoleToolExecutionResult,
@@ -3666,6 +3667,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     )
       ? 1
       : maxParallelToolCalls;
+    const emitProgress = (
+      call: LLMToolCall,
+      progress: Parameters<typeof emitRoleToolProgressSafely>[0]["progress"],
+    ) =>
+      emitRoleToolProgressSafely({
+        recorder:
+          this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+        activation: input.activation,
+        call,
+        progress,
+        defer: this.deferToolObservability,
+        onProgress: input.onProgress,
+      });
     for (
       let index = 0;
       index < executableCalls.length;
@@ -3689,16 +3703,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         const chunkResults = await Promise.all(
           chunk.map(async (call) => {
             throwIfAborted(input.signal);
-            await this.emitToolProgressSafely(
-              input.activation,
-              call,
-              {
-                phase: "started",
-                toolName: call.name,
-                summary: `Tool call started: ${call.name}`,
-              },
-              input.onProgress,
-            );
+            await emitProgress(call, {
+              phase: "started",
+              toolName: call.name,
+              summary: `Tool call started: ${call.name}`,
+            });
             try {
               throwIfAborted(input.signal);
               const result = await activeToolLoop.executor.execute({
@@ -3711,31 +3720,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               });
               throwIfAborted(input.signal);
               for (const progress of result.progress ?? []) {
-                await this.emitToolProgressSafely(
-                  input.activation,
-                  call,
-                  progress,
-                  input.onProgress,
-                );
+                await emitProgress(call, progress);
               }
-              await this.emitToolProgressSafely(
-                input.activation,
-                call,
-                {
-                  phase: result.cancelled
-                    ? "cancelled"
-                    : result.isError
-                      ? "failed"
-                      : "completed",
-                  toolName: call.name,
-                  summary: result.cancelled
-                    ? `Tool call cancelled: ${call.name}`
-                    : result.isError
-                      ? `Tool call failed: ${call.name}`
-                      : `Tool call completed: ${call.name}`,
-                },
-                input.onProgress,
-              );
+              await emitProgress(call, {
+                phase: result.cancelled
+                  ? "cancelled"
+                  : result.isError
+                    ? "failed"
+                    : "completed",
+                toolName: call.name,
+                summary: result.cancelled
+                  ? `Tool call cancelled: ${call.name}`
+                  : result.isError
+                    ? `Tool call failed: ${call.name}`
+                    : `Tool call completed: ${call.name}`,
+              });
               await input.onResult?.(result);
               return result;
             } catch (error) {
@@ -3744,16 +3743,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               }
               const content =
                 error instanceof Error ? error.message : String(error);
-              await this.emitToolProgressSafely(
-                input.activation,
-                call,
-                {
-                  phase: "failed",
-                  toolName: call.name,
-                  summary: `Tool call failed: ${call.name}: ${content}`,
-                },
-                input.onProgress,
-              );
+              await emitProgress(call, {
+                phase: "failed",
+                toolName: call.name,
+                summary: `Tool call failed: ${call.name}: ${content}`,
+              });
               const result = {
                 toolCallId: call.id,
                 toolName: call.name,
@@ -3778,12 +3772,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         input.toolCalls.length,
       );
       for (const progress of result.progress ?? []) {
-        await this.emitToolProgressSafely(
-          input.activation,
-          call,
-          progress,
-          input.onProgress,
-        );
+        await emitProgress(call, progress);
       }
       await input.onResult?.(result);
       results.push(result);
@@ -3907,38 +3896,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       messages,
     });
     return { messages, toolResults };
-  }
-
-  private async emitToolProgressSafely(
-    activation: RoleActivationInput,
-    call: LLMToolCall,
-    progress: Parameters<typeof recordRoleToolProgressSafely>[0]["progress"],
-    onProgress:
-      | ((
-          call: LLMToolCall,
-          progress: Parameters<typeof recordRoleToolProgressSafely>[0]["progress"],
-        ) => Promise<void>)
-      | undefined,
-  ): Promise<void> {
-    await recordRoleToolProgressSafely({
-      recorder:
-        this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
-      activation,
-      call,
-      progress,
-      defer: this.deferToolObservability,
-    });
-    try {
-      await onProgress?.(call, progress);
-    } catch (error) {
-      console.error("native tool message progress persistence failed", {
-        threadId: activation.thread.threadId,
-        flowId: activation.flow.flowId,
-        taskId: activation.handoff.taskId,
-        toolName: call.name,
-        error,
-      });
-    }
   }
 
 }

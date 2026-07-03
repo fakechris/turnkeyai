@@ -63,7 +63,10 @@ test("architecture guard actually scans real react-engine files", () => {
 test("forced engine tool rounds do not record provider protocol rounds directly", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async executeRuntimeForcedToolRound");
-  const end = source.indexOf("\n  private async emitToolProgressSafely", start);
+  const end =
+    source.indexOf("\n  private async emitToolProgressSafely", start) >= 0
+      ? source.indexOf("\n  private async emitToolProgressSafely", start)
+      : source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
   assert.notEqual(start, -1, "executeRuntimeForcedToolRound must exist");
   assert.notEqual(end, -1, "executeRuntimeForcedToolRound boundary must be found");
   const helperSource = source.slice(start, end);
@@ -78,7 +81,10 @@ test("forced engine tool rounds do not record provider protocol rounds directly"
 test("forced engine tool rounds delegate observer-owned trace persistence when available", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async executeRuntimeForcedToolRound");
-  const end = source.indexOf("\n  private async emitToolProgressSafely", start);
+  const end =
+    source.indexOf("\n  private async emitToolProgressSafely", start) >= 0
+      ? source.indexOf("\n  private async emitToolProgressSafely", start)
+      : source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
   assert.notEqual(start, -1, "executeRuntimeForcedToolRound must exist");
   assert.notEqual(end, -1, "executeRuntimeForcedToolRound boundary must be found");
   const helperSource = source.slice(start, end);
@@ -387,5 +393,20 @@ test("native tool trace persistence routes through native message owner", () => 
     source.includes("persistNativeToolTraceSafely({"),
     true,
     "adapter should call the neutral safe native tool trace persister",
+  );
+});
+
+test("runtime tool progress emission routes through tool-use owner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    source.includes("private async emitToolProgressSafely"),
+    false,
+    "runtime tool progress emission must not stay as an adapter-private method",
+  );
+  assert.equal(
+    source.includes("emitRoleToolProgressSafely({"),
+    true,
+    "adapter should call the neutral safe runtime tool progress emitter",
   );
 });

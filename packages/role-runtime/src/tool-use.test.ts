@@ -16,6 +16,7 @@ import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
 import {
   createWorkerSessionToolExecutor,
+  emitRoleToolProgressSafely,
   recordRoleToolProgressSafely,
   type RoleToolProgressEvent,
 } from "./tool-use";
@@ -92,6 +93,70 @@ test("recordRoleToolProgressSafely swallows recorder failures", async () => {
 
   assert.equal(errors.length, 1);
   assert.equal(errors[0]?.[0], "runtime tool progress recording failed");
+});
+
+test("emitRoleToolProgressSafely records runtime progress and forwards to observer", async () => {
+  const events: unknown[] = [];
+  const forwarded: Array<{ call: LLMToolCall; progress: RoleToolProgressEvent }> = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: {},
+  };
+  const progress: RoleToolProgressEvent = {
+    phase: "started",
+    toolName: "sessions_spawn",
+    summary: "Tool call started: sessions_spawn",
+  };
+
+  await emitRoleToolProgressSafely({
+    recorder: {
+      async record(event) {
+        events.push(event);
+      },
+    },
+    activation: buildActivation(),
+    call,
+    progress,
+    onProgress: async (progressCall, progressEvent) => {
+      forwarded.push({ call: progressCall, progress: progressEvent });
+    },
+  });
+
+  assert.equal(events.length, 1);
+  assert.deepEqual(forwarded, [{ call, progress }]);
+});
+
+test("emitRoleToolProgressSafely swallows observer progress failures", async () => {
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    await emitRoleToolProgressSafely({
+      recorder: undefined,
+      activation: buildActivation(),
+      call: {
+        id: "call-1",
+        name: "sessions_spawn",
+        input: {},
+      },
+      progress: {
+        phase: "started",
+        toolName: "sessions_spawn",
+        summary: "Tool call started: sessions_spawn",
+      },
+      onProgress: async () => {
+        throw new Error("observer unavailable");
+      },
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.[0], "native tool message progress persistence failed");
 });
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {

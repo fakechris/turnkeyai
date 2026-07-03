@@ -216,6 +216,33 @@ export async function recordRoleToolProgressSafely(input: {
   }
 }
 
+export async function emitRoleToolProgressSafely(input: {
+  recorder: RuntimeProgressRecorder | undefined;
+  activation: RoleActivationInput;
+  call: LLMToolCall;
+  progress: RoleToolProgressEvent;
+  defer?: boolean | undefined;
+  onProgress?:
+    | ((
+        call: LLMToolCall,
+        progress: RoleToolProgressEvent,
+      ) => Promise<void>)
+    | undefined;
+}): Promise<void> {
+  await recordRoleToolProgressSafely(input);
+  try {
+    await input.onProgress?.(input.call, input.progress);
+  } catch (error) {
+    console.error("native tool message progress persistence failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      toolName: input.call.name,
+      error,
+    });
+  }
+}
+
 export function createWorkerSessionToolExecutor(options: {
   workerRuntime: WorkerRuntime;
   availableWorkerKinds?: WorkerKind[];
