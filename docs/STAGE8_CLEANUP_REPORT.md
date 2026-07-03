@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `14a7aa9d6dc6a699f733ebeeb46a9a45e427b286`
+**Code HEAD before this docs-only report:** `aa6d0d855baa8256a0f66d8aa832675efe75c8e5`
 **Date:** 2026-07-02
 
 ## Summary
@@ -38,11 +38,13 @@ could not move the normalizer without making the inline parity reference import 
   Pending closeout and post-execute closeout state-effect application now also
   route through `CloseoutPolicyRegistry` application helpers; the adapter passes
   the run-state target. The pending-call closeout hook flow now enters through
-  `CloseoutPolicyRegistry.applyPendingCallsCloseout()`: the registry owns the
-  read-only suppression pre-emption, recovery-budget-before-continuation
-  ordering, empty-round continuation preview handoff, and remaining pending-call
-  closeout cascade, while the adapter supplies only live state and module-owned
-  callbacks. The post-execute closeout hook now also enters through
+  `CloseoutPolicyRegistry.applyPendingCallsCloseoutHook()`: the registry owns
+  active-loop gating, used-call/evidence snapshot calculation, read-only
+  suppression pre-emption, recovery-budget-before-continuation ordering,
+  empty-round continuation preview handoff, budget callback wiring, and the
+  remaining pending-call closeout cascade, while the adapter supplies only live
+  state and module-owned collaborators. The post-execute closeout hook now also
+  enters through
   `CloseoutPolicyRegistry.applyPostExecuteCloseout()`, so completed-vs-timeout
   selection and state writes are one registry-owned application boundary.
   The first natural-finish repair policies,
@@ -539,6 +541,7 @@ outside the terminal completion path.
 | `acba8b6` | Move engine request-envelope reduction boundary wiring into `react-engine/engine-final-response.ts`; adapter calls `recordEngineReductionBoundary()`. |
 | `e2d2907` | Move the engine `onToolCalls` hook flow into `react-engine/tool-call-normalizer.ts`; adapter delegates normalization context construction and recovery-budget truncation. |
 | `14a7aa9` | Move the engine `onBeforeExecute` and `runToolBatch` hook wiring into `ExecutionBudgetController`; adapter delegates admission and role tool-batch execution entrypoints. |
+| `aa6d0d8` | Move engine pending-call closeout hook wiring into `CloseoutPolicyRegistry`; adapter delegates used-call/evidence calculation and budget/continuation callback assembly. |
 
 ## Current Extracted Implementation
 
@@ -598,7 +601,8 @@ Real implementation now exists in:
   state-effect application through injected targets, including the single
   `onToolCallsClose` pending-call flow entrypoint that owns read-only
   suppression pre-emption, recovery-budget-before-continuation ordering,
-  empty-round continuation preview handoff, wall-clock signal handoff, remaining
+  empty-round continuation preview handoff, wall-clock signal handoff,
+  used-call/evidence snapshot calculation, budget callback wiring, remaining
   pending-call closeout evaluation/application, and remaining pending-call
   closeout session context construction, plus the post-execute closeout
   application entrypoint used by `onAfterExecute`.
@@ -832,21 +836,21 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine execution hook wiring slice:
+Fresh gates run for this engine pending-closeout hook wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 33 / 33 |
-| `npx tsx --test packages/role-runtime/src/react-engine/execution-budget-controller.test.ts` | 16 / 16 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 257 / 257 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 34 / 34 |
+| `npx tsx --test packages/role-runtime/src/react-engine/closeout-policy-registry.test.ts` | 36 / 36 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 259 / 259 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
 | `npm run parity:inline` | 272 / 272, 0 fail |
-| `npm run parity:engine` | 265 / 265, 0 fail; all 14 chunks completed |
+| `npm run parity:engine` | 272 / 272, 0 fail; all 14 chunks completed |
 
-Note: this latest parity run reported 272 inline test points and discovered 265
+Note: this latest parity run reported 272 inline test points and discovered 272
 engine test points. Engine chunks completed without individual recovery.
 
 ## Is The Adapter Thin?
@@ -913,11 +917,12 @@ Stage 8 boundaries/slices are now real:
   `CloseoutPolicyRegistry`, using shared session anti-loop detectors where
   needed.
 - pending-call closeout application now enters through
-  `CloseoutPolicyRegistry.applyPendingCallsCloseout`; the registry owns
-  read-only suppression pre-emption, recovery-budget-before-continuation
-  ordering, empty-round continuation preview handoff, and remaining pending-call
-  closeout evaluation/application. Remaining pending-call closeout session
-  context construction also lives in the registry owner.
+  `CloseoutPolicyRegistry.applyPendingCallsCloseoutHook`; the registry owns
+  active-loop gating, used-call/evidence calculation, read-only suppression
+  pre-emption, recovery-budget-before-continuation ordering, empty-round
+  continuation preview handoff, budget callback wiring, and remaining
+  pending-call closeout evaluation/application. Remaining pending-call closeout
+  session context construction also lives in the registry owner.
 - post-execute `completed_sub_agent_final` / `sub_agent_timeout` closeout
   selection and state-effect application route through `CloseoutPolicyRegistry`;
   the adapter passes the hook input and run-state target through a single
@@ -1318,7 +1323,9 @@ Continue with the remaining high-risk pieces:
   `react-engine/engine-run-observer.ts`; engine `onToolCalls` hook flow
   delegates to `react-engine/tool-call-normalizer.ts`; engine
   `onBeforeExecute` / `runToolBatch` hook wiring delegates to
-  `react-engine/execution-budget-controller.ts`; keep thinning the adapter. The only
+  `react-engine/execution-budget-controller.ts`; engine pending-call closeout
+  hook wiring delegates to `react-engine/closeout-policy-registry.ts`; keep
+  thinning the adapter. The only
   remaining adapter-private method at this
   checkpoint is `runViaReActEngine`.
 
