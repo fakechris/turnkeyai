@@ -18,6 +18,7 @@ export * from "./engine-model-client";
 export * from "./engine-forced-tool-round-runner";
 export * from "./engine-final-response";
 export * from "./engine-agent-runner";
+export * from "./engine-role-toolkit";
 export * from "./permission-policy";
 export * from "./tool-call-normalizer";
 export * from "./finalization-pipeline";

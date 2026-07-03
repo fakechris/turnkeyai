@@ -248,6 +248,7 @@ import {
   createEngineModelClient,
   createEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
+  createEngineRoleToolkit,
   runEngineAgent,
   enginePolicyTraceDebugEnabled,
   createExecutionBudgetController,
@@ -273,7 +274,6 @@ import {
   shouldRepairMissingRequestedTableColumns,
   shouldSuppressToolsForAwaitingContextSetup,
 } from "./task-facts-shared";
-import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
 import {
   type PreCompactionMemoryFlusher,
   type PreCompactionMemoryFlushResult,
@@ -2551,24 +2551,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
 
     const toolDefinitions = initialGatewayInput.tools ?? [];
-    const toolkit: Toolkit<RoleToolContext> = {
-      definitions: () => toolDefinitions,
-      has: (name) => toolDefinitions.some((def) => def.name === name),
-      execute: (call, ctx) =>
-        activeToolLoop
-          ? activeToolLoop.executor.execute({
-              call,
-              activation: ctx.activation,
-              packet: ctx.packet,
-              ...(ctx.signal ? { signal: ctx.signal } : {}),
-            })
-          : Promise.resolve({
-              toolCallId: call.id,
-              toolName: call.name,
-              isError: true,
-              content: `Unknown tool: ${call.name}`,
-            }),
-    };
+    const toolkit = createEngineRoleToolkit({
+      toolDefinitions,
+      activeToolLoop,
+    });
 
     const ctx: RoleToolContext = { activation, packet, repairMarkers: [], ...(signal ? { signal } : {}) };
     const permissionPolicy = createPermissionPolicy();
