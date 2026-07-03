@@ -155,6 +155,23 @@ export interface NonCompletedTerminalSynthesisResult<
   reductionSnapshot?: TReductionSnapshot;
 }
 
+export interface FinalSynthesisRepairMergeInput<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  initial: NonCompletedTerminalSynthesis<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+  repair: NonCompletedTerminalSynthesis<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
+}
+
 export interface TerminalSynthesisRequest {
   messages: LLMMessage[];
   reasonLines?: string[];
@@ -945,6 +962,34 @@ export class TerminalCloseoutController {
       ...(input.generated.reductionSnapshot !== undefined
         ? { reductionSnapshot: input.generated.reductionSnapshot }
         : {}),
+    };
+  }
+
+  mergeFinalSynthesisRepairResult<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: FinalSynthesisRepairMergeInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): NonCompletedTerminalSynthesis<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > {
+    const reduction = input.repair.reduction ?? input.initial.reduction;
+    const reductionSnapshot =
+      input.repair.reductionSnapshot ?? input.initial.reductionSnapshot;
+    const memoryFlush =
+      input.repair.memoryFlush ?? input.initial.memoryFlush;
+    return {
+      result: input.repair.result,
+      ...(reduction === undefined ? {} : { reduction }),
+      ...(reductionSnapshot === undefined ? {} : { reductionSnapshot }),
+      ...(memoryFlush === undefined ? {} : { memoryFlush }),
     };
   }
 

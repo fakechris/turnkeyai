@@ -819,6 +819,50 @@ test("TerminalCloseoutController applies non-completed synthesis effects", () =>
   assert.equal(plain.reductionSnapshot, undefined);
 });
 
+test("TerminalCloseoutController merges final synthesis repair effects with repair precedence", () => {
+  const controller = createTerminalCloseoutController();
+
+  const initial = {
+    result: result("initial"),
+    reduction: "initial-reduction",
+    reductionSnapshot: "initial-snapshot",
+    memoryFlush: "initial-flush",
+  };
+
+  assert.deepEqual(
+    controller.mergeFinalSynthesisRepairResult({
+      initial,
+      repair: {
+        result: result("repair"),
+        reduction: "repair-reduction",
+      },
+    }),
+    {
+      result: result("repair"),
+      reduction: "repair-reduction",
+      reductionSnapshot: "initial-snapshot",
+      memoryFlush: "initial-flush",
+    },
+  );
+
+  assert.deepEqual(
+    controller.mergeFinalSynthesisRepairResult({
+      initial,
+      repair: {
+        result: result("repair with effects"),
+        reductionSnapshot: "repair-snapshot",
+        memoryFlush: "repair-flush",
+      },
+    }),
+    {
+      result: result("repair with effects"),
+      reduction: "initial-reduction",
+      reductionSnapshot: "repair-snapshot",
+      memoryFlush: "repair-flush",
+    },
+  );
+});
+
 test("TerminalCloseoutController owns terminal synthesis invocation boundaries", async () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Do the task." }];

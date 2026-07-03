@@ -3703,21 +3703,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             : {}),
           tracePhase: "final_synthesis_repair",
         });
-        return {
-          result: repaired.result,
-          ...((repaired.reduction ?? generated.reduction)
-            ? { reduction: (repaired.reduction ?? generated.reduction)! }
-            : {}),
-          ...((repaired.reductionSnapshot ?? generated.reductionSnapshot)
-            ? {
-                reductionSnapshot: (repaired.reductionSnapshot ??
-                  generated.reductionSnapshot)!,
-              }
-            : {}),
-          ...((repaired.memoryFlush ?? generated.memoryFlush)
-            ? { memoryFlush: (repaired.memoryFlush ?? generated.memoryFlush)! }
-            : {}),
-        };
+        return createTerminalCloseoutController().mergeFinalSynthesisRepairResult({
+          initial: generated,
+          repair: repaired,
+        });
       }
       if (!containsAnyToolCallForm(generated.result)) {
         return generated;
@@ -3757,21 +3746,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             },
           )
         : repaired.result;
-      return {
-        result: repairedResult,
-        ...((repaired.reduction ?? generated.reduction)
-          ? { reduction: (repaired.reduction ?? generated.reduction)! }
-          : {}),
-        ...((repaired.reductionSnapshot ?? generated.reductionSnapshot)
-          ? {
-              reductionSnapshot: (repaired.reductionSnapshot ??
-                generated.reductionSnapshot)!,
-            }
-          : {}),
-        ...((repaired.memoryFlush ?? generated.memoryFlush)
-          ? { memoryFlush: (repaired.memoryFlush ?? generated.memoryFlush)! }
-          : {}),
-      };
+      return createTerminalCloseoutController().mergeFinalSynthesisRepairResult({
+        initial: generated,
+        repair: {
+          ...repaired,
+          result: repairedResult,
+        },
+      });
     } catch (error) {
       const localResult = buildLocalEvidenceCloseout({
         activation: input.activation,
