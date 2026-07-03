@@ -869,6 +869,33 @@ test("engine approval wait-timeout fallback hook routes through terminal closeou
   );
 });
 
+test("engine permission policy facts route through EvidenceLedger", () => {
+  const repairSource = readFileSync(
+    path.join(ENGINE_DIR, "repair-policy-registry.ts"),
+    "utf8",
+  );
+  const closeoutSource = readFileSync(
+    path.join(ENGINE_DIR, "closeout-policy-registry.ts"),
+    "utf8",
+  );
+
+  assert.equal(
+    repairSource.includes("permissionFacts?: PermissionEvidenceFacts"),
+    true,
+    "repair policies should accept typed permission facts from EvidenceLedger",
+  );
+  assert.equal(
+    repairSource.includes("permissionFacts: evidence.permission"),
+    true,
+    "natural-finish repair hook should pass EvidenceLedger permission facts",
+  );
+  assert.equal(
+    closeoutSource.includes("terminateEvidence.permission.runtimeEvidenceText"),
+    true,
+    "terminate closeout should read approval wait-timeout text through typed permission facts",
+  );
+});
+
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runViaReActEngine");

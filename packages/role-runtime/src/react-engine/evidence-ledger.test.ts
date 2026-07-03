@@ -198,6 +198,62 @@ test("EvidenceLedger snapshots approval wait-timeout runtime evidence", () => {
   );
 });
 
+test("EvidenceLedger produces permission facts for pending wait-timeout evidence", () => {
+  const ledger = createEvidenceLedger();
+  const snapshot = ledger.snapshot({
+    taskPrompt: "Submit the form after approval.",
+    messages: [],
+    toolTrace: [
+      {
+        round: 0,
+        calls: [],
+        results: [
+          result({
+            toolName: "permission_query",
+            content: "requested approval for browser.form.submit",
+          }),
+          result({
+            toolName: "permission_result",
+            content: "approval_wait_timeout: approval is still pending",
+          }),
+        ],
+      },
+    ],
+  });
+
+  assert.equal(snapshot.permission.latestStatus, "wait_timeout");
+  assert.equal(snapshot.permission.pendingApproval, true);
+  assert.equal(snapshot.permission.waitTimeout, true);
+  assert.match(
+    snapshot.permission.runtimeEvidenceText,
+    /approval_wait_timeout/,
+  );
+});
+
+test("EvidenceLedger keeps pending permission_result compatible with wait-timeout repairs", () => {
+  const ledger = createEvidenceLedger();
+  const snapshot = ledger.snapshot({
+    taskPrompt: "Submit the form after approval.",
+    messages: [],
+    toolTrace: [
+      {
+        round: 0,
+        calls: [],
+        results: [
+          result({
+            toolName: "permission_result",
+            content: JSON.stringify({ status: "pending" }),
+          }),
+        ],
+      },
+    ],
+  });
+
+  assert.equal(snapshot.permission.latestStatus, "pending");
+  assert.equal(snapshot.permission.pendingApproval, true);
+  assert.equal(snapshot.permission.waitTimeout, true);
+});
+
 test("EvidenceLedger marks skipped/error-only traces as not usable evidence", () => {
   const snapshot = buildEvidenceSnapshot({
     taskPrompt: "Summarize source evidence.",

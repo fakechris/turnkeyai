@@ -76,6 +76,19 @@ function wallClockSnapshot(): ExecutionBudgetCloseoutSnapshot {
   };
 }
 
+function permissionFacts(runtimeEvidenceText = "") {
+  return {
+    latestStatus: runtimeEvidenceText ? ("pending" as const) : ("none" as const),
+    latestToolName: runtimeEvidenceText ? "permission_result" : null,
+    latestResultStatus: runtimeEvidenceText ? "pending" : null,
+    pendingApproval: Boolean(runtimeEvidenceText),
+    appliedApproval: false,
+    deniedApproval: false,
+    waitTimeout: false,
+    runtimeEvidenceText,
+  };
+}
+
 function remainingPendingInput(
   overrides: Partial<RemainingPendingCallsCloseoutInput> = {},
 ): RemainingPendingCallsCloseoutInput {
@@ -524,6 +537,7 @@ test("CloseoutPolicyRegistry pending-call hook computes live budget and evidence
             naturalFinishEvidenceText: "",
             toolTraceResultContent: "",
             approvalWaitTimeoutRuntimeEvidence: "",
+            permission: permissionFacts(),
             usableEvidence: false,
           };
         },
@@ -1363,6 +1377,7 @@ test("CloseoutPolicyRegistry owns terminate hook state and evidence assembly", (
         return {
           usableEvidence: true,
           approvalWaitTimeoutRuntimeEvidence: "permission_result pending",
+          permission: permissionFacts("permission_result pending"),
         };
       },
     },

@@ -493,6 +493,35 @@ test("RepairPolicyRegistry returns pending-approval wait-timeout check repair de
   );
 });
 
+test("RepairPolicyRegistry consumes typed pending permission facts", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["pending_approval_wait_timeout_check"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "Approval is still pending.",
+    taskPrompt:
+      "If the approval decision does not arrive during this attempt, write a wait-timeout closeout.",
+    toolTrace: [],
+    permissionFacts: {
+      latestStatus: "pending",
+      latestToolName: "permission_query",
+      latestResultStatus: null,
+      pendingApproval: true,
+      appliedApproval: false,
+      deniedApproval: false,
+      waitTimeout: false,
+      runtimeEvidenceText: "permission_query requested approval",
+    },
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "pending_approval_wait_timeout_check");
+  assert.deepEqual(decision?.forceToolChoice, { name: "permission_result" });
+});
+
 test("RepairPolicyRegistry does not repeat pending-approval wait-timeout check repair after marker", () => {
   const registry = createRepairPolicyRegistry();
 

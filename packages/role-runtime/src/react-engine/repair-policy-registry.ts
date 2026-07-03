@@ -44,12 +44,21 @@ import {
   shouldRepairStalePendingApproval,
   shouldRepairTimeoutFollowupFinalGuidance,
   shouldRepairWeakEvidenceSynthesis,
+  mentionsPendingApproval,
+  requestsApprovalGatedBrowserAction,
+  taskPromptAllowsStoppingAtPendingApproval,
+  taskPromptIsAppliedApprovalBrowserContinuation,
+  taskPromptRequestsApprovalWaitTimeoutCloseout,
+  taskPromptSaysApprovalAlreadyApplied,
 } from "../tool-loop-shared";
 import {
   countNativeToolCalls,
   type NativeToolRoundTrace,
 } from "../native-tool-messages";
-import { buildEvidenceSnapshot } from "./evidence-ledger";
+import {
+  buildEvidenceSnapshot,
+  type PermissionEvidenceFacts,
+} from "./evidence-ledger";
 import {
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
@@ -109,6 +118,7 @@ export interface NaturalFinishRepairInput {
   toolTrace?: NativeToolRoundTrace[];
   tools?: readonly { name: string }[];
   evidenceText?: string;
+  permissionFacts?: PermissionEvidenceFacts;
 }
 
 export interface NaturalFinishRepairHookContext {
@@ -339,6 +349,11 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
       return null;
     }
     const repairMarkers = (input.hookContext.repairMarkers ??= []);
+    const evidence = buildEvidenceSnapshot({
+      taskPrompt: input.taskPrompt ?? "",
+      messages: input.messages,
+      toolTrace: input.toolTrace,
+    });
     return this.applyNaturalFinishRepair({
       ...(input.activation === undefined
         ? {}
@@ -359,6 +374,7 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
         : { taskPrompt: input.taskPrompt }),
       toolTrace: input.toolTrace,
       ...(input.tools === undefined ? {} : { tools: input.tools }),
+      permissionFacts: evidence.permission,
     });
   }
 
@@ -700,6 +716,26 @@ function evaluatePendingApprovalWaitTimeoutCheckRepair(
   if (!input.taskPrompt || !input.toolTrace) {
     return null;
   }
+  if (input.permissionFacts) {
+    if (
+      hasNaturalFinishRepairMarker(
+        input.repairMarkers,
+        "Runtime correction: approval decision has not arrived",
+      ) ||
+      !taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) ||
+      input.permissionFacts.latestToolName !== "permission_query"
+    ) {
+      return null;
+    }
+    return {
+      kind: "force_tool_round",
+      policyId: "pending_approval_wait_timeout_check",
+      evidenceFormula: "candidate_final",
+      repairPrompt: buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
+      forceToolChoice: { name: "permission_result" },
+      consumesRound: true,
+    };
+  }
   if (
     !shouldRepairPendingApprovalWaitTimeoutCheck({
       taskPrompt: input.taskPrompt,
@@ -726,6 +762,35 @@ function evaluatePrematurePendingApprovalRepair(
 ): NaturalFinishRepairDecision | null {
   if (!input.taskPrompt || !input.toolTrace) {
     return null;
+  }
+  if (input.permissionFacts) {
+    if (
+      hasNaturalFinishRepairMarker(
+        input.repairMarkers,
+        "Runtime correction: approval-gated browser action is still pending",
+      ) ||
+      !mentionsPendingApproval(input.resultText) ||
+      !requestsApprovalGatedBrowserAction(input.taskPrompt) ||
+      taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) ||
+      taskPromptAllowsStoppingAtPendingApproval(input.taskPrompt) ||
+      input.permissionFacts.appliedApproval ||
+      taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
+      hasSessionToolEvidence(input.toolTrace) ||
+      !(
+        input.permissionFacts.latestToolName === "permission_query" ||
+        input.permissionFacts.latestResultStatus === "pending"
+      )
+    ) {
+      return null;
+    }
+    return {
+      kind: "force_tool_round",
+      policyId: "premature_pending_approval",
+      evidenceFormula: "candidate_final",
+      repairPrompt: buildPrematurePendingApprovalRepairPrompt(),
+      forceToolChoice: { name: "permission_result" },
+      consumesRound: true,
+    };
   }
   if (
     !shouldRepairPrematurePendingApprovalFinal({
@@ -754,6 +819,32 @@ function evaluateStalePendingApprovalRepair(
   if (!input.taskPrompt || !input.toolTrace) {
     return null;
   }
+  if (input.permissionFacts) {
+    if (
+      hasNaturalFinishRepairMarker(
+        input.repairMarkers,
+        "Runtime correction: approval already applied",
+      ) ||
+      !mentionsPendingApproval(input.resultText) ||
+      (!requestsApprovalGatedBrowserAction(input.taskPrompt) &&
+        !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)) ||
+      !(
+        input.permissionFacts.appliedApproval ||
+        taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
+        taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
+      )
+    ) {
+      return null;
+    }
+    return {
+      kind: "force_tool_round",
+      policyId: "stale_pending_approval",
+      evidenceFormula: "candidate_final",
+      repairPrompt: buildStalePendingApprovalRepairPrompt(),
+      forceToolChoice: { name: "sessions_spawn" },
+      consumesRound: true,
+    };
+  }
   if (
     !shouldRepairStalePendingApproval({
       taskPrompt: input.taskPrompt,
@@ -781,6 +872,26 @@ function evaluateStaleDeniedApprovalRepair(
   if (!input.taskPrompt || !input.toolTrace) {
     return null;
   }
+  if (input.permissionFacts) {
+    if (
+      hasNaturalFinishRepairMarker(
+        input.repairMarkers,
+        "Runtime correction: approval was denied",
+      ) ||
+      !mentionsPendingApproval(input.resultText) ||
+      !requestsApprovalGatedBrowserAction(input.taskPrompt) ||
+      !input.permissionFacts.deniedApproval
+    ) {
+      return null;
+    }
+    return {
+      kind: "resynthesize",
+      policyId: "stale_denied_approval",
+      evidenceFormula: "candidate_final",
+      repairPrompt: buildStaleDeniedApprovalRepairPrompt(),
+      forceToolChoice: "none",
+    };
+  }
   if (
     !shouldRepairStaleDeniedApproval({
       taskPrompt: input.taskPrompt,
@@ -805,6 +916,9 @@ function evaluateApprovalWaitTimeoutCloseoutRepair(
   input: NaturalFinishRepairInput,
 ): NaturalFinishRepairDecision | null {
   if (!input.taskPrompt || !input.toolTrace) {
+    return null;
+  }
+  if (input.permissionFacts && !input.permissionFacts.waitTimeout) {
     return null;
   }
   if (
@@ -833,6 +947,9 @@ function evaluateApprovalWaitTimeoutLocalCloseout(
   if (!input.taskPrompt || !input.toolTrace) {
     return null;
   }
+  if (input.permissionFacts && !input.permissionFacts.waitTimeout) {
+    return null;
+  }
   if (
     !shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
       taskPrompt: input.taskPrompt,
@@ -850,6 +967,32 @@ function evaluateApprovalWaitTimeoutLocalCloseout(
     evidenceFormula: "candidate_final",
     closeoutReason: "tool_evidence_fallback",
   };
+}
+
+function hasNaturalFinishRepairMarker(
+  messages: readonly LLMMessage[],
+  marker: string,
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      typeof message.content === "string" &&
+      message.content.includes(marker),
+  );
+}
+
+function hasSessionToolEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
+  return toolTrace.some(
+    (round) =>
+      round.calls.some(
+        (call) => call.name === "sessions_spawn" || call.name === "sessions_send",
+      ) ||
+      round.results.some(
+        (result) =>
+          result.toolName === "sessions_spawn" ||
+          result.toolName === "sessions_send",
+      ),
+  );
 }
 
 function evaluateIncompleteApprovedBrowserActionRepair(

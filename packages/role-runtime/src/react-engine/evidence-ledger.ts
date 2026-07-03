@@ -21,6 +21,9 @@ import {
   collectApprovalWaitTimeoutRuntimeEvidence,
   collectCompletedSessionEvidenceText,
   collectSourceBoundedEvidenceText,
+  hasPermissionAppliedEvidence,
+  latestPermissionResultStatus,
+  latestPermissionToolName,
 } from "../tool-loop-shared";
 import {
   collectCompletedSessionEvidenceFacts,
@@ -52,7 +55,26 @@ export interface EvidenceSnapshot {
   naturalFinishEvidenceText: string;
   toolTraceResultContent: string;
   approvalWaitTimeoutRuntimeEvidence: string;
+  permission: PermissionEvidenceFacts;
   usableEvidence: boolean;
+}
+
+export type PermissionStatus =
+  | "none"
+  | "pending"
+  | "applied"
+  | "denied"
+  | "wait_timeout";
+
+export interface PermissionEvidenceFacts {
+  latestStatus: PermissionStatus;
+  latestToolName: string | null;
+  latestResultStatus: string | null;
+  pendingApproval: boolean;
+  appliedApproval: boolean;
+  deniedApproval: boolean;
+  waitTimeout: boolean;
+  runtimeEvidenceText: string;
 }
 
 export interface EvidenceRoundSnapshot {
@@ -118,11 +140,16 @@ export function buildEvidenceSnapshot(
   const toolTraceResultContent = collectToolTraceResultContent(input.toolTrace);
   const approvalWaitTimeoutRuntimeEvidence =
     collectApprovalWaitTimeoutRuntimeEvidence(input.toolTrace);
+  const permission = buildPermissionEvidenceFacts({
+    toolTrace: input.toolTrace,
+    runtimeEvidenceText: approvalWaitTimeoutRuntimeEvidence,
+  });
   return {
     sourceBoundedEvidenceText,
     completedSessionEvidenceText,
     toolTraceResultContent,
     approvalWaitTimeoutRuntimeEvidence,
+    permission,
     usableEvidence: hasUsableEvidence(input.toolTrace),
     naturalFinishEvidenceText: [
       sourceBoundedEvidenceText,
@@ -150,6 +177,51 @@ export function buildToolResultContentText(
   results: RoleToolExecutionResult[],
 ): string {
   return collectToolResultContentText(results);
+}
+
+export function buildPermissionEvidenceFacts(input: {
+  toolTrace: NativeToolRoundTrace[];
+  runtimeEvidenceText: string;
+}): PermissionEvidenceFacts {
+  const latestToolName = latestPermissionToolName(input.toolTrace);
+  const latestResultStatus = latestPermissionResultStatus(input.toolTrace);
+  const resultWaitTimeout =
+    latestResultStatus === "approval_wait_timeout" ||
+    latestResultStatus === "wait_timeout";
+  const runtimeWaitTimeout = input.runtimeEvidenceText
+    .toLowerCase()
+    .includes("approval_wait_timeout");
+  const waitTimeout =
+    resultWaitTimeout || latestResultStatus === "pending" || runtimeWaitTimeout;
+  const deniedApproval = latestResultStatus === "denied";
+  const appliedApproval =
+    latestResultStatus === "applied" ||
+    latestToolName === "permission_applied" ||
+    hasPermissionAppliedEvidence(input.toolTrace);
+  const pendingApproval =
+    waitTimeout ||
+    latestResultStatus === "pending" ||
+    latestToolName === "permission_query";
+  const latestStatus: PermissionStatus =
+    resultWaitTimeout || runtimeWaitTimeout
+      ? "wait_timeout"
+      : deniedApproval
+        ? "denied"
+        : appliedApproval
+          ? "applied"
+          : pendingApproval
+            ? "pending"
+            : "none";
+  return {
+    latestStatus,
+    latestToolName,
+    latestResultStatus,
+    pendingApproval,
+    appliedApproval,
+    deniedApproval,
+    waitTimeout,
+    runtimeEvidenceText: input.runtimeEvidenceText,
+  };
 }
 
 export function buildEvidenceRoundSnapshot(

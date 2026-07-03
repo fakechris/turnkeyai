@@ -38,6 +38,7 @@ import type {
 import type {
   CompletedSessionEvidenceFact,
   EvidenceRunSnapshotter,
+  PermissionEvidenceFacts,
   TimeoutEvidenceFact,
 } from "./evidence-ledger";
 import type { PermissionPolicy } from "./permission-policy";
@@ -267,6 +268,7 @@ export interface TerminateCloseoutInput {
 export interface TerminateCloseoutEvidenceSnapshot {
   usableEvidence: boolean;
   approvalWaitTimeoutRuntimeEvidence: string;
+  permission: PermissionEvidenceFacts;
 }
 
 export interface TerminateCloseoutEvidenceSnapshotter {
@@ -1150,7 +1152,7 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
       approvalWaitTimeoutFallback: {
         toolCallCount: usedToolCalls,
         roundCount,
-        evidenceText: terminateEvidence.approvalWaitTimeoutRuntimeEvidence,
+        evidenceText: terminateEvidence.permission.runtimeEvidenceText,
       },
     };
   }

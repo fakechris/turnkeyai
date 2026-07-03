@@ -1433,4 +1433,60 @@ Stage 2 gates:
 | `npm run parity:engine` | 272 / 272, all 14 chunks |
 | `git diff --check` | clean |
 
-The branch has been pushed to `origin/feat/stage8-engine-cleanup`.
+The Stage 2 checkpoint was pushed to `origin/feat/stage8-engine-cleanup`.
+
+### Stage 3 Permission Facts Checkpoint
+
+Landed:
+
+- `EvidenceLedger.snapshot()` now produces `permission` facts with
+  `latestStatus`, `latestToolName`, `latestResultStatus`, `pendingApproval`,
+  `appliedApproval`, `deniedApproval`, `waitTimeout`, and
+  `runtimeEvidenceText`.
+- `RepairPolicyRegistry` natural-finish hooks now receive
+  `permissionFacts: evidence.permission`; the installed approval policies consume
+  typed permission facts for pending wait-timeout checks, premature pending
+  approval, stale pending approval, stale denied approval, approval wait-timeout
+  closeout repair, and approval wait-timeout local closeout.
+- `CloseoutPolicyRegistry.evaluateTerminateHook()` reads approval wait-timeout
+  fallback text through `terminateEvidence.permission.runtimeEvidenceText`
+  instead of reaching directly for the raw approval runtime evidence field.
+- The permission fact producer preserves legacy behavior for both structured
+  `permission_result` statuses and compatibility text that contains the
+  `approval_wait_timeout` token. It also keeps legacy `pending` permission
+  results compatible with wait-timeout closeout repairs.
+- `architecture-guard.test.ts` now pins the installed permission policy path to
+  `EvidenceLedger` permission facts.
+
+Still remaining for later stages:
+
+- Permission facts are still partly derived from text/runtime-progress
+  compatibility readers. The permission tool producer is not yet a complete
+  typed upstream status pipeline.
+- `ContinuationController` and `TerminalCloseoutController` still use existing
+  registered shared helper boundaries for forced `permission_result` selection;
+  this stage did not broaden that into a full permission-producer rewrite.
+- Task intent facts remain Stage 4 work, and `legacy-text-detectors.ts` remains
+  a Stage 5 quarantine/metadata task.
+
+Why this keeps the adapter acceptable as a composition layer:
+
+- The adapter does not gain new product-policy branches. Permission policy
+  interpretation now sits behind `EvidenceLedger` plus existing owner modules,
+  while `runViaReActEngine` continues to supply composition, live state, injected
+  callbacks, and final reply assembly.
+- Remaining permission text compatibility is localized in the typed evidence
+  producer and existing shared helpers; installed hooks consume owner-module
+  inputs instead of performing adapter-local permission decisions.
+
+Stage 3 gates:
+
+| Gate | Result |
+| --- | --- |
+| `npm run typecheck` | pass |
+| `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts` | 282 / 282 |
+| `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
+| `npx tsx --test packages/agent-core/src/*.test.ts` | 53 / 53 |
+| `npm run parity:inline` | 272 / 272 |
+| `npm run parity:engine` | 272 / 272, all 14 chunks |
+| `git diff --check` | clean |
