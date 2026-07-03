@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `e0c356e876ecf4abd8cd0ec237de0983abf3c95e`
+**Code HEAD before this docs-only report:** `3aaecb723fee0e5daaaf19d48ad21ea9c020531b`
 **Date:** 2026-07-02
 
 ## Summary
@@ -152,9 +152,10 @@ could not move the normalizer without making the inline parity reference import 
   metadata, reduction/memory closeout metadata, mission report construction, and
   debug-only policy trace exposure are handled by the react-engine owner.
   Engine agent event consumption now lives in
-  `react-engine/engine-agent-runner.ts`: the adapter creates the ReAct agent and
-  passes it to the owner, which consumes model/tool/final events, dispatches the
-  engine observer callbacks, and returns the selected final text.
+  `react-engine/engine-agent-runner.ts`: the owner creates the ReAct agent,
+  applies the boundary-round `maxRounds + 1` adjustment, consumes
+  model/tool/final events, dispatches the engine observer callbacks, and returns
+  the selected final text.
   Engine role toolkit wiring now lives in
   `react-engine/engine-role-toolkit.ts`: the owner exposes the filtered tool
   definitions, `has()` lookup, active tool-loop execution delegation, and
@@ -531,6 +532,7 @@ outside the terminal completion path.
 | `1de02ca` | Move engine run observer dependency wiring into `react-engine/engine-run-observer.ts`; adapter calls `createRoleEngineRunObserver()`. |
 | `75e6e08` | Move engine model client dependency wiring into `react-engine/engine-model-client.ts`; adapter calls `createRoleEngineModelClient()`. |
 | `e0c356e` | Move engine forced-round runner dependency wiring into `react-engine/engine-forced-tool-round-runner.ts`; adapter calls `createRoleEngineRuntimeForcedToolRoundRunner()`. |
+| `3aaecb7` | Move engine ReAct agent creation and boundary-round adjustment into `react-engine/engine-agent-runner.ts`; adapter calls `createRoleEngineAgentRunner()`. |
 
 ## Current Extracted Implementation
 
@@ -759,8 +761,9 @@ Real implementation now exists in:
   tool-use/model-use/reduction/memory metadata construction, runtime-derived
   mission report construction, and debug-only policy trace metadata exposure.
 - `react-engine/engine-agent-runner.ts` for engine ReAct event consumption:
-  drives the created `ReActLoop`, dispatches model/tool lifecycle events to
-  `EngineRunObserver`, and returns the final text.
+  creates the `ReActLoop`, applies the boundary-round `maxRounds + 1`
+  adjustment, dispatches model/tool lifecycle events to `EngineRunObserver`, and
+  returns the final text.
 - `react-engine/engine-role-toolkit.ts` for engine ReAct toolkit wiring:
   exposes the gateway-filtered tool definitions, name lookup, active role
   tool-loop execution delegation, and no-active-loop unknown-tool fallback.
@@ -817,14 +820,14 @@ Still shell/deferred or partial:
 
 ## Latest Gates
 
-Fresh gates run for this engine forced-round runner wiring slice:
+Fresh gates run for this engine agent creation wiring slice:
 
 | Gate | Result |
 | --- | --- |
 | `npm run typecheck` | exit 0 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 29 / 29 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-forced-tool-round-runner.test.ts` | 2 / 2 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 247 / 247 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 30 / 30 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/engine-agent-runner.test.ts` | 2 / 2 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 249 / 249 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -1022,9 +1025,10 @@ Stage 8 boundaries/slices are now real:
   run-state snapshots, tool trace, model-call trace, and last model result into
   the owner instead of assembling finalization output and metadata inline.
 - engine ReAct event consumption now routes through
-  `react-engine/engine-agent-runner.ts`; `runViaReActEngine` creates the agent
-  but delegates event iteration, observer dispatch, and final-text selection to
-  the owner runner.
+  `react-engine/engine-agent-runner.ts`; `runViaReActEngine` passes model,
+  toolkit, maxRounds, and hooks to `createRoleEngineAgentRunner()` instead of
+  importing/constructing the agent-core ReAct agent or owning the boundary-round
+  adjustment inline.
 - engine role toolkit wiring now routes through
   `react-engine/engine-role-toolkit.ts`; `runViaReActEngine` passes filtered tool
   definitions and the active tool loop instead of declaring the toolkit methods
@@ -1288,8 +1292,8 @@ Continue with the remaining high-risk pieces:
   runner wiring delegates to
   `react-engine/engine-forced-tool-round-runner.ts`; engine final generated
   response assembly delegates to
-  `react-engine/engine-final-response.ts`; engine ReAct event consumption
-  delegates to `react-engine/engine-agent-runner.ts`; engine role toolkit
+  `react-engine/engine-final-response.ts`; engine ReAct agent creation and event
+  consumption delegate to `react-engine/engine-agent-runner.ts`; engine role toolkit
   wiring delegates to `react-engine/engine-role-toolkit.ts`; role-engine
   run-state typing delegates to `react-engine/engine-run-state.ts`; engine run
   observer dependency wiring delegates to
