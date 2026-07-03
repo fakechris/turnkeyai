@@ -1,7 +1,7 @@
 # Stage 8 Engine Cleanup — Campaign Progress Report
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Code HEAD before this docs-only report:** `e44d4af52251b4bd41527700d25786cc15d74788`
+**Code HEAD before this docs-only report:** `d1bee4c8a304e8d8124174098f87eb23ef1bce5e`
 **Date:** 2026-07-02
 
 ## Summary
@@ -322,7 +322,10 @@ could not move the normalizer without making the inline parity reference import 
   observer callback instead of owning that wrapper. Role tool-call execution now
   also lives in `tool-use.ts`, including lifecycle progress emission,
   serial/concurrent chunking, wall-clock execution signals, non-abort tool error
-  shaping, and over-cap skipped results.
+  shaping, and over-cap skipped results. Forced runtime tool-round orchestration
+  now also lives in `tool-use.ts`, including observer delegation, native trace
+  updates, assistant/tool message append, and provider-protocol handoff through
+  injected persistence/recorder callbacks.
   Runtime-derived mission terminal reports now live in
   `runtime-derived-mission-report.ts`, and the supplemental browser-probe
   capability check now lives in neutral `tool-loop-shared.ts`.
@@ -474,6 +477,7 @@ outside the terminal completion path.
 | `1732722` | Move forced runtime provider-protocol fallback recording into `tool-history-pruning.ts`; adapter passes recorder/clock/defer inputs instead of owning the private wrapper. |
 | `5193d4f` | Move pre-compaction memory flush safety into `pre-compaction-memory-flusher.ts`; adapter passes flusher/selection/diagnostics instead of owning the safe wrapper. |
 | `e44d4af` | Move role tool-call execution into `tool-use.ts`; adapter passes tool-loop/recorder/clock inputs instead of owning the private execution runner. |
+| `d1bee4c` | Move forced runtime tool-round orchestration into `tool-use.ts`; adapter passes persistence/provider callbacks instead of owning the private forced-round runner. |
 
 ## Current Extracted Implementation
 
@@ -683,7 +687,9 @@ Real implementation now exists in:
   recording and observer emission, including the safe recorder/emitter wrappers
   used by inline and engine paths, plus role tool-call execution for
   serial/concurrent chunks, wall-clock signals, progress/result forwarding,
-  tool-error shaping, and over-cap skipped results.
+  tool-error shaping, and over-cap skipped results, plus forced runtime
+  tool-round orchestration for observer delegation, native trace updates,
+  assistant/tool message append, and provider-protocol handoff.
 - `tool-loop-shared.ts` as the neutral shared helper module for inline + engine,
   including final-recovery budget parsing/counting, repair text helpers, timeout
   continuation predicates, timeout continuation prompts, supplemental local
@@ -730,13 +736,13 @@ All gates below passed on the current code before the report update:
 | `npx tsx --test packages/role-runtime/src/pre-compaction-memory-flusher.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/gateway-input-builder.test.ts` | 13 / 13 |
 | `npx tsx --test packages/role-runtime/src/tool-history-pruning.test.ts` | 9 / 9 |
-| `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 102 / 102 |
+| `npx tsx --test packages/role-runtime/src/tool-use.test.ts` | 103 / 103 |
 | `npx tsx --test packages/role-runtime/src/native-tool-messages.test.ts` | 6 / 6 |
 | `npx tsx --test packages/role-runtime/src/request-envelope-reducer.test.ts` | 2 / 2 |
-| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 18 / 18 |
+| `npx tsx --test packages/role-runtime/src/react-engine/architecture-guard.test.ts` | 19 / 19 |
 | `npx tsx --test packages/role-runtime/src/react-engine/repair-policy-registry.test.ts` | 46 / 46 |
 | `npx tsx --test packages/role-runtime/src/react-engine/terminal-closeout-controller.test.ts` | 33 / 33 |
-| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 223 / 223 |
+| `npx tsx --test --test-reporter=dot packages/role-runtime/src/react-engine/*.test.ts` | 224 / 224 |
 | `npx tsx --test --test-reporter=dot packages/role-runtime/src/llm-response-generator.test.ts` | 272 / 272 |
 | `npx tsx --test --test-reporter=dot packages/agent-core/src/*.test.ts` | 53 / 53 |
 | `git diff --check` | clean |
@@ -894,7 +900,9 @@ Stage 8 boundaries/slices are now real:
   `tool-use.ts`; the adapter passes recorder/defer/observer inputs instead of
   keeping adapter-private safe recorder/emitter wrappers. Role tool-call
   execution now also routes through `tool-use.ts`; the adapter supplies the
-  active tool loop, recorder, defer mode, clock, and callbacks.
+  active tool loop, recorder, defer mode, clock, and callbacks. Forced runtime
+  tool-round orchestration now also routes through `tool-use.ts`; the adapter
+  supplies native trace persistence and provider-protocol recorder callbacks.
 - tool-definition filtering for permission tools, task-tracking tools, and
   focused durable-memory recall now lives in neutral
   `tool-definition-filter.ts`; the adapter calls the module instead of owning
@@ -1152,7 +1160,6 @@ Continue with the remaining high-risk pieces:
   terminal hook fallback entry,
   and model-error fallback / flow-selection / hook-application /
   forced-round-result boundary slices; forced runtime tool-round orchestration
-  still enters through an adapter helper, but actual role tool-call execution
   now delegates to `tool-use.ts`, runtime progress recorder/observer emission
   delegates to `tool-use.ts`, and provider-protocol fallback recording delegates
   to `tool-history-pruning.ts`; keep thinning the adapter.
