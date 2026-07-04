@@ -9,7 +9,7 @@ import {
   allowsSupplementalBrowserProbe,
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
-  collectApprovalWaitTimeoutRuntimeEvidence,
+  readLegacyApprovalWaitTimeoutRuntimeEvidence,
   parseJsonObject,
   throwIfAborted,
 } from "./tool-loop-shared";
@@ -26,7 +26,7 @@ function packet(taskPrompt: string, outputContract = ""): RolePromptPacket {
   } as RolePromptPacket;
 }
 
-test("collectApprovalWaitTimeoutRuntimeEvidence keeps permission evidence only", () => {
+test("readLegacyApprovalWaitTimeoutRuntimeEvidence keeps permission evidence only", () => {
   const toolTrace: NativeToolRoundTrace[] = [
     {
       round: 1,
@@ -69,7 +69,7 @@ test("collectApprovalWaitTimeoutRuntimeEvidence keeps permission evidence only",
     },
   ];
 
-  const evidence = collectApprovalWaitTimeoutRuntimeEvidence(toolTrace);
+  const evidence = readLegacyApprovalWaitTimeoutRuntimeEvidence(toolTrace);
 
   assert.match(evidence, /permission_query:/);
   assert.match(evidence, /permission_result:/);

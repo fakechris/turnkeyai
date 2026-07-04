@@ -150,7 +150,7 @@ function collectBrowserFailureBuckets(
           add(bucket);
         }
       }
-      for (const bucket of collectBrowserFailureBucketNames(result.content ?? "")) {
+      for (const bucket of readLegacyBrowserFailureBucketNames(result.content ?? "")) {
         add(bucket);
       }
     }
@@ -196,7 +196,7 @@ function normalizeBrowserFailureBucket(
   }
 }
 
-function collectBrowserFailureBucketNames(text: string): string[] {
+function readLegacyBrowserFailureBucketNames(text: string): string[] {
   const buckets = new Set<string>();
   const pattern =
     /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|wait_condition_timeout|transport_failure|owner_mismatch|lease_conflict)\b/gi;

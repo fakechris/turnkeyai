@@ -3,11 +3,11 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
   countCompletedSessionEvidenceResults,
-  inferIndependentEvidenceStreamCount,
-  shouldContinueIndependentEvidenceStreams,
-  shouldContinueTimedOutApprovedBrowserSession,
-  shouldContinueTimedOutSiblingSession,
-  shouldRepairMissingApprovalGate,
+  readLegacyIndependentEvidenceStreamCount,
+  readLegacyIndependentEvidenceStreamsContinuation,
+  readLegacyTimedOutApprovedBrowserSessionContinuation,
+  readLegacyTimedOutSiblingSessionContinuation,
+  readLegacyMissingApprovalGateRepair,
   type SubAgentToolTimeoutSignal,
 } from "../tool-loop-shared";
 import type { TaskIntentFacts } from "./types";
@@ -66,7 +66,7 @@ export function buildTimeoutContinuationPolicyFacts(
     };
   }
   return {
-    timedOutApprovedBrowserSession: shouldContinueTimedOutApprovedBrowserSession(
+    timedOutApprovedBrowserSession: readLegacyTimedOutApprovedBrowserSessionContinuation(
       {
         taskPrompt: input.taskPrompt,
         messages: input.messages,
@@ -75,7 +75,7 @@ export function buildTimeoutContinuationPolicyFacts(
         ...(input.tools === undefined ? {} : { tools: input.tools }),
       },
     ),
-    timedOutSiblingSession: shouldContinueTimedOutSiblingSession({
+    timedOutSiblingSession: readLegacyTimedOutSiblingSessionContinuation({
       taskPrompt: input.taskPrompt,
       messages: input.messages,
       toolTrace: input.toolTrace,
@@ -90,11 +90,11 @@ export function buildIndependentEvidenceStreamsPolicyFacts(
 ): IndependentEvidenceStreamsPolicyFacts {
   const requiredStreams =
     input.taskFacts?.requiredIndependentEvidenceStreams ??
-    inferIndependentEvidenceStreamCount(input.taskPrompt);
+    readLegacyIndependentEvidenceStreamCount(input.taskPrompt);
   return {
     independentEvidenceStreams:
       requiredStreams >= 2 &&
-      shouldContinueIndependentEvidenceStreams({
+      readLegacyIndependentEvidenceStreamsContinuation({
         taskPrompt: input.taskPrompt,
         messages: input.messages,
         toolTrace: input.toolTrace,
@@ -109,7 +109,7 @@ export function buildMissingApprovalGateContinuationFacts(
   input: MissingApprovalGateContinuationFactInput,
 ): MissingApprovalGateContinuationFacts {
   return {
-    missingApprovalGate: shouldRepairMissingApprovalGate({
+    missingApprovalGate: readLegacyMissingApprovalGateRepair({
       taskPrompt: input.taskPrompt,
       resultText: input.resultText,
       messages: input.messages,

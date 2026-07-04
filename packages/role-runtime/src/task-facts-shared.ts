@@ -498,12 +498,6 @@ export function buildAwaitingContextSetupNoToolRepairPrompt(
   ].join("\n");
 }
 
-export const shouldSuppressToolsForAwaitingContextSetup =
-  readAwaitingContextSetupNoToolSuppression;
-export const shouldRepairMissingRequestedTableColumns =
-  readMissingRequestedTableColumnsRepair;
-export const shouldRepairExtraneousProviderTableSchema =
-  readExtraneousProviderTableSchemaRepair;
 
 function inferRequestedTableColumns(texts: string[]): string[] {
   const columns: string[] = [];

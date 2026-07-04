@@ -22298,7 +22298,7 @@ test("cutover parity: extraneous-provider-table-schema repair is identical betwe
 
 test("cutover parity: weak-evidence-synthesis repair is identical between inline and engine paths", async () => {
   // The first (tool-free) candidate weakens verified evidence with placeholder
-  // uncertainty ("probably"/"TBD"), so shouldRepairWeakEvidenceSynthesis fires a
+  // uncertainty ("probably"/"TBD"), so readLegacyWeakEvidenceSynthesisRepair fires a
   // repair round on both paths and the confident, verified answer is the result.
   const weakAnswer = "核心要点：该产品 probably 支持离线模式，定价 TBD。";
   const fixedAnswer = "核心要点：观察到该产品支持离线模式，定价已验证为每月 9 元。";
@@ -22338,7 +22338,7 @@ test("cutover parity: weak-evidence-synthesis repair is identical between inline
 test("cutover parity: source-evidence-carry-forward natural-finish repair is identical between inline and engine paths", async () => {
   // The NATURAL-FINISH path (engine onRepairRound, inline :1202) — distinct from the
   // completed-closeout onTerminate loop. A lookup tool returns a source label; the
-  // tool-free candidate answer drops it, so shouldRepairSourceEvidenceCarryForward
+  // tool-free candidate answer drops it, so readLegacySourceEvidenceCarryForwardRepair
   // (label branch) fires on both paths using sourceBoundedEvidenceText (which pulls the
   // label from the tool-trace evidence). Unlike the other natural-finish tests the model
   // must actually call the tool so the label reaches the tool trace.
@@ -22470,7 +22470,7 @@ test("cutover parity: false-evidence-blocked completed-closeout repair is identi
 
 test("cutover parity: missing-requested-next-action completed-closeout repair is identical between inline and engine paths", async () => {
   // The task asks for the next action the operator should take, but the closeout
-  // synthesis omits any next-action guidance. shouldRepairMissingRequestedNextAction
+  // synthesis omits any next-action guidance. readLegacyMissingRequestedNextActionRepair
   // fires a completed-closeout repair round on both paths (inline re-loops via the
   // "none" round; engine via the onTerminate repair loop). The scenario is isolated
   // to this predicate: the task names no sources / product brief / timeout / table /
@@ -22710,7 +22710,7 @@ test("cutover parity: source-evidence-carry-forward completed-closeout repair is
 test("cutover parity: timeout-followup-final-guidance completed-closeout repair is identical between inline and engine paths", async () => {
   // The task is a timeout/continuation follow-up, and the delegated evidence reports
   // a timeout recovery — but the first synthesis omits the unverified-scope and
-  // continuation guidance the task requires. shouldRepairTimeoutFollowupFinalGuidance
+  // continuation guidance the task requires. readLegacyTimeoutFollowupFinalGuidanceRepair
   // fires a completed-closeout repair on both paths. Isolated: the delegated evidence
   // carries NO source labels (so source-evidence short-circuits on empty labels) and
   // the task names no product brief / next action / deliverable / table, so timeout-
@@ -23075,7 +23075,7 @@ test("cutover parity: extraneous-provider-table-schema completed-closeout repair
 test("cutover parity: weak-evidence-synthesis completed-closeout repair is identical between inline and engine paths", async () => {
   // weak-evidence is the LAST every-round member (inline completed :2154 / natural-finish
   // :1231). The closeout synthesis weakens verified evidence with placeholder uncertainty
-  // ("maybe"/"TBD"), so shouldRepairWeakEvidenceSynthesis (WEAK_UNCERTAINTY branch) fires
+  // ("maybe"/"TBD"), so readLegacyWeakEvidenceSynthesisRepair (WEAK_UNCERTAINTY branch) fires
   // on both paths and the rewrite states the verified facts plainly. Isolated to this
   // predicate: the task names no table / sources / timeout / next action / conclusion /
   // risk, the evidence carries no labels, and the synthesis has no DNS/ban/estimate
@@ -23248,7 +23248,7 @@ test("cutover parity: browser-evidence-dimensions completed-closeout repair is i
   // tool-free natural-finish cascade), so it lives in the repairRound===0 block and uses
   // the bare finalContents evidenceText. The task requests a browser dimension (details
   // popup); the completed evidence shows it; the closeout synthesis omits the "popup"
-  // dimension, so shouldRepairMissingBrowserEvidenceDimensions fires on both paths and
+  // dimension, so readLegacyMissingBrowserEvidenceDimensionsRepair fires on both paths and
   // the rewrite carries the popup/P-42/manager-acknowledgement forward. Isolated to the
   // "details popup state" dimension (the only one with no `negated` field): no table /
   // sources / timeout / next-action / conclusion / risk in the task, no labels in the
@@ -23398,7 +23398,7 @@ test("cutover parity: setup-only awaiting-context tool suppression is identical 
 
 test("cutover parity: forced-spawn missing-browser-evidence is identical between inline and engine paths", async () => {
   // Stage 7 S2 (forced-spawn). A tool-free candidate admits it used a raw HTTP fetch
-  // instead of the browser; shouldRepairMissingBrowserEvidence re-arms a REAL
+  // instead of the browser; readLegacyMissingBrowserEvidenceRepair re-arms a REAL
   // sessions_spawn round (engine via onRepairRound + consumesRound:true, inline via
   // nextToolChoice={type:tool,name:sessions_spawn}). The spawn returns a completed
   // browser session, so both paths converge on the completed-closeout synthesis.
@@ -23482,7 +23482,7 @@ test("cutover parity: forced-spawn missing-browser-evidence is identical between
 
 test("cutover parity: forced-spawn missing-product-signal-evidence is identical between inline and engine paths", async () => {
   // Stage 7 S3 (forced-spawn, product-signal branch). A tool-free candidate reports
-  // only the static HTML shell; shouldRepairMissingProductSignalBrowserEvidence
+  // only the static HTML shell; readLegacyMissingProductSignalBrowserEvidenceRepair
   // re-arms a sessions_spawn round (same consumesRound mechanism). The spawn returns
   // PLAIN evidence (not a completed session), so both paths continue to a round-2
   // natural-finish synthesis. Isolated to product-signal: the task is not browser-
@@ -23888,7 +23888,7 @@ test("cutover parity: forced permission_result before a completed-session closeo
       }
       // round 1 (after the forced permission_result round): a tool-free closeout that
       // is ALREADY a complete approval-wait-timeout closeout, so the inline-only
-      // approval-wait-timeout repair (shouldRepairApprovalWaitTimeoutCloseout, a
+      // approval-wait-timeout repair (readLegacyApprovalWaitTimeoutCloseoutRepair, a
       // natural-finish repair not yet cut over) does NOT fire on either path — isolating
       // S5's forced permission_result as the only behavioral difference under test.
       return {
@@ -24034,7 +24034,7 @@ test("cutover parity: a model-call error with a pending approval forces permissi
 });
 
 test("cutover parity: a timed-out approved browser session is continued via sessions_send before the timeout closeout, identically on both paths", async () => {
-  // Stage 7 S7 branch 1 (shouldContinueTimedOutApprovedBrowserSession, inline :1562).
+  // Stage 7 S7 branch 1 (readLegacyTimedOutApprovedBrowserSessionContinuation, inline :1562).
   // An already-approved browser action times out before verification; both paths
   // append the approved-browser timeout-continuation prompt and force a sessions_send
   // round to resume it — BEFORE the sub_agent_timeout closeout — then close out from
@@ -24176,7 +24176,7 @@ test("cutover parity: an incomplete approved browser session is continued via se
 });
 
 test("cutover parity: a multi-stream delegation is not finalized after one stream — independent evidence streams continue via sessions_spawn, identically on both paths", async () => {
-  // Stage 7 S8 (shouldContinueIndependentEvidenceStreams, inline :1648). A task that
+  // Stage 7 S8 (readLegacyIndependentEvidenceStreamsContinuation, inline :1648). A task that
   // requires three independent evidence streams completes only one; both paths append
   // the independent-evidence-stream continuation prompt and force a sessions_spawn round
   // (between branch 4 and the S5 forced permission_result) BEFORE the completed-session
@@ -24421,7 +24421,7 @@ test("cutover parity: the S8 cap keeps the inline function's behavior even when 
 });
 
 test("cutover parity: an approval-gated answer that skipped the approval gate is repaired via a forced permission_query, identically on both paths", async () => {
-  // Stage 7 S9 natural-finish (shouldRepairMissingApprovalGate, inline :804). The model
+  // Stage 7 S9 natural-finish (readLegacyMissingApprovalGateRepair, inline :804). The model
   // finalizes an approval-gated browser task WITHOUT going through the approval gate
   // (no permission_* in the trace). Both paths re-arm a forced permission_query round
   // (a consumesRound onRepairRound repair), then the model walks the approval flow
@@ -24696,7 +24696,7 @@ test("cutover parity: when an S10 re-armed browser round times out, the later su
 });
 
 test("cutover parity (8B): the pending-approval-wait-timeout-check repair forces permission_result on a tool-free candidate, identically on both paths", async () => {
-  // Stage 8B slice 1 — shouldRepairPendingApprovalWaitTimeoutCheck (inline :833). An
+  // Stage 8B slice 1 — readLegacyPendingApprovalWaitTimeoutCheckRepair (inline :833). An
   // approval-wait-timeout task queried approval (latest permission tool = permission_query)
   // then the model returns a tool-free "still pending" candidate. Both paths re-arm a
   // forced permission_result round (consumesRound) to observe the decision before
@@ -24823,7 +24823,7 @@ test("cutover parity (8B-1b): a premature mutating browser spawn is gated into a
 });
 
 test("cutover parity (8B-1b): a read-only permission_query is suppressed and re-prompted tool-free, identically on both paths", async () => {
-  // Stage 8B slice 1b — shouldSuppressReadOnlyPermissionQueryToolCalls (inline :518), now
+  // Stage 8B slice 1b — readLegacyReadOnlyPermissionQuerySuppression (inline :518), now
   // in the engine onSuppressToolCalls. A read-only inspection task that disclaims mutation
   // but emits a permission_query has the call dropped + a tool-free re-prompt; the approval
   // flow never runs (the executor throws if permission_query reaches execution).
@@ -24939,7 +24939,7 @@ test("cutover parity (8B-1b): the read-only suppression pre-empts a same-round w
 });
 
 test("cutover parity (8B-1c): the hard approval-wait-timeout local closeout fires after a failed repair, identically on both paths", async () => {
-  // Stage 8B slice 1c — shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair
+  // Stage 8B slice 1c — readLegacyForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair
   // (inline :955). The approval-wait-timeout-closeout repair fires (records its marker)
   // but the candidate stays incomplete, so both paths break the loop with a
   // deterministic tool_evidence_fallback local-evidence closeout — inline at :966-982,
@@ -25005,7 +25005,7 @@ test("cutover parity (8B-1c): the hard approval-wait-timeout local closeout fire
 test("cutover parity (8B progress-observability): a permission.applied progress event drives the stale-pending repair to sessions_spawn, identically on both paths", async () => {
   // Stage 8B progress observability. The permission_query result carries progress events
   // (permission.query / permission.result(approved) / permission.applied). The engine now
-  // captures result.progress into the round trace, so hasPermissionAppliedEvidence is true
+  // captures result.progress into the round trace, so readLegacyPermissionAppliedEvidence is true
   // — and the stale-pending-approval repair forces a sessions_spawn (the approved action),
   // matching inline. Without the capture the engine would instead fire the premature-
   // pending repair (permission_result), diverging.

@@ -10,8 +10,8 @@ import type {
 export function producePermissionEvidenceEnvelope(
   input: Pick<RuntimeFactInput, "toolTrace">,
 ): EvidenceEnvelope<"permission_evidence", PermissionEvidenceFacts> {
-  const latestToolName = latestPermissionToolName(input.toolTrace);
-  const latestResultStatus = latestPermissionResultStatus(input.toolTrace);
+  const latestToolName = readLegacyLatestPermissionToolName(input.toolTrace);
+  const latestResultStatus = readLegacyLatestPermissionResultStatus(input.toolTrace);
   const appliedProgress = hasPermissionAppliedProgress(input.toolTrace);
   const waitTimeout =
     latestResultStatus === "approval_wait_timeout" ||
@@ -54,7 +54,7 @@ export function producePermissionEvidenceEnvelope(
   };
 }
 
-function latestPermissionToolName(
+function readLegacyLatestPermissionToolName(
   toolTrace: NativeToolRoundTrace[],
 ): string | null {
   for (
@@ -97,7 +97,7 @@ function latestPermissionToolName(
   return null;
 }
 
-function latestPermissionResultStatus(
+function readLegacyLatestPermissionResultStatus(
   toolTrace: NativeToolRoundTrace[],
 ): string | null {
   for (

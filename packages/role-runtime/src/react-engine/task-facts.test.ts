@@ -18,9 +18,9 @@ import {
   requestedTableColumnMessageContext,
   resolveRequestedTableColumns,
   resultIntroducesProviderSupportSchema,
-  shouldRepairExtraneousProviderTableSchema,
-  shouldRepairMissingRequestedTableColumns,
-  shouldSuppressToolsForAwaitingContextSetup,
+  readExtraneousProviderTableSchemaRepair,
+  readMissingRequestedTableColumnsRepair,
+  readAwaitingContextSetupNoToolSuppression,
   taskPromptRequestsAwaitingContextSetup,
 } from "./task-facts";
 import type { LLMMessage } from "./types";
@@ -171,7 +171,7 @@ test("TaskFacts owns missing requested table column repair prompts and markers",
   const resultText = ["| provider |", "| --- |", "| A |"].join("\n");
 
   assert.equal(
-    shouldRepairMissingRequestedTableColumns({
+    readMissingRequestedTableColumnsRepair({
       taskPrompt,
       messages,
       repairMarkers,
@@ -188,7 +188,7 @@ test("TaskFacts owns missing requested table column repair prompts and markers",
   assert.match(prompt, /Required table header columns: provider \| evidence URL/);
   assert.equal(recordRepairPrompt(repairMarkers, prompt), repairMarkers[0]);
   assert.equal(
-    shouldRepairMissingRequestedTableColumns({
+    readMissingRequestedTableColumnsRepair({
       taskPrompt,
       messages,
       repairMarkers,
@@ -210,7 +210,7 @@ test("TaskFacts owns extraneous provider schema repair prompts and markers", () 
   ].join("\n");
 
   assert.equal(
-    shouldRepairExtraneousProviderTableSchema({
+    readExtraneousProviderTableSchemaRepair({
       taskPrompt,
       messages,
       repairMarkers,
@@ -226,7 +226,7 @@ test("TaskFacts owns extraneous provider schema repair prompts and markers", () 
   assert.match(prompt, /provider\/search\/model-support columns/);
   recordRepairPrompt(repairMarkers, prompt);
   assert.equal(
-    shouldRepairExtraneousProviderTableSchema({
+    readExtraneousProviderTableSchemaRepair({
       taskPrompt,
       messages,
       repairMarkers,
@@ -250,7 +250,7 @@ test("TaskFacts owns awaiting-context setup suppression and marker idempotency",
     false,
   );
   assert.equal(
-    shouldSuppressToolsForAwaitingContextSetup({ taskPrompt, repairMarkers }),
+    readAwaitingContextSetupNoToolSuppression({ taskPrompt, repairMarkers }),
     true,
   );
 
@@ -293,7 +293,7 @@ test("TaskFacts owns awaiting-context setup suppression and marker idempotency",
     buildAwaitingContextSetupNoToolRepairPrompt(taskPrompt),
   );
   assert.equal(
-    shouldSuppressToolsForAwaitingContextSetup({ taskPrompt, repairMarkers }),
+    readAwaitingContextSetupNoToolSuppression({ taskPrompt, repairMarkers }),
     false,
   );
 });

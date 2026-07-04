@@ -7,7 +7,7 @@ import type {
 import type { RolePromptPacket } from "./prompt-policy";
 import {
   escapeRegExp,
-  inferRequiredFinalSynthesisDeliverables,
+  readLegacyRequiredFinalSynthesisDeliverables,
   requestsStatusVisibleTextEvidenceUrlLines,
   type SessionContinuationDirective,
 } from "./tool-loop-shared";
@@ -132,7 +132,7 @@ export function finalSynthesisFormatContract(
   taskPrompt?: string,
   messages: LLMMessage[] = [],
 ): string[] {
-  const requiredDeliverables = inferRequiredFinalSynthesisDeliverables(
+  const requiredDeliverables = readLegacyRequiredFinalSynthesisDeliverables(
     taskPrompt ?? "",
   );
   const requestedTableColumns = resolveRequestedTableColumns([

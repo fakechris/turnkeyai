@@ -124,12 +124,8 @@ import {
   buildStalePendingApprovalRepairPrompt,
   buildTimeoutFollowupFinalGuidanceRepairPrompt,
   buildWeakEvidenceSynthesisRepairPrompt,
-  collectApprovalWaitTimeoutRuntimeEvidence,
   contextHasTimeoutSessionResult,
   continuationRequestPrefersResumableSession,
-  collectBrowserRecoverySummariesFromToolTrace,
-  collectCompletedSessionEvidenceText,
-  collectSourceBoundedEvidenceText,
   countCompletedSessionEvidenceResults,
   countRecoveryToolCallsBeforeActivation,
   dedupeStrings,
@@ -151,18 +147,14 @@ import {
   hasSessionTimeoutEvidence,
   hasTimeoutCloseoutGuidance,
   hasTimeoutContinuationGuidance,
-  hasPermissionAppliedEvidence,
   hasMissingRequiredFinalDeliverablesRepairPrompt,
   hasLatestSupplementalLocalTimeoutProbePrompt,
   isAbortError,
   isAppliedApprovalBrowserContinuation,
   isProviderSearchPricingResearchTask,
-  inferIndependentEvidenceStreamCount,
   isControlPlaneToolResultName,
   isExplicitSessionContinuationRequest,
   isLoopbackHostname,
-  latestPermissionResultStatus,
-  latestPermissionToolName,
   limitIndependentEvidenceSpawnCalls,
   matchesAny,
   containsAnyToolCallForm,
@@ -181,8 +173,6 @@ import {
   maybeAppendRequiredTimeoutFollowupVisibility,
   maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
-  mentionsPendingApproval,
-  mentionsTimeout,
   parseJsonObject,
   readSessionKeyFromToolInput,
   readStringField,
@@ -191,39 +181,16 @@ import {
   resolveRecoveryToolBudgetForActivation,
   resolveEffectiveToolLoopWallClockMs,
   shouldCloseoutCancelledSessionWithoutContinuation,
-  shouldContinueTimedOutApprovedBrowserSession,
-  shouldContinueTimedOutSiblingSession,
-  shouldContinueIndependentEvidenceStreams,
-  shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
   shouldRunSupplementalLocalTimeoutProbe,
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
-  shouldRepairApprovalWaitTimeoutCloseout,
-  shouldRepairFalseEvidenceBlockedSynthesis,
-  shouldRepairFinalRecoveryBudgetCloseout,
-  shouldRepairIncompleteApprovedBrowserAction,
-  shouldRepairMissingBrowserEvidence,
-  shouldRepairMissingBrowserEvidenceDimensions,
-  shouldRepairMissingProductSignalBrowserEvidence,
-  shouldRepairMissingApprovalGate,
-  shouldRepairMissingRequestedNextAction,
-  shouldRepairPendingApprovalWaitTimeoutCheck,
-  shouldRepairPrematurePendingApprovalFinal,
-  shouldRepairSourceEvidenceCarryForward,
-  shouldRepairStaleDeniedApproval,
-  shouldRepairStalePendingApproval,
-  shouldRepairTimeoutFollowupFinalGuidance,
-  shouldRepairWeakEvidenceSynthesis,
   shouldPreserveRecoveredTimeoutCloseout,
-  shouldSuppressReadOnlyPermissionQueryToolCalls,
   sliceUtf8,
   taskAllowsPermissionTools,
   taskPromptRequestsApprovalWaitTimeoutCloseout,
   taskPromptIsAppliedApprovalBrowserContinuation,
   taskPromptLooksLikeSourceCheckContinuation,
   taskPromptSaysApprovalAlreadyApplied,
-  taskRequestsSessionTranscript,
-  taskRequestsTimeoutFollowupContinuation,
   toNativeToolProgressTrace,
   toNativeToolResultTrace,
   toolTraceHasCall,
@@ -235,6 +202,34 @@ import {
   buildRuntimeDerivedMissionReport,
   type ToolLoopCloseoutMetadata,
 } from "./runtime-derived-mission-report";
+import {
+  readApprovalWaitTimeoutRuntimeEvidence,
+  readApprovalWaitTimeoutCloseoutRepair,
+  readBrowserRecoverySummariesFromTrace,
+  readCompletedSessionEvidenceText,
+  readFalseEvidenceBlockedSynthesisRepair,
+  readFinalRecoveryBudgetCloseoutRepair,
+  readForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
+  readIncompleteApprovedBrowserActionRepair,
+  readIndependentEvidenceStreamCount,
+  readIndependentEvidenceStreamsContinuation,
+  readMissingApprovalGateRepair,
+  readMissingBrowserEvidenceDimensionsRepair,
+  readMissingBrowserEvidenceRepair,
+  readMissingProductSignalBrowserEvidenceRepair,
+  readMissingRequestedNextActionRepair,
+  readPendingApprovalWaitTimeoutCheckRepair,
+  readPrematurePendingApprovalFinalRepair,
+  readReadOnlyPermissionQuerySuppression,
+  readSourceBoundedEvidenceText,
+  readSourceEvidenceCarryForwardRepair,
+  readStaleDeniedApprovalRepair,
+  readStalePendingApprovalRepair,
+  readTimedOutApprovedBrowserSessionContinuation,
+  readTimedOutSiblingSessionContinuation,
+  readTimeoutFollowupFinalGuidanceRepair,
+  readWeakEvidenceSynthesisRepair,
+} from "./runtime-facts/inline-policy-compat";
 // Stage 8 cleanup (Batch 0.5): engine policy-trace plumbing. The trace is a
 // behavior-neutral observability sink that records the per-hook decision sequence
 // so later batches can prove byte-identical behavior and so production-behind-flag
@@ -268,9 +263,9 @@ import {
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
   recordRepairPrompt,
-  shouldRepairExtraneousProviderTableSchema,
-  shouldRepairMissingRequestedTableColumns,
-  shouldSuppressToolsForAwaitingContextSetup,
+  readExtraneousProviderTableSchemaRepair,
+  readMissingRequestedTableColumnsRepair,
+  readAwaitingContextSetupNoToolSuppression,
 } from "./task-facts-shared";
 import {
   type PreCompactionMemoryFlusher,
@@ -652,7 +647,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       const modelRequestedMoreTools = (result.toolCalls?.length ?? 0) > 0;
       if (
         activeToolLoop &&
-        shouldSuppressReadOnlyPermissionQueryToolCalls(toolCalls, {
+        readReadOnlyPermissionQuerySuppression(toolCalls, {
           taskPrompt: input.packet.taskPrompt,
           sessionContext: sessionContinuationContext,
         })
@@ -677,7 +672,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolCalls.length === 0 &&
         recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace) >=
           recoveryToolBudget.maxToolCalls &&
-        shouldRepairFinalRecoveryBudgetCloseout({
+        readFinalRecoveryBudgetCloseoutRepair({
           messages,
           repairMarkers,
           resultText: result.text,
@@ -769,7 +764,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             memoryFlushes.push(generated.memoryFlush);
           }
           if (
-            shouldRepairMissingRequestedTableColumns({
+            readMissingRequestedTableColumnsRepair({
               activation: input.activation,
               taskPrompt: input.packet.taskPrompt,
               messages,
@@ -839,10 +834,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         if (generated.memoryFlush) {
           memoryFlushes.push(generated.memoryFlush);
         }
-        const completedEvidenceText = collectCompletedSessionEvidenceText(toolTrace);
+        const completedEvidenceText = readCompletedSessionEvidenceText(toolTrace);
         if (
           completedEvidenceText &&
-          shouldRepairMissingBrowserEvidenceDimensions({
+          readMissingBrowserEvidenceDimensionsRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -873,7 +868,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairMissingBrowserEvidence({
+        readMissingBrowserEvidenceRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -903,7 +898,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairMissingProductSignalBrowserEvidence({
+        readMissingProductSignalBrowserEvidenceRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -933,7 +928,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairMissingApprovalGate({
+        readMissingApprovalGateRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -961,7 +956,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairPendingApprovalWaitTimeoutCheck({
+        readPendingApprovalWaitTimeoutCheckRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -986,7 +981,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairPrematurePendingApprovalFinal({
+        readPrematurePendingApprovalFinalRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -1011,7 +1006,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairStalePendingApproval({
+        readStalePendingApprovalRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -1036,7 +1031,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairStaleDeniedApproval({
+        readStaleDeniedApprovalRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -1061,7 +1056,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairApprovalWaitTimeoutCloseout({
+        readApprovalWaitTimeoutCloseoutRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -1086,7 +1081,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
+        readForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -1104,7 +1099,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         result = maybeRedactForbiddenLocalUrls({
           result: buildApprovalWaitTimeoutLocalEvidenceCloseout({
             selection,
-            evidenceText: collectApprovalWaitTimeoutRuntimeEvidence(toolTrace),
+            evidenceText: readApprovalWaitTimeoutRuntimeEvidence(toolTrace),
             error: new Error(
               "approval wait-timeout repair omitted required pending evidence",
             ),
@@ -1116,7 +1111,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
-        shouldRepairIncompleteApprovedBrowserAction({
+        readIncompleteApprovedBrowserActionRepair({
           taskPrompt: input.packet.taskPrompt,
           resultText: result.text,
           messages,
@@ -1141,7 +1136,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (
         activeToolLoop &&
         toolCalls.length > 0 &&
-        shouldSuppressToolsForAwaitingContextSetup({
+        readAwaitingContextSetupNoToolSuppression({
           taskPrompt: input.packet.taskPrompt,
           repairMarkers,
         })
@@ -1201,10 +1196,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         if (generated.memoryFlush) {
           memoryFlushes.push(generated.memoryFlush);
         }
-        const completedEvidenceText = collectCompletedSessionEvidenceText(toolTrace);
+        const completedEvidenceText = readCompletedSessionEvidenceText(toolTrace);
         if (
           completedEvidenceText &&
-          shouldRepairMissingBrowserEvidenceDimensions({
+          readMissingBrowserEvidenceDimensionsRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -1238,7 +1233,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             recoveryToolBudget &&
             recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace) >=
               recoveryToolBudget.maxToolCalls &&
-            shouldRepairFinalRecoveryBudgetCloseout({
+            readFinalRecoveryBudgetCloseoutRepair({
               messages,
               repairMarkers,
               resultText: result.text,
@@ -1261,7 +1256,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             continue;
           }
           if (
-            shouldRepairMissingRequestedTableColumns({
+            readMissingRequestedTableColumnsRepair({
               activation: input.activation,
               taskPrompt: input.packet.taskPrompt,
               messages,
@@ -1289,7 +1284,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             continue;
           }
           if (
-            shouldRepairExtraneousProviderTableSchema({
+            readExtraneousProviderTableSchemaRepair({
               activation: input.activation,
               taskPrompt: input.packet.taskPrompt,
               messages,
@@ -1315,18 +1310,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             continue;
           }
           const sourceBoundedEvidenceText = [
-            collectSourceBoundedEvidenceText({
+            readSourceBoundedEvidenceText({
               taskPrompt: input.packet.taskPrompt,
               messages,
               toolTrace,
             }),
-            collectCompletedSessionEvidenceText(toolTrace),
+            readCompletedSessionEvidenceText(toolTrace),
           ]
             .filter((text) => text.trim().length > 0)
             .join("\n\n");
           if (
             sourceBoundedEvidenceText &&
-            shouldRepairSourceEvidenceCarryForward({
+            readSourceEvidenceCarryForwardRepair({
               taskPrompt: input.packet.taskPrompt,
               resultText: result.text,
               messages,
@@ -1353,7 +1348,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             continue;
           }
           if (
-            shouldRepairWeakEvidenceSynthesis({
+            readWeakEvidenceSynthesisRepair({
               taskPrompt: input.packet.taskPrompt,
               resultText: result.text,
               messages,
@@ -1441,10 +1436,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         if (generated.memoryFlush) {
           memoryFlushes.push(generated.memoryFlush);
         }
-        const completedEvidenceText = collectCompletedSessionEvidenceText(toolTrace);
+        const completedEvidenceText = readCompletedSessionEvidenceText(toolTrace);
         if (
           completedEvidenceText &&
-          shouldRepairMissingBrowserEvidenceDimensions({
+          readMissingBrowserEvidenceDimensionsRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -1686,7 +1681,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       const timeoutSignal = findSubAgentToolTimeout(toolResults);
       if (
         timeoutSignal &&
-        shouldContinueTimedOutApprovedBrowserSession({
+        readTimedOutApprovedBrowserSessionContinuation({
           taskPrompt: input.packet.taskPrompt,
           messages,
           toolTrace,
@@ -1709,7 +1704,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
       if (
         timeoutSignal &&
-        shouldContinueTimedOutSiblingSession({
+        readTimedOutSiblingSessionContinuation({
           taskPrompt: input.packet.taskPrompt,
           messages,
           toolTrace,
@@ -1778,7 +1773,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldContinueIndependentEvidenceStreams({
+          readIndependentEvidenceStreamsContinuation({
             taskPrompt: input.packet.taskPrompt,
             messages,
             toolTrace,
@@ -1792,7 +1787,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             {
               role: "user",
               content: buildIndependentEvidenceStreamContinuationPrompt({
-                requiredStreams: inferIndependentEvidenceStreamCount(
+                requiredStreams: readIndependentEvidenceStreamCount(
                   input.packet.taskPrompt,
                 ),
                 completedSessions:
@@ -1804,7 +1799,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldRepairMissingApprovalGate({
+          readMissingApprovalGateRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: completedSession.finalContents.join("\n\n"),
             messages,
@@ -1935,7 +1930,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         throwIfAborted(input.signal);
         const browserRecoverySummaries = dedupeStrings([
           ...completedSession.browserRecoverySummaries,
-          ...collectBrowserRecoverySummariesFromToolTrace(toolTrace),
+          ...readBrowserRecoverySummariesFromTrace(toolTrace),
         ]);
         result = maybeAppendBrowserRecoveryVisibility({
           result: generated.result,
@@ -1982,7 +1977,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           memoryFlushes.push(generated.memoryFlush);
         }
         if (
-          shouldRepairMissingRequestedTableColumns({
+          readMissingRequestedTableColumnsRepair({
             activation: input.activation,
             taskPrompt: input.packet.taskPrompt,
             messages,
@@ -2010,7 +2005,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldRepairExtraneousProviderTableSchema({
+          readExtraneousProviderTableSchemaRepair({
             activation: input.activation,
             taskPrompt: input.packet.taskPrompt,
             messages,
@@ -2036,7 +2031,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldRepairMissingBrowserEvidence({
+          readMissingBrowserEvidenceRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2062,7 +2057,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldRepairMissingProductSignalBrowserEvidence({
+          readMissingProductSignalBrowserEvidenceRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2096,7 +2091,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           .join("\n\n");
         if (
           completedProductBriefEvidenceText &&
-          shouldRepairSourceEvidenceCarryForward({
+          readSourceEvidenceCarryForwardRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2123,7 +2118,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldRepairTimeoutFollowupFinalGuidance({
+          readTimeoutFollowupFinalGuidanceRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2150,7 +2145,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldRepairMissingRequestedNextAction({
+          readMissingRequestedNextActionRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2202,7 +2197,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
         if (
           completedProductBriefEvidenceText &&
-          shouldRepairSourceEvidenceCarryForward({
+          readSourceEvidenceCarryForwardRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2229,7 +2224,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldRepairTimeoutFollowupFinalGuidance({
+          readTimeoutFollowupFinalGuidanceRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2257,7 +2252,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
         if (
           completedSession.finalContents.length > 0 &&
-          shouldRepairMissingBrowserEvidenceDimensions({
+          readMissingBrowserEvidenceDimensionsRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2285,7 +2280,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
         if (
           completedSession.finalContents.length > 0 &&
-          shouldRepairFalseEvidenceBlockedSynthesis({
+          readFalseEvidenceBlockedSynthesisRepair({
             resultText: result.text,
             messages,
             repairMarkers,
@@ -2309,7 +2304,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
-          shouldRepairWeakEvidenceSynthesis({
+          readWeakEvidenceSynthesisRepair({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
             messages,
@@ -2977,7 +2972,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // permission_result round (host-authored, no model call) and return a
         // { messages } continuation so the engine retries the model call with the
         // approval decision observed, instead of closing out blind to it. The forced
-        // round's permission_result lands in the trace, so latestPermissionToolName is
+        // round's permission_result lands in the trace, so readLegacyLatestPermissionToolName is
         // no longer "permission_query" and the builder returns null on a repeat error
         // (idempotent — no loop). Aborts must rethrow.
         onModelCallError: async (error, state, _ctx) => {

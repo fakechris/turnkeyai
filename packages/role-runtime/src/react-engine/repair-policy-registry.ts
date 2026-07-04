@@ -50,8 +50,8 @@ import {
   buildExtraneousProviderTableSchemaRepairPrompt,
   buildMissingRequestedTableColumnsRepairPrompt,
   recordRepairPrompt,
-  shouldRepairExtraneousProviderTableSchema,
-  shouldRepairMissingRequestedTableColumns,
+  readExtraneousProviderTableSchemaRepair,
+  readMissingRequestedTableColumnsRepair,
   type TaskFactsSnapshot,
 } from "./task-facts";
 import type { LLMMessage, ReActToolChoice } from "./types";

@@ -89,7 +89,7 @@ export function readSessionKeyFromToolInput(input: unknown): string | null {
   return typeof raw === "string" && raw.trim() ? raw.trim() : null;
 }
 
-export function taskRequestsSessionTranscript(taskPrompt: string): boolean {
+export function readLegacySessionTranscriptRequest(taskPrompt: string): boolean {
   return /\b(?:full|complete|entire|raw)\s+(?:session\s+)?(?:transcript|history|log)\b|\b(?:show|print|dump|export)\s+(?:the\s+)?(?:session\s+)?(?:transcript|history|log)\b|完整(?:会话|历史|记录)|原始(?:会话|历史|记录)/iu.test(
     taskPrompt,
   );
@@ -104,7 +104,7 @@ export function findRepeatedSessionInspectionCall(
   if (pendingCalls.length === 0 || toolTrace.length === 0) {
     return null;
   }
-  if (taskRequestsSessionTranscript(taskPrompt)) {
+  if (readLegacySessionTranscriptRequest(taskPrompt)) {
     return null;
   }
   const inspected = new Set<string>();
@@ -216,7 +216,7 @@ export function limitIndependentEvidenceSpawnCalls(
     toolTrace: NativeToolRoundTrace[];
   },
 ): LLMToolCall[] {
-  const requiredStreams = inferIndependentEvidenceStreamCount(input.taskPrompt);
+  const requiredStreams = readLegacyIndependentEvidenceStreamCount(input.taskPrompt);
   if (requiredStreams < 2) {
     return toolCalls;
   }
@@ -241,7 +241,7 @@ export function limitIndependentEvidenceSpawnCalls(
   });
 }
 
-export function inferIndependentEvidenceStreamCount(taskPrompt: string): number {
+export function readLegacyIndependentEvidenceStreamCount(taskPrompt: string): number {
   if (isTwoSourceComparisonTask(taskPrompt)) {
     return Math.min(6, uniqueHttpUrlCount(taskPrompt));
   }
@@ -319,7 +319,7 @@ export function countCompletedSessionEvidenceResults(
   return completedSessionKeys.size;
 }
 
-export function shouldContinueIndependentEvidenceStreams(input: {
+export function readLegacyIndependentEvidenceStreamsContinuation(input: {
   taskPrompt: string;
   messages: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
@@ -331,7 +331,7 @@ export function shouldContinueIndependentEvidenceStreams(input: {
   if (hasIndependentEvidenceStreamContinuationPrompt(input.messages)) {
     return false;
   }
-  const requiredStreams = inferIndependentEvidenceStreamCount(input.taskPrompt);
+  const requiredStreams = readLegacyIndependentEvidenceStreamCount(input.taskPrompt);
   if (requiredStreams < 2) {
     return false;
   }
@@ -537,7 +537,7 @@ export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function hasPermissionGateEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
+export function readLegacyPermissionGateEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
   return toolTrace.some(
     (round) =>
       round.calls.some((call) => call.name.startsWith("permission_")) ||
@@ -550,7 +550,7 @@ export function hasPermissionGateEvidence(toolTrace: NativeToolRoundTrace[]): bo
   );
 }
 
-export function shouldRepairMissingApprovalGate(input: {
+export function readLegacyMissingApprovalGateRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: readonly LLMMessage[];
@@ -567,13 +567,13 @@ export function shouldRepairMissingApprovalGate(input: {
   if (taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
     return false;
   }
-  if (hasPermissionGateEvidence(input.toolTrace)) {
+  if (readLegacyPermissionGateEvidence(input.toolTrace)) {
     return false;
   }
   return requestsApprovalGatedBrowserAction(input.taskPrompt);
 }
 
-export function shouldSuppressReadOnlyPermissionQueryToolCalls(
+export function readLegacyReadOnlyPermissionQuerySuppression(
   toolCalls: LLMToolCall[],
   context: { taskPrompt: string; sessionContext: string },
 ): boolean {
@@ -706,7 +706,7 @@ export function disclaimsApprovalGatedBrowserAction(taskPrompt: string): boolean
   );
 }
 
-export function taskRequestsTimeoutFollowupContinuation(taskPrompt: string): boolean {
+export function readLegacyTimeoutFollowupContinuationRequest(taskPrompt: string): boolean {
   const timeoutSourceRequest = /\b(?:slow source|bounded attempt|source does not return|doesn't return|timed out|timeout|earlier timeout|previous timeout|prior timeout)\b/i.test(
     taskPrompt,
   );
@@ -754,7 +754,7 @@ export function isControlPlaneToolResultName(
   );
 }
 
-export function collectNativeToolTraceEvidenceText(
+export function readLegacyNativeToolTraceEvidenceText(
   rounds: NativeToolRoundTrace[],
 ): string {
   return rounds
@@ -766,13 +766,13 @@ export function collectNativeToolTraceEvidenceText(
     .join("\n\n");
 }
 
-export function collectSourceBoundedEvidenceText(input: {
+export function readLegacySourceBoundedEvidenceText(input: {
   taskPrompt: string;
   messages: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): string {
   return [
-    collectNativeToolTraceEvidenceText(input.toolTrace),
+    readLegacyNativeToolTraceEvidenceText(input.toolTrace),
     extractSourceBoundedEvidenceSnippets(input.taskPrompt),
     ...input.messages.map((message) =>
       extractSourceBoundedEvidenceSnippets(
@@ -786,7 +786,7 @@ export function collectSourceBoundedEvidenceText(input: {
     .join("\n\n");
 }
 
-export function collectCompletedSessionEvidenceText(
+export function readLegacyCompletedSessionEvidenceText(
   toolTrace: NativeToolRoundTrace[],
 ): string {
   const evidence: string[] = [];
@@ -813,7 +813,7 @@ export function collectCompletedSessionEvidenceText(
   return dedupeStrings(evidence).join("\n\n");
 }
 
-export function shouldRepairSourceEvidenceCarryForward(input: {
+export function readLegacySourceEvidenceCarryForwardRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -821,8 +821,8 @@ export function shouldRepairSourceEvidenceCarryForward(input: {
   evidenceText: string;
 }): boolean {
   return (
-    shouldRepairProductBriefEvidenceCarryForward(input) ||
-    shouldRepairCompletedSessionLabelCarryForward(input)
+    readLegacyProductBriefEvidenceCarryForwardRepair(input) ||
+    readLegacyCompletedSessionLabelCarryForwardRepair(input)
   );
 }
 
@@ -832,7 +832,7 @@ export function buildSourceEvidenceCarryForwardRepairPrompt(input: {
   evidenceText: string;
 }): string {
   if (
-    shouldRepairProductBriefEvidenceCarryForward({
+    readLegacyProductBriefEvidenceCarryForwardRepair({
       ...input,
       messages: [],
       repairMarkers: [],
@@ -852,7 +852,7 @@ export function buildSourceEvidenceCarryForwardRepairPrompt(input: {
   return buildProductBriefEvidenceCarryForwardRepairPrompt(input);
 }
 
-export function shouldRepairWeakEvidenceSynthesis(input: {
+export function readLegacyWeakEvidenceSynthesisRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -877,11 +877,11 @@ export function shouldRepairWeakEvidenceSynthesis(input: {
   if (matchesAny(input.resultText, WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS)) {
     return true;
   }
-  if (shouldRepairMissingRequestedRiskDimension(input)) {
+  if (readLegacyMissingRequestedRiskDimensionRepair(input)) {
     return true;
   }
   return (
-    !taskRequestsEstimate(input.taskPrompt) &&
+    !readLegacyEstimateRequest(input.taskPrompt) &&
     matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS)
   );
 }
@@ -900,7 +900,7 @@ export function buildWeakEvidenceSynthesisRepairPrompt(): string {
   ].join("\n");
 }
 
-export function shouldRepairTimeoutFollowupFinalGuidance(input: {
+export function readLegacyTimeoutFollowupFinalGuidanceRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -910,7 +910,7 @@ export function shouldRepairTimeoutFollowupFinalGuidance(input: {
   if (hasTimeoutFollowupFinalGuidanceRepairPrompt(input.repairMarkers)) {
     return false;
   }
-  if (!taskRequestsTimeoutFollowupContinuation(input.taskPrompt)) {
+  if (!readLegacyTimeoutFollowupContinuationRequest(input.taskPrompt)) {
     return false;
   }
   if (!/\b(?:timeout|timed out|resumable|recovered|recovery)\b/i.test(input.evidenceText)) {
@@ -945,7 +945,7 @@ export function buildTimeoutFollowupFinalGuidanceRepairPrompt(input: {
   ].join("\n");
 }
 
-export function shouldRepairMissingRequestedNextAction(input: {
+export function readLegacyMissingRequestedNextActionRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -980,11 +980,11 @@ export type RequiredFinalDeliverable = {
   instruction: string;
 };
 
-export function inferRequiredFinalSynthesisDeliverables(
+export function readLegacyRequiredFinalSynthesisDeliverables(
   taskPrompt: string,
 ): RequiredFinalDeliverable[] {
   const deliverables: RequiredFinalDeliverable[] = [];
-  if (taskRequestsTwoRowTable(taskPrompt)) {
+  if (readLegacyTwoRowTableRequest(taskPrompt)) {
     deliverables.push({
       id: "two_row_table",
       label: "two-row table",
@@ -992,7 +992,7 @@ export function inferRequiredFinalSynthesisDeliverables(
         "Return the requested merged table with exactly two evidence rows after the header unless a source is explicitly incomplete.",
     });
   }
-  if (taskRequestsFinalConclusion(taskPrompt)) {
+  if (readLegacyFinalConclusionRequest(taskPrompt)) {
     deliverables.push({
       id: "final_conclusion",
       label: "final one-sentence conclusion",
@@ -1007,7 +1007,7 @@ export function findMissingRequiredFinalDeliverables(input: {
   taskPrompt: string;
   resultText: string;
 }): RequiredFinalDeliverable[] {
-  return inferRequiredFinalSynthesisDeliverables(input.taskPrompt).filter(
+  return readLegacyRequiredFinalSynthesisDeliverables(input.taskPrompt).filter(
     (deliverable) => !finalDeliverableIsPresent(deliverable, input.resultText),
   );
 }
@@ -1042,7 +1042,7 @@ export function buildMissingRequiredFinalDeliverablesRepairPrompt(input: {
   ].join("\n");
 }
 
-export function shouldRepairMissingBrowserEvidenceDimensions(input: {
+export function readLegacyMissingBrowserEvidenceDimensionsRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -1074,7 +1074,7 @@ export function buildMissingBrowserEvidenceDimensionsRepairPrompt(input: {
   ].join("\n");
 }
 
-export function shouldRepairFalseEvidenceBlockedSynthesis(input: {
+export function readLegacyFalseEvidenceBlockedSynthesisRepair(input: {
   resultText: string;
   messages: LLMMessage[];
   repairMarkers: LLMMessage[];
@@ -1144,7 +1144,7 @@ const PRODUCT_BRIEF_MULTI_AGENT_EVIDENCE_PATTERN =
 const PRODUCT_BRIEF_MULTI_AGENT_RESULT_PATTERN =
   /\bmulti[- ]agent\b|multiple agents|specialist agents|delegated agents|agent coordination/i;
 
-function shouldRepairProductBriefEvidenceCarryForward(input: {
+function readLegacyProductBriefEvidenceCarryForwardRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -1154,7 +1154,7 @@ function shouldRepairProductBriefEvidenceCarryForward(input: {
   if (hasProductBriefEvidenceCarryForwardRepairPrompt(input.repairMarkers)) {
     return false;
   }
-  if (!taskRequestsAgentWorkbenchProductBrief(input.taskPrompt)) {
+  if (!readLegacyAgentWorkbenchProductBriefRequest(input.taskPrompt)) {
     return false;
   }
   if (!PRODUCT_BRIEF_MULTI_AGENT_EVIDENCE_PATTERN.test(input.evidenceText)) {
@@ -1169,7 +1169,7 @@ function shouldRepairProductBriefEvidenceCarryForward(input: {
   return missingMultiAgent || missingRenderedSignals;
 }
 
-function shouldRepairCompletedSessionLabelCarryForward(input: {
+function readLegacyCompletedSessionLabelCarryForwardRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -1183,7 +1183,7 @@ function shouldRepairCompletedSessionLabelCarryForward(input: {
   if (labels.length === 0) {
     return false;
   }
-  if (taskRequestsAgentWorkbenchProductBrief(input.taskPrompt)) {
+  if (readLegacyAgentWorkbenchProductBriefRequest(input.taskPrompt)) {
     return false;
   }
   const labelSensitiveTask =
@@ -1198,7 +1198,7 @@ function shouldRepairCompletedSessionLabelCarryForward(input: {
   return labels.some((label) => !normalizedTextContains(input.resultText, label));
 }
 
-function taskRequestsAgentWorkbenchProductBrief(taskPrompt: string): boolean {
+function readLegacyAgentWorkbenchProductBriefRequest(taskPrompt: string): boolean {
   return (
     /\bagent workbench\b/i.test(taskPrompt) &&
     /\b(?:product[- ]ready brief|product brief|audit-ready product brief|next release)\b/i.test(
@@ -1364,7 +1364,7 @@ function evidenceStatesStrictOperationsRestriction(
   );
 }
 
-function shouldRepairMissingRequestedRiskDimension(input: {
+function readLegacyMissingRequestedRiskDimensionRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -1381,7 +1381,7 @@ function shouldRepairMissingRequestedRiskDimension(input: {
   );
 }
 
-function taskRequestsEstimate(taskPrompt: string): boolean {
+function readLegacyEstimateRequest(taskPrompt: string): boolean {
   return matchesAny(taskPrompt, ESTIMATE_REQUEST_PATTERNS);
 }
 
@@ -1445,7 +1445,7 @@ function hasMissingBrowserEvidenceDimensionsRepairPrompt(
   );
 }
 
-function taskRequestsFinalConclusion(taskPrompt: string): boolean {
+function readLegacyFinalConclusionRequest(taskPrompt: string): boolean {
   return (
     /(?:最后|最终|末尾|结尾|再给|补充)[^\n。.!?]{0,80}(?:一句话|一[个段]?简短|简短)?[^\n。.!?]{0,60}(?:结论|总结)/i.test(
       taskPrompt,
@@ -1459,7 +1459,7 @@ function taskRequestsFinalConclusion(taskPrompt: string): boolean {
   );
 }
 
-function taskRequestsTwoRowTable(taskPrompt: string): boolean {
+function readLegacyTwoRowTableRequest(taskPrompt: string): boolean {
   return (
     /(?:两行|2\s*行|两条|2\s*条)[^\n。.!?]{0,80}(?:表格|表)/.test(
       taskPrompt,
@@ -1584,7 +1584,7 @@ function hasProductSignalDashboardUnverifiedContradiction(
   );
 }
 
-export function taskRequestsProductSignalDashboardEvidence(text: string): boolean {
+export function readLegacyProductSignalDashboardEvidenceRequest(text: string): boolean {
   return /\b(?:product-signals|live signal dashboard|product signal dashboard)\b/i.test(
     text,
   );
@@ -1627,7 +1627,7 @@ export function buildCompletedBrowserEvidenceDimensionCarryForwardLines(input: {
   taskPrompt: string;
   finalContents: readonly string[];
 }): string[] {
-  if (!taskRequestsProductSignalDashboardEvidence(input.taskPrompt)) {
+  if (!readLegacyProductSignalDashboardEvidenceRequest(input.taskPrompt)) {
     return [];
   }
   const evidenceText = input.finalContents.join("\n\n");
@@ -1649,7 +1649,7 @@ export function extractProductSignalDashboardUrl(
 ): string | null {
   const lines = taskPrompt.split(/\r?\n/);
   for (const line of lines) {
-    if (!taskRequestsProductSignalDashboardEvidence(line)) {
+    if (!readLegacyProductSignalDashboardEvidenceRequest(line)) {
       continue;
     }
     const url = extractHttpUrls(line)[0];
@@ -1672,7 +1672,7 @@ const MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS = [
   /\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b[\s\S]{0,160}\b(?:not verified|unverified|unable to verify|was not verified|could not verify)\b/i,
 ];
 
-export function shouldRepairMissingBrowserEvidence(input: {
+export function readLegacyMissingBrowserEvidenceRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -1686,7 +1686,7 @@ export function shouldRepairMissingBrowserEvidence(input: {
   if (hasMissingBrowserEvidenceRepairPrompt(input.repairMarkers)) {
     return false;
   }
-  if (!taskRequiresBrowserEvidence(input.taskPrompt)) {
+  if (!readLegacyBrowserEvidenceRequirement(input.taskPrompt)) {
     return false;
   }
   if (hasCompletedBrowserSessionEvidence(input.toolTrace)) {
@@ -1703,7 +1703,7 @@ export function shouldRepairMissingBrowserEvidence(input: {
   return matchesAny(input.resultText, MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS);
 }
 
-export function shouldRepairMissingProductSignalBrowserEvidence(input: {
+export function readLegacyMissingProductSignalBrowserEvidenceRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: LLMMessage[];
@@ -1718,12 +1718,12 @@ export function shouldRepairMissingProductSignalBrowserEvidence(input: {
   if (hasMissingBrowserEvidenceRepairPrompt(input.repairMarkers)) {
     return false;
   }
-  if (!taskRequestsProductSignalDashboardEvidence(input.taskPrompt)) {
+  if (!readLegacyProductSignalDashboardEvidenceRequest(input.taskPrompt)) {
     return false;
   }
   const evidenceText = [
     input.evidenceText,
-    collectCompletedSessionEvidenceText(input.toolTrace),
+    readLegacyCompletedSessionEvidenceText(input.toolTrace),
   ]
     .filter(
       (item): item is string =>
@@ -1930,7 +1930,7 @@ export function hasExecutedSessionsSend(
   );
 }
 
-export function shouldContinueTimedOutApprovedBrowserSession(input: {
+export function readLegacyTimedOutApprovedBrowserSessionContinuation(input: {
   taskPrompt: string;
   messages: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
@@ -1960,7 +1960,7 @@ export function shouldContinueTimedOutApprovedBrowserSession(input: {
   return true;
 }
 
-export function shouldContinueTimedOutSiblingSession(input: {
+export function readLegacyTimedOutSiblingSessionContinuation(input: {
   taskPrompt: string;
   messages: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
@@ -2058,7 +2058,7 @@ export function shouldRunSupplementalLocalTimeoutProbe(input: {
   }
   const hasTimeoutEvidence =
     hasSessionTimeoutEvidence(input) ||
-    mentionsTimeout(`${context}\n${input.evidenceText}`);
+    readLegacyTimeoutMention(`${context}\n${input.evidenceText}`);
   if (
     !hasTimeoutEvidence ||
     !toolTraceHasCall(input.toolTrace, "sessions_send")
@@ -2092,7 +2092,7 @@ function explicitlyDisallowsBrowserEvidence(text: string): boolean {
 
 function isContentPoorTimeoutEvidence(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized || !mentionsTimeout(normalized)) {
+  if (!normalized || !readLegacyTimeoutMention(normalized)) {
     return false;
   }
   const hasPositiveSourceEvidence =
@@ -2185,7 +2185,7 @@ export function findIncompleteApprovedBrowserSession(input: {
     return null;
   }
   if (
-    !hasPermissionAppliedEvidence(input.toolTrace) &&
+    !readLegacyPermissionAppliedEvidence(input.toolTrace) &&
     !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
   ) {
     return null;
@@ -2252,10 +2252,10 @@ export function buildIncompleteApprovedBrowserSessionContinuationPrompt(
   ].join("\n");
 }
 
-export function hasPermissionAppliedEvidence(
+export function readLegacyPermissionAppliedEvidence(
   toolTrace: NativeToolRoundTrace[],
 ): boolean {
-  if (latestPermissionToolName(toolTrace) === "permission_applied") {
+  if (readLegacyLatestPermissionToolName(toolTrace) === "permission_applied") {
     return true;
   }
   return toolTrace.some((round) =>
@@ -2265,7 +2265,7 @@ export function hasPermissionAppliedEvidence(
   );
 }
 
-export function latestPermissionToolName(
+export function readLegacyLatestPermissionToolName(
   toolTrace: NativeToolRoundTrace[],
 ): string | null {
   for (
@@ -2288,7 +2288,7 @@ export function latestPermissionToolName(
   return null;
 }
 
-export function latestPermissionResultStatus(
+export function readLegacyLatestPermissionResultStatus(
   toolTrace: NativeToolRoundTrace[],
 ): string | null {
   for (
@@ -2339,7 +2339,7 @@ export function taskPromptRequestsApprovalWaitTimeoutCloseout(
   );
 }
 
-export function shouldRepairPendingApprovalWaitTimeoutCheck(input: {
+export function readLegacyPendingApprovalWaitTimeoutCheckRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: readonly LLMMessage[];
@@ -2352,7 +2352,7 @@ export function shouldRepairPendingApprovalWaitTimeoutCheck(input: {
   if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
     return false;
   }
-  return latestPermissionToolName(input.toolTrace) === "permission_query";
+  return readLegacyLatestPermissionToolName(input.toolTrace) === "permission_query";
 }
 
 function hasPendingApprovalWaitTimeoutCheckRepairPrompt(
@@ -2376,7 +2376,7 @@ export function buildPendingApprovalWaitTimeoutCheckRepairPrompt(): string {
   ].join("\n");
 }
 
-export function shouldRepairPrematurePendingApprovalFinal(input: {
+export function readLegacyPrematurePendingApprovalFinalRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: readonly LLMMessage[];
@@ -2387,7 +2387,7 @@ export function shouldRepairPrematurePendingApprovalFinal(input: {
     return false;
   }
   if (
-    !mentionsPendingApproval(input.resultText) ||
+    !readLegacyPendingApprovalMention(input.resultText) ||
     !requestsApprovalGatedBrowserAction(input.taskPrompt)
   ) {
     return false;
@@ -2399,7 +2399,7 @@ export function shouldRepairPrematurePendingApprovalFinal(input: {
     return false;
   }
   if (
-    hasPermissionAppliedEvidence(input.toolTrace) ||
+    readLegacyPermissionAppliedEvidence(input.toolTrace) ||
     taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
   ) {
     return false;
@@ -2408,8 +2408,8 @@ export function shouldRepairPrematurePendingApprovalFinal(input: {
     return false;
   }
   return (
-    latestPermissionToolName(input.toolTrace) === "permission_query" ||
-    latestPermissionResultStatus(input.toolTrace) === "pending"
+    readLegacyLatestPermissionToolName(input.toolTrace) === "permission_query" ||
+    readLegacyLatestPermissionResultStatus(input.toolTrace) === "pending"
   );
 }
 
@@ -2439,7 +2439,7 @@ function hasSessionToolEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
   );
 }
 
-export function mentionsPendingApproval(text: string): boolean {
+export function readLegacyPendingApprovalMention(text: string): boolean {
   return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission is (?:now )?pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|standby for (?:the )?decision|once you approve|after you approve|before (?:the )?(?:browser worker )?can)\b/i.test(
     text,
   );
@@ -2463,7 +2463,7 @@ export function buildPrematurePendingApprovalRepairPrompt(): string {
   ].join("\n");
 }
 
-export function shouldRepairStalePendingApproval(input: {
+export function readLegacyStalePendingApprovalRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: readonly LLMMessage[];
@@ -2474,14 +2474,14 @@ export function shouldRepairStalePendingApproval(input: {
     return false;
   }
   if (
-    !mentionsPendingApproval(input.resultText) ||
+    !readLegacyPendingApprovalMention(input.resultText) ||
     (!requestsApprovalGatedBrowserAction(input.taskPrompt) &&
       !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt))
   ) {
     return false;
   }
   return (
-    hasPermissionAppliedEvidence(input.toolTrace) ||
+    readLegacyPermissionAppliedEvidence(input.toolTrace) ||
     taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
     taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
   );
@@ -2518,7 +2518,7 @@ export function buildStalePendingApprovalRepairPrompt(): string {
   ].join("\n");
 }
 
-export function shouldRepairStaleDeniedApproval(input: {
+export function readLegacyStaleDeniedApprovalRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: readonly LLMMessage[];
@@ -2529,12 +2529,12 @@ export function shouldRepairStaleDeniedApproval(input: {
     return false;
   }
   if (
-    !mentionsPendingApproval(input.resultText) ||
+    !readLegacyPendingApprovalMention(input.resultText) ||
     !requestsApprovalGatedBrowserAction(input.taskPrompt)
   ) {
     return false;
   }
-  return latestPermissionResultStatus(input.toolTrace) === "denied";
+  return readLegacyLatestPermissionResultStatus(input.toolTrace) === "denied";
 }
 
 function hasStaleDeniedApprovalRepairPrompt(
@@ -2557,7 +2557,7 @@ export function buildStaleDeniedApprovalRepairPrompt(): string {
   ].join("\n");
 }
 
-export function shouldRepairApprovalWaitTimeoutCloseout(input: {
+export function readLegacyApprovalWaitTimeoutCloseoutRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: readonly LLMMessage[];
@@ -2576,7 +2576,7 @@ export function shouldRepairApprovalWaitTimeoutCloseout(input: {
   return !looksLikeCompleteApprovalWaitTimeoutCloseout(input.resultText);
 }
 
-export function shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair(input: {
+export function readLegacyForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: readonly LLMMessage[];
@@ -2598,7 +2598,7 @@ export function shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair(inp
 function hasApprovalWaitTimeoutEvidence(
   toolTrace: NativeToolRoundTrace[],
 ): boolean {
-  if (latestPermissionResultStatus(toolTrace) === "pending") {
+  if (readLegacyLatestPermissionResultStatus(toolTrace) === "pending") {
     return true;
   }
   return toolTrace.some((round) =>
@@ -2621,7 +2621,7 @@ function looksLikeCompleteApprovalWaitTimeoutCloseout(text: string): boolean {
     /\b(?:approval|permission|operator decision)\b[\s\S]{0,180}\b(?:pending|did not arrive|still pending|timed out|timeout|wait[- ]timeout)\b/i.test(
       text,
     ) &&
-    mentionsPendingApproval(text) &&
+    readLegacyPendingApprovalMention(text) &&
     /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\b(?:action|side effect)\s+(?:not performed|did not run)\b|\bno (?:browser form submission|form submission|browser action|browser mutation|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed|mutated)\b|\bno form (?:was )?submitted\b/i.test(
       text,
     ) &&
@@ -2656,7 +2656,7 @@ export function buildApprovalWaitTimeoutCloseoutRepairPrompt(): string {
   ].join("\n");
 }
 
-export function collectApprovalWaitTimeoutRuntimeEvidence(
+export function readLegacyApprovalWaitTimeoutRuntimeEvidence(
   toolTrace: NativeToolRoundTrace[],
 ): string {
   const evidence: string[] = [];
@@ -3122,7 +3122,7 @@ function summarizeToolResultContent(content: string): string {
     : normalized;
 }
 
-export function shouldRepairIncompleteApprovedBrowserAction(input: {
+export function readLegacyIncompleteApprovedBrowserActionRepair(input: {
   taskPrompt: string;
   resultText: string;
   messages: readonly LLMMessage[];
@@ -3139,7 +3139,7 @@ export function shouldRepairIncompleteApprovedBrowserAction(input: {
     return false;
   }
   if (
-    !hasPermissionAppliedEvidence(input.toolTrace) &&
+    !readLegacyPermissionAppliedEvidence(input.toolTrace) &&
     !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
   ) {
     return false;
@@ -3183,10 +3183,10 @@ export function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input:
   if (!hasToolDefinition(input.tools, "permission_result")) {
     return null;
   }
-  if (latestPermissionToolName(input.toolTrace) !== "permission_query") {
+  if (readLegacyLatestPermissionToolName(input.toolTrace) !== "permission_query") {
     return null;
   }
-  if (latestPermissionResultStatus(input.toolTrace)) {
+  if (readLegacyLatestPermissionResultStatus(input.toolTrace)) {
     return null;
   }
   const approvalId = latestPendingPermissionQueryApprovalId(input.toolTrace);
@@ -3330,7 +3330,7 @@ export function findSessionContinuationDirective(
 ): SessionContinuationDirective | null {
   let latestUserText = extractLatestUserContinuationText(taskPrompt);
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
-    if (!shouldForceSlowSourceRecoveryContinuation(taskPrompt)) {
+    if (!readLegacyForceSlowSourceRecoveryContinuation(taskPrompt)) {
       return null;
     }
     latestUserText =
@@ -3501,7 +3501,7 @@ export function findSessionContinuationLookupDirective(
 ): SessionContinuationLookupDirective | null {
   let latestUserText = extractLatestUserContinuationText(taskPrompt);
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
-    if (!shouldForceSlowSourceRecoveryContinuation(context)) {
+    if (!readLegacyForceSlowSourceRecoveryContinuation(context)) {
       return null;
     }
     latestUserText =
@@ -3531,7 +3531,7 @@ export function findSessionContinuationLookupDirective(
   };
 }
 
-export function shouldForceSlowSourceRecoveryContinuation(context: string): boolean {
+export function readLegacyForceSlowSourceRecoveryContinuation(context: string): boolean {
   return (
     /\bSystem recovery:\s*the previous final answer did not satisfy required goal slots\b/i.test(
       context,
@@ -3865,7 +3865,7 @@ export function explicitSessionContinuationPriority(
     return 0;
   }
   let priority = 1;
-  const agentId = inferWorkerKindFromSessionKey(sessionKey) ?? "";
+  const agentId = readLegacyWorkerKindFromSessionKey(sessionKey) ?? "";
   if (
     continuationRequestRequiresBrowserEvidence(latestUserText) &&
     agentId !== "browser"
@@ -4009,12 +4009,12 @@ export function extractSessionToolResultRecords(
 ): Array<Record<string, unknown>> {
   const records: Array<Record<string, unknown>> = [];
   for (const parsed of parseJsonObjectsFromContext(context)) {
-    collectSessionToolResultRecords(parsed, records);
+    readLegacySessionToolResultRecords(parsed, records);
   }
   return records;
 }
 
-export function collectSessionToolResultRecords(
+export function readLegacySessionToolResultRecords(
   value: unknown,
   records: Array<Record<string, unknown>>,
 ): void {
@@ -4034,7 +4034,7 @@ export function collectSessionToolResultRecords(
       continue;
     }
     for (const parsed of parseJsonObjectsFromContext(nested)) {
-      collectSessionToolResultRecords(parsed, records);
+      readLegacySessionToolResultRecords(parsed, records);
     }
   }
 }
@@ -4508,7 +4508,7 @@ export function applySessionContinuationLookupDirective(
   );
   if (sendIndex >= 0) {
     const sent = toolCalls[sendIndex]!;
-    const agentId = inferWorkerKindFromSessionKey(
+    const agentId = readLegacyWorkerKindFromSessionKey(
       readStringInput(sent.input, "session_key"),
     );
     return [
@@ -4563,7 +4563,7 @@ export function applySessionContinuationLookupDirective(
   ];
 }
 
-export function inferWorkerKindFromSessionKey(sessionKey: unknown): string | null {
+export function readLegacyWorkerKindFromSessionKey(sessionKey: unknown): string | null {
   if (typeof sessionKey !== "string") {
     return null;
   }
@@ -4648,7 +4648,7 @@ export function normalizeExplicitContinuationHistoryCalls(
 ): LLMToolCall[] {
   if (
     !taskLooksLikeExplicitSessionContinuation(taskPrompt) ||
-    taskRequestsSessionTranscript(taskPrompt)
+    readLegacySessionTranscriptRequest(taskPrompt)
   ) {
     return toolCalls;
   }
@@ -4682,7 +4682,7 @@ export function normalizeExplicitContinuationHistoryCalls(
 
 export function taskLooksLikeExplicitSessionContinuation(taskPrompt: string): boolean {
   return (
-    taskRequestsTimeoutFollowupContinuation(taskPrompt) ||
+    readLegacyTimeoutFollowupContinuationRequest(taskPrompt) ||
     /\b(?:continue|resume|retry|follow[- ]?up)\b[\s\S]{0,180}\b(?:existing|same|previous|prior|earlier|source[- ]check|source check|session|attempt|context)\b/i.test(
       taskPrompt,
     ) ||
@@ -4764,7 +4764,7 @@ export function normalizePrivateUrlResearchSpawnCalls(
       (allowsLoopbackExploreForE2E() &&
         containsLoopbackHttpUrl(combined) &&
         !containsPrivateNonLoopbackHttpUrl(combined) &&
-        !taskRequiresBrowserEvidence(combined) &&
+        !readLegacyBrowserEvidenceRequirement(combined) &&
         !targetsBrowserRequiredUrl)
     ) {
       return call;
@@ -4813,8 +4813,8 @@ export function normalizeBoundedTimeoutSourceSpawnAgents(
       return call;
     }
     const browserRequired =
-      taskRequiresBrowserEvidence(context.taskPrompt) ||
-      taskRequiresBrowserEvidence(callText) ||
+      readLegacyBrowserEvidenceRequirement(context.taskPrompt) ||
+      readLegacyBrowserEvidenceRequirement(callText) ||
       hasHardBrowserRequiredSignal(context.taskPrompt) ||
       hasHardBrowserRequiredSignal(callText) ||
       toolCallTargetsBrowserRequiredUrl({
@@ -4900,8 +4900,8 @@ export function scoreBoundedTimeoutSourceSpawn(
     readStringInput(call.input, "label") ?? "",
   ].join("\n");
   const browserRequired =
-    taskRequiresBrowserEvidence(taskPrompt) ||
-    taskRequiresBrowserEvidence(callText) ||
+    readLegacyBrowserEvidenceRequirement(taskPrompt) ||
+    readLegacyBrowserEvidenceRequirement(callText) ||
     toolCallTargetsBrowserRequiredUrl({ toolCallText: callText, taskPrompt });
   if (browserRequired) {
     if (agentId === "browser") return 30;
@@ -4954,8 +4954,8 @@ export function normalizeApprovalGatedBrowserSpawnCalls(
   if (
     prematureMutatingBrowserSpawn &&
     !taskPromptSaysApprovalAlreadyApplied(context.taskPrompt) &&
-    !hasPermissionGateContextEvidence(context.sessionContext) &&
-    !hasPermissionGateEvidence(context.toolTrace) &&
+    !readLegacyPermissionGateContextEvidence(context.sessionContext) &&
+    !readLegacyPermissionGateEvidence(context.toolTrace) &&
     !toolCalls.some((call) => call.name.startsWith("permission_"))
   ) {
     return toolCalls.flatMap((call) => {
@@ -4993,7 +4993,7 @@ export function normalizeApprovalGatedBrowserSpawnCalls(
   });
 }
 
-export function hasPermissionGateContextEvidence(context: string): boolean {
+export function readLegacyPermissionGateContextEvidence(context: string): boolean {
   return /\bpermission_(?:query|result|applied)\b|\bpermission\.(?:query|result|applied)\b|\bapproval_id\b|\bpermission cache\b[\s\S]{0,120}\balready applied\b/i.test(
     context,
   );
@@ -5089,7 +5089,7 @@ export function enforceMissingApprovalGateRepairToolCalls(
   if (
     !hasMissingApprovalGateRepairPrompt(context.repairMarkers) ||
     !requestsApprovalGatedBrowserAction(context.taskPrompt) ||
-    hasPermissionGateEvidence(context.toolTrace) ||
+    readLegacyPermissionGateEvidence(context.toolTrace) ||
     toolCalls.some((call) => call.name === "permission_query")
   ) {
     return toolCalls;
@@ -5138,7 +5138,7 @@ export function isBrowserSessionSpawn(call: LLMToolCall): boolean {
   );
 }
 
-export function taskRequiresBrowserEvidence(text: string): boolean {
+export function readLegacyBrowserEvidenceRequirement(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) {
     return false;
@@ -5184,7 +5184,7 @@ export function toolCallTargetsBrowserRequiredUrl(input: {
   taskPrompt: string;
 }): boolean {
   const urls = extractHttpUrls(input.toolCallText);
-  if (urls.length === 0 || !taskRequiresBrowserEvidence(input.taskPrompt)) {
+  if (urls.length === 0 || !readLegacyBrowserEvidenceRequirement(input.taskPrompt)) {
     return false;
   }
   return urls.some((url) =>
@@ -5215,7 +5215,7 @@ export function taskPromptRequiresBrowserForUrl(
     ]
       .filter((item): item is string => typeof item === "string")
       .join("\n");
-    if (taskRequiresBrowserEvidence(localContext)) {
+    if (readLegacyBrowserEvidenceRequirement(localContext)) {
       return true;
     }
   }
@@ -5376,8 +5376,8 @@ export function isLoopbackReadOnlySourceExploreTask(input: {
 }): boolean {
   if (
     input.targetsBrowserRequiredUrl ||
-    taskRequiresBrowserEvidence(input.taskPrompt) ||
-    taskRequiresBrowserEvidence(input.toolCallText) ||
+    readLegacyBrowserEvidenceRequirement(input.taskPrompt) ||
+    readLegacyBrowserEvidenceRequirement(input.toolCallText) ||
     !containsLoopbackHttpUrl(input.toolCallText) ||
     containsPrivateNonLoopbackHttpUrl(input.toolCallText)
   ) {
@@ -5499,7 +5499,7 @@ export function maybeAppendBrowserFailureBucketVisibility(input: {
   taskPrompt: string;
   evidenceText: string;
 }): GenerateTextResult {
-  const buckets = collectBrowserFailureBucketNames(input.evidenceText);
+  const buckets = readLegacyBrowserFailureBucketNames(input.evidenceText);
   if (buckets.length === 0) {
     return input.result;
   }
@@ -5572,7 +5572,7 @@ export function isBrowserRecoveryVisible(
   );
 }
 
-export function collectBrowserRecoverySummariesFromToolTrace(
+export function readLegacyBrowserRecoverySummariesFromToolTrace(
   rounds: NativeToolRoundTrace[],
 ): string[] {
   const summaries: string[] = [];
@@ -5610,7 +5610,7 @@ export function collectBrowserRecoverySummariesFromToolTrace(
   return dedupeStrings(summaries);
 }
 
-export function collectBrowserFailureBucketNames(text: string): string[] {
+export function readLegacyBrowserFailureBucketNames(text: string): string[] {
   const buckets = new Set<string>();
   const pattern =
     /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|wait_condition_timeout|transport_failure|owner_mismatch|lease_conflict)\b/gi;
@@ -5713,14 +5713,14 @@ export function shouldAppendRecoveredTimeoutCloseoutVisibility(input: {
 }): boolean {
   const recoveredTimeoutContext =
     (hasSessionTimeoutEvidence(input) ||
-      taskRequestsTimeoutContinuationCloseout(input.taskPrompt)) &&
+      readLegacyTimeoutContinuationCloseoutRequest(input.taskPrompt)) &&
     toolTraceHasCall(input.toolTrace, "sessions_send");
   if (!recoveredTimeoutContext) {
     return false;
   }
   if (
-    taskRequestsUnverifiedTimeoutCloseout(input.taskPrompt) &&
-    !mentionsUnverifiedScope(input.resultText)
+    readLegacyUnverifiedTimeoutCloseoutRequest(input.taskPrompt) &&
+    !readLegacyUnverifiedScopeMention(input.resultText)
   ) {
     return true;
   }
@@ -5759,7 +5759,7 @@ export function maybeAppendRequiredTimeoutFollowupVisibility(input: {
   messages: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): GenerateTextResult {
-  if (!taskRequestsTimeoutFollowupContinuation(input.taskPrompt)) {
+  if (!readLegacyTimeoutFollowupContinuationRequest(input.taskPrompt)) {
     return input.result;
   }
   const contextText = [
@@ -5781,12 +5781,12 @@ export function maybeAppendRequiredTimeoutFollowupVisibility(input: {
       "Continuation guidance: continue or retry the same source-check with a bounded timeout if future release-gated evidence is missing or if production-equivalent validation is required.",
     );
   }
-  if (!mentionsUnverifiedScope(input.result.text)) {
+  if (!readLegacyUnverifiedScopeMention(input.result.text)) {
     missingLines.push(
       "Unverified scope: production-equivalent release health and any source facts beyond the recovered result remain unverified.",
     );
   }
-  if (!mentionsTimeout(input.result.text)) {
+  if (!readLegacyTimeoutMention(input.result.text)) {
     missingLines.push(
       "Timeout recovery: this answer follows a resumed source-check after an earlier timeout.",
     );
@@ -5809,10 +5809,10 @@ export function maybeAppendBrowserRecoveryResidualRiskVisibility(input: {
   if (requestsStatusVisibleTextEvidenceUrlLines(input.taskPrompt)) {
     return input.result;
   }
-  if (!taskRequiresBrowserEvidence(input.taskPrompt)) {
+  if (!readLegacyBrowserEvidenceRequirement(input.taskPrompt)) {
     return input.result;
   }
-  if (mentionsUnverifiedScope(input.result.text) || /\bresidual risks?\b/i.test(input.result.text)) {
+  if (readLegacyUnverifiedScopeMention(input.result.text) || /\bresidual risks?\b/i.test(input.result.text)) {
     return input.result;
   }
   const contextText = [
@@ -5837,22 +5837,22 @@ export function maybeAppendBrowserRecoveryResidualRiskVisibility(input: {
   };
 }
 
-export function taskRequestsTimeoutContinuationCloseout(taskPrompt: string): boolean {
+export function readLegacyTimeoutContinuationCloseoutRequest(taskPrompt: string): boolean {
   return /\b(?:explain|state|say|describe)\b[\s\S]{0,160}\bwhether\b[\s\S]{0,160}\b(?:earlier|previous|prior)\s+timeouts?\b[\s\S]{0,160}\b(?:still\s+)?limits?\b[\s\S]{0,120}\bconclusion\b|\b(?:earlier|previous|prior)\s+timeouts?\b[\s\S]{0,120}\b(?:still\s+)?limits?\b[\s\S]{0,120}\bconclusion\b/i.test(
     taskPrompt,
   );
 }
 
-export function taskRequestsUnverifiedTimeoutCloseout(taskPrompt: string): boolean {
+export function readLegacyUnverifiedTimeoutCloseoutRequest(taskPrompt: string): boolean {
   return (
-    taskRequestsTimeoutContinuationCloseout(taskPrompt) &&
+    readLegacyTimeoutContinuationCloseoutRequest(taskPrompt) &&
     /\b(?:unverified|not verified|residual risk|uncertainty|uncertain)\b/i.test(
       taskPrompt,
     )
   );
 }
 
-export function mentionsUnverifiedScope(text: string): boolean {
+export function readLegacyUnverifiedScopeMention(text: string): boolean {
   return /\b(?:unverified|not verified|unconfirmed|uncertain|uncertainty|not confirmed)\b/i.test(
     text,
   );
@@ -5870,7 +5870,7 @@ export function shouldPreserveRecoveredTimeoutCloseout(input: {
   return (
     hasSessionTimeoutEvidence(input) &&
     toolTraceHasCall(input.toolTrace, "sessions_send") &&
-    mentionsTimeout(input.evidenceText)
+    readLegacyTimeoutMention(input.evidenceText)
   );
 }
 
@@ -5900,7 +5900,7 @@ export function hasTimeoutContinuationGuidance(text: string): boolean {
   );
 }
 
-export function mentionsTimeout(text: string): boolean {
+export function readLegacyTimeoutMention(text: string): boolean {
   return /\b(?:timeout|timed out)\b/i.test(text);
 }
 
@@ -6393,7 +6393,7 @@ export function buildFinalRecoveryBudgetCloseoutReasonLines(
   ];
 }
 
-export function shouldRepairFinalRecoveryBudgetCloseout(input: {
+export function readLegacyFinalRecoveryBudgetCloseoutRepair(input: {
   messages: LLMMessage[];
   repairMarkers: LLMMessage[];
   resultText: string;

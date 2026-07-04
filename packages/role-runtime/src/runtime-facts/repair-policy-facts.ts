@@ -3,28 +3,28 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
-  collectSourceBoundedEvidenceText,
+  readLegacySourceBoundedEvidenceText,
   findMissingRequiredFinalDeliverables,
   hasMissingRequiredFinalDeliverablesRepairPrompt,
-  mentionsPendingApproval,
+  readLegacyPendingApprovalMention,
   requestsApprovalGatedBrowserAction,
-  shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
-  shouldRepairApprovalWaitTimeoutCloseout,
-  shouldRepairFalseEvidenceBlockedSynthesis,
-  shouldRepairFinalRecoveryBudgetCloseout,
-  shouldRepairIncompleteApprovedBrowserAction,
-  shouldRepairMissingApprovalGate,
-  shouldRepairMissingBrowserEvidence,
-  shouldRepairMissingBrowserEvidenceDimensions,
-  shouldRepairMissingProductSignalBrowserEvidence,
-  shouldRepairMissingRequestedNextAction,
-  shouldRepairPendingApprovalWaitTimeoutCheck,
-  shouldRepairPrematurePendingApprovalFinal,
-  shouldRepairSourceEvidenceCarryForward,
-  shouldRepairStaleDeniedApproval,
-  shouldRepairStalePendingApproval,
-  shouldRepairTimeoutFollowupFinalGuidance,
-  shouldRepairWeakEvidenceSynthesis,
+  readLegacyForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
+  readLegacyApprovalWaitTimeoutCloseoutRepair,
+  readLegacyFalseEvidenceBlockedSynthesisRepair,
+  readLegacyFinalRecoveryBudgetCloseoutRepair,
+  readLegacyIncompleteApprovedBrowserActionRepair,
+  readLegacyMissingApprovalGateRepair,
+  readLegacyMissingBrowserEvidenceRepair,
+  readLegacyMissingBrowserEvidenceDimensionsRepair,
+  readLegacyMissingProductSignalBrowserEvidenceRepair,
+  readLegacyMissingRequestedNextActionRepair,
+  readLegacyPendingApprovalWaitTimeoutCheckRepair,
+  readLegacyPrematurePendingApprovalFinalRepair,
+  readLegacySourceEvidenceCarryForwardRepair,
+  readLegacyStaleDeniedApprovalRepair,
+  readLegacyStalePendingApprovalRepair,
+  readLegacyTimeoutFollowupFinalGuidanceRepair,
+  readLegacyWeakEvidenceSynthesisRepair,
   taskPromptAllowsStoppingAtPendingApproval,
   taskPromptIsAppliedApprovalBrowserContinuation,
   taskPromptRequestsApprovalWaitTimeoutCloseout,
@@ -32,8 +32,8 @@ import {
   type RequiredFinalDeliverable,
 } from "../tool-loop-shared";
 import {
-  shouldRepairExtraneousProviderTableSchema,
-  shouldRepairMissingRequestedTableColumns,
+  readExtraneousProviderTableSchemaRepair,
+  readMissingRequestedTableColumnsRepair,
 } from "../task-facts-shared";
 import type { PermissionEvidenceFacts, TaskIntentFacts } from "./types";
 
@@ -117,7 +117,7 @@ export function buildNaturalFinishRepairPolicyFacts(
     incompleteApprovedBrowserAction:
       shouldSelectIncompleteApprovedBrowserAction(input),
     missingRequestedTableColumns:
-      shouldRepairMissingRequestedTableColumns({
+      readMissingRequestedTableColumnsRepair({
         activation: input.activation,
         taskPrompt: input.taskPrompt ?? "",
         messages: input.messages,
@@ -125,7 +125,7 @@ export function buildNaturalFinishRepairPolicyFacts(
         resultText: input.resultText,
       }),
     extraneousProviderTableSchema:
-      shouldRepairExtraneousProviderTableSchema({
+      readExtraneousProviderTableSchemaRepair({
         activation: input.activation,
         taskPrompt: input.taskPrompt ?? "",
         messages: input.messages,
@@ -134,14 +134,14 @@ export function buildNaturalFinishRepairPolicyFacts(
       }),
     sourceEvidenceCarryForward:
       Boolean(sourceEvidenceText) &&
-      shouldRepairSourceEvidenceCarryForward({
+      readLegacySourceEvidenceCarryForwardRepair({
         taskPrompt: input.taskPrompt ?? "",
         resultText: input.resultText,
         messages: input.messages,
         repairMarkers: input.repairMarkers,
         evidenceText: sourceEvidenceText,
       }),
-    weakEvidenceSynthesis: shouldRepairWeakEvidenceSynthesis({
+    weakEvidenceSynthesis: readLegacyWeakEvidenceSynthesisRepair({
       taskPrompt: input.taskPrompt ?? "",
       resultText: input.resultText,
       messages: input.messages,
@@ -160,14 +160,14 @@ export function buildCompletedSynthesisRepairPolicyFacts(
     resultText: input.resultText,
   });
   return {
-    timeoutFollowupFinalGuidance: shouldRepairTimeoutFollowupFinalGuidance({
+    timeoutFollowupFinalGuidance: readLegacyTimeoutFollowupFinalGuidanceRepair({
       taskPrompt: input.taskPrompt,
       resultText: input.resultText,
       messages: input.messages,
       repairMarkers: input.repairMarkers,
       evidenceText: input.completedEvidenceText,
     }),
-    missingRequestedNextAction: shouldRepairMissingRequestedNextAction({
+    missingRequestedNextAction: readLegacyMissingRequestedNextActionRepair({
       taskPrompt: input.taskPrompt,
       resultText: input.resultText,
       messages: input.messages,
@@ -178,7 +178,7 @@ export function buildCompletedSynthesisRepairPolicyFacts(
       !hasMissingRequiredFinalDeliverablesRepairPrompt(input.repairMarkers),
     missingBrowserEvidenceDimensions:
       input.completedSessionFinalContents.length > 0 &&
-      shouldRepairMissingBrowserEvidenceDimensions({
+      readLegacyMissingBrowserEvidenceDimensionsRepair({
         taskPrompt: input.taskPrompt,
         resultText: input.resultText,
         messages: input.messages,
@@ -187,7 +187,7 @@ export function buildCompletedSynthesisRepairPolicyFacts(
       }),
     falseEvidenceBlockedSynthesis:
       input.completedSessionFinalContents.length > 0 &&
-      shouldRepairFalseEvidenceBlockedSynthesis({
+      readLegacyFalseEvidenceBlockedSynthesisRepair({
         resultText: input.resultText,
         messages: input.messages,
         repairMarkers: input.repairMarkers,
@@ -204,7 +204,7 @@ function shouldSelectFinalRecoveryBudgetCloseoutRepair(
   return (
     Boolean(budget) &&
     budget!.usedToolCalls >= budget!.maxToolCalls &&
-    shouldRepairFinalRecoveryBudgetCloseout({
+    readLegacyFinalRecoveryBudgetCloseoutRepair({
       messages: input.messages,
       repairMarkers: input.repairMarkers,
       resultText: input.resultText,
@@ -218,7 +218,7 @@ function shouldSelectMissingApprovalGate(
   return Boolean(
     input.taskPrompt &&
       input.toolTrace &&
-      shouldRepairMissingApprovalGate({
+      readLegacyMissingApprovalGateRepair({
         taskPrompt: input.taskPrompt,
         resultText: input.resultText,
         messages: input.messages,
@@ -236,7 +236,7 @@ function shouldSelectMissingBrowserEvidence(
   if (input.taskFacts && !input.taskFacts.browserVisibleEvidenceRequired) {
     return false;
   }
-  return shouldRepairMissingBrowserEvidence({
+  return readLegacyMissingBrowserEvidenceRepair({
     taskPrompt: input.taskPrompt,
     resultText: input.resultText,
     messages: input.messages,
@@ -256,7 +256,7 @@ function shouldSelectMissingProductSignalBrowserEvidence(
   ) {
     return false;
   }
-  return shouldRepairMissingProductSignalBrowserEvidence({
+  return readLegacyMissingProductSignalBrowserEvidenceRepair({
     taskPrompt: input.taskPrompt,
     resultText: input.resultText,
     messages: input.messages,
@@ -281,7 +281,7 @@ function shouldSelectPendingApprovalWaitTimeoutCheck(
       input.permissionFacts.latestToolName === "permission_query"
     );
   }
-  return shouldRepairPendingApprovalWaitTimeoutCheck({
+  return readLegacyPendingApprovalWaitTimeoutCheckRepair({
     taskPrompt: input.taskPrompt,
     resultText: input.resultText,
     messages: input.messages,
@@ -300,7 +300,7 @@ function shouldSelectPrematurePendingApproval(
         input.repairMarkers,
         "Runtime correction: approval-gated browser action is still pending",
       ) &&
-      mentionsPendingApproval(input.resultText) &&
+      readLegacyPendingApprovalMention(input.resultText) &&
       requestsApprovalGatedBrowserAction(input.taskPrompt) &&
       !taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) &&
       !taskPromptAllowsStoppingAtPendingApproval(input.taskPrompt) &&
@@ -311,7 +311,7 @@ function shouldSelectPrematurePendingApproval(
         input.permissionFacts.latestResultStatus === "pending")
     );
   }
-  return shouldRepairPrematurePendingApprovalFinal({
+  return readLegacyPrematurePendingApprovalFinalRepair({
     taskPrompt: input.taskPrompt,
     resultText: input.resultText,
     messages: input.messages,
@@ -330,7 +330,7 @@ function shouldSelectStalePendingApproval(
         input.repairMarkers,
         "Runtime correction: approval already applied",
       ) &&
-      mentionsPendingApproval(input.resultText) &&
+      readLegacyPendingApprovalMention(input.resultText) &&
       (requestsApprovalGatedBrowserAction(input.taskPrompt) ||
         taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)) &&
       (input.permissionFacts.appliedApproval ||
@@ -338,7 +338,7 @@ function shouldSelectStalePendingApproval(
         taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt))
     );
   }
-  return shouldRepairStalePendingApproval({
+  return readLegacyStalePendingApprovalRepair({
     taskPrompt: input.taskPrompt,
     resultText: input.resultText,
     messages: input.messages,
@@ -357,12 +357,12 @@ function shouldSelectStaleDeniedApproval(
         input.repairMarkers,
         "Runtime correction: approval was denied",
       ) &&
-      mentionsPendingApproval(input.resultText) &&
+      readLegacyPendingApprovalMention(input.resultText) &&
       requestsApprovalGatedBrowserAction(input.taskPrompt) &&
       input.permissionFacts.deniedApproval
     );
   }
-  return shouldRepairStaleDeniedApproval({
+  return readLegacyStaleDeniedApprovalRepair({
     taskPrompt: input.taskPrompt,
     resultText: input.resultText,
     messages: input.messages,
@@ -378,7 +378,7 @@ function shouldSelectApprovalWaitTimeoutCloseout(
     input.taskPrompt &&
       input.toolTrace &&
       (!input.permissionFacts || input.permissionFacts.waitTimeout) &&
-      shouldRepairApprovalWaitTimeoutCloseout({
+      readLegacyApprovalWaitTimeoutCloseoutRepair({
         taskPrompt: input.taskPrompt,
         resultText: input.resultText,
         messages: input.messages,
@@ -395,7 +395,7 @@ function shouldSelectApprovalWaitTimeoutLocalCloseout(
     input.taskPrompt &&
       input.toolTrace &&
       (!input.permissionFacts || input.permissionFacts.waitTimeout) &&
-      shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
+      readLegacyForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
         taskPrompt: input.taskPrompt,
         resultText: input.resultText,
         messages: input.messages,
@@ -411,7 +411,7 @@ function shouldSelectIncompleteApprovedBrowserAction(
   return Boolean(
     input.taskPrompt &&
       input.toolTrace &&
-      shouldRepairIncompleteApprovedBrowserAction({
+      readLegacyIncompleteApprovedBrowserActionRepair({
         taskPrompt: input.taskPrompt,
         resultText: input.resultText,
         messages: input.messages,
@@ -426,7 +426,7 @@ function resolveNaturalFinishEvidenceText(
 ): string {
   if (input.evidenceText !== undefined) return input.evidenceText;
   if (!input.taskPrompt || !input.toolTrace) return "";
-  return collectSourceBoundedEvidenceText({
+  return readLegacySourceBoundedEvidenceText({
     taskPrompt: input.taskPrompt,
     messages: input.messages,
     toolTrace: input.toolTrace,

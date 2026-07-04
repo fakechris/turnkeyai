@@ -29,6 +29,36 @@ const TERMINAL_FINAL_SYNTHESIS = path.join(
 );
 const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
 const ENGINE_RUN_OBSERVER = path.join(ENGINE_DIR, "engine-run-observer.ts");
+const RUNTIME_POLICY_DIR = path.join(ROLE_RUNTIME_DIR, "runtime-policy");
+
+const ACTIVE_ENGINE_POLICY_FILES = [
+  "permission-policy.ts",
+  "tool-call-normalizer.ts",
+  "continuation-controller.ts",
+  "closeout-policy-registry.ts",
+  "repair-policy-registry.ts",
+  "completed-closeout-controller.ts",
+  "terminal-closeout-controller.ts",
+];
+
+const CORE_FACT_HELPER_NAME_PATTERN =
+  /^(?:collectSessionToolResultRecords|inferWorkerKindFromSessionKey|inferRequiredFinalSynthesisDeliverables|should(?:Repair|Force|Continue|Suppress)\w+|mentions\w+|taskRequests\w+|taskRequires\w+|collect\w*(?:Evidence|Browser|Recovery|Failure)\w*|latestPermission\w+|hasPermission\w+|infer\w*Stream\w*)$/;
+
+const CORE_FACT_HELPER_REFERENCE_PATTERN =
+  /\b((?:collectSessionToolResultRecords|inferWorkerKindFromSessionKey|inferRequiredFinalSynthesisDeliverables|should(?:Repair|Force|Continue|Suppress)\w+|mentions\w+|taskRequests\w+|taskRequires\w+|collect\w*(?:Evidence|Browser|Recovery|Failure)\w*|latestPermission\w+|hasPermission\w+|infer\w*Stream\w*))\s*\(/g;
+
+const CORE_FACT_HELPER_ALLOWLIST = new Set<string>([]);
+
+const POLICY_TEXT_VIEW_NAMES = [
+  "FinalSynthesisTextViews",
+  "sourceBoundedEvidenceText",
+  "completedSessionEvidenceText",
+  "naturalFinishEvidenceText",
+  "toolTraceResultContent",
+  "approvalWaitTimeoutRuntimeEvidence",
+  "runtimeEvidenceText",
+  "toolResultContentText",
+];
 
 /** Forbidden import specifiers: the composition root and any known re-exporter. */
 const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
@@ -62,6 +92,79 @@ function engineSourceFiles(): string[] {
     .filter((name) => name.endsWith(".ts"))
     .filter((name) => !name.endsWith(".test.ts"))
     .map((name) => path.join(ENGINE_DIR, name));
+}
+
+function runtimePolicyCoreFiles(): string[] {
+  try {
+    return readdirSync(RUNTIME_POLICY_DIR)
+      .filter((name) => name.endsWith(".ts"))
+      .filter((name) => !name.endsWith(".test.ts"))
+      .filter((name) => name !== "types.ts")
+      .filter((name) => name !== "renderers.ts")
+      .map((name) => path.join(RUNTIME_POLICY_DIR, name));
+  } catch {
+    return [];
+  }
+}
+
+function activePolicySourceFiles(): string[] {
+  return [
+    ...ACTIVE_ENGINE_POLICY_FILES.map((name) => path.join(ENGINE_DIR, name)),
+    ...runtimePolicyCoreFiles(),
+  ];
+}
+
+function coreFactReferenceSourceFiles(): string[] {
+  return [
+    LLM_RESPONSE_GENERATOR,
+    path.join(ENGINE_DIR, "evidence-ledger.ts"),
+    path.join(ROLE_RUNTIME_DIR, "task-facts-shared.ts"),
+    ...activePolicySourceFiles(),
+  ];
+}
+
+function coreFactExportSourceFiles(): string[] {
+  return [
+    path.join(ROLE_RUNTIME_DIR, "tool-loop-shared.ts"),
+    path.join(ROLE_RUNTIME_DIR, "task-facts-shared.ts"),
+  ];
+}
+
+function exportedFunctionNames(source: string): string[] {
+  return Array.from(
+    source.matchAll(/^export\s+function\s+([A-Za-z0-9_]+)\b/gm),
+    (match) => match[1]!,
+  );
+}
+
+function exportedValueNames(source: string): string[] {
+  return Array.from(
+    source.matchAll(/^export\s+(?:const|let|var)\s+([A-Za-z0-9_]+)\b/gm),
+    (match) => match[1]!,
+  );
+}
+
+function exportedRuntimeNames(source: string): string[] {
+  return [...exportedFunctionNames(source), ...exportedValueNames(source)];
+}
+
+function coreFactHelperExportNames(source: string): string[] {
+  return exportedRuntimeNames(source).filter(
+    (name) =>
+      CORE_FACT_HELPER_NAME_PATTERN.test(name) &&
+      !CORE_FACT_HELPER_ALLOWLIST.has(name),
+  );
+}
+
+function coreFactHelperReferences(source: string): string[] {
+  return Array.from(
+    new Set(
+      Array.from(
+        source.matchAll(CORE_FACT_HELPER_REFERENCE_PATTERN),
+        (match) => match[1]!,
+      ).filter((name) => !CORE_FACT_HELPER_ALLOWLIST.has(name)),
+    ),
+  );
 }
 
 test("no react-engine module imports llm-response-generator", () => {
@@ -313,12 +416,11 @@ test("engine task intent facts are built at the adapter boundary and consumed by
     ["permission-policy.ts", "input.taskFacts.awaitingContextSetupOnly"],
     [
       "continuation-controller.ts",
-      "input.taskFacts.requiredIndependentEvidenceStreams",
+      "buildIndependentEvidenceStreamsPolicyFacts(input)",
     ],
-    ["repair-policy-registry.ts", "input.taskFacts.browserVisibleEvidenceRequired"],
     [
       "repair-policy-registry.ts",
-      "input.taskFacts.productSignalDashboardEvidenceRequested",
+      "buildNaturalFinishRepairPolicyFacts(input)",
     ],
     ["tool-call-normalizer.ts", "x.taskFacts.requiredIndependentEvidenceStreams"],
   ];
@@ -963,9 +1065,9 @@ test("engine permission policy facts route through EvidenceLedger", () => {
     "natural-finish repair hook should pass EvidenceLedger permission facts",
   );
   assert.equal(
-    closeoutSource.includes("terminateEvidence.permission.runtimeEvidenceText"),
+    closeoutSource.includes("terminateEvidence.approvalEvidenceText"),
     true,
-    "terminate closeout should read approval wait-timeout text through typed permission facts",
+    "terminate closeout should read approval wait-timeout text through EvidenceLedger approval evidence",
   );
 });
 
@@ -1531,25 +1633,88 @@ test("forced runtime tool-round orchestration routes through tool-use owner", ()
 });
 
 test("policy modules do not add unregistered regex detector branches", () => {
-  const policyFiles = [
-    "permission-policy.ts",
-    "tool-call-normalizer.ts",
-    "continuation-controller.ts",
-    "closeout-policy-registry.ts",
-    "repair-policy-registry.ts",
-    "completed-closeout-controller.ts",
-    "terminal-closeout-controller.ts",
-  ];
   const offenders: string[] = [];
-  for (const name of policyFiles) {
-    const source = readFileSync(path.join(ENGINE_DIR, name), "utf8");
+  for (const file of activePolicySourceFiles()) {
+    const source = readFileSync(file, "utf8");
     for (const regex of regexLiteralTexts(source)) {
-      offenders.push(`${name}: ${regex}`);
+      offenders.push(`${path.basename(file)}: ${regex}`);
     }
   }
   assert.deepEqual(
     offenders,
     [],
     "new policy regex must move to typed facts or legacy-text-detectors metadata",
+  );
+});
+
+test("active engine and adapter code do not call core fact helpers", () => {
+  const offenders: string[] = [];
+  for (const file of coreFactReferenceSourceFiles()) {
+    const source = readFileSync(file, "utf8");
+    for (const helper of coreFactHelperReferences(source)) {
+      offenders.push(`${path.basename(file)}: ${helper}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `active runtime code must consume typed producers instead of core fact helpers:\n${offenders.join("\n")}`,
+  );
+});
+
+test("EvidenceLedger does not import tool-loop-shared", () => {
+  const source = readFileSync(path.join(ENGINE_DIR, "evidence-ledger.ts"), "utf8");
+  assert.equal(
+    /from\s+["']\.\.\/tool-loop-shared["']/.test(source),
+    false,
+    "EvidenceLedger must aggregate runtime-facts producers, not tool-loop-shared text helpers",
+  );
+});
+
+test("active policy modules do not receive final-synthesis text views", () => {
+  const offenders: string[] = [];
+  for (const file of activePolicySourceFiles()) {
+    const source = readFileSync(file, "utf8");
+    for (const field of POLICY_TEXT_VIEW_NAMES) {
+      if (source.includes(field)) {
+        offenders.push(`${path.basename(file)}: ${field}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `policy modules must not inspect final-synthesis text views:\n${offenders.join("\n")}`,
+  );
+});
+
+test("shared fact source files do not export core Stage 8 fact helpers", () => {
+  const offenders: string[] = [];
+  for (const file of coreFactExportSourceFiles()) {
+    const source = readFileSync(file, "utf8");
+    for (const name of coreFactHelperExportNames(source)) {
+      offenders.push(`${path.basename(file)}: ${name}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `shared files must not own core Stage 8 fact helpers:\n${offenders.join("\n")}`,
+  );
+});
+
+test("core fact helper allowlist entries point at real exports", () => {
+  const exports = new Set(
+    coreFactExportSourceFiles().flatMap((file) =>
+      exportedRuntimeNames(readFileSync(file, "utf8")),
+    ),
+  );
+  const missing = Array.from(CORE_FACT_HELPER_ALLOWLIST).filter(
+    (name) => !exports.has(name),
+  );
+  assert.deepEqual(
+    missing,
+    [],
+    `core fact helper allowlist entries must be real tool-loop-shared or task-facts-shared exports:\n${missing.join("\n")}`,
   );
 });

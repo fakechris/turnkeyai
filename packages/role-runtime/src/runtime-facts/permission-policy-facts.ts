@@ -1,6 +1,6 @@
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
-import { shouldSuppressReadOnlyPermissionQueryToolCalls } from "../tool-loop-shared";
+import { readLegacyReadOnlyPermissionQuerySuppression } from "../tool-loop-shared";
 
 export interface PermissionSuppressionFactInput {
   calls: LLMToolCall[];
@@ -16,7 +16,7 @@ export function buildPermissionSuppressionFacts(
   input: PermissionSuppressionFactInput,
 ): PermissionSuppressionFacts {
   return {
-    readOnlyPermissionQuery: shouldSuppressReadOnlyPermissionQueryToolCalls(
+    readOnlyPermissionQuery: readLegacyReadOnlyPermissionQuerySuppression(
       input.calls,
       input,
     ),
