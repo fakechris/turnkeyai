@@ -197,7 +197,7 @@ import {
   throwIfAborted,
   withFinalToolRoundWarning,
   expectsExactFinalAnswerShape,
-} from "./tool-loop-shared";
+} from "./runtime-facts/policy-text-facts";
 import {
   buildRuntimeDerivedMissionReport,
   type ToolLoopCloseoutMetadata,
@@ -229,7 +229,7 @@ import {
   readTimedOutSiblingSessionContinuation,
   readTimeoutFollowupFinalGuidanceRepair,
   readWeakEvidenceSynthesisRepair,
-} from "./runtime-facts/inline-policy-compat";
+} from "./runtime-policy/inline-policy-runner";
 // Stage 8 cleanup (Batch 0.5): engine policy-trace plumbing. The trace is a
 // behavior-neutral observability sink that records the per-hook decision sequence
 // so later batches can prove byte-identical behavior and so production-behind-flag
@@ -2972,7 +2972,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // permission_result round (host-authored, no model call) and return a
         // { messages } continuation so the engine retries the model call with the
         // approval decision observed, instead of closing out blind to it. The forced
-        // round's permission_result lands in the trace, so readLegacyLatestPermissionToolName is
+        // round's permission_result lands in the trace, so readPolicyLatestPermissionToolName is
         // no longer "permission_query" and the builder returns null on a repeat error
         // (idempotent — no loop). Aborts must rethrow.
         onModelCallError: async (error, state, _ctx) => {

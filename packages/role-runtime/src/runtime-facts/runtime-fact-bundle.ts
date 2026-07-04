@@ -1,10 +1,10 @@
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RoleToolExecutionResult } from "../tool-use";
 import {
-  readLegacyApprovalWaitTimeoutRuntimeEvidence,
-  readLegacyCompletedSessionEvidenceText,
-  readLegacySourceBoundedEvidenceText,
-} from "../tool-loop-shared";
+  readPolicyApprovalWaitTimeoutRuntimeEvidence,
+  readPolicyCompletedSessionEvidenceText,
+  readPolicySourceBoundedEvidenceText,
+} from "./policy-text-facts";
 import {
   collectToolResultContentText,
   collectToolTraceResultContent,
@@ -35,12 +35,12 @@ export function buildRuntimeFactBundle(
   });
   const usable = produceUsableEvidenceEnvelope(input);
   const toolTraceResultContent = collectToolTraceResultContent(input.toolTrace);
-  const sourceBoundedEvidenceText = readLegacySourceBoundedEvidenceText({
+  const sourceBoundedEvidenceText = readPolicySourceBoundedEvidenceText({
     taskPrompt: input.taskPrompt,
     messages: input.messages,
     toolTrace: input.toolTrace,
   });
-  const completedSessionEvidenceText = readLegacyCompletedSessionEvidenceText(
+  const completedSessionEvidenceText = readPolicyCompletedSessionEvidenceText(
     input.toolTrace,
   );
   return {
@@ -63,7 +63,7 @@ export function buildRuntimeFactBundle(
         .join("\n\n"),
       toolTraceResultContent,
       approvalWaitTimeoutRuntimeEvidence:
-        readLegacyApprovalWaitTimeoutRuntimeEvidence(input.toolTrace),
+        readPolicyApprovalWaitTimeoutRuntimeEvidence(input.toolTrace),
       toolResultContentText: toolTraceResultContent,
     },
   };

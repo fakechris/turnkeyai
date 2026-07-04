@@ -23,7 +23,7 @@ import {
   isAppliedApprovalBrowserContinuation,
   type SessionContinuationDirective,
   type SessionContinuationLookupDirective,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 import {
   createPermissionPolicy,
   type PermissionPolicy,

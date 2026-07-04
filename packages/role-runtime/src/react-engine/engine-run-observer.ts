@@ -14,7 +14,7 @@ import { recordProviderToolProtocolRoundSafely } from "../tool-history-pruning";
 import {
   toNativeToolProgressTrace,
   toNativeToolResultTrace,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 import {
   appendAssistantToolCallMessage,
   appendToolResultMessages,

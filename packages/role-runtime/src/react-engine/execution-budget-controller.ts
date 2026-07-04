@@ -13,7 +13,7 @@ import {
   isAbortError,
   resolveEffectiveToolLoopWallClockMs,
   withFinalToolRoundWarning,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 
 // Stage 8 engine cleanup — ExecutionBudgetController.
 //

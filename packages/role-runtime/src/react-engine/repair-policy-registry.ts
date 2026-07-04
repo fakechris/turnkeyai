@@ -25,7 +25,7 @@ import {
   buildStalePendingApprovalRepairPrompt,
   buildTimeoutFollowupFinalGuidanceRepairPrompt,
   buildWeakEvidenceSynthesisRepairPrompt,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 import {
   buildCompletedSynthesisRepairPolicyFacts,
   buildNaturalFinishRepairPolicyFacts,

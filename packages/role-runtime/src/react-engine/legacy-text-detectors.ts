@@ -16,6 +16,7 @@ export type LegacyDetectorFeasibilityClass =
 
 export interface LegacyTextDetectorDefinition {
   id: string;
+  legacyImporterOnly: true;
   targetTypedField: string;
   producer: string;
   feasibilityClass: LegacyDetectorFeasibilityClass;
@@ -34,6 +35,7 @@ export interface LegacyTextDetectorResult {
 export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   {
     id: "approval_wait_timeout_text",
+    legacyImporterOnly: true,
     targetTypedField: "EvidenceSnapshot.permission.waitTimeout",
     producer: "permission_result tool output and runtime progress text",
     feasibilityClass: "present_only_as_text",
@@ -48,6 +50,7 @@ export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   },
   {
     id: "approval_applied_text",
+    legacyImporterOnly: true,
     targetTypedField: "EvidenceSnapshot.permission.appliedApproval",
     producer: "permission_result tool output and runtime progress text",
     feasibilityClass: "present_only_as_text",
@@ -64,6 +67,7 @@ export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   },
   {
     id: "approval_denied_text",
+    legacyImporterOnly: true,
     targetTypedField: "EvidenceSnapshot.permission.deniedApproval",
     producer: "permission_result tool output",
     feasibilityClass: "present_only_as_text",
@@ -79,6 +83,7 @@ export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   },
   {
     id: "browser_visible_requirement_text",
+    legacyImporterOnly: true,
     targetTypedField: "TaskFactsSnapshot.browserVisibleEvidenceRequired",
     producer: "task prompt, activation, and recent user messages",
     feasibilityClass: "present_only_as_text",
@@ -98,6 +103,7 @@ export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   },
   {
     id: "product_signal_dashboard_text",
+    legacyImporterOnly: true,
     targetTypedField:
       "TaskFactsSnapshot.productSignalDashboardEvidenceRequested",
     producer: "task prompt, activation, and recent user messages",
@@ -115,6 +121,7 @@ export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   },
   {
     id: "independent_evidence_streams_text",
+    legacyImporterOnly: true,
     targetTypedField: "TaskFactsSnapshot.requiredIndependentEvidenceStreams",
     producer: "task prompt",
     feasibilityClass: "present_only_as_text",
@@ -131,6 +138,7 @@ export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   },
   {
     id: "timeout_recovery_intent_text",
+    legacyImporterOnly: true,
     targetTypedField: "TaskFactsSnapshot.timeoutRecoveryRequested",
     producer: "task prompt and recent user messages",
     feasibilityClass: "present_only_as_text",
@@ -149,6 +157,7 @@ export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   },
   {
     id: "awaiting_context_setup_text",
+    legacyImporterOnly: true,
     targetTypedField: "TaskFactsSnapshot.awaitingContextSetupOnly",
     producer: "task prompt",
     feasibilityClass: "present_only_as_text",
@@ -164,6 +173,7 @@ export const LEGACY_TEXT_DETECTORS: readonly LegacyTextDetectorDefinition[] = [
   },
   {
     id: "pseudo_tool_call_markup_text",
+    legacyImporterOnly: true,
     targetTypedField: "FutureModelTextFacts.pseudoToolCallMarkup",
     producer: "model final text",
     feasibilityClass: "missing_from_producer",

@@ -5,84 +5,63 @@
 
 ## What Landed
 
-Stage 8 now has a typed runtime-facts layer and a runtime-policy layer that make
-the ReAct engine adapter a composition/wiring boundary instead of a
-product-policy body.
+Stage 8 now has a producer-owned compatibility boundary instead of an active
+`tool-loop-shared.ts` shadow policy body.
 
-- `runtime-facts/*` now produces task intent, session evidence, permission
-  evidence, browser evidence, usable evidence, envelopes, provenance, policy
-  snapshots, round snapshots, and final-synthesis text views.
-- `react-engine/evidence-ledger.ts` is now an engine-facing wrapper over
-  `RuntimeFactBundle` / `RuntimeRoundFactBundle`; it does not import
-  `tool-loop-shared.ts`.
-- `runtime-policy/*-core.ts` owns the pure decision selection for repair,
-  continuation, permission suppression, and closeout policy facts.
-- Installed ReAct hooks now delegate product-policy decisions through owner
-  modules: `RepairPolicyRegistry`, `ContinuationController`,
-  `CloseoutPolicyRegistry`, `PermissionPolicy`, `CompletedCloseoutController`,
-  and `TerminalCloseoutController`.
-- `runViaReActEngine` keeps composition responsibilities: dependency
-  injection, gateway/model callbacks, forced-round execution callbacks, feature
-  flags, run-state wiring, observer wiring, and final `GeneratedRoleReply`
-  assembly.
-- Inline parity remains behavior-neutral. The active inline path no longer calls
-  public `shouldRepair*`, `shouldContinue*`, `shouldSuppress*`,
-  `taskRequests*`, `taskRequires*`, `mentions*`, `latestPermission*`,
-  `hasPermission*`, or `collect*Evidence*` helper names directly; it routes
-  through neutral runtime-facts/task-facts compatibility entrypoints.
-- `tool-loop-shared.ts` and `task-facts-shared.ts` no longer export core Stage 8
-  helper names matching the guarded pattern. The guard now checks both
-  `export function` and exported value aliases, so const aliases cannot
-  reintroduce the shadow API.
+- `tool-loop-shared.ts` is now facade-only: one re-export line to the
+  producer-side implementation. It no longer owns or exports `readLegacy*`
+  detector bodies.
+- `runtime-facts/policy-text-facts.ts` owns the behavior-preserving legacy text
+  fallback implementation while typed producers continue to replace those
+  fallbacks family by family.
+- `runtime-policy/inline-policy-runner.ts` routes the inline runtime's repair,
+  continuation, closeout, and permission-suppression booleans through the same
+  fact builders and `runtime-policy/*-core.ts` selectors used by the engine
+  path.
+- `inline-policy-compat.ts` was deleted. Active inline/engine policy code no
+  longer imports `tool-loop-shared.ts` or `readLegacy*` shims.
+- `legacy-trace-importer.ts` and `legacyImporterOnly` detector metadata make the
+  legacy detector registry an importer boundary, not a policy module API.
+- `architecture-guard.test.ts` now enforces the real structure: no active
+  runtime policy/fact boundary imports `tool-loop-shared.ts`, no active boundary
+  uses `readLegacy*` or the deleted inline shim, inline policy booleans must
+  route through `runtime-policy/inline-policy-runner.ts`, and
+  `tool-loop-shared.ts` must remain facade-only.
 
 ## Remaining Debt
 
-The remaining debt is now explicit and guarded rather than spread through policy
-modules:
+The remaining debt is typed-producer replacement work, not adapter thinning:
 
-- Several producer-local compatibility paths still call `readLegacy*` utilities
-  for legacy text fallback and final-synthesis evidence text views. These are
-  behavior-preserving wrappers around old detector semantics; they are no
-  longer exported under core product-policy names, but they should be moved into
-  first-class typed producers or deleted when the inline runtime is retired.
-- Some policy facts are still text-derived compatibility facts rather than fully
-  structured facts. The biggest examples are weak/source-evidence synthesis
-  repairs, browser evidence dimension repairs, timeout-followup wording repairs,
-  and final recovery budget closeout wording.
-- `EvidenceLedger` is a typed bundle facade with provenance, but it is not yet a
-  complete producer-owned evidence pipeline where every final-synthesis input is
-  structured before rendering. Final text views are intentionally separated from
-  policy snapshots and remain render/finalization inputs only.
-
-This means the adapter cleanup landing line is complete, but full typed-facts
-producerization is not. The next architectural stage should remove the
-`readLegacy*` compatibility layer by either making inline consume the same typed
-runner/policy path directly or retiring inline once the engine is the only
-runtime.
+- `runtime-facts/policy-text-facts.ts` is still a large legacy compatibility
+  producer. It preserves the old text fallback behavior in one owner module; it
+  should be narrowed into smaller typed producers as upstream tool/session/
+  permission payloads expose stronger structured fields.
+- Some facts remain text-derived compatibility facts: weak/source-evidence
+  synthesis, browser evidence dimensions, timeout follow-up wording, approval
+  wait-timeout evidence text, and some task-intent phrasing.
+- Final-synthesis text views still exist for rendering/finalization. They are
+  separated from policy snapshots and guarded out of policy core inputs, but the
+  evidence ledger is not yet a fully producer-owned typed evidence pipeline.
 
 ## Why The Adapter Is Acceptable Now
 
-The remaining adapter code composes owner modules and passes dependencies. It no
-longer steps through installed-hook product-policy branches directly. Policy
-decisions are selected from typed policy fact builders and runtime-policy cores;
-rendering/final text is separated from policy snapshots; and architecture guards
-make regressions visible in CI.
+The unacceptable state was "renamed helpers still owned by
+`tool-loop-shared.ts`, with inline calling an alias shim." That is no longer the
+state.
 
-The acceptable boundary is:
-
-- adapter: wires gateway/model/tool callbacks, run state, feature flags,
-  observers, forced execution, and final response assembly;
-- facts: produce typed evidence and final text views;
-- policy cores/registries/controllers: select and apply product-policy
-  decisions;
-- final synthesis/rendering: may consume text views, but policy core inputs may
-  not.
+`runViaReActEngine` remains a composition/wiring layer: it wires gateway/model
+callbacks, feature flags, observer/run-state targets, forced-round execution,
+and final `GeneratedRoleReply` assembly. Product-policy decisions for installed
+hooks live behind owner controllers/registries and runtime-policy selectors.
+The inline reference path still keeps its loop shape for parity, but its active
+policy booleans now route through `runtime-policy/inline-policy-runner.ts`
+instead of directly calling detector helpers.
 
 ## Gate Results
 
 - `npm run typecheck`: pass, 0 TypeScript errors.
 - `npx tsx --test packages/role-runtime/src/react-engine/*.test.ts`: pass,
-  295 / 295.
+  301 / 301.
 - `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts`:
   pass, 272 / 272.
 - `npx tsx --test packages/agent-core/src/*.test.ts`: pass, 53 / 53.

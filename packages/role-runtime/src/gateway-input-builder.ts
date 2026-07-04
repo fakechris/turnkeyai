@@ -7,10 +7,10 @@ import type {
 import type { RolePromptPacket } from "./prompt-policy";
 import {
   escapeRegExp,
-  readLegacyRequiredFinalSynthesisDeliverables,
+  readPolicyRequiredFinalSynthesisDeliverables,
   requestsStatusVisibleTextEvidenceUrlLines,
   type SessionContinuationDirective,
-} from "./tool-loop-shared";
+} from "./runtime-facts/policy-text-facts";
 import {
   requestedTableColumnMessageContext,
   buildExtraneousProviderTableSchemaRepairPrompt,
@@ -132,7 +132,7 @@ export function finalSynthesisFormatContract(
   taskPrompt?: string,
   messages: LLMMessage[] = [],
 ): string[] {
-  const requiredDeliverables = readLegacyRequiredFinalSynthesisDeliverables(
+  const requiredDeliverables = readPolicyRequiredFinalSynthesisDeliverables(
     taskPrompt ?? "",
   );
   const requestedTableColumns = resolveRequestedTableColumns([

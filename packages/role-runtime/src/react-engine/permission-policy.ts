@@ -10,7 +10,7 @@ import {
   buildReadOnlyPermissionQuerySuppressionPrompt,
   enforceMissingApprovalGateRepairToolCalls,
   normalizeApprovalGatedBrowserSpawnCalls,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 import { buildPermissionSuppressionFacts } from "../runtime-facts/permission-policy-facts";
 import { selectPermissionSuppressionPolicy } from "../runtime-policy/permission-policy-core";
 import type { EngineSuppressDecision } from "./types";

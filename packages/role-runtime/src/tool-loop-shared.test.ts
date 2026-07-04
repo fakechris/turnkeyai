@@ -5,11 +5,11 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
+import { readPolicyApprovalWaitTimeoutRuntimeEvidence } from "./runtime-facts/policy-text-facts";
 import {
   allowsSupplementalBrowserProbe,
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
-  readLegacyApprovalWaitTimeoutRuntimeEvidence,
   parseJsonObject,
   throwIfAborted,
 } from "./tool-loop-shared";
@@ -26,7 +26,7 @@ function packet(taskPrompt: string, outputContract = ""): RolePromptPacket {
   } as RolePromptPacket;
 }
 
-test("readLegacyApprovalWaitTimeoutRuntimeEvidence keeps permission evidence only", () => {
+test("readPolicyApprovalWaitTimeoutRuntimeEvidence keeps permission evidence only", () => {
   const toolTrace: NativeToolRoundTrace[] = [
     {
       round: 1,
@@ -69,7 +69,7 @@ test("readLegacyApprovalWaitTimeoutRuntimeEvidence keeps permission evidence onl
     },
   ];
 
-  const evidence = readLegacyApprovalWaitTimeoutRuntimeEvidence(toolTrace);
+  const evidence = readPolicyApprovalWaitTimeoutRuntimeEvidence(toolTrace);
 
   assert.match(evidence, /permission_query:/);
   assert.match(evidence, /permission_result:/);

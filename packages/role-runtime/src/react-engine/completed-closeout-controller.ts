@@ -17,7 +17,7 @@ import {
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
   shouldPreserveRecoveredTimeoutCloseout,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 import { readRuntimeBrowserSummariesFromTrace } from "../runtime-facts/browser-recovery-summary-producer";
 import { recordRepairPrompt } from "../task-facts-shared";
 import {

@@ -7,7 +7,7 @@ import {
   maybeAppendRecoveredTimeoutCloseoutVisibility,
   maybeAppendRequiredTimeoutFollowupVisibility,
   shouldAppendRecoveredTimeoutCloseoutVisibility,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 
 // Stage 8 engine cleanup — FinalizationPipeline.
 //

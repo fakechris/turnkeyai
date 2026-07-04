@@ -30,6 +30,15 @@ const TERMINAL_FINAL_SYNTHESIS = path.join(
 const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
 const ENGINE_RUN_OBSERVER = path.join(ENGINE_DIR, "engine-run-observer.ts");
 const RUNTIME_POLICY_DIR = path.join(ROLE_RUNTIME_DIR, "runtime-policy");
+const RUNTIME_FACTS_DIR = path.join(ROLE_RUNTIME_DIR, "runtime-facts");
+const INLINE_POLICY_RUNNER = path.join(
+  RUNTIME_POLICY_DIR,
+  "inline-policy-runner.ts",
+);
+const GATEWAY_INPUT_BUILDER = path.join(
+  ROLE_RUNTIME_DIR,
+  "gateway-input-builder.ts",
+);
 
 const ACTIVE_ENGINE_POLICY_FILES = [
   "permission-policy.ts",
@@ -107,6 +116,18 @@ function runtimePolicyCoreFiles(): string[] {
   }
 }
 
+function runtimeFactSourceFiles(): string[] {
+  try {
+    return readdirSync(RUNTIME_FACTS_DIR)
+      .filter((name) => name.endsWith(".ts"))
+      .filter((name) => !name.endsWith(".test.ts"))
+      .filter((name) => name !== "types.ts")
+      .map((name) => path.join(RUNTIME_FACTS_DIR, name));
+  } catch {
+    return [];
+  }
+}
+
 function activePolicySourceFiles(): string[] {
   return [
     ...ACTIVE_ENGINE_POLICY_FILES.map((name) => path.join(ENGINE_DIR, name)),
@@ -117,9 +138,20 @@ function activePolicySourceFiles(): string[] {
 function coreFactReferenceSourceFiles(): string[] {
   return [
     LLM_RESPONSE_GENERATOR,
+    GATEWAY_INPUT_BUILDER,
     path.join(ENGINE_DIR, "evidence-ledger.ts"),
     path.join(ROLE_RUNTIME_DIR, "task-facts-shared.ts"),
     ...activePolicySourceFiles(),
+  ];
+}
+
+function activeRuntimeBoundarySourceFiles(): string[] {
+  return [
+    LLM_RESPONSE_GENERATOR,
+    GATEWAY_INPUT_BUILDER,
+    ...runtimeFactSourceFiles(),
+    ...runtimePolicyCoreFiles(),
+    ...ACTIVE_ENGINE_POLICY_FILES.map((name) => path.join(ENGINE_DIR, name)),
   ];
 }
 
@@ -1671,6 +1703,81 @@ test("EvidenceLedger does not import tool-loop-shared", () => {
   );
 });
 
+test("active runtime policy boundary does not import tool-loop-shared", () => {
+  const offenders: string[] = [];
+  for (const file of activeRuntimeBoundarySourceFiles()) {
+    const source = readFileSync(file, "utf8");
+    if (/from\s+["'][^"']*tool-loop-shared["']/.test(source)) {
+      offenders.push(path.relative(ROLE_RUNTIME_DIR, file));
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `active runtime policy/fact modules must not depend on tool-loop-shared:\n${offenders.join("\n")}`,
+  );
+});
+
+test("active runtime policy boundary does not use renamed legacy fact shims", () => {
+  const offenders: string[] = [];
+  for (const file of activeRuntimeBoundarySourceFiles()) {
+    const source = readFileSync(file, "utf8");
+    if (source.includes("inline-policy-compat")) {
+      offenders.push(`${path.relative(ROLE_RUNTIME_DIR, file)}: inline-policy-compat`);
+    }
+    for (const match of source.matchAll(/\breadLegacy[A-Za-z0-9_]+\b/g)) {
+      offenders.push(`${path.relative(ROLE_RUNTIME_DIR, file)}: ${match[0]}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `active runtime code must consume producer-owned facts, not renamed legacy shims:\n${offenders.join("\n")}`,
+  );
+});
+
+test("inline adapter routes policy booleans through runtime-policy runner", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const producerImports = Array.from(
+    source.matchAll(
+      /import\s+\{([\s\S]*?)\}\s+from\s+["']\.\/runtime-facts\/policy-text-facts["'];/g,
+    ),
+    (match) => match[1] ?? "",
+  ).join("\n");
+  const forbiddenProducerPolicyImports = Array.from(
+    producerImports.matchAll(
+      /\b(read[A-Za-z0-9_]*(?:Repair|Continuation|Suppression))\b/g,
+    ),
+    (match) => match[1]!,
+  );
+  assert.deepEqual(
+    forbiddenProducerPolicyImports,
+    [],
+    `inline adapter must not import policy decision booleans directly from text producers:\n${forbiddenProducerPolicyImports.join("\n")}`,
+  );
+  assert.equal(
+    source.includes('from "./runtime-policy/inline-policy-runner"'),
+    true,
+    "inline adapter must route policy booleans through runtime-policy/inline-policy-runner",
+  );
+
+  const runnerSource = readFileSync(INLINE_POLICY_RUNNER, "utf8");
+  for (const selector of [
+    "selectNaturalFinishRepairPolicy",
+    "selectCompletedSynthesisRepairPolicy",
+    "selectPermissionSuppressionPolicy",
+    "selectTimeoutContinuationPolicy",
+    "selectIndependentEvidenceStreamsPolicy",
+    "selectRecoveryToolBudgetCloseoutPolicy",
+  ]) {
+    assert.equal(
+      runnerSource.includes(selector),
+      true,
+      `inline policy runner must use ${selector}`,
+    );
+  }
+});
+
 test("active policy modules do not receive final-synthesis text views", () => {
   const offenders: string[] = [];
   for (const file of activePolicySourceFiles()) {
@@ -1685,6 +1792,27 @@ test("active policy modules do not receive final-synthesis text views", () => {
     offenders,
     [],
     `policy modules must not inspect final-synthesis text views:\n${offenders.join("\n")}`,
+  );
+});
+
+test("tool-loop-shared does not export renamed legacy fact helpers", () => {
+  const source = readFileSync(path.join(ROLE_RUNTIME_DIR, "tool-loop-shared.ts"), "utf8");
+  const offenders = exportedRuntimeNames(source).filter((name) =>
+    /^readLegacy[A-Za-z0-9_]+$/.test(name),
+  );
+  assert.deepEqual(
+    offenders,
+    [],
+    `tool-loop-shared must not retain renamed Stage 8 policy fact exports:\n${offenders.join("\n")}`,
+  );
+});
+
+test("tool-loop-shared remains a legacy facade, not an active fact owner", () => {
+  const source = readFileSync(path.join(ROLE_RUNTIME_DIR, "tool-loop-shared.ts"), "utf8");
+  assert.match(
+    source.trim(),
+    /^export \* from "\.\/runtime-facts\/policy-text-facts";$/,
+    "tool-loop-shared must stay a compatibility facade over the producer-owned implementation",
   );
 });
 

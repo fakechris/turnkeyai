@@ -21,7 +21,7 @@ import {
   isAppliedApprovalBrowserContinuation,
   shouldRunSupplementalLocalTimeoutProbe,
   type SubAgentToolTimeoutSignal,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 import {
   buildIndependentEvidenceStreamsPolicyFacts,
   buildMissingApprovalGateContinuationFacts,

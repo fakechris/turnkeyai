@@ -1,8 +1,8 @@
 import type { NativeToolRoundTrace } from "../native-tool-messages";
-import { readLegacyBrowserRecoverySummariesFromToolTrace } from "../tool-loop-shared";
+import { readPolicyBrowserRecoverySummariesFromToolTrace } from "./policy-text-facts";
 
 export function readRuntimeBrowserSummariesFromTrace(
   toolTrace: NativeToolRoundTrace[],
 ): string[] {
-  return readLegacyBrowserRecoverySummariesFromToolTrace(toolTrace);
+  return readPolicyBrowserRecoverySummariesFromToolTrace(toolTrace);
 }

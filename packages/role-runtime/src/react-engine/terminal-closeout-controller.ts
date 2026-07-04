@@ -31,7 +31,7 @@ import {
   isAbortError,
   maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 import type {
   CompletedCloseoutSynthesis,
   CompletedCloseoutTerminalInput,

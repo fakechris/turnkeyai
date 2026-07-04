@@ -1,6 +1,6 @@
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
-import { readLegacyFinalRecoveryBudgetCloseoutRepair } from "../tool-loop-shared";
+import { readPolicyFinalRecoveryBudgetCloseoutRepair } from "./policy-text-facts";
 
 export interface RecoveryToolBudgetCloseoutFactInput {
   pendingToolCallCount: number;
@@ -19,7 +19,7 @@ export function buildRecoveryToolBudgetCloseoutFacts(
   return {
     deferToRepairRound:
       input.pendingToolCallCount === 0 &&
-      readLegacyFinalRecoveryBudgetCloseoutRepair({
+      readPolicyFinalRecoveryBudgetCloseoutRepair({
         messages: input.messages,
         repairMarkers: input.repairMarkers,
         resultText: input.resultText,

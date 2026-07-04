@@ -19,7 +19,7 @@ import {
   shouldPreserveRecoveredTimeoutCloseout,
   shouldCloseoutCancelledSessionWithoutContinuation,
   sliceUtf8,
-} from "../tool-loop-shared";
+} from "../runtime-facts/policy-text-facts";
 import { buildRecoveryToolBudgetCloseoutFacts } from "../runtime-facts/closeout-policy-facts";
 import { selectRecoveryToolBudgetCloseoutPolicy } from "../runtime-policy/closeout-policy-core";
 import { findRepeatedFailedToolCall } from "../react/predicates";

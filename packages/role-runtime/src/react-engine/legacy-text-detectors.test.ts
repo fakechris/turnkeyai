@@ -10,6 +10,7 @@ test("legacy text detectors carry required migration metadata", () => {
   assert.ok(LEGACY_TEXT_DETECTORS.length > 0);
   for (const detector of LEGACY_TEXT_DETECTORS) {
     assert.ok(detector.id);
+    assert.equal(detector.legacyImporterOnly, true);
     assert.ok(detector.targetTypedField);
     assert.ok(detector.producer);
     assert.match(
