@@ -2,6 +2,7 @@ import type {
   CompletedSynthesisRepairPolicyFacts,
   NaturalFinishRepairPolicyFacts,
 } from "../runtime-facts/repair-policy-facts";
+import { buildPolicyIdRenderRequest } from "./renderers";
 import type { RuntimeRepairDecision } from "./types";
 
 export const RUNTIME_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
@@ -153,7 +154,7 @@ function buildNaturalDecision(
         evidenceFormula: "candidate_final",
         forceToolChoice: { name: "sessions_spawn" },
         consumesRound: true,
-        render: { kind: "repair_prompt", payload: { policyId } },
+        render: buildPolicyIdRenderRequest("repair_prompt", policyId),
       };
     case "missing_approval_gate":
       return {
@@ -163,7 +164,10 @@ function buildNaturalDecision(
         evidenceFormula: "candidate_final",
         forceToolChoice: { name: "permission_query" },
         consumesRound: true,
-        render: { kind: "permission_repair_prompt", payload: { policyId } },
+        render: buildPolicyIdRenderRequest(
+          "permission_repair_prompt",
+          policyId,
+        ),
       };
     case "pending_approval_wait_timeout_check":
     case "premature_pending_approval":
@@ -174,7 +178,10 @@ function buildNaturalDecision(
         evidenceFormula: "candidate_final",
         forceToolChoice: { name: "permission_result" },
         consumesRound: true,
-        render: { kind: "permission_repair_prompt", payload: { policyId } },
+        render: buildPolicyIdRenderRequest(
+          "permission_repair_prompt",
+          policyId,
+        ),
       };
     case "approval_wait_timeout_local_closeout":
       return {
@@ -193,7 +200,7 @@ function buildNaturalDecision(
         reasonCode: policyId,
         evidenceFormula: "source_bounded_evidence",
         forceToolChoice: "none",
-        render: { kind: "repair_prompt", payload: { policyId } },
+        render: buildPolicyIdRenderRequest("repair_prompt", policyId),
       };
     default:
       return {
@@ -202,7 +209,7 @@ function buildNaturalDecision(
         reasonCode: policyId,
         evidenceFormula: "candidate_final",
         forceToolChoice: "none",
-        render: { kind: "repair_prompt", payload: { policyId } },
+        render: buildPolicyIdRenderRequest("repair_prompt", policyId),
       };
   }
 }
@@ -221,6 +228,6 @@ function buildCompletedDecision(
           ? "candidate_final"
           : "completed_session_evidence",
     forceToolChoice: "none",
-    render: { kind: "repair_prompt", payload: { policyId } },
+    render: buildPolicyIdRenderRequest("repair_prompt", policyId),
   };
 }

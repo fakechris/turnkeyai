@@ -3,6 +3,7 @@ import type {
   MissingApprovalGateContinuationFacts,
   TimeoutContinuationPolicyFacts,
 } from "../runtime-facts/continuation-policy-facts";
+import { buildPolicyIdRenderRequest } from "./renderers";
 import type { RuntimeContinuationDecision } from "./types";
 
 export type RuntimeContinuationPolicyId =
@@ -46,13 +47,12 @@ function buildContinueDecision(
     kind: "continue",
     policyId,
     reasonCode: policyId,
-    render: {
-      kind:
+    render: buildPolicyIdRenderRequest(
         policyId === "independent_evidence_stream_continuation"
           ? "independent_evidence_prompt"
           : "timeout_recovery_prompt",
-      payload: { policyId },
-    },
+      policyId,
+    ),
   };
 }
 

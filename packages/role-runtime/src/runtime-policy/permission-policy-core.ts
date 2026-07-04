@@ -1,4 +1,5 @@
 import type { PermissionSuppressionFacts } from "../runtime-facts/permission-policy-facts";
+import { buildPolicyIdRenderRequest } from "./renderers";
 import type { RuntimePermissionDecision } from "./types";
 
 export interface SelectPermissionSuppressionInput {
@@ -22,9 +23,9 @@ export function selectPermissionSuppressionPolicy(
     reasonCode: "read_only_permission_query",
     forceToolChoice: "none",
     consumesRound: true,
-    render: {
-      kind: "permission_repair_prompt",
-      payload: { policyId: "read_only_permission_query" },
-    },
+    render: buildPolicyIdRenderRequest(
+      "permission_repair_prompt",
+      "read_only_permission_query",
+    ),
   };
 }

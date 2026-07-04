@@ -18,6 +18,9 @@ Stage 8 now has a producer-owned compatibility boundary instead of an active
   continuation, closeout, and permission-suppression booleans through the same
   fact builders and `runtime-policy/*-core.ts` selectors used by the engine
   path.
+- `runtime-policy/renderers.ts` centralizes typed render-request construction,
+  keeping policy cores on policy selection data instead of prompt/text-view
+  assembly.
 - `inline-policy-compat.ts` was deleted. Active inline/engine policy code no
   longer imports `tool-loop-shared.ts` or `readLegacy*` shims.
 - `legacy-trace-importer.ts` and `legacyImporterOnly` detector metadata make the
