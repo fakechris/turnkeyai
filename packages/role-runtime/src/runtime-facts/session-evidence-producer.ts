@@ -89,11 +89,13 @@ function collectCompletedSessions(
       if (!historyEvidence) continue;
       const identity = readSessionHistoryIdentity(result.content);
       facts.push({
+        toolName: result.toolName,
         sessionKey: identity.sessionKey,
         agentId: identity.agentId,
         finalContents: [historyEvidence],
         streamLabel: null,
         browserRecoverySummary: null,
+        browserRecoverySummaries: [],
       });
       continue;
     }
@@ -105,12 +107,15 @@ function collectCompletedSessions(
     if (!finalContent) {
       continue;
     }
+    const browserRecoverySummaries = readBrowserRecoveryFromParsedSession(parsed);
     facts.push({
+      toolName: result.toolName,
       sessionKey: parsed.session_key,
       agentId: parsed.agent_id,
       finalContents: [finalContent],
       streamLabel: parsed.parent_session_key ? null : parsed.label ?? null,
-      browserRecoverySummary: readBrowserRecoveryFromParsedSession(parsed),
+      browserRecoverySummary: browserRecoverySummaries.join("\n\n") || null,
+      browserRecoverySummaries,
     });
   }
   return facts;
@@ -132,6 +137,7 @@ function collectTimeoutSignals(
       continue;
     }
     facts.push({
+      toolName: result.toolName,
       sessionKey: parsed.session_key,
       agentId: parsed.agent_id,
       seconds:
@@ -149,7 +155,7 @@ function collectTimeoutSignals(
 
 function readBrowserRecoveryFromParsedSession(
   parsed: NonNullable<ReturnType<typeof parseSessionToolResult>>,
-): string | null {
+): string[] {
   const summaries: string[] = [];
   const payload = parsed.payload;
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
@@ -164,7 +170,7 @@ function readBrowserRecoveryFromParsedSession(
     ),
   );
   if (inlineSummary) summaries.push(inlineSummary);
-  return dedupeStrings(summaries).join("\n\n") || null;
+  return dedupeStrings(summaries);
 }
 
 function readSessionHistoryIdentity(content: string): {

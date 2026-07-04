@@ -58,14 +58,17 @@ export interface TaskIntentFacts {
 }
 
 export interface CompletedSessionFact {
+  toolName: string | null;
   sessionKey: string | null;
   agentId: string | null;
   finalContents: string[];
   streamLabel: string | null;
   browserRecoverySummary: string | null;
+  browserRecoverySummaries: string[];
 }
 
 export interface TimeoutSignalFact {
+  toolName: string | null;
   sessionKey: string | null;
   agentId: string | null;
   seconds: number | null;

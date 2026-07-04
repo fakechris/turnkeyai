@@ -15,22 +15,24 @@
 // contract before the producer rewrite.
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
+import {
+  buildRuntimeFactBundle,
+  buildRuntimeRoundFactBundle,
+  type RuntimeFactEnvelope,
+} from "../runtime-facts/runtime-fact-bundle";
+import type {
+  FinalSynthesisTextViews,
+  PermissionEvidenceFacts as RuntimePermissionEvidenceFacts,
+  PermissionStatus,
+  RuntimePolicySnapshot,
+  RuntimeRoundFinalTextViews,
+  RuntimeRoundPolicySnapshot,
+  CompletedSessionFact,
+  TimeoutSignalFact,
+} from "../runtime-facts/types";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RoleToolExecutionResult } from "../tool-use";
 import {
-  collectApprovalWaitTimeoutRuntimeEvidence,
-  collectCompletedSessionEvidenceText,
-  collectSourceBoundedEvidenceText,
-  hasPermissionAppliedEvidence,
-  latestPermissionResultStatus,
-  latestPermissionToolName,
-} from "../tool-loop-shared";
-import {
-  collectCompletedSessionEvidenceFacts,
-  collectSubAgentTimeoutFacts,
-  collectToolResultContentText,
-  collectToolTraceResultContent,
-  hasUsableEvidence,
   type CompletedSessionEvidenceSummary,
   type CompletedSessionEvidenceFact,
   type TimeoutEvidenceFact,
@@ -57,23 +59,14 @@ export interface EvidenceSnapshot {
   approvalWaitTimeoutRuntimeEvidence: string;
   permission: PermissionEvidenceFacts;
   usableEvidence: boolean;
+  envelopes?: readonly RuntimeFactEnvelope[];
+  policy?: RuntimePolicySnapshot;
+  finalText?: FinalSynthesisTextViews;
 }
 
-export type PermissionStatus =
-  | "none"
-  | "pending"
-  | "applied"
-  | "denied"
-  | "wait_timeout";
+export type { PermissionStatus };
 
-export interface PermissionEvidenceFacts {
-  latestStatus: PermissionStatus;
-  latestToolName: string | null;
-  latestResultStatus: string | null;
-  pendingApproval: boolean;
-  appliedApproval: boolean;
-  deniedApproval: boolean;
-  waitTimeout: boolean;
+export interface PermissionEvidenceFacts extends RuntimePermissionEvidenceFacts {
   runtimeEvidenceText: string;
 }
 
@@ -84,6 +77,9 @@ export interface EvidenceRoundSnapshot {
   completedSessionFinalContents: readonly string[] | null;
   timeoutSignal: TimeoutEvidenceFact | null;
   timeoutSignals: readonly TimeoutEvidenceFact[];
+  envelopes?: readonly RuntimeFactEnvelope[];
+  policy?: RuntimeRoundPolicySnapshot;
+  finalText?: RuntimeRoundFinalTextViews;
 }
 
 export interface EvidenceRunSnapshotter {
@@ -111,14 +107,18 @@ export class EvidenceLedger {
     results: RoleToolExecutionResult[],
   ): CompletedSessionEvidenceSummary | null {
     return summarizeCompletedSessionFacts(
-      collectCompletedSessionEvidenceFacts(results),
+      buildRuntimeRoundFactBundle({ results }).policy.session.completedSessions.map(
+        toCompletedSessionEvidenceFact,
+      ),
     );
   }
 
   subAgentToolTimeout(
     results: RoleToolExecutionResult[],
   ): TimeoutEvidenceFact | null {
-    return collectSubAgentTimeoutFacts(results)[0] ?? null;
+    const timeout = buildRuntimeRoundFactBundle({ results }).policy.session
+      .timeoutSignal;
+    return timeout ? toTimeoutEvidenceFact(timeout) : null;
   }
 }
 
@@ -129,34 +129,24 @@ export function createEvidenceLedger(): EvidenceLedger {
 export function buildEvidenceSnapshot(
   input: EvidenceLedgerInput,
 ): EvidenceSnapshot {
-  const sourceBoundedEvidenceText = collectSourceBoundedEvidenceText({
-    taskPrompt: input.taskPrompt,
-    messages: input.messages,
-    toolTrace: input.toolTrace,
-  });
-  const completedSessionEvidenceText = collectCompletedSessionEvidenceText(
-    input.toolTrace,
+  const bundle = buildRuntimeFactBundle(input);
+  const { finalText } = bundle;
+  const permission = buildPermissionEvidenceFacts(
+    bundle.policy.permission,
+    finalText.approvalWaitTimeoutRuntimeEvidence,
   );
-  const toolTraceResultContent = collectToolTraceResultContent(input.toolTrace);
-  const approvalWaitTimeoutRuntimeEvidence =
-    collectApprovalWaitTimeoutRuntimeEvidence(input.toolTrace);
-  const permission = buildPermissionEvidenceFacts({
-    toolTrace: input.toolTrace,
-    runtimeEvidenceText: approvalWaitTimeoutRuntimeEvidence,
-  });
   return {
-    sourceBoundedEvidenceText,
-    completedSessionEvidenceText,
-    toolTraceResultContent,
-    approvalWaitTimeoutRuntimeEvidence,
+    sourceBoundedEvidenceText: finalText.sourceBoundedEvidenceText,
+    completedSessionEvidenceText: finalText.completedSessionEvidenceText,
+    toolTraceResultContent: finalText.toolTraceResultContent,
+    approvalWaitTimeoutRuntimeEvidence:
+      finalText.approvalWaitTimeoutRuntimeEvidence,
     permission,
-    usableEvidence: hasUsableEvidence(input.toolTrace),
-    naturalFinishEvidenceText: [
-      sourceBoundedEvidenceText,
-      completedSessionEvidenceText,
-    ]
-      .filter((text) => text.trim().length > 0)
-      .join("\n\n"),
+    usableEvidence: bundle.policy.usable.usableEvidence,
+    naturalFinishEvidenceText: finalText.naturalFinishEvidenceText,
+    envelopes: bundle.envelopes,
+    policy: bundle.policy,
+    finalText,
   };
 }
 
@@ -176,67 +166,38 @@ export function buildEvidenceRunSnapshotter(
 export function buildToolResultContentText(
   results: RoleToolExecutionResult[],
 ): string {
-  return collectToolResultContentText(results);
+  return buildRuntimeRoundFactBundle({ results }).finalText.toolResultContentText;
 }
 
-export function buildPermissionEvidenceFacts(input: {
-  toolTrace: NativeToolRoundTrace[];
-  runtimeEvidenceText: string;
-}): PermissionEvidenceFacts {
-  const latestToolName = latestPermissionToolName(input.toolTrace);
-  const latestResultStatus = latestPermissionResultStatus(input.toolTrace);
-  const resultWaitTimeout =
-    latestResultStatus === "approval_wait_timeout" ||
-    latestResultStatus === "wait_timeout";
-  const runtimeWaitTimeout = input.runtimeEvidenceText
-    .toLowerCase()
-    .includes("approval_wait_timeout");
-  const waitTimeout =
-    resultWaitTimeout || latestResultStatus === "pending" || runtimeWaitTimeout;
-  const deniedApproval = latestResultStatus === "denied";
-  const appliedApproval =
-    latestResultStatus === "applied" ||
-    latestToolName === "permission_applied" ||
-    hasPermissionAppliedEvidence(input.toolTrace);
-  const pendingApproval =
-    waitTimeout ||
-    latestResultStatus === "pending" ||
-    latestToolName === "permission_query";
-  const latestStatus: PermissionStatus =
-    resultWaitTimeout || runtimeWaitTimeout
-      ? "wait_timeout"
-      : deniedApproval
-        ? "denied"
-        : appliedApproval
-          ? "applied"
-          : pendingApproval
-            ? "pending"
-            : "none";
+export function buildPermissionEvidenceFacts(
+  facts: RuntimePermissionEvidenceFacts,
+  runtimeEvidenceText: string,
+): PermissionEvidenceFacts {
   return {
-    latestStatus,
-    latestToolName,
-    latestResultStatus,
-    pendingApproval,
-    appliedApproval,
-    deniedApproval,
-    waitTimeout,
-    runtimeEvidenceText: input.runtimeEvidenceText,
+    ...facts,
+    runtimeEvidenceText,
   };
 }
 
 export function buildEvidenceRoundSnapshot(
   results: RoleToolExecutionResult[],
 ): EvidenceRoundSnapshot {
-  const completedSessions = collectCompletedSessionEvidenceFacts(results);
+  const bundle = buildRuntimeRoundFactBundle({ results });
+  const completedSessions =
+    bundle.policy.session.completedSessions.map(toCompletedSessionEvidenceFact);
   const completedSession = summarizeCompletedSessionFacts(completedSessions);
-  const timeoutSignals = collectSubAgentTimeoutFacts(results);
+  const timeoutSignals =
+    bundle.policy.session.timeoutSignals.map(toTimeoutEvidenceFact);
   return {
-    toolResultContentText: buildToolResultContentText(results),
+    toolResultContentText: bundle.finalText.toolResultContentText,
     completedSession,
     completedSessions,
     completedSessionFinalContents: completedSession?.finalContents ?? null,
     timeoutSignal: timeoutSignals[0] ?? null,
     timeoutSignals,
+    envelopes: bundle.envelopes,
+    policy: bundle.policy,
+    finalText: bundle.finalText,
   };
 }
 
@@ -255,5 +216,27 @@ function summarizeCompletedSessionFacts(
     browserRecoverySummaries: facts.flatMap(
       (fact) => fact.browserRecoverySummaries,
     ),
+  };
+}
+
+function toCompletedSessionEvidenceFact(
+  fact: CompletedSessionFact,
+): CompletedSessionEvidenceFact {
+  return {
+    toolName: fact.toolName ?? "sessions_spawn",
+    ...(fact.sessionKey === null ? {} : { sessionKey: fact.sessionKey }),
+    ...(fact.agentId === null ? {} : { agentId: fact.agentId }),
+    finalContents: fact.finalContents,
+    browserRecoverySummaries: fact.browserRecoverySummaries,
+  };
+}
+
+function toTimeoutEvidenceFact(fact: TimeoutSignalFact): TimeoutEvidenceFact {
+  return {
+    toolName: fact.toolName ?? "sessions_send",
+    sessionKey: fact.sessionKey ?? "",
+    agentId: fact.agentId ?? "",
+    timeoutSeconds: fact.seconds,
+    evidenceAvailable: fact.evidenceAvailable,
   };
 }
