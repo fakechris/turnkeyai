@@ -7,6 +7,8 @@
 import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
+import { produceTaskIntentEnvelope } from "./runtime-facts/task-intent-producer";
+
 export const TASK_FACTS_MODULE = "task-facts" as const;
 
 export interface TaskFactsInput {
@@ -26,25 +28,7 @@ export interface TaskFactsSnapshot {
 }
 
 export function buildTaskFacts(input: TaskFactsInput): TaskFactsSnapshot {
-  const taskAndContext = buildTaskFactTextContext(input);
-  const taskAndContextText = taskAndContext.join("\n");
-  return {
-    requestedTableColumns: resolveRequestedTableColumns(taskAndContext),
-    providerSupportSchemaRequested: taskAndContext.some(
-      explicitlyRequestsProviderSupportSchema,
-    ),
-    browserVisibleEvidenceRequired:
-      taskFactRequiresBrowserVisibleEvidence(taskAndContextText),
-    productSignalDashboardEvidenceRequested:
-      taskFactRequestsProductSignalDashboardEvidence(taskAndContextText),
-    timeoutRecoveryRequested:
-      taskFactRequestsTimeoutRecovery(taskAndContextText),
-    awaitingContextSetupOnly: taskPromptRequestsAwaitingContextSetup(
-      input.taskPrompt,
-    ),
-    requiredIndependentEvidenceStreams:
-      inferTaskFactIndependentEvidenceStreamCount(input.taskPrompt),
-  };
+  return produceTaskIntentEnvelope(input).facts;
 }
 
 export function resolveRequestedTableColumns(texts: string[]): string[] {
