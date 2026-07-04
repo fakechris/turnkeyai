@@ -96,7 +96,7 @@ test("CompletedCloseoutController repairs completed-only synthesis and cleans up
     ],
     completedEvidenceText:
       "The delegated session verified the plan is $10 per month.",
-    completedSessionEvidenceText:
+    delegatedEvidenceText:
       "The delegated session verified the plan is $10 per month.",
     initialResult: textResult("The plan is verified at $10 per month."),
     repairPolicy: createRepairPolicyRegistry(),
@@ -151,7 +151,7 @@ test("CompletedCloseoutController re-arms through registry before round>0 table 
     ],
     completedEvidenceText:
       "Provider A pricing was verified from https://a.example.",
-    completedSessionEvidenceText:
+    delegatedEvidenceText:
       "Provider A pricing was verified from https://a.example.",
     initialResult: textResult(
       ["| provider | evidence URL |", "| --- | --- |", "| A | https://a.example |"].join(

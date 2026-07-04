@@ -10,8 +10,9 @@ import {
   buildReadOnlyPermissionQuerySuppressionPrompt,
   enforceMissingApprovalGateRepairToolCalls,
   normalizeApprovalGatedBrowserSpawnCalls,
-  shouldSuppressReadOnlyPermissionQueryToolCalls,
 } from "../tool-loop-shared";
+import { buildPermissionSuppressionFacts } from "../runtime-facts/permission-policy-facts";
+import { selectPermissionSuppressionPolicy } from "../runtime-policy/permission-policy-core";
 import type { EngineSuppressDecision } from "./types";
 
 // Stage 8 engine cleanup — PermissionPolicy.
@@ -102,7 +103,10 @@ export function buildPermissionSuppressInput(
 function suppressReadOnlyPermissionQuery(
   input: PermissionSuppressInput,
 ): EngineSuppressDecision {
-  if (!shouldSuppressReadOnlyPermissionQueryToolCalls(input.calls, input)) {
+  const decision = selectPermissionSuppressionPolicy({
+    facts: buildPermissionSuppressionFacts(input),
+  });
+  if (decision.kind !== "suppress") {
     return { kind: "none" };
   }
   return {
@@ -195,6 +199,10 @@ const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
   },
 
   wouldSuppressReadOnlyPermissionQuery(input) {
-    return shouldSuppressReadOnlyPermissionQueryToolCalls(input.calls, input);
+    return (
+      selectPermissionSuppressionPolicy({
+        facts: buildPermissionSuppressionFacts(input),
+      }).kind === "suppress"
+    );
   },
 };

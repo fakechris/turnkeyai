@@ -1324,7 +1324,7 @@ test("RepairPolicyRegistry returns timeout follow-up final guidance repair decis
   const decision = registry.evaluateCompletedSynthesis({
     completedEvidenceText:
       "The slow source recovered after an earlier timeout and returned owner Release Captain.",
-    completedSessionEvidenceText:
+    delegatedEvidenceText:
       "The slow source recovered after an earlier timeout and returned owner Release Captain.",
     completedSessionFinalContents: [],
     enabledPolicies: ["timeout_followup_final_guidance"],
@@ -1354,7 +1354,7 @@ test("RepairPolicyRegistry does not repeat timeout follow-up final guidance repa
   const input = {
     completedEvidenceText:
       "The slow source recovered after an earlier timeout and returned owner Release Captain.",
-    completedSessionEvidenceText:
+    delegatedEvidenceText:
       "The slow source recovered after an earlier timeout and returned owner Release Captain.",
     completedSessionFinalContents: [],
     enabledPolicies: ["timeout_followup_final_guidance"] as const,
@@ -1385,7 +1385,7 @@ test("RepairPolicyRegistry returns missing requested next action completed repai
 
   const decision = registry.evaluateCompletedSynthesis({
     completedEvidenceText: "The delegated session verified the plan price.",
-    completedSessionEvidenceText:
+    delegatedEvidenceText:
       "The delegated session verified the plan price.",
     completedSessionFinalContents: [],
     enabledPolicies: ["missing_requested_next_action"],
@@ -1411,7 +1411,7 @@ test("RepairPolicyRegistry returns missing required final deliverables completed
 
   const decision = registry.evaluateCompletedSynthesis({
     completedEvidenceText: "Vendor A is cheaper; Vendor B has stronger risk controls.",
-    completedSessionEvidenceText:
+    delegatedEvidenceText:
       "Vendor A is cheaper; Vendor B has stronger risk controls.",
     completedSessionFinalContents: [],
     enabledPolicies: ["missing_required_final_deliverables"],
@@ -1440,7 +1440,7 @@ test("RepairPolicyRegistry returns missing browser evidence dimensions completed
   const decision = registry.evaluateCompletedSynthesis({
     completedEvidenceText:
       "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
-    completedSessionEvidenceText:
+    delegatedEvidenceText:
       "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
     completedSessionFinalContents: [
       "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
@@ -1473,7 +1473,7 @@ test("RepairPolicyRegistry returns false evidence blocked completed repair decis
   const decision = registry.evaluateCompletedSynthesis({
     completedEvidenceText:
       "Completed source evidence: owner Release Captain and plan price $10 were observed.",
-    completedSessionEvidenceText:
+    delegatedEvidenceText:
       "Completed source evidence: owner Release Captain and plan price $10 were observed.",
     completedSessionFinalContents: [
       "Completed source evidence: owner Release Captain and plan price $10 were observed.",

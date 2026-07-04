@@ -476,7 +476,7 @@ export interface TerminalCloseoutCompletionInput<
 }
 
 export interface TerminalCompletedCloseoutEvidence {
-  toolResultContentText(results: ToolResult[]): string;
+  roundEvidenceText(results: ToolResult[]): string;
 }
 
 export interface TerminalCompletedCloseoutSynthesizer<
@@ -1284,7 +1284,7 @@ export class TerminalCloseoutController {
           messages: input.messages,
           repairMarkers: closeout.repairMarkers,
           completedSession,
-          completedSessionToolResultText: closeout.evidence.toolResultContentText(
+          completedSessionToolResultText: closeout.evidence.roundEvidenceText(
             closeout.completedSessionToolResults ?? [],
           ),
           initialSynthesis,

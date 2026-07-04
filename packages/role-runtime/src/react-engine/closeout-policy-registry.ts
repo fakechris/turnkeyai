@@ -18,9 +18,10 @@ import {
   findRepeatedSessionInspectionCall,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldCloseoutCancelledSessionWithoutContinuation,
-  shouldRepairFinalRecoveryBudgetCloseout,
   sliceUtf8,
 } from "../tool-loop-shared";
+import { buildRecoveryToolBudgetCloseoutFacts } from "../runtime-facts/closeout-policy-facts";
+import { selectRecoveryToolBudgetCloseoutPolicy } from "../runtime-policy/closeout-policy-core";
 import { findRepeatedFailedToolCall } from "../react/predicates";
 import {
   countNativeToolCalls,
@@ -174,7 +175,7 @@ export interface PendingCallsCloseoutInput {
   roundCount: number;
   evidenceAvailable: boolean;
   recoveryToolBudget: RecoveryToolBudgetSignal | null;
-  shouldSuppressReadOnlyPermissionQuery(): boolean;
+  readOnlyPermissionQuerySuppressed(): boolean;
   previewEmptyRoundContinuation(): LLMToolCall | null;
   buildRecoveryToolBudgetCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
   buildWallClockBudgetCloseoutSignal(
@@ -267,7 +268,7 @@ export interface TerminateCloseoutInput {
 
 export interface TerminateCloseoutEvidenceSnapshot {
   usableEvidence: boolean;
-  approvalWaitTimeoutRuntimeEvidence: string;
+  approvalEvidenceText: string;
   permission: PermissionEvidenceFacts;
 }
 
@@ -523,14 +524,16 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
     if (!budget || input.usedToolCalls < budget.maxToolCalls) {
       return null;
     }
-    if (
-      input.pendingToolCallCount === 0 &&
-      shouldRepairFinalRecoveryBudgetCloseout({
+    const decision = selectRecoveryToolBudgetCloseoutPolicy({
+      budgetExceeded: true,
+      facts: buildRecoveryToolBudgetCloseoutFacts({
+        pendingToolCallCount: input.pendingToolCallCount,
         messages: input.messages,
         repairMarkers: input.repairMarkers,
         resultText: input.resultText,
-      })
-    ) {
+      }),
+    });
+    if (decision.kind === "defer") {
       return {
         kind: "defer",
         policyId: "recovery_tool_budget",
@@ -753,7 +756,7 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
     input: PendingCallsCloseoutInput,
     target: PendingCloseoutApplicationTarget,
   ): EngineCloseoutReason | null {
-    if (input.shouldSuppressReadOnlyPermissionQuery()) {
+    if (input.readOnlyPermissionQuerySuppressed()) {
       return null;
     }
 
@@ -829,7 +832,7 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         roundCount,
         evidenceAvailable: evidence.usableEvidence,
         recoveryToolBudget: input.recoveryToolBudget,
-        shouldSuppressReadOnlyPermissionQuery: () =>
+        readOnlyPermissionQuerySuppressed: () =>
           input.permissionPolicy.wouldSuppressReadOnlyPermissionQuery({
             calls: input.pendingCalls,
             taskPrompt: input.taskPrompt,
@@ -1152,7 +1155,7 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
       approvalWaitTimeoutFallback: {
         toolCallCount: usedToolCalls,
         roundCount,
-        evidenceText: terminateEvidence.permission.runtimeEvidenceText,
+        evidenceText: terminateEvidence.approvalEvidenceText,
       },
     };
   }

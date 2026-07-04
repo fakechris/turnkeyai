@@ -25,32 +25,18 @@ import {
   buildStalePendingApprovalRepairPrompt,
   buildTimeoutFollowupFinalGuidanceRepairPrompt,
   buildWeakEvidenceSynthesisRepairPrompt,
-  findMissingRequiredFinalDeliverables,
-  hasMissingRequiredFinalDeliverablesRepairPrompt,
-  shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
-  shouldRepairApprovalWaitTimeoutCloseout,
-  shouldRepairFalseEvidenceBlockedSynthesis,
-  shouldRepairFinalRecoveryBudgetCloseout,
-  shouldRepairIncompleteApprovedBrowserAction,
-  shouldRepairMissingBrowserEvidence,
-  shouldRepairMissingBrowserEvidenceDimensions,
-  shouldRepairMissingApprovalGate,
-  shouldRepairMissingProductSignalBrowserEvidence,
-  shouldRepairMissingRequestedNextAction,
-  shouldRepairPendingApprovalWaitTimeoutCheck,
-  shouldRepairPrematurePendingApprovalFinal,
-  shouldRepairSourceEvidenceCarryForward,
-  shouldRepairStaleDeniedApproval,
-  shouldRepairStalePendingApproval,
-  shouldRepairTimeoutFollowupFinalGuidance,
-  shouldRepairWeakEvidenceSynthesis,
-  mentionsPendingApproval,
-  requestsApprovalGatedBrowserAction,
-  taskPromptAllowsStoppingAtPendingApproval,
-  taskPromptIsAppliedApprovalBrowserContinuation,
-  taskPromptRequestsApprovalWaitTimeoutCloseout,
-  taskPromptSaysApprovalAlreadyApplied,
 } from "../tool-loop-shared";
+import {
+  buildCompletedSynthesisRepairPolicyFacts,
+  buildNaturalFinishRepairPolicyFacts,
+  type CompletedSynthesisRepairPolicyFacts,
+  type NaturalFinishRepairPolicyFacts,
+} from "../runtime-facts/repair-policy-facts";
+import {
+  selectCompletedSynthesisRepairPolicy,
+  selectNaturalFinishRepairPolicy,
+} from "../runtime-policy/repair-policy-core";
+import type { RuntimeRepairDecision } from "../runtime-policy/types";
 import {
   countNativeToolCalls,
   type NativeToolRoundTrace,
@@ -144,7 +130,7 @@ export interface NaturalFinishRepairHookInput {
 
 export interface CompletedSynthesisRepairInput {
   completedEvidenceText: string;
-  completedSessionEvidenceText: string;
+  delegatedEvidenceText: string;
   completedSessionFinalContents: readonly string[];
   enabledPolicies?: readonly EngineCompletedSynthesisRepairPolicyId[];
   messages: LLMMessage[];
@@ -425,887 +411,253 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
   evaluateNaturalFinish(
     input: NaturalFinishRepairInput,
   ): NaturalFinishRepairDecision | null {
-    for (const policyId of ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER) {
-      if (!isPolicyEnabled(input, policyId)) {
-        continue;
-      }
-      switch (policyId) {
-        case "final_recovery_budget_closeout_repair": {
-          const decision = evaluateFinalRecoveryBudgetCloseoutRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "missing_browser_evidence": {
-          const decision = evaluateMissingBrowserEvidenceRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "missing_product_signal_browser_evidence": {
-          const decision =
-            evaluateMissingProductSignalBrowserEvidenceRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "missing_approval_gate": {
-          const decision = evaluateMissingApprovalGateRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "pending_approval_wait_timeout_check": {
-          const decision =
-            evaluatePendingApprovalWaitTimeoutCheckRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "premature_pending_approval": {
-          const decision = evaluatePrematurePendingApprovalRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "stale_pending_approval": {
-          const decision = evaluateStalePendingApprovalRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "stale_denied_approval": {
-          const decision = evaluateStaleDeniedApprovalRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "approval_wait_timeout_closeout": {
-          const decision = evaluateApprovalWaitTimeoutCloseoutRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "approval_wait_timeout_local_closeout": {
-          const decision =
-            evaluateApprovalWaitTimeoutLocalCloseout(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "incomplete_approved_browser_action": {
-          const decision =
-            evaluateIncompleteApprovedBrowserActionRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "missing_requested_table_columns": {
-          const decision = evaluateMissingRequestedTableColumnsRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "extraneous_provider_table_schema": {
-          const decision = evaluateExtraneousProviderTableSchemaRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "source_evidence_carry_forward": {
-          const decision = evaluateSourceEvidenceCarryForwardRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "weak_evidence_synthesis": {
-          const decision = evaluateWeakEvidenceSynthesisRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-      }
-    }
-    return null;
+    const facts = buildNaturalFinishRepairPolicyFacts(input);
+    return renderNaturalFinishRepairDecision(
+      selectNaturalFinishRepairPolicy({
+        facts,
+        ...(input.enabledPolicies === undefined
+          ? {}
+          : { enabledPolicies: input.enabledPolicies }),
+      }),
+      input,
+      facts,
+    );
   }
 
   evaluateCompletedSynthesis(
     input: CompletedSynthesisRepairInput,
   ): CompletedSynthesisRepairDecision | null {
-    for (const policyId of ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER) {
-      if (!isCompletedPolicyEnabled(input, policyId)) {
-        continue;
-      }
-      switch (policyId) {
-        case "timeout_followup_final_guidance": {
-          const decision = evaluateTimeoutFollowupFinalGuidanceRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "missing_requested_next_action": {
-          const decision = evaluateMissingRequestedNextActionRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "missing_required_final_deliverables": {
-          const decision = evaluateMissingRequiredFinalDeliverablesRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "missing_browser_evidence_dimensions": {
-          const decision =
-            evaluateMissingBrowserEvidenceDimensionsRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-        case "false_evidence_blocked_synthesis": {
-          const decision = evaluateFalseEvidenceBlockedSynthesisRepair(input);
-          if (decision) {
-            return decision;
-          }
-          break;
-        }
-      }
-    }
-    return null;
+    const facts = buildCompletedSynthesisRepairPolicyFacts(input);
+    return renderCompletedSynthesisRepairDecision(
+      selectCompletedSynthesisRepairPolicy({
+        facts,
+        ...(input.enabledPolicies === undefined
+          ? {}
+          : { enabledPolicies: input.enabledPolicies }),
+      }),
+      input,
+      facts,
+    );
   }
 }
 
-function isPolicyEnabled(
+function renderNaturalFinishRepairDecision(
+  decision: RuntimeRepairDecision | null,
   input: NaturalFinishRepairInput,
-  policyId: EngineNaturalFinishRepairPolicyId,
-): boolean {
-  return !input.enabledPolicies || input.enabledPolicies.includes(policyId);
+  facts: NaturalFinishRepairPolicyFacts,
+): NaturalFinishRepairDecision | null {
+  if (!decision) return null;
+  switch (decision.policyId as EngineNaturalFinishRepairPolicyId) {
+    case "final_recovery_budget_closeout_repair":
+      return {
+        kind: "resynthesize",
+        policyId: "final_recovery_budget_closeout_repair",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildFinalRecoveryBudgetCloseoutRepairPrompt(
+          input.finalRecoveryBudget?.maxToolCalls ?? 0,
+        ),
+        forceToolChoice: "none",
+      };
+    case "missing_browser_evidence":
+      return {
+        kind: "force_tool_round",
+        policyId: "missing_browser_evidence",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildMissingBrowserEvidenceRepairPrompt(
+          input.taskPrompt ?? "",
+        ),
+        forceToolChoice: { name: "sessions_spawn" },
+        consumesRound: true,
+      };
+    case "missing_product_signal_browser_evidence":
+      return {
+        kind: "force_tool_round",
+        policyId: "missing_product_signal_browser_evidence",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildMissingProductSignalBrowserEvidenceRepairPrompt(
+          input.taskPrompt ?? "",
+        ),
+        forceToolChoice: { name: "sessions_spawn" },
+        consumesRound: true,
+      };
+    case "missing_approval_gate":
+      return {
+        kind: "force_tool_round",
+        policyId: "missing_approval_gate",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildMissingApprovalGateRepairPrompt(),
+        forceToolChoice: { name: "permission_query" },
+        consumesRound: true,
+      };
+    case "pending_approval_wait_timeout_check":
+      return {
+        kind: "force_tool_round",
+        policyId: "pending_approval_wait_timeout_check",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
+        forceToolChoice: { name: "permission_result" },
+        consumesRound: true,
+      };
+    case "premature_pending_approval":
+      return {
+        kind: "force_tool_round",
+        policyId: "premature_pending_approval",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildPrematurePendingApprovalRepairPrompt(),
+        forceToolChoice: { name: "permission_result" },
+        consumesRound: true,
+      };
+    case "stale_pending_approval":
+      return {
+        kind: "force_tool_round",
+        policyId: "stale_pending_approval",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildStalePendingApprovalRepairPrompt(),
+        forceToolChoice: { name: "sessions_spawn" },
+        consumesRound: true,
+      };
+    case "stale_denied_approval":
+      return {
+        kind: "resynthesize",
+        policyId: "stale_denied_approval",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildStaleDeniedApprovalRepairPrompt(),
+        forceToolChoice: "none",
+      };
+    case "approval_wait_timeout_closeout":
+      return {
+        kind: "resynthesize",
+        policyId: "approval_wait_timeout_closeout",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildApprovalWaitTimeoutCloseoutRepairPrompt(),
+        forceToolChoice: "none",
+      };
+    case "approval_wait_timeout_local_closeout":
+      return {
+        kind: "closeout",
+        policyId: "approval_wait_timeout_local_closeout",
+        evidenceFormula: "candidate_final",
+        closeoutReason: "tool_evidence_fallback",
+      };
+    case "incomplete_approved_browser_action":
+      return {
+        kind: "force_tool_round",
+        policyId: "incomplete_approved_browser_action",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildIncompleteApprovedBrowserActionRepairPrompt(),
+        forceToolChoice: { name: "sessions_spawn" },
+        consumesRound: true,
+      };
+    case "missing_requested_table_columns":
+      return {
+        kind: "resynthesize",
+        policyId: "missing_requested_table_columns",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildMissingRequestedTableColumnsRepairPrompt({
+          activation: input.activation,
+          taskPrompt: input.taskPrompt ?? "",
+          messages: input.messages,
+          resultText: input.resultText,
+        }),
+        forceToolChoice: "none",
+      };
+    case "extraneous_provider_table_schema":
+      return {
+        kind: "resynthesize",
+        policyId: "extraneous_provider_table_schema",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildExtraneousProviderTableSchemaRepairPrompt({
+          taskPrompt: input.taskPrompt ?? "",
+          resultText: input.resultText,
+        }),
+        forceToolChoice: "none",
+      };
+    case "source_evidence_carry_forward":
+      return {
+        kind: "resynthesize",
+        policyId: "source_evidence_carry_forward",
+        evidenceFormula: "source_bounded_evidence",
+        repairPrompt: buildSourceEvidenceCarryForwardRepairPrompt({
+          taskPrompt: input.taskPrompt ?? "",
+          resultText: input.resultText,
+          evidenceText: facts.sourceEvidenceText,
+        }),
+        forceToolChoice: "none",
+      };
+    case "weak_evidence_synthesis":
+      return {
+        kind: "resynthesize",
+        policyId: "weak_evidence_synthesis",
+        evidenceFormula: "source_bounded_evidence",
+        repairPrompt: buildWeakEvidenceSynthesisRepairPrompt(),
+        forceToolChoice: "none",
+      };
+  }
 }
 
-function isCompletedPolicyEnabled(
+function renderCompletedSynthesisRepairDecision(
+  decision: RuntimeRepairDecision | null,
   input: CompletedSynthesisRepairInput,
-  policyId: EngineCompletedSynthesisRepairPolicyId,
-): boolean {
-  return !input.enabledPolicies || input.enabledPolicies.includes(policyId);
-}
-
-function evaluateFinalRecoveryBudgetCloseoutRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  const budget = input.finalRecoveryBudget;
-  if (!budget || budget.usedToolCalls < budget.maxToolCalls) {
-    return null;
-  }
-  if (
-    !shouldRepairFinalRecoveryBudgetCloseout({
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      resultText: input.resultText,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "final_recovery_budget_closeout_repair",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildFinalRecoveryBudgetCloseoutRepairPrompt(
-      budget.maxToolCalls,
-    ),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateMissingApprovalGateRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (
-    !shouldRepairMissingApprovalGate({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-      ...(input.tools === undefined ? {} : { tools: input.tools }),
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "force_tool_round",
-    policyId: "missing_approval_gate",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildMissingApprovalGateRepairPrompt(),
-    forceToolChoice: { name: "permission_query" },
-    consumesRound: true,
-  };
-}
-
-function evaluateMissingBrowserEvidenceRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (input.taskFacts && !input.taskFacts.browserVisibleEvidenceRequired) {
-    return null;
-  }
-  if (
-    !shouldRepairMissingBrowserEvidence({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-      ...(input.tools === undefined ? {} : { tools: input.tools }),
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "force_tool_round",
-    policyId: "missing_browser_evidence",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildMissingBrowserEvidenceRepairPrompt(input.taskPrompt),
-    forceToolChoice: { name: "sessions_spawn" },
-    consumesRound: true,
-  };
-}
-
-function evaluateMissingProductSignalBrowserEvidenceRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (
-    input.taskFacts &&
-    !input.taskFacts.productSignalDashboardEvidenceRequested
-  ) {
-    return null;
-  }
-  if (
-    !shouldRepairMissingProductSignalBrowserEvidence({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-      ...(input.tools === undefined ? {} : { tools: input.tools }),
-      ...(input.evidenceText === undefined
-        ? {}
-        : { evidenceText: input.evidenceText }),
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "force_tool_round",
-    policyId: "missing_product_signal_browser_evidence",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildMissingProductSignalBrowserEvidenceRepairPrompt(
-      input.taskPrompt,
-    ),
-    forceToolChoice: { name: "sessions_spawn" },
-    consumesRound: true,
-  };
-}
-
-function evaluatePendingApprovalWaitTimeoutCheckRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (input.permissionFacts) {
-    if (
-      hasNaturalFinishRepairMarker(
-        input.repairMarkers,
-        "Runtime correction: approval decision has not arrived",
-      ) ||
-      !taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) ||
-      input.permissionFacts.latestToolName !== "permission_query"
-    ) {
-      return null;
-    }
-    return {
-      kind: "force_tool_round",
-      policyId: "pending_approval_wait_timeout_check",
-      evidenceFormula: "candidate_final",
-      repairPrompt: buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
-      forceToolChoice: { name: "permission_result" },
-      consumesRound: true,
-    };
-  }
-  if (
-    !shouldRepairPendingApprovalWaitTimeoutCheck({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "force_tool_round",
-    policyId: "pending_approval_wait_timeout_check",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
-    forceToolChoice: { name: "permission_result" },
-    consumesRound: true,
-  };
-}
-
-function evaluatePrematurePendingApprovalRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (input.permissionFacts) {
-    if (
-      hasNaturalFinishRepairMarker(
-        input.repairMarkers,
-        "Runtime correction: approval-gated browser action is still pending",
-      ) ||
-      !mentionsPendingApproval(input.resultText) ||
-      !requestsApprovalGatedBrowserAction(input.taskPrompt) ||
-      taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) ||
-      taskPromptAllowsStoppingAtPendingApproval(input.taskPrompt) ||
-      input.permissionFacts.appliedApproval ||
-      taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
-      hasSessionToolEvidence(input.toolTrace) ||
-      !(
-        input.permissionFacts.latestToolName === "permission_query" ||
-        input.permissionFacts.latestResultStatus === "pending"
-      )
-    ) {
-      return null;
-    }
-    return {
-      kind: "force_tool_round",
-      policyId: "premature_pending_approval",
-      evidenceFormula: "candidate_final",
-      repairPrompt: buildPrematurePendingApprovalRepairPrompt(),
-      forceToolChoice: { name: "permission_result" },
-      consumesRound: true,
-    };
-  }
-  if (
-    !shouldRepairPrematurePendingApprovalFinal({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "force_tool_round",
-    policyId: "premature_pending_approval",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildPrematurePendingApprovalRepairPrompt(),
-    forceToolChoice: { name: "permission_result" },
-    consumesRound: true,
-  };
-}
-
-function evaluateStalePendingApprovalRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (input.permissionFacts) {
-    if (
-      hasNaturalFinishRepairMarker(
-        input.repairMarkers,
-        "Runtime correction: approval already applied",
-      ) ||
-      !mentionsPendingApproval(input.resultText) ||
-      (!requestsApprovalGatedBrowserAction(input.taskPrompt) &&
-        !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)) ||
-      !(
-        input.permissionFacts.appliedApproval ||
-        taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
-        taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
-      )
-    ) {
-      return null;
-    }
-    return {
-      kind: "force_tool_round",
-      policyId: "stale_pending_approval",
-      evidenceFormula: "candidate_final",
-      repairPrompt: buildStalePendingApprovalRepairPrompt(),
-      forceToolChoice: { name: "sessions_spawn" },
-      consumesRound: true,
-    };
-  }
-  if (
-    !shouldRepairStalePendingApproval({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "force_tool_round",
-    policyId: "stale_pending_approval",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildStalePendingApprovalRepairPrompt(),
-    forceToolChoice: { name: "sessions_spawn" },
-    consumesRound: true,
-  };
-}
-
-function evaluateStaleDeniedApprovalRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (input.permissionFacts) {
-    if (
-      hasNaturalFinishRepairMarker(
-        input.repairMarkers,
-        "Runtime correction: approval was denied",
-      ) ||
-      !mentionsPendingApproval(input.resultText) ||
-      !requestsApprovalGatedBrowserAction(input.taskPrompt) ||
-      !input.permissionFacts.deniedApproval
-    ) {
-      return null;
-    }
-    return {
-      kind: "resynthesize",
-      policyId: "stale_denied_approval",
-      evidenceFormula: "candidate_final",
-      repairPrompt: buildStaleDeniedApprovalRepairPrompt(),
-      forceToolChoice: "none",
-    };
-  }
-  if (
-    !shouldRepairStaleDeniedApproval({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "stale_denied_approval",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildStaleDeniedApprovalRepairPrompt(),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateApprovalWaitTimeoutCloseoutRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (input.permissionFacts && !input.permissionFacts.waitTimeout) {
-    return null;
-  }
-  if (
-    !shouldRepairApprovalWaitTimeoutCloseout({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "approval_wait_timeout_closeout",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildApprovalWaitTimeoutCloseoutRepairPrompt(),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateApprovalWaitTimeoutLocalCloseout(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (input.permissionFacts && !input.permissionFacts.waitTimeout) {
-    return null;
-  }
-  if (
-    !shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "closeout",
-    policyId: "approval_wait_timeout_local_closeout",
-    evidenceFormula: "candidate_final",
-    closeoutReason: "tool_evidence_fallback",
-  };
-}
-
-function hasNaturalFinishRepairMarker(
-  messages: readonly LLMMessage[],
-  marker: string,
-): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "user" &&
-      typeof message.content === "string" &&
-      message.content.includes(marker),
-  );
-}
-
-function hasSessionToolEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
-  return toolTrace.some(
-    (round) =>
-      round.calls.some(
-        (call) => call.name === "sessions_spawn" || call.name === "sessions_send",
-      ) ||
-      round.results.some(
-        (result) =>
-          result.toolName === "sessions_spawn" ||
-          result.toolName === "sessions_send",
-      ),
-  );
-}
-
-function evaluateIncompleteApprovedBrowserActionRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return null;
-  }
-  if (
-    !shouldRepairIncompleteApprovedBrowserAction({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      toolTrace: input.toolTrace,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "force_tool_round",
-    policyId: "incomplete_approved_browser_action",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildIncompleteApprovedBrowserActionRepairPrompt(),
-    forceToolChoice: { name: "sessions_spawn" },
-    consumesRound: true,
-  };
-}
-
-function evaluateMissingRequestedTableColumnsRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (
-    !shouldRepairMissingRequestedTableColumns({
-      activation: input.activation,
-      taskPrompt: input.taskPrompt ?? "",
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      resultText: input.resultText,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "missing_requested_table_columns",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildMissingRequestedTableColumnsRepairPrompt({
-      activation: input.activation,
-      taskPrompt: input.taskPrompt ?? "",
-      messages: input.messages,
-      resultText: input.resultText,
-    }),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateExtraneousProviderTableSchemaRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (
-    !shouldRepairExtraneousProviderTableSchema({
-      activation: input.activation,
-      taskPrompt: input.taskPrompt ?? "",
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      resultText: input.resultText,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "extraneous_provider_table_schema",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildExtraneousProviderTableSchemaRepairPrompt({
-      taskPrompt: input.taskPrompt ?? "",
-      resultText: input.resultText,
-    }),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateSourceEvidenceCarryForwardRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  if (!input.taskPrompt || !input.toolTrace) {
-    if (!input.taskPrompt || !input.evidenceText) {
-      return null;
-    }
-  }
-  const evidenceText =
-    input.evidenceText ?? collectNaturalFinishSourceBoundedEvidenceText(input);
-  if (!evidenceText) {
-    return null;
-  }
-  if (
-    !shouldRepairSourceEvidenceCarryForward({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      evidenceText,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "source_evidence_carry_forward",
-    evidenceFormula: "source_bounded_evidence",
-    repairPrompt: buildSourceEvidenceCarryForwardRepairPrompt({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      evidenceText,
-    }),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateWeakEvidenceSynthesisRepair(
-  input: NaturalFinishRepairInput,
-): NaturalFinishRepairDecision | null {
-  const evidenceText =
-    input.evidenceText ??
-    (input.taskPrompt ? collectNaturalFinishSourceBoundedEvidenceText(input) : "");
-  if (
-    !shouldRepairWeakEvidenceSynthesis({
-      taskPrompt: input.taskPrompt ?? "",
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      evidenceText,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "weak_evidence_synthesis",
-    evidenceFormula: "source_bounded_evidence",
-    repairPrompt: buildWeakEvidenceSynthesisRepairPrompt(),
-    forceToolChoice: "none",
-  };
-}
-
-function collectNaturalFinishSourceBoundedEvidenceText(
-  input: NaturalFinishRepairInput,
-): string {
-  if (!input.taskPrompt || !input.toolTrace) {
-    return "";
-  }
-  return buildEvidenceSnapshot({
-    taskPrompt: input.taskPrompt,
-    messages: input.messages,
-    toolTrace: input.toolTrace,
-  }).naturalFinishEvidenceText;
-}
-
-function evaluateTimeoutFollowupFinalGuidanceRepair(
-  input: CompletedSynthesisRepairInput,
+  facts: CompletedSynthesisRepairPolicyFacts,
 ): CompletedSynthesisRepairDecision | null {
-  if (
-    !shouldRepairTimeoutFollowupFinalGuidance({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      evidenceText: input.completedEvidenceText,
-    })
-  ) {
-    return null;
+  if (!decision) return null;
+  switch (decision.policyId as EngineCompletedSynthesisRepairPolicyId) {
+    case "timeout_followup_final_guidance":
+      return {
+        kind: "resynthesize",
+        policyId: "timeout_followup_final_guidance",
+        evidenceFormula: "completed_product_brief_evidence",
+        repairPrompt: buildTimeoutFollowupFinalGuidanceRepairPrompt({
+          taskPrompt: input.taskPrompt,
+          resultText: input.resultText,
+          evidenceText: input.completedEvidenceText,
+        }),
+        forceToolChoice: "none",
+      };
+    case "missing_requested_next_action":
+      return {
+        kind: "resynthesize",
+        policyId: "missing_requested_next_action",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildMissingRequestedNextActionRepairPrompt(),
+        forceToolChoice: "none",
+      };
+    case "missing_required_final_deliverables":
+      return {
+        kind: "resynthesize",
+        policyId: "missing_required_final_deliverables",
+        evidenceFormula: "completed_session_evidence",
+        repairPrompt: buildMissingRequiredFinalDeliverablesRepairPrompt({
+          taskPrompt: input.taskPrompt,
+          resultText: input.resultText,
+          missing: [...facts.missingRequiredDeliverables],
+          evidenceText: input.delegatedEvidenceText,
+        }),
+        forceToolChoice: "none",
+      };
+    case "missing_browser_evidence_dimensions":
+      return {
+        kind: "resynthesize",
+        policyId: "missing_browser_evidence_dimensions",
+        evidenceFormula: "completed_session_evidence",
+        repairPrompt: buildMissingBrowserEvidenceDimensionsRepairPrompt({
+          taskPrompt: input.taskPrompt,
+          resultText: input.resultText,
+          evidenceText: input.delegatedEvidenceText,
+        }),
+        forceToolChoice: "none",
+      };
+    case "false_evidence_blocked_synthesis":
+      return {
+        kind: "resynthesize",
+        policyId: "false_evidence_blocked_synthesis",
+        evidenceFormula: "completed_session_evidence",
+        repairPrompt: buildFalseEvidenceBlockedSynthesisRepairPrompt(
+          input.completedSessionFinalContents,
+        ),
+        forceToolChoice: "none",
+      };
   }
-  return {
-    kind: "resynthesize",
-    policyId: "timeout_followup_final_guidance",
-    evidenceFormula: "completed_product_brief_evidence",
-    repairPrompt: buildTimeoutFollowupFinalGuidanceRepairPrompt({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      evidenceText: input.completedEvidenceText,
-    }),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateMissingRequestedNextActionRepair(
-  input: CompletedSynthesisRepairInput,
-): CompletedSynthesisRepairDecision | null {
-  if (
-    !shouldRepairMissingRequestedNextAction({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "missing_requested_next_action",
-    evidenceFormula: "candidate_final",
-    repairPrompt: buildMissingRequestedNextActionRepairPrompt(),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateMissingRequiredFinalDeliverablesRepair(
-  input: CompletedSynthesisRepairInput,
-): CompletedSynthesisRepairDecision | null {
-  const missingRequiredDeliverables = findMissingRequiredFinalDeliverables({
-    taskPrompt: input.taskPrompt,
-    resultText: input.resultText,
-  });
-  if (
-    missingRequiredDeliverables.length === 0 ||
-    hasMissingRequiredFinalDeliverablesRepairPrompt(input.repairMarkers)
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "missing_required_final_deliverables",
-    evidenceFormula: "completed_session_evidence",
-    repairPrompt: buildMissingRequiredFinalDeliverablesRepairPrompt({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      missing: missingRequiredDeliverables,
-      evidenceText: input.completedSessionEvidenceText,
-    }),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateMissingBrowserEvidenceDimensionsRepair(
-  input: CompletedSynthesisRepairInput,
-): CompletedSynthesisRepairDecision | null {
-  if (input.completedSessionFinalContents.length === 0) {
-    return null;
-  }
-  if (
-    !shouldRepairMissingBrowserEvidenceDimensions({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      evidenceText: input.completedSessionEvidenceText,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "missing_browser_evidence_dimensions",
-    evidenceFormula: "completed_session_evidence",
-    repairPrompt: buildMissingBrowserEvidenceDimensionsRepairPrompt({
-      taskPrompt: input.taskPrompt,
-      resultText: input.resultText,
-      evidenceText: input.completedSessionEvidenceText,
-    }),
-    forceToolChoice: "none",
-  };
-}
-
-function evaluateFalseEvidenceBlockedSynthesisRepair(
-  input: CompletedSynthesisRepairInput,
-): CompletedSynthesisRepairDecision | null {
-  if (input.completedSessionFinalContents.length === 0) {
-    return null;
-  }
-  if (
-    !shouldRepairFalseEvidenceBlockedSynthesis({
-      resultText: input.resultText,
-      messages: input.messages,
-      repairMarkers: input.repairMarkers,
-      evidenceText: input.completedSessionEvidenceText,
-    })
-  ) {
-    return null;
-  }
-  return {
-    kind: "resynthesize",
-    policyId: "false_evidence_blocked_synthesis",
-    evidenceFormula: "completed_session_evidence",
-    repairPrompt: buildFalseEvidenceBlockedSynthesisRepairPrompt(
-      input.completedSessionFinalContents,
-    ),
-    forceToolChoice: "none",
-  };
 }
 
 export function createRepairPolicyRegistry(): RepairPolicyRegistry {

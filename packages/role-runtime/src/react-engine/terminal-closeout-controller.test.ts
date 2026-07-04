@@ -1718,7 +1718,7 @@ test("TerminalCloseoutController owns completed closeout synthesis callback cons
       completedSession,
       completedSessionToolResults: completedToolResults,
       evidence: {
-        toolResultContentText: (results: typeof completedToolResults) => {
+        roundEvidenceText: (results: typeof completedToolResults) => {
           calls.push("evidence");
           assert.equal(results, completedToolResults);
           return "ledger completed result text";
@@ -1835,7 +1835,7 @@ test("TerminalCloseoutController owns completed terminal hook handoff assembly",
       },
       hookContext,
       evidence: {
-        toolResultContentText: (results: typeof completedToolResults) => {
+        roundEvidenceText: (results: typeof completedToolResults) => {
           calls.push("evidence");
           assert.equal(results, completedToolResults);
           return "ledger completed result text";
@@ -1962,7 +1962,7 @@ test("TerminalCloseoutController owns completed closeout reason and session guar
     },
     baseGatewayInput: baseGatewayInput(),
     evidence: {
-      toolResultContentText: () => {
+      roundEvidenceText: () => {
         throw new Error("completed evidence should not be read");
       },
     },

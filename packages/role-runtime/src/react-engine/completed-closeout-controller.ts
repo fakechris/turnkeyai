@@ -8,7 +8,6 @@ import type {
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
 import {
-  collectBrowserRecoverySummariesFromToolTrace,
   dedupeStrings,
   maybeAppendBrowserFailureBucketVisibility,
   maybeAppendBrowserRecoveryVisibility,
@@ -19,6 +18,7 @@ import {
   shouldAppendTimeoutContinuationVisibility,
   shouldPreserveRecoveredTimeoutCloseout,
 } from "../tool-loop-shared";
+import { readRuntimeBrowserSummariesFromTrace } from "../runtime-facts/browser-recovery-summary-producer";
 import { recordRepairPrompt } from "../task-facts-shared";
 import {
   createRepairPolicyRegistry,
@@ -70,7 +70,7 @@ export interface CompletedCloseoutRepairLoopInput<
   repairMarkers: LLMMessage[];
   completedSessionFinalContents: readonly string[];
   completedEvidenceText: string;
-  completedSessionEvidenceText: string;
+  delegatedEvidenceText: string;
   initialResult: GenerateTextResult;
   initialReduction?: TReduction;
   initialReductionSnapshot?: TReductionSnapshot;
@@ -184,13 +184,13 @@ export class CompletedCloseoutController {
     const memoryFlushes: TMemoryFlush[] = [];
     appendMemoryFlush(memoryFlushes, input.initialSynthesis.memoryFlush);
 
-    const completedSessionEvidenceText =
+    const delegatedEvidenceText =
       input.completedSession.finalContents.join("\n\n");
     // Inline completed closeout used the delegated final text alone for some
     // predicates, and final text plus raw completing-round tool text for source
     // carry-forward and timeout guidance. Keep that asymmetry in this owner.
     const completedEvidenceText = [
-      completedSessionEvidenceText,
+      delegatedEvidenceText,
       input.completedSessionToolResultText,
     ]
       .filter((text) => text.trim().length > 0)
@@ -204,7 +204,7 @@ export class CompletedCloseoutController {
       repairMarkers: input.repairMarkers,
       completedSessionFinalContents: input.completedSession.finalContents,
       completedEvidenceText,
-      completedSessionEvidenceText,
+      delegatedEvidenceText,
       initialResult: input.initialSynthesis.result,
       ...(input.initialSynthesis.reduction !== undefined
         ? { initialReduction: input.initialSynthesis.reduction }
@@ -320,14 +320,14 @@ export class CompletedCloseoutController {
         }
       }
 
-      const naturalFinishEvidenceText =
+      const synthesisEvidenceText =
         repairRound === 0
           ? input.completedEvidenceText
           : buildEvidenceSnapshot({
               taskPrompt: input.taskPrompt,
               messages: repairMessages,
               toolTrace: input.toolTrace,
-            }).naturalFinishEvidenceText;
+            }).synthesisEvidenceText;
 
       let repairPrompt = evaluateTableOrSchemaRepair({
         input,
@@ -342,7 +342,7 @@ export class CompletedCloseoutController {
           repairPolicy,
           repairMessages,
           synthesisResult,
-          productSignalEvidenceText: input.completedSessionEvidenceText,
+          productSignalEvidenceText: input.delegatedEvidenceText,
         });
         if (browserReArm) {
           return {
@@ -359,13 +359,13 @@ export class CompletedCloseoutController {
         }
       }
 
-      if (!repairPrompt && naturalFinishEvidenceText) {
+      if (!repairPrompt && synthesisEvidenceText) {
         repairPrompt = evaluateSourceEvidenceRepair({
           input,
           repairPolicy,
           repairMessages,
           resultText: synthesisResult.text,
-          evidenceText: naturalFinishEvidenceText,
+          evidenceText: synthesisEvidenceText,
         });
       }
 
@@ -373,7 +373,7 @@ export class CompletedCloseoutController {
         repairPrompt =
           repairPolicy.evaluateCompletedSynthesis({
             completedEvidenceText: input.completedEvidenceText,
-            completedSessionEvidenceText: input.completedSessionEvidenceText,
+            delegatedEvidenceText: input.delegatedEvidenceText,
             completedSessionFinalContents: input.completedSessionFinalContents,
             messages: repairMessages,
             repairMarkers: input.repairMarkers,
@@ -388,7 +388,7 @@ export class CompletedCloseoutController {
           repairPolicy,
           repairMessages,
           resultText: synthesisResult.text,
-          evidenceText: naturalFinishEvidenceText,
+          evidenceText: synthesisEvidenceText,
         });
       }
 
@@ -555,7 +555,7 @@ function appendCompletedBrowserVisibility(
   }
   const browserRecoverySummaries = dedupeStrings([
     ...completedSession.browserRecoverySummaries,
-    ...collectBrowserRecoverySummariesFromToolTrace(input.toolTrace),
+    ...readRuntimeBrowserSummariesFromTrace(input.toolTrace),
   ]);
   let visible = maybeAppendBrowserRecoveryVisibility({
     result: input.result,

@@ -133,7 +133,7 @@ function taskFactRequestsTimeoutRecovery(text: string): boolean {
   );
 }
 
-function inferTaskFactIndependentEvidenceStreamCount(taskPrompt: string): number {
+function readTaskFactIndependentEvidenceTarget(taskPrompt: string): number {
   if (isTaskFactTwoSourceComparisonTask(taskPrompt)) {
     return Math.min(6, uniqueTaskFactHttpUrlCount(taskPrompt));
   }
@@ -290,7 +290,7 @@ export function recordRepairPrompt(
   return message;
 }
 
-export function shouldSuppressToolsForAwaitingContextSetup(input: {
+export function readAwaitingContextSetupNoToolSuppression(input: {
   taskPrompt: string;
   repairMarkers: LLMMessage[];
 }): boolean {
@@ -316,7 +316,7 @@ export function applyAwaitingContextSetupNoToolSuppression(
   input: AwaitingContextSetupNoToolSuppressionInput,
 ): AwaitingContextSetupNoToolSuppressionResult | null {
   if (
-    !shouldSuppressToolsForAwaitingContextSetup({
+    !readAwaitingContextSetupNoToolSuppression({
       taskPrompt: input.taskPrompt,
       repairMarkers: input.repairMarkers,
     })
@@ -357,7 +357,7 @@ export function taskPromptRequestsAwaitingContextSetup(
   );
 }
 
-export function shouldRepairMissingRequestedTableColumns(input: {
+export function readMissingRequestedTableColumnsRepair(input: {
   activation?: RoleActivationInput | undefined;
   taskPrompt: string;
   messages: LLMMessage[];
@@ -417,7 +417,7 @@ export function buildMissingRequestedTableColumnsRepairPrompt(input: {
   ].join("\n");
 }
 
-export function shouldRepairExtraneousProviderTableSchema(input: {
+export function readExtraneousProviderTableSchemaRepair(input: {
   activation?: RoleActivationInput | undefined;
   taskPrompt: string;
   messages: LLMMessage[];
@@ -497,6 +497,13 @@ export function buildAwaitingContextSetupNoToolRepairPrompt(
     `Original task:\n${sliceTaskFactUtf8(taskPrompt, 1000)}`,
   ].join("\n");
 }
+
+export const shouldSuppressToolsForAwaitingContextSetup =
+  readAwaitingContextSetupNoToolSuppression;
+export const shouldRepairMissingRequestedTableColumns =
+  readMissingRequestedTableColumnsRepair;
+export const shouldRepairExtraneousProviderTableSchema =
+  readExtraneousProviderTableSchemaRepair;
 
 function inferRequestedTableColumns(texts: string[]): string[] {
   const columns: string[] = [];

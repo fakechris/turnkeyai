@@ -55,8 +55,10 @@ export interface EvidenceSnapshot {
   sourceBoundedEvidenceText: string;
   completedSessionEvidenceText: string;
   naturalFinishEvidenceText: string;
+  synthesisEvidenceText: string;
   toolTraceResultContent: string;
   approvalWaitTimeoutRuntimeEvidence: string;
+  approvalEvidenceText: string;
   permission: PermissionEvidenceFacts;
   usableEvidence: boolean;
   envelopes?: readonly RuntimeFactEnvelope[];
@@ -72,6 +74,7 @@ export interface PermissionEvidenceFacts extends RuntimePermissionEvidenceFacts 
 
 export interface EvidenceRoundSnapshot {
   toolResultContentText: string;
+  roundEvidenceText: string;
   completedSession: CompletedSessionEvidenceSummary | null;
   completedSessions: readonly CompletedSessionEvidenceFact[];
   completedSessionFinalContents: readonly string[] | null;
@@ -100,6 +103,10 @@ export class EvidenceLedger {
   }
 
   toolResultContentText(results: RoleToolExecutionResult[]): string {
+    return buildToolResultContentText(results);
+  }
+
+  roundEvidenceText(results: RoleToolExecutionResult[]): string {
     return buildToolResultContentText(results);
   }
 
@@ -141,9 +148,11 @@ export function buildEvidenceSnapshot(
     toolTraceResultContent: finalText.toolTraceResultContent,
     approvalWaitTimeoutRuntimeEvidence:
       finalText.approvalWaitTimeoutRuntimeEvidence,
+    approvalEvidenceText: finalText.approvalWaitTimeoutRuntimeEvidence,
     permission,
     usableEvidence: bundle.policy.usable.usableEvidence,
     naturalFinishEvidenceText: finalText.naturalFinishEvidenceText,
+    synthesisEvidenceText: finalText.naturalFinishEvidenceText,
     envelopes: bundle.envelopes,
     policy: bundle.policy,
     finalText,
@@ -190,6 +199,7 @@ export function buildEvidenceRoundSnapshot(
     bundle.policy.session.timeoutSignals.map(toTimeoutEvidenceFact);
   return {
     toolResultContentText: bundle.finalText.toolResultContentText,
+    roundEvidenceText: bundle.finalText.toolResultContentText,
     completedSession,
     completedSessions,
     completedSessionFinalContents: completedSession?.finalContents ?? null,

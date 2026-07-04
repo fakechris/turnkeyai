@@ -625,7 +625,7 @@ test("ContinuationController owns after-execute continuation hook flow", async (
                 browserRecoverySummaries: [],
               },
             ],
-            toolResultContentText: "Source A evidence.",
+            roundEvidenceText: "Source A evidence.",
           };
         },
       },

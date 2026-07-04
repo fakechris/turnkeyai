@@ -375,7 +375,7 @@ test("CloseoutPolicyRegistry pending-call flow honors read-only suppression pree
       roundCount: 2,
       evidenceAvailable: true,
       recoveryToolBudget: { maxToolCalls: 2 },
-      shouldSuppressReadOnlyPermissionQuery: () => {
+      readOnlyPermissionQuerySuppressed: () => {
         order.push("suppress");
         return true;
       },
@@ -428,7 +428,7 @@ test("CloseoutPolicyRegistry pending-call flow applies recovery before continuat
       roundCount: 2,
       evidenceAvailable: false,
       recoveryToolBudget: { maxToolCalls: 2 },
-      shouldSuppressReadOnlyPermissionQuery: () => {
+      readOnlyPermissionQuerySuppressed: () => {
         order.push("suppress");
         return false;
       },
@@ -535,8 +535,10 @@ test("CloseoutPolicyRegistry pending-call hook computes live budget and evidence
             sourceBoundedEvidenceText: "",
             completedSessionEvidenceText: "",
             naturalFinishEvidenceText: "",
+            synthesisEvidenceText: "",
             toolTraceResultContent: "",
             approvalWaitTimeoutRuntimeEvidence: "",
+            approvalEvidenceText: "",
             permission: permissionFacts(),
             usableEvidence: false,
           };
@@ -604,7 +606,7 @@ test("CloseoutPolicyRegistry pending-call flow passes continuation preview into 
       roundCount: 2,
       evidenceAvailable: true,
       recoveryToolBudget: null,
-      shouldSuppressReadOnlyPermissionQuery: () => {
+      readOnlyPermissionQuerySuppressed: () => {
         order.push("suppress");
         return false;
       },
@@ -1376,7 +1378,7 @@ test("CloseoutPolicyRegistry owns terminate hook state and evidence assembly", (
         evidenceMessages = capturedMessages;
         return {
           usableEvidence: true,
-          approvalWaitTimeoutRuntimeEvidence: "permission_result pending",
+          approvalEvidenceText: "permission_result pending",
           permission: permissionFacts("permission_result pending"),
         };
       },

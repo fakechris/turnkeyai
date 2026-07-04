@@ -12,22 +12,26 @@ import {
   buildMissingApprovalGateRepairPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
-  countCompletedSessionEvidenceResults,
   FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   findIncompleteApprovedBrowserSession,
   hasExecutedSessionsSend,
   hasLatestSupplementalLocalTimeoutProbePrompt,
-  inferIndependentEvidenceStreamCount,
   isAppliedApprovalBrowserContinuation,
-  shouldContinueTimedOutApprovedBrowserSession,
-  shouldContinueTimedOutSiblingSession,
-  shouldContinueIndependentEvidenceStreams,
   shouldRunSupplementalLocalTimeoutProbe,
-  shouldRepairMissingApprovalGate,
   type SubAgentToolTimeoutSignal,
 } from "../tool-loop-shared";
+import {
+  buildIndependentEvidenceStreamsPolicyFacts,
+  buildMissingApprovalGateContinuationFacts,
+  buildTimeoutContinuationPolicyFacts,
+} from "../runtime-facts/continuation-policy-facts";
+import {
+  selectIndependentEvidenceStreamsPolicy,
+  selectMissingApprovalGateContinuationPolicy,
+  selectTimeoutContinuationPolicy,
+} from "../runtime-policy/continuation-policy-core";
 import type {
   CompletedSessionEvidenceFact,
   TimeoutEvidenceFact,
@@ -127,7 +131,7 @@ export interface AfterExecuteContinuationInput {
 export interface AfterExecuteContinuationEvidenceSnapshot {
   timeoutSignals: readonly TimeoutEvidenceFact[];
   completedSessions: readonly CompletedSessionEvidenceFact[];
-  toolResultContentText: string;
+  roundEvidenceText: string;
 }
 
 export interface AfterExecuteContinuationEvidenceProvider {
@@ -278,15 +282,11 @@ export class ContinuationController {
   continueTimedOutApprovedBrowserSession(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {
+    const facts = buildTimeoutContinuationPolicyFacts(input);
+    const decision = selectTimeoutContinuationPolicy({ facts });
     if (
       !input.timeoutSignal ||
-      !shouldContinueTimedOutApprovedBrowserSession({
-        taskPrompt: input.taskPrompt,
-        messages: input.messages,
-        toolTrace: input.toolTrace,
-        timeoutSignal: input.timeoutSignal,
-        ...(input.tools === undefined ? {} : { tools: input.tools }),
-      })
+      decision.policyId !== "approved_browser_timeout_continuation"
     ) {
       return { kind: "none" };
     }
@@ -309,15 +309,11 @@ export class ContinuationController {
   continueTimedOutSiblingSession(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {
+    const facts = buildTimeoutContinuationPolicyFacts(input);
+    const decision = selectTimeoutContinuationPolicy({ facts });
     if (
       !input.timeoutSignal ||
-      !shouldContinueTimedOutSiblingSession({
-        taskPrompt: input.taskPrompt,
-        messages: input.messages,
-        toolTrace: input.toolTrace,
-        timeoutSignal: input.timeoutSignal,
-        ...(input.tools === undefined ? {} : { tools: input.tools }),
-      })
+      decision.policyId !== "coverage_timeout_continuation"
     ) {
       return { kind: "none" };
     }
@@ -402,20 +398,9 @@ export class ContinuationController {
   continueIndependentEvidenceStreams(
     input: IndependentEvidenceStreamsInput,
   ): EngineContinueAction {
-    if (
-      input.taskFacts &&
-      input.taskFacts.requiredIndependentEvidenceStreams < 2
-    ) {
-      return { kind: "none" };
-    }
-    if (
-      !shouldContinueIndependentEvidenceStreams({
-        taskPrompt: input.taskPrompt,
-        messages: input.messages,
-        toolTrace: input.toolTrace,
-        ...(input.tools === undefined ? {} : { tools: input.tools }),
-      })
-    ) {
+    const facts = buildIndependentEvidenceStreamsPolicyFacts(input);
+    const decision = selectIndependentEvidenceStreamsPolicy({ facts });
+    if (decision.kind !== "continue") {
       return { kind: "none" };
     }
     return {
@@ -425,12 +410,8 @@ export class ContinuationController {
         {
           role: "user",
           content: buildIndependentEvidenceStreamContinuationPrompt({
-            requiredStreams:
-              input.taskFacts?.requiredIndependentEvidenceStreams ??
-              inferIndependentEvidenceStreamCount(input.taskPrompt),
-            completedSessions: countCompletedSessionEvidenceResults(
-              input.toolTrace,
-            ),
+            requiredStreams: facts.requiredStreams,
+            completedSessions: facts.completedSessions,
           }),
         },
       ],
@@ -442,16 +423,10 @@ export class ContinuationController {
   continueMissingApprovalGateRepair(
     input: MissingApprovalGateRepairInput,
   ): EngineContinueAction {
-    if (
-      !shouldRepairMissingApprovalGate({
-        taskPrompt: input.taskPrompt,
-        resultText: input.resultText,
-        messages: input.messages,
-        repairMarkers: input.repairMarkers,
-        toolTrace: input.toolTrace,
-        ...(input.tools === undefined ? {} : { tools: input.tools }),
-      })
-    ) {
+    const decision = selectMissingApprovalGateContinuationPolicy({
+      facts: buildMissingApprovalGateContinuationFacts(input),
+    });
+    if (decision.kind !== "continue") {
       return { kind: "none" };
     }
     const repairMarker: LLMMessage = {
@@ -646,7 +621,7 @@ export class ContinuationController {
         timeoutSignal: roundEvidence.timeoutSignals[0] ?? null,
         completedSessionFinalContents:
           collectCompletedSessionFinalContents(roundEvidence.completedSessions),
-        currentRoundEvidenceText: roundEvidence.toolResultContentText,
+        currentRoundEvidenceText: roundEvidence.roundEvidenceText,
         results: input.results,
         repairMarkers: input.repairMarkers,
         ...(input.tools === undefined ? {} : { tools: input.tools }),
