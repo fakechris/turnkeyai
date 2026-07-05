@@ -8,7 +8,7 @@
 // into the composition root.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript";
@@ -68,6 +68,173 @@ const POLICY_TEXT_VIEW_NAMES = [
   "runtimeEvidenceText",
   "toolResultContentText",
 ];
+
+// Stage 8 closeout ratchet: this is a snapshot of the inline adapter's current
+// fact/render/protocol imports. It may shrink as TaskIntentFacts and split
+// modules land. New reader/detector imports need review; DETECTOR(temporary)
+// entries are specifically expected to disappear in the task-intent producer
+// migration.
+const INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST = new Set<string>([
+  // renderer / prompt assembly
+  "FORCED_PERMISSION_RESULT_ASSISTANT_TEXT",
+  "buildApprovedBrowserTimeoutContinuationPrompt",
+  "buildCompletedBrowserEvidenceDimensionCarryForwardLines",
+  "buildForcedPendingApprovalWaitTimeoutPermissionResultCall",
+  "buildIncompleteApprovedBrowserActionRepairPrompt",
+  "buildIncompleteApprovedBrowserSessionContinuationPrompt",
+  "buildIndependentEvidenceStreamContinuationPrompt",
+  "buildMissingBrowserEvidenceRepairPrompt",
+  "buildMissingProductSignalBrowserEvidenceRepairPrompt",
+  "buildSupplementalLocalTimeoutProbePrompt",
+  "buildReadOnlyPermissionQuerySuppressionPrompt",
+  "buildContinuationDirectiveContext",
+  "buildCoverageTimeoutContinuationPrompt",
+  "buildApprovalWaitTimeoutCloseoutRepairPrompt",
+  "buildApprovalWaitTimeoutLocalEvidenceCloseout",
+  "buildFalseEvidenceBlockedSynthesisRepairPrompt",
+  "buildFinalRecoveryBudgetCloseoutReasonLines",
+  "buildFinalRecoveryBudgetCloseoutRepairPrompt",
+  "buildMissingApprovalGateRepairPrompt",
+  "buildMissingBrowserEvidenceDimensionsRepairPrompt",
+  "buildMissingRequestedNextActionRepairPrompt",
+  "buildMissingRequiredFinalDeliverablesRepairPrompt",
+  "buildLocalEvidenceCloseout",
+  "buildPendingApprovalWaitTimeoutCheckRepairPrompt",
+  "buildPrematurePendingApprovalRepairPrompt",
+  "buildSourceEvidenceCarryForwardRepairPrompt",
+  "buildStaleDeniedApprovalRepairPrompt",
+  "buildStalePendingApprovalRepairPrompt",
+  "buildTimeoutFollowupFinalGuidanceRepairPrompt",
+  "buildWeakEvidenceSynthesisRepairPrompt",
+  "maybeAppendBrowserFailureBucketVisibility",
+  "maybeAppendBrowserRecoveryVisibility",
+  "maybeAppendBrowserRecoveryResidualRiskVisibility",
+  "maybeAppendRecoveredTimeoutCloseoutVisibility",
+  "maybeAppendRequiredTimeoutFollowupVisibility",
+  "maybeAppendTimeoutContinuationVisibility",
+  "maybeRedactForbiddenLocalUrls",
+  "withFinalToolRoundWarning",
+
+  // protocol / neutral utilities
+  "applySessionContinuationDirective",
+  "applySessionContinuationLookupDirective",
+  "containsAnyToolCallForm",
+  "dedupeStrings",
+  "enforceMissingApprovalGateRepairToolCalls",
+  "enforceSupplementalLocalTimeoutProbeToolCall",
+  "extractHttpUrls",
+  "formatDurationMs",
+  "isAbortError",
+  "isControlPlaneToolResultName",
+  "isExplicitSessionContinuationRequest",
+  "isLoopbackHostname",
+  "matchesAny",
+  "normalizeApprovalGatedBrowserSpawnCalls",
+  "normalizeBoundedTimeoutDuplicateSourceSpawns",
+  "normalizeBoundedTimeoutSourceSpawnAgents",
+  "normalizeExplicitContinuationHistoryCalls",
+  "normalizeLocalUrlWebFetchCalls",
+  "normalizePrivateUrlResearchSpawnCalls",
+  "normalizeSessionToolAliasCalls",
+  "normalizeSessionToolCalls",
+  "parseJsonObject",
+  "readSessionKeyFromToolInput",
+  "readStringField",
+  "readStringInput",
+  "sliceUtf8",
+  "toNativeToolProgressTrace",
+  "toNativeToolResultTrace",
+  "throwIfAborted",
+
+  // reader / compatibility producer outputs
+  "allowsSupplementalBrowserProbe",
+  "contextHasTimeoutSessionResult",
+  "continuationRequestPrefersResumableSession",
+  "countCompletedSessionEvidenceResults",
+  "countRecoveryToolCallsBeforeActivation",
+  "extractLatestUserContinuationText",
+  "findExcessiveSessionContinuationCall",
+  "findRepeatedSessionInspectionCall",
+  "findSessionContinuationDirective",
+  "findSessionContinuationLookupDirective",
+  "findIncompleteApprovedBrowserSession",
+  "findMissingRequiredFinalDeliverables",
+  "hasCompletedBrowserSessionEvidence",
+  "hasExecutedSessionsSend",
+  "hasSessionTimeoutEvidence",
+  "hasTimeoutCloseoutGuidance",
+  "hasTimeoutContinuationGuidance",
+  "hasMissingRequiredFinalDeliverablesRepairPrompt",
+  "hasLatestSupplementalLocalTimeoutProbePrompt",
+  "isProviderSearchPricingResearchTask",
+  "limitIndependentEvidenceSpawnCalls",
+  "resolveRecoveryToolBudgetForActivation",
+  "resolveEffectiveToolLoopWallClockMs",
+  "shouldCloseoutCancelledSessionWithoutContinuation",
+  "shouldRunSupplementalLocalTimeoutProbe",
+  "shouldAppendRecoveredTimeoutCloseoutVisibility",
+  "shouldAppendTimeoutContinuationVisibility",
+  "shouldPreserveRecoveredTimeoutCloseout",
+  "toolTraceHasCall",
+
+  // DETECTOR(temporary): migrate into TaskIntentFacts in Task 2.
+  "disclaimsApprovalGatedBrowserAction",
+  "disclaimsIntendedBrowserMutation",
+  "isAppliedApprovalBrowserContinuation",
+  "requestsApprovalGatedBrowserAction",
+  "taskAllowsPermissionTools",
+  "taskPromptRequestsApprovalWaitTimeoutCloseout",
+  "taskPromptIsAppliedApprovalBrowserContinuation",
+  "taskPromptLooksLikeSourceCheckContinuation",
+  "taskPromptSaysApprovalAlreadyApplied",
+  "expectsExactFinalAnswerShape",
+]);
+
+const INLINE_ADAPTER_FACT_IMPORT_MODULES = [
+  "./runtime-facts/policy-text-facts",
+  "./runtime-facts/text-fallback-readers",
+  "./runtime-facts/repair-marker-facts",
+  "./runtime-policy/prompt-renderers",
+  "./runtime-policy/synthesis-visibility",
+  "./tool-protocol",
+];
+
+const INLINE_REPAIR_POLICY_NAME_MAP = new Map<string, string>([
+  ["readFinalRecoveryBudgetCloseoutRepair", "final_recovery_budget_closeout_repair"],
+  ["readMissingBrowserEvidenceRepair", "missing_browser_evidence"],
+  [
+    "readMissingProductSignalBrowserEvidenceRepair",
+    "missing_product_signal_browser_evidence",
+  ],
+  ["readMissingApprovalGateRepair", "missing_approval_gate"],
+  [
+    "readPendingApprovalWaitTimeoutCheckRepair",
+    "pending_approval_wait_timeout_check",
+  ],
+  ["readPrematurePendingApprovalFinalRepair", "premature_pending_approval"],
+  ["readStalePendingApprovalRepair", "stale_pending_approval"],
+  ["readStaleDeniedApprovalRepair", "stale_denied_approval"],
+  ["readApprovalWaitTimeoutCloseoutRepair", "approval_wait_timeout_closeout"],
+  [
+    "readForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair",
+    "approval_wait_timeout_local_closeout",
+  ],
+  [
+    "readIncompleteApprovedBrowserActionRepair",
+    "incomplete_approved_browser_action",
+  ],
+  ["readSourceEvidenceCarryForwardRepair", "source_evidence_carry_forward"],
+  ["readWeakEvidenceSynthesisRepair", "weak_evidence_synthesis"],
+  ["readTimeoutFollowupFinalGuidanceRepair", "timeout_followup_final_guidance"],
+  ["readMissingRequestedNextActionRepair", "missing_requested_next_action"],
+  [
+    "readMissingBrowserEvidenceDimensionsRepair",
+    "missing_browser_evidence_dimensions",
+  ],
+  ["readFalseEvidenceBlockedSynthesisRepair", "false_evidence_blocked_synthesis"],
+]);
+
+const REPAIR_POLICY_CORE = path.join(RUNTIME_POLICY_DIR, "repair-policy-core.ts");
 
 /** Forbidden import specifiers: the composition root and any known re-exporter. */
 const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
@@ -180,11 +347,96 @@ function exportedRuntimeNames(source: string): string[] {
   return [...exportedFunctionNames(source), ...exportedValueNames(source)];
 }
 
+function importedNamesFrom(source: string, modules: readonly string[]): string[] {
+  const moduleSet = new Set(modules);
+  const names = new Set<string>();
+  const importPattern =
+    /import\s+(?:type\s+)?\{([\s\S]*?)\}\s+from\s+["']([^"']+)["'];/g;
+  for (const match of source.matchAll(importPattern)) {
+    const specifier = match[2]!;
+    if (!moduleSet.has(specifier)) continue;
+    for (const rawName of match[1]!.split(",")) {
+      const name = rawName
+        .replace(/\/\/.*$/g, "")
+        .replace(/\btype\s+/g, "")
+        .trim()
+        .split(/\s+as\s+/)[0]
+        ?.trim();
+      if (name) {
+        names.add(name);
+      }
+    }
+  }
+  return Array.from(names).sort();
+}
+
 function coreFactHelperExportNames(source: string): string[] {
   return exportedRuntimeNames(source).filter(
     (name) =>
       CORE_FACT_HELPER_NAME_PATTERN.test(name) &&
       !CORE_FACT_HELPER_ALLOWLIST.has(name),
+  );
+}
+
+function stringArrayConst(source: string, constName: string): string[] {
+  const match = source.match(
+    new RegExp(`export const ${constName} = \\[([\\s\\S]*?)\\] as const;`),
+  );
+  assert.ok(match, `${constName} must exist`);
+  return Array.from(match[1]!.matchAll(/"([^"]+)"/g), (item) => item[1]!);
+}
+
+function lineNumberAt(source: string, index: number): number {
+  return source.slice(0, index).split("\n").length;
+}
+
+function inlineRepairPolicyOccurrences(source: string): Array<{
+  line: number;
+  name: string;
+  policyId: string;
+}> {
+  const names = Array.from(INLINE_REPAIR_POLICY_NAME_MAP.keys()).map((name) =>
+    name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+  );
+  const pattern = new RegExp(`\\b(${names.join("|")})\\s*\\(`, "g");
+  return Array.from(source.matchAll(pattern), (match) => {
+    const name = match[1]!;
+    return {
+      line: lineNumberAt(source, match.index ?? 0),
+      name,
+      policyId: INLINE_REPAIR_POLICY_NAME_MAP.get(name)!,
+    };
+  });
+}
+
+function assertNearbyPolicyOrderCompatible(input: {
+  occurrences: Array<{ line: number; name: string; policyId: string }>;
+  policyOrder: readonly string[];
+  maxAdjacentLineGap: number;
+}): void {
+  const orderIndex = new Map(
+    input.policyOrder.map((policyId, index) => [policyId, index]),
+  );
+  const offenders: string[] = [];
+  for (let index = 1; index < input.occurrences.length; index++) {
+    const previous = input.occurrences[index - 1]!;
+    const current = input.occurrences[index]!;
+    const previousIndex = orderIndex.get(previous.policyId);
+    const currentIndex = orderIndex.get(current.policyId);
+    if (previousIndex === undefined || currentIndex === undefined) continue;
+    if (
+      currentIndex < previousIndex &&
+      current.line - previous.line <= input.maxAdjacentLineGap
+    ) {
+      offenders.push(
+        `${previous.line}:${previous.name}(${previous.policyId}) before ${current.line}:${current.name}(${current.policyId})`,
+      );
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `nearby inline repair checks must stay compatible with runtime-policy order:\n${offenders.join("\n")}`,
   );
 }
 
@@ -1774,6 +2026,86 @@ test("inline adapter routes policy booleans through runtime-policy runner", () =
       runnerSource.includes(selector),
       true,
       `inline policy runner must use ${selector}`,
+    );
+  }
+});
+
+test("inline adapter fact imports stay inside the reviewed allowlist", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const imported = importedNamesFrom(
+    source,
+    INLINE_ADAPTER_FACT_IMPORT_MODULES,
+  );
+  const offenders = imported.filter(
+    (name) => !INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST.has(name),
+  );
+  const stale = Array.from(INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST)
+    .filter((name) => !imported.includes(name))
+    .sort();
+  assert.deepEqual(
+    offenders,
+    [],
+    `new fact-layer imports need explicit review:\n${offenders.join("\n")}`,
+  );
+  assert.deepEqual(
+    stale,
+    [],
+    `stale fact-layer allowlist entries must be removed as the boundary shrinks:\n${stale.join("\n")}`,
+  );
+});
+
+test("text fallback export budget only shrinks", () => {
+  const budget = JSON.parse(
+    readFileSync(path.join(ENGINE_DIR, "fact-export-budget.json"), "utf8"),
+  ) as Record<string, number>;
+  for (const [rel, max] of Object.entries(budget)) {
+    const file = path.join(ROLE_RUNTIME_DIR, rel);
+    if (!existsSync(file)) continue;
+    const count = exportedRuntimeNames(readFileSync(file, "utf8")).length;
+    assert.ok(
+      count <= max,
+      `${rel} exports ${count} > budget ${max}; typed replacements must shrink, never grow`,
+    );
+  }
+});
+
+test("inline repair policy call order stays compatible with policy-core order", () => {
+  const inlineSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const runnerSource = readFileSync(INLINE_POLICY_RUNNER, "utf8");
+  const repairCoreSource = readFileSync(REPAIR_POLICY_CORE, "utf8");
+  const naturalOrder = stringArrayConst(
+    repairCoreSource,
+    "RUNTIME_NATURAL_FINISH_REPAIR_POLICY_ORDER",
+  );
+  const completedOrder = stringArrayConst(
+    repairCoreSource,
+    "RUNTIME_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER",
+  );
+  const naturalPolicyIds = new Set(naturalOrder);
+  const completedPolicyIds = new Set(completedOrder);
+
+  for (const [label, source, maxAdjacentLineGap] of [
+    ["inline adapter", inlineSource, 40],
+    ["inline policy runner", runnerSource, Number.POSITIVE_INFINITY],
+  ] as const) {
+    const occurrences = inlineRepairPolicyOccurrences(source);
+    assertNearbyPolicyOrderCompatible({
+      occurrences: occurrences.filter((item) =>
+        naturalPolicyIds.has(item.policyId),
+      ),
+      policyOrder: naturalOrder,
+      maxAdjacentLineGap,
+    });
+    assertNearbyPolicyOrderCompatible({
+      occurrences: occurrences.filter((item) =>
+        completedPolicyIds.has(item.policyId),
+      ),
+      policyOrder: completedOrder,
+      maxAdjacentLineGap,
+    });
+    assert.ok(
+      occurrences.length > 0,
+      `${label} must expose reviewed inline repair policy checks`,
     );
   }
 });
