@@ -137,7 +137,6 @@ import {
   buildMissingProductSignalBrowserEvidenceRepairPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
   buildReadOnlyPermissionQuerySuppressionPrompt,
-  buildContinuationDirectiveContext,
   buildCoverageTimeoutContinuationPrompt,
   buildApprovalWaitTimeoutCloseoutRepairPrompt,
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
@@ -158,6 +157,7 @@ import {
   buildWeakEvidenceSynthesisRepairPrompt,
 } from "./runtime-policy/prompt-renderers";
 import {
+  buildContinuationDirectiveContext,
   dedupeStrings,
   extractHttpUrls,
   formatDurationMs,

@@ -48,8 +48,8 @@ import {
   resolveKnownWorkerSessionKey,
   relaxedSessionKeySignature,
   readTruncatedSessionKeyPrefix,
+  buildContinuationDirectiveContext,
 } from "../tool-protocol";
-import { buildContinuationDirectiveContext } from "./prompt-renderers";
 import {
   contextHasTimeoutSessionResult,
   extractLatestUserContinuationText,

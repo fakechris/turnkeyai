@@ -5,7 +5,6 @@ import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
   buildApprovedBrowserTimeoutContinuationPrompt,
-  buildContinuationDirectiveContext,
   buildCoverageTimeoutContinuationPrompt,
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildIndependentEvidenceStreamContinuationPrompt,
@@ -14,6 +13,7 @@ import {
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
 } from "../runtime-policy/prompt-renderers";
+import { buildContinuationDirectiveContext } from "../tool-protocol";
 import {
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,

@@ -5,10 +5,8 @@ import {
   applyAwaitingContextSetupNoToolSuppression,
   type TaskFactsSnapshot,
 } from "../task-facts-shared";
-import {
-  buildContinuationDirectiveContext,
-  buildReadOnlyPermissionQuerySuppressionPrompt,
-} from "../runtime-policy/prompt-renderers";
+import { buildReadOnlyPermissionQuerySuppressionPrompt } from "../runtime-policy/prompt-renderers";
+import { buildContinuationDirectiveContext } from "../tool-protocol";
 import {
   enforceMissingApprovalGateRepairToolCalls,
   normalizeApprovalGatedBrowserSpawnCalls,

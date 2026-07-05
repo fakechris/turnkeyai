@@ -28,6 +28,7 @@ import {
   ROLE_TOOL_RESULT_TRACE_CAP_BYTES,
   SESSION_SEND_ALIAS_NAMES,
   SESSION_TOOL_RESULT_PROTOCOL,
+  buildContinuationDirectiveContext,
   buildToolCallLimitExceededResult,
   compactSessionPayloadArtifactRefs,
   compactSessionPayloadEvidenceExcerpt,
@@ -70,61 +71,6 @@ import {
   trimHttpUrlCandidate,
   withFinalToolRoundWarning,
 } from "../tool-protocol";
-import {
-  FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
-  applySessionContinuationDirective,
-  applySessionContinuationLookupDirective,
-  buildApprovalWaitTimeoutCloseoutRepairPrompt,
-  buildApprovalWaitTimeoutLocalEvidenceCloseout,
-  buildApprovedBrowserTimeoutContinuationPrompt,
-  buildCompletedBrowserEvidenceDimensionCarryForwardLines,
-  buildContinuationDirectiveContext,
-  buildCoverageTimeoutContinuationPrompt,
-  buildFalseEvidenceBlockedSynthesisRepairPrompt,
-  buildFinalRecoveryBudgetCloseoutReasonLines,
-  buildFinalRecoveryBudgetCloseoutRepairPrompt,
-  buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
-  buildIncompleteApprovedBrowserActionRepairPrompt,
-  buildIncompleteApprovedBrowserSessionContinuationPrompt,
-  buildIndependentEvidenceStreamContinuationPrompt,
-  buildLocalEvidenceCloseout,
-  buildMissingApprovalGateRepairPrompt,
-  buildMissingBrowserEvidenceDimensionsRepairPrompt,
-  buildMissingBrowserEvidenceRepairPrompt,
-  buildMissingProductSignalBrowserEvidenceRepairPrompt,
-  buildMissingRequestedNextActionRepairPrompt,
-  buildMissingRequiredFinalDeliverablesRepairPrompt,
-  buildPendingApprovalWaitTimeoutCheckRepairPrompt,
-  buildPermissionQueryFromBrowserSpawn,
-  buildPreApprovalBrowserInspectionSpawn,
-  buildPrematurePendingApprovalRepairPrompt,
-  buildReadOnlyPermissionQuerySuppressionPrompt,
-  buildSessionContinuationMessageHint,
-  buildSourceEvidenceCarryForwardRepairPrompt,
-  buildStaleDeniedApprovalRepairPrompt,
-  buildStalePendingApprovalRepairPrompt,
-  buildSupplementalLocalTimeoutProbePrompt,
-  buildTimeoutFollowupFinalGuidanceRepairPrompt,
-  buildWeakEvidenceSynthesisRepairPrompt,
-  mergeSessionContinuationMessage,
-} from "../runtime-policy/prompt-renderers";
-import {
-  browserFailureBucketVisible,
-  buildBrowserFailureBucketVisibilityLine,
-  forbidsFinalUrls,
-  hasRecoveredRenderedBrowserEvidence,
-  isBrowserRecoveryVisible,
-  maybeAppendBrowserFailureBucketVisibility,
-  maybeAppendBrowserRecoveryResidualRiskVisibility,
-  maybeAppendBrowserRecoveryVisibility,
-  maybeAppendRecoveredTimeoutCloseoutVisibility,
-  maybeAppendRequiredTimeoutFollowupVisibility,
-  maybeAppendTimeoutContinuationVisibility,
-  maybeRedactForbiddenLocalUrls,
-  requestsStatusVisibleTextEvidenceUrlLines,
-  shouldAppendRecoveredTimeoutCloseoutVisibility,
-  shouldAppendTimeoutContinuationVisibility,
-} from "../runtime-policy/synthesis-visibility";
 import {
   hasApprovedBrowserTimeoutContinuationPrompt,
   hasCoverageTimeoutContinuationPrompt,
@@ -3367,6 +3313,27 @@ export function extractPriorContinuationContext(
   return sliceUtf8(compact, 1600);
 }
 
+function buildSessionContinuationMessageHint(
+  taskPrompt: string,
+  latestUserText: string,
+): string {
+  const priorContext = extractPriorContinuationContext(
+    taskPrompt,
+    latestUserText,
+  );
+  if (!priorContext) {
+    return latestUserText;
+  }
+  return [
+    latestUserText,
+    "",
+    "Continuation context from the original task:",
+    priorContext,
+    "",
+    "Preserve the original task's decision criteria, required dimensions, entity names, source labels, and user terminology from that context unless the latest user message explicitly changes scope.",
+  ].join("\n");
+}
+
 export function normalizeExplicitContinuationHistoryCalls(
   toolCalls: LLMToolCall[],
   taskPrompt: string,
@@ -3731,6 +3698,65 @@ export function shouldPreservePreApprovalBrowserInspection(
   );
 }
 
+function buildPermissionQueryFromBrowserSpawn(
+  call: LLMToolCall,
+  taskPrompt: string,
+): LLMToolCall {
+  const task = readStringInput(call.input, "task") ?? "";
+  const label = readStringInput(call.input, "label") ?? "";
+  const url = extractHttpUrls(`${task}\n${taskPrompt}`)[0];
+  return {
+    ...call,
+    name: "permission_query",
+    input: {
+      action: "browser.form.submit",
+      title: "Approve local dry-run browser form submission",
+      risk:
+        "Applies an approval-gated browser form submission in an isolated local dry-run page.",
+      level: "approval",
+      scope: "mutate",
+      worker_kind: "browser",
+      rationale:
+        "The user asked to carry a browser form submission through the approval gate before applying the action.",
+      payload: {
+        ...(url ? { url } : {}),
+        task: task || label || "approval-gated browser form submission",
+      },
+    },
+  };
+}
+
+function buildPreApprovalBrowserInspectionSpawn(
+  call: LLMToolCall,
+  taskPrompt: string,
+): LLMToolCall | null {
+  const task = readStringInput(call.input, "task") ?? "";
+  const label = readStringInput(call.input, "label") ?? "";
+  const callText = [task, label].join("\n");
+  if (!shouldPreservePreApprovalBrowserInspection(callText, taskPrompt)) {
+    return null;
+  }
+  const url = extractHttpUrls(`${callText}\n${taskPrompt}`)[0];
+  if (!url) {
+    return null;
+  }
+  return {
+    ...call,
+    id: `${call.id}-inspection`,
+    input: {
+      ...call.input,
+      agent_id: "browser",
+      label: label || "Pre-approval browser inspection",
+      task: [
+        "Pre-approval browser inspection only.",
+        `Open ${url} as a rendered browser page and observe what is visible before any approval-gated action.`,
+        "Report the final URL, page title, visible fixture/marker text, form fields, submission control, and screenshot/snapshot evidence if available.",
+        "Do not submit the form, click the submit control, fill fields, save, mutate, or perform any side effect. The form submission remains blocked until permission_query/permission_result/permission_applied clears it.",
+      ].join("\n"),
+    },
+  };
+}
+
 export function enforceMissingApprovalGateRepairToolCalls(
   toolCalls: LLMToolCall[],
   context: {
@@ -4060,7 +4086,7 @@ export function shouldPreserveRecoveredTimeoutCloseout(input: {
   toolTrace: NativeToolRoundTrace[];
   evidenceText: string;
 }): boolean {
-  if (shouldAppendTimeoutContinuationVisibility(input)) {
+  if (shouldAppendTimeoutContinuationVisibilityFact(input)) {
     return true;
   }
   return (
@@ -4068,6 +4094,28 @@ export function shouldPreserveRecoveredTimeoutCloseout(input: {
     toolTraceHasCall(input.toolTrace, "sessions_send") &&
     readPolicyTimeoutMention(input.evidenceText)
   );
+}
+
+function shouldAppendTimeoutContinuationVisibilityFact(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  const taskPromptSuffix = input.taskPrompt.slice(
+    Math.max(0, input.taskPrompt.length - 4000),
+  );
+  if (
+    !isExplicitSessionContinuationRequest(
+      extractLatestUserContinuationText(taskPromptSuffix),
+    ) &&
+    !isExplicitSessionContinuationRequest(taskPromptSuffix)
+  ) {
+    return false;
+  }
+  if (!toolTraceHasCall(input.toolTrace, "sessions_send")) {
+    return false;
+  }
+  return hasSessionTimeoutEvidence(input);
 }
 
 export function hasTimeoutCloseoutGuidance(text: string): boolean {

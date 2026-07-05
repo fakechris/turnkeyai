@@ -7,8 +7,8 @@ import {
 import {
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
-  buildContinuationDirectiveContext,
 } from "../runtime-policy/prompt-renderers";
+import { buildContinuationDirectiveContext } from "../tool-protocol";
 import {
   enforceSupplementalLocalTimeoutProbeToolCall,
   findSessionContinuationDirective,

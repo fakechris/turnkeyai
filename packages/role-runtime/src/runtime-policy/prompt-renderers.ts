@@ -27,7 +27,6 @@ import {
   isControlPlaneToolResultName,
   parseJsonObject,
   throwIfAborted,
-  llmMessageContentToText,
   readPolicyWorkerKindFromSessionKey,
   SESSION_SEND_ALIAS_NAMES,
   normalizeSessionToolAliasCalls,
@@ -61,6 +60,7 @@ import {
   resolveKnownWorkerSessionKey,
   relaxedSessionKeySignature,
   readTruncatedSessionKeyPrefix,
+  buildContinuationDirectiveContext,
 } from "../tool-protocol";
 import {
   IncompleteApprovedBrowserSessionContinuation,
@@ -79,7 +79,6 @@ import {
   readPolicyLatestPermissionToolName,
   readPolicyProductBriefEvidenceCarryForwardRepair,
   readPolicyProductSignalDashboardEvidenceRequest,
-  shouldPreservePreApprovalBrowserInspection,
   summarizeProductSignalDashboardMetrics,
 } from "../runtime-facts/text-fallback-readers";
 import type {
@@ -1072,21 +1071,6 @@ function hasToolDefinition(
   return (tools ?? []).some((tool) => tool.name === name);
 }
 
-export function buildContinuationDirectiveContext(
-  taskPrompt: string,
-  messages: LLMMessage[],
-): string {
-  const toolEvidence = messages
-    .filter((message) => message.role === "tool")
-    .map((message) => llmMessageContentToText(message.content))
-    .filter(
-      (content) =>
-        content.includes("session_key") || content.includes('"sessions"'),
-    )
-    .join("\n");
-  return toolEvidence ? `${taskPrompt}\n${toolEvidence}` : taskPrompt;
-}
-
 export function buildSessionContinuationMessageHint(
   taskPrompt: string,
   latestUserText: string,
@@ -1262,65 +1246,6 @@ export function applySessionContinuationLookupDirective(
       .slice(spawnIndex + 1)
       .filter((call) => call.name !== "sessions_spawn"),
   ];
-}
-
-export function buildPermissionQueryFromBrowserSpawn(
-  call: LLMToolCall,
-  taskPrompt: string,
-): LLMToolCall {
-  const task = readStringInput(call.input, "task") ?? "";
-  const label = readStringInput(call.input, "label") ?? "";
-  const url = extractHttpUrls(`${task}\n${taskPrompt}`)[0];
-  return {
-    ...call,
-    name: "permission_query",
-    input: {
-      action: "browser.form.submit",
-      title: "Approve local dry-run browser form submission",
-      risk:
-        "Applies an approval-gated browser form submission in an isolated local dry-run page.",
-      level: "approval",
-      scope: "mutate",
-      worker_kind: "browser",
-      rationale:
-        "The user asked to carry a browser form submission through the approval gate before applying the action.",
-      payload: {
-        ...(url ? { url } : {}),
-        task: task || label || "approval-gated browser form submission",
-      },
-    },
-  };
-}
-
-export function buildPreApprovalBrowserInspectionSpawn(
-  call: LLMToolCall,
-  taskPrompt: string,
-): LLMToolCall | null {
-  const task = readStringInput(call.input, "task") ?? "";
-  const label = readStringInput(call.input, "label") ?? "";
-  const callText = [task, label].join("\n");
-  if (!shouldPreservePreApprovalBrowserInspection(callText, taskPrompt)) {
-    return null;
-  }
-  const url = extractHttpUrls(`${callText}\n${taskPrompt}`)[0];
-  if (!url) {
-    return null;
-  }
-  return {
-    ...call,
-    id: `${call.id}-inspection`,
-    input: {
-      ...call.input,
-      agent_id: "browser",
-      label: label || "Pre-approval browser inspection",
-      task: [
-        "Pre-approval browser inspection only.",
-        `Open ${url} as a rendered browser page and observe what is visible before any approval-gated action.`,
-        "Report the final URL, page title, visible fixture/marker text, form fields, submission control, and screenshot/snapshot evidence if available.",
-        "Do not submit the form, click the submit control, fill fields, save, mutate, or perform any side effect. The form submission remains blocked until permission_query/permission_result/permission_applied clears it.",
-      ].join("\n"),
-    },
-  };
 }
 
 function allowsExactFinalAnswerShapeBypass(

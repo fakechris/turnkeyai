@@ -126,6 +126,21 @@ export function llmMessageContentToText(content: LLMMessage["content"]): string 
     .join("\n");
 }
 
+export function buildContinuationDirectiveContext(
+  taskPrompt: string,
+  messages: LLMMessage[],
+): string {
+  const toolEvidence = messages
+    .filter((message) => message.role === "tool")
+    .map((message) => llmMessageContentToText(message.content))
+    .filter(
+      (content) =>
+        content.includes("session_key") || content.includes('"sessions"'),
+    )
+    .join("\n");
+  return toolEvidence ? `${taskPrompt}\n${toolEvidence}` : taskPrompt;
+}
+
 export function readPolicyWorkerKindFromSessionKey(sessionKey: unknown): string | null {
   if (typeof sessionKey !== "string") {
     return null;

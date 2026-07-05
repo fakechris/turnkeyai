@@ -273,6 +273,16 @@ function runtimePolicyCoreFiles(): string[] {
   }
 }
 
+function runtimePolicyDecisionCoreFiles(): string[] {
+  try {
+    return readdirSync(RUNTIME_POLICY_DIR)
+      .filter((name) => name.endsWith("-core.ts"))
+      .map((name) => path.join(RUNTIME_POLICY_DIR, name));
+  } catch {
+    return [];
+  }
+}
+
 function runtimeFactSourceFiles(): string[] {
   try {
     return readdirSync(RUNTIME_FACTS_DIR)
@@ -358,6 +368,33 @@ function importedNamesFrom(source: string, modules: readonly string[]): string[]
     }
   }
   return Array.from(names).sort();
+}
+
+function importReferencesFrom(
+  source: string,
+  fileName = "source.ts",
+): Array<{ moduleSpecifier: string; isTypeOnly: boolean }> {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const imports: Array<{ moduleSpecifier: string; isTypeOnly: boolean }> = [];
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      continue;
+    }
+    imports.push({
+      moduleSpecifier: statement.moduleSpecifier.text,
+      isTypeOnly: statement.importClause?.isTypeOnly === true,
+    });
+  }
+  return imports;
 }
 
 function coreFactHelperExportNames(source: string): string[] {
@@ -2035,6 +2072,61 @@ test("policy-text-facts facade is retired", () => {
     offenders,
     [],
     `active runtime code must import concrete fact/render modules, not policy-text-facts:\n${offenders.join("\n")}`,
+  );
+});
+
+test("split fact and render modules keep dependency direction", () => {
+  const offenders: string[] = [];
+  const toolProtocol = path.join(ROLE_RUNTIME_DIR, "tool-protocol.ts");
+  for (const ref of importReferencesFrom(
+    readFileSync(toolProtocol, "utf8"),
+    toolProtocol,
+  )) {
+    if (
+      ref.moduleSpecifier.includes("runtime-facts") ||
+      ref.moduleSpecifier.includes("runtime-policy")
+    ) {
+      offenders.push(`tool-protocol.ts -> ${ref.moduleSpecifier}`);
+    }
+  }
+
+  for (const rel of [
+    "runtime-facts/text-fallback-readers.ts",
+    "runtime-facts/repair-marker-facts.ts",
+  ]) {
+    const file = path.join(ROLE_RUNTIME_DIR, rel);
+    const source = readFileSync(file, "utf8");
+    for (const ref of importReferencesFrom(source, file)) {
+      if (ref.moduleSpecifier.includes("runtime-policy")) {
+        offenders.push(`${rel} -> ${ref.moduleSpecifier}`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `facts/protocol modules must not depend upward on runtime-policy:\n${offenders.join("\n")}`,
+  );
+});
+
+test("runtime policy cores import runtime facts as types only", () => {
+  const offenders: string[] = [];
+  for (const file of runtimePolicyDecisionCoreFiles()) {
+    const source = readFileSync(file, "utf8");
+    for (const ref of importReferencesFrom(source, file)) {
+      if (
+        ref.moduleSpecifier.includes("../runtime-facts/") &&
+        !ref.isTypeOnly
+      ) {
+        offenders.push(`${path.basename(file)} -> ${ref.moduleSpecifier}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `runtime-policy/*-core.ts may consume fact shapes only via import type:\n${offenders.join("\n")}`,
   );
 });
 

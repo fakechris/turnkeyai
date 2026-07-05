@@ -10,11 +10,12 @@
 // The exported order array below is the source of truth for closeout
 // precedence; it is defined in Batch 0 so the contract is pinnable, and the
 // evaluating registry methods are added in Batch 3.
+import { buildCompletedBrowserEvidenceDimensionCarryForwardLines } from "../runtime-policy/prompt-renderers";
 import {
   buildContinuationDirectiveContext,
-  buildCompletedBrowserEvidenceDimensionCarryForwardLines,
-} from "../runtime-policy/prompt-renderers";
-import { containsAnyToolCallForm, sliceUtf8 } from "../tool-protocol";
+  containsAnyToolCallForm,
+  sliceUtf8,
+} from "../tool-protocol";
 import {
   findExcessiveSessionContinuationCall,
   findRepeatedSessionInspectionCall,
