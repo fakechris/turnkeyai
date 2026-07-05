@@ -3,16 +3,17 @@ import test from "node:test";
 
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
-import type { NativeToolRoundTrace } from "./native-tool-messages";
-import type { RolePromptPacket } from "./prompt-policy";
-import { readPolicyApprovalWaitTimeoutRuntimeEvidence } from "./runtime-facts/text-fallback-readers";
+import type { NativeToolRoundTrace } from "../native-tool-messages";
+import type { RolePromptPacket } from "../prompt-policy";
 import {
   allowsSupplementalBrowserProbe,
+  readPolicyApprovalWaitTimeoutRuntimeEvidence,
+} from "./text-fallback-readers";
+import {
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
-  parseJsonObject,
-  throwIfAborted,
-} from "./tool-loop-shared";
+} from "../runtime-policy/prompt-renderers";
+import { parseJsonObject, throwIfAborted } from "../tool-protocol";
 
 function packet(taskPrompt: string, outputContract = ""): RolePromptPacket {
   return {

@@ -9,7 +9,7 @@ import type {
   LLMToolCall,
 } from "@turnkeyai/llm-adapter/index";
 
-import { sliceUtf8 } from "./tool-loop-shared";
+import { sliceUtf8 } from "./tool-protocol";
 
 export interface ToolResultPruningLimits {
   historyMaxMessages: number;

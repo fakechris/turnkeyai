@@ -3,17 +3,18 @@ import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import { produceTaskIntentEnvelope } from "./runtime-facts/task-intent-producer";
 import { parseSessionToolResult } from "./session-tool-result-protocol";
+import { dedupeStrings, sliceUtf8 } from "./tool-protocol";
 import {
-  dedupeStrings,
   hasApprovedBrowserTimeoutContinuationPrompt,
   hasCoverageTimeoutContinuationPrompt,
+} from "./runtime-facts/repair-marker-facts";
+import {
   hasExecutedSessionsSend,
   readBrowserRecoverySummary,
   readCompletedSessionEvidence,
   readInlineBrowserRecoverySummary,
-  sliceUtf8,
-  type SubAgentToolTimeoutSignal,
-} from "./tool-loop-shared";
+} from "./runtime-facts/text-fallback-readers";
+import type { SubAgentToolTimeoutSignal } from "./runtime-facts/text-fallback-readers";
 import type { RoleToolExecutionResult } from "./tool-use";
 
 export interface CompletedSessionEvidenceSummary {

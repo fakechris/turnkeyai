@@ -37,10 +37,10 @@ import type {
 // Stage 8 engine cleanup — ToolCallNormalizer.
 //
 // Authority: own syntactic and routing normalization before execution and
-// preserve the current ENGINE_TOOL_CALL_NORMALIZATION_ORDER. The shared
-// compatibility helpers live in ../tool-loop-shared so the inline reference loop
-// and this engine module call the same implementation without importing from
-// each other.
+// preserve the current ENGINE_TOOL_CALL_NORMALIZATION_ORDER. Shared helpers now
+// live in concrete fact/render/protocol modules so the inline reference loop and
+// this engine module call the same implementation without importing from each
+// other.
 export const TOOL_CALL_NORMALIZER_MODULE = "tool-call-normalizer" as const;
 
 /**

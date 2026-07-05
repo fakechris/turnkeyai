@@ -64,7 +64,7 @@ import {
   throwIfAborted,
   toNativeToolProgressTrace,
   toNativeToolResultTrace,
-} from "./tool-loop-shared";
+} from "./tool-protocol";
 import { shouldSerializeToolBatch } from "./react/predicates";
 
 export interface RoleToolExecutionInput {

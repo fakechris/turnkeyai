@@ -324,7 +324,6 @@ function activeRuntimeBoundarySourceFiles(): string[] {
 
 function coreFactExportSourceFiles(): string[] {
   return [
-    path.join(ROLE_RUNTIME_DIR, "tool-loop-shared.ts"),
     path.join(ROLE_RUNTIME_DIR, "task-facts-shared.ts"),
   ];
 }
@@ -2246,31 +2245,23 @@ test("active policy modules do not receive final-synthesis text views", () => {
   );
 });
 
-test("tool-loop-shared does not export renamed legacy fact helpers", () => {
-  const source = readFileSync(path.join(ROLE_RUNTIME_DIR, "tool-loop-shared.ts"), "utf8");
-  const offenders = exportedRuntimeNames(source).filter((name) =>
-    /^readLegacy[A-Za-z0-9_]+$/.test(name),
+test("tool-loop-shared facade is retired", () => {
+  assert.equal(
+    existsSync(path.join(ROLE_RUNTIME_DIR, "tool-loop-shared.ts")),
+    false,
+    "tool-loop-shared.ts must not return as a compatibility facade",
   );
+  const offenders: string[] = [];
+  for (const file of activeRuntimeBoundarySourceFiles()) {
+    const source = readFileSync(file, "utf8");
+    if (/from\s+["'][^"']*tool-loop-shared["']/.test(source)) {
+      offenders.push(path.relative(ROLE_RUNTIME_DIR, file));
+    }
+  }
   assert.deepEqual(
     offenders,
     [],
-    `tool-loop-shared must not retain renamed Stage 8 policy fact exports:\n${offenders.join("\n")}`,
-  );
-});
-
-test("tool-loop-shared remains a legacy facade, not an active fact owner", () => {
-  const source = readFileSync(path.join(ROLE_RUNTIME_DIR, "tool-loop-shared.ts"), "utf8");
-  const expected = [
-    'export * from "./tool-protocol";',
-    'export * from "./runtime-policy/prompt-renderers";',
-    'export * from "./runtime-policy/synthesis-visibility";',
-    'export * from "./runtime-facts/repair-marker-facts";',
-    'export * from "./runtime-facts/text-fallback-readers";',
-  ];
-  assert.deepEqual(
-    source.trim().split(/\n/),
-    expected,
-    "tool-loop-shared must stay a compatibility facade over concrete split modules",
+    `active runtime code must import concrete split modules, not tool-loop-shared:\n${offenders.join("\n")}`,
   );
 });
 
@@ -2301,6 +2292,6 @@ test("core fact helper allowlist entries point at real exports", () => {
   assert.deepEqual(
     missing,
     [],
-    `core fact helper allowlist entries must be real tool-loop-shared or task-facts-shared exports:\n${missing.join("\n")}`,
+    `core fact helper allowlist entries must be real task-facts-shared exports:\n${missing.join("\n")}`,
   );
 });

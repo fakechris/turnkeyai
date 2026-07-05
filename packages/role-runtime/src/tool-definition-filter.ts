@@ -10,7 +10,7 @@ import {
   continuationRequestPrefersResumableSession,
   extractLatestUserContinuationText,
   isExplicitSessionContinuationRequest,
-} from "./tool-loop-shared";
+} from "./runtime-facts/text-fallback-readers";
 
 const FOCUSED_MEMORY_RECALL_TOOL_NAMES = new Set([
   "memory_search",
