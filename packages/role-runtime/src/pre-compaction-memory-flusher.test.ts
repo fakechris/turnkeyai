@@ -5,9 +5,93 @@ import type { ThreadMemoryRecord, ThreadMemoryStore } from "@turnkeyai/core-type
 import type { GenerateTextInput } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
-import { DefaultPreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
+import {
+  DefaultPreCompactionMemoryFlusher,
+  flushPreCompactionMemorySafely,
+  type PreCompactionMemoryFlusher,
+} from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
 import type { RoleActivationInput } from "@turnkeyai/core-types/team";
+
+test("flushPreCompactionMemorySafely invokes configured flusher with selection and diagnostics", async () => {
+  const calls: Array<Parameters<PreCompactionMemoryFlusher["flush"]>[0]> = [];
+  const result = await flushPreCompactionMemorySafely({
+    flusher: {
+      async flush(input) {
+        calls.push(input);
+        return {
+          status: "written",
+          preferences: ["Prefer terse updates."],
+          constraints: [],
+          longTermNotes: [],
+        };
+      },
+    },
+    activation: buildActivation(),
+    packet: buildPacket(),
+    selection: {
+      modelId: "model-1",
+      modelChainId: "chain-1",
+    },
+    diagnostics: {
+      messageCount: 1,
+      promptChars: 2,
+      promptBytes: 3,
+      metadataBytes: 4,
+      artifactCount: 5,
+      toolCount: 6,
+      toolSchemaBytes: 7,
+      toolResultCount: 8,
+      toolResultBytes: 9,
+      inlineAttachmentBytes: 10,
+      inlineImageCount: 11,
+      inlineImageBytes: 12,
+      inlinePdfCount: 13,
+      inlinePdfBytes: 14,
+      multimodalPartCount: 15,
+      totalSerializedBytes: 16,
+      overLimitKeys: ["promptBytes"],
+    },
+  });
+
+  assert.deepEqual(result, {
+    status: "written",
+    preferences: ["Prefer terse updates."],
+    constraints: [],
+    longTermNotes: [],
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.modelId, "model-1");
+  assert.equal(calls[0]!.modelChainId, "chain-1");
+  assert.equal(calls[0]!.reason, "request_envelope_overflow");
+  assert.equal(calls[0]!.diagnostics?.promptBytes, 3);
+});
+
+test("flushPreCompactionMemorySafely swallows flusher failures", async () => {
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    const result = await flushPreCompactionMemorySafely({
+      flusher: {
+        async flush() {
+          throw new Error("memory backend unavailable");
+        },
+      },
+      activation: buildActivation(),
+      packet: buildPacket(),
+      selection: {},
+    });
+
+    assert.equal(result, undefined);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.[0], "pre-compaction memory flush failed");
+  } finally {
+    console.error = originalError;
+  }
+});
 
 test("pre-compaction memory flusher asks the model and writes durable thread memory", async () => {
   const gatewayInputs: GenerateTextInput[] = [];

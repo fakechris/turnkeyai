@@ -169,7 +169,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           });
           state.lastText = generated.text;
           let toolCalls = generated.toolCalls ?? [];
-          if (onToolCalls) toolCalls = onToolCalls(toolCalls, round, ctx) ?? [];
+          if (onToolCalls) toolCalls = onToolCalls(toolCalls, state, ctx) ?? [];
           // Pending-call closeouts fire before the round is recorded/executed, so
           // a terminating reason leaves this round out of the trace (matching a
           // host loop that closes out on the pending calls without executing).
@@ -300,7 +300,11 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           const executed: ToolResult[] = hooks.runToolBatch
             ? await hooks.runToolBatch(executable, runOne, toolCtx)
             : await Promise.all(executable.map(runOne));
-          const results = [...rejected, ...executed];
+          // Executed results first, then onBeforeExecute's rejected results. A host
+          // that rejects over-cap calls (e.g. an execution-cap that keeps the first N
+          // and skips the rest) appends the skipped results AFTER the executed ones;
+          // this order is the parity contract such a host relies on.
+          const results = [...executed, ...rejected];
           for (const result of results) {
             yield emit({ type: "tool_result", round, result });
           }

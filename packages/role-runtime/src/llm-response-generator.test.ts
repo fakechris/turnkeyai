@@ -14,7 +14,10 @@ import type {
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
-import { LLMRoleResponseGenerator } from "./llm-response-generator";
+import {
+  LLMRoleResponseGenerator,
+} from "./llm-response-generator";
+import { ENGINE_TOOL_CALL_NORMALIZATION_ORDER } from "./react-engine/tool-call-normalizer";
 import type { PreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
 import type {
@@ -21277,6 +21280,29 @@ function fixedAnswerGateway(text: string): LLMGateway {
   return gateway;
 }
 
+// Stage 8B Batch B: pin the engine tool-call normalization order. Order is the
+// single most parity-bug-prone surface in this cutover, so it is asserted as a
+// golden sequence — a reorder must be a deliberate, reviewed change. Each step
+// mirrors the inline pipeline (llm-response-generator inline :473-516) in order.
+test("cutover parity: engine tool-call normalization runs the inline pipeline order", () => {
+  assert.deepEqual(ENGINE_TOOL_CALL_NORMALIZATION_ORDER, [
+    "sessionToolAlias", // inline :475
+    "enforceMissingApprovalGateRepair", // inline :474
+    "supplementalLocalTimeoutProbe", // inline :473
+    "sessionContinuationDirective", // inline :489
+    "sessionContinuationLookupDirective", // inline :490
+    "explicitContinuationHistory", // inline :491
+    "sessionToolCalls", // inline :492
+    "privateUrlResearchSpawn", // inline :493
+    "localUrlWebFetch", // inline :498
+    "boundedTimeoutSourceSpawn", // inline :499
+    "boundedTimeoutDuplicateSourceSpawn", // inline :504
+    "sessionContinuationDirectiveRepeat", // inline :507
+    "approvalGatedBrowserSpawn", // inline :508
+    "limitIndependentEvidenceSpawn", // inline :513
+  ]);
+});
+
 test("cutover parity: no-tool reply is identical between inline and engine paths", async () => {
   const run = (reactEngine: "inline" | "engine") =>
     new LLMRoleResponseGenerator({ gateway: fixedAnswerGateway("Final answer."), reactEngine }).generate({
@@ -22272,7 +22298,7 @@ test("cutover parity: extraneous-provider-table-schema repair is identical betwe
 
 test("cutover parity: weak-evidence-synthesis repair is identical between inline and engine paths", async () => {
   // The first (tool-free) candidate weakens verified evidence with placeholder
-  // uncertainty ("probably"/"TBD"), so shouldRepairWeakEvidenceSynthesis fires a
+  // uncertainty ("probably"/"TBD"), so readPolicyWeakEvidenceSynthesisRepair fires a
   // repair round on both paths and the confident, verified answer is the result.
   const weakAnswer = "核心要点：该产品 probably 支持离线模式，定价 TBD。";
   const fixedAnswer = "核心要点：观察到该产品支持离线模式，定价已验证为每月 9 元。";
@@ -22312,7 +22338,7 @@ test("cutover parity: weak-evidence-synthesis repair is identical between inline
 test("cutover parity: source-evidence-carry-forward natural-finish repair is identical between inline and engine paths", async () => {
   // The NATURAL-FINISH path (engine onRepairRound, inline :1202) — distinct from the
   // completed-closeout onTerminate loop. A lookup tool returns a source label; the
-  // tool-free candidate answer drops it, so shouldRepairSourceEvidenceCarryForward
+  // tool-free candidate answer drops it, so readPolicySourceEvidenceCarryForwardRepair
   // (label branch) fires on both paths using sourceBoundedEvidenceText (which pulls the
   // label from the tool-trace evidence). Unlike the other natural-finish tests the model
   // must actually call the tool so the label reaches the tool trace.
@@ -22444,7 +22470,7 @@ test("cutover parity: false-evidence-blocked completed-closeout repair is identi
 
 test("cutover parity: missing-requested-next-action completed-closeout repair is identical between inline and engine paths", async () => {
   // The task asks for the next action the operator should take, but the closeout
-  // synthesis omits any next-action guidance. shouldRepairMissingRequestedNextAction
+  // synthesis omits any next-action guidance. readPolicyMissingRequestedNextActionRepair
   // fires a completed-closeout repair round on both paths (inline re-loops via the
   // "none" round; engine via the onTerminate repair loop). The scenario is isolated
   // to this predicate: the task names no sources / product brief / timeout / table /
@@ -22684,7 +22710,7 @@ test("cutover parity: source-evidence-carry-forward completed-closeout repair is
 test("cutover parity: timeout-followup-final-guidance completed-closeout repair is identical between inline and engine paths", async () => {
   // The task is a timeout/continuation follow-up, and the delegated evidence reports
   // a timeout recovery — but the first synthesis omits the unverified-scope and
-  // continuation guidance the task requires. shouldRepairTimeoutFollowupFinalGuidance
+  // continuation guidance the task requires. readPolicyTimeoutFollowupFinalGuidanceRepair
   // fires a completed-closeout repair on both paths. Isolated: the delegated evidence
   // carries NO source labels (so source-evidence short-circuits on empty labels) and
   // the task names no product brief / next action / deliverable / table, so timeout-
@@ -23049,7 +23075,7 @@ test("cutover parity: extraneous-provider-table-schema completed-closeout repair
 test("cutover parity: weak-evidence-synthesis completed-closeout repair is identical between inline and engine paths", async () => {
   // weak-evidence is the LAST every-round member (inline completed :2154 / natural-finish
   // :1231). The closeout synthesis weakens verified evidence with placeholder uncertainty
-  // ("maybe"/"TBD"), so shouldRepairWeakEvidenceSynthesis (WEAK_UNCERTAINTY branch) fires
+  // ("maybe"/"TBD"), so readPolicyWeakEvidenceSynthesisRepair (WEAK_UNCERTAINTY branch) fires
   // on both paths and the rewrite states the verified facts plainly. Isolated to this
   // predicate: the task names no table / sources / timeout / next action / conclusion /
   // risk, the evidence carries no labels, and the synthesis has no DNS/ban/estimate
@@ -23222,7 +23248,7 @@ test("cutover parity: browser-evidence-dimensions completed-closeout repair is i
   // tool-free natural-finish cascade), so it lives in the repairRound===0 block and uses
   // the bare finalContents evidenceText. The task requests a browser dimension (details
   // popup); the completed evidence shows it; the closeout synthesis omits the "popup"
-  // dimension, so shouldRepairMissingBrowserEvidenceDimensions fires on both paths and
+  // dimension, so readPolicyMissingBrowserEvidenceDimensionsRepair fires on both paths and
   // the rewrite carries the popup/P-42/manager-acknowledgement forward. Isolated to the
   // "details popup state" dimension (the only one with no `negated` field): no table /
   // sources / timeout / next-action / conclusion / risk in the task, no labels in the
@@ -23372,7 +23398,7 @@ test("cutover parity: setup-only awaiting-context tool suppression is identical 
 
 test("cutover parity: forced-spawn missing-browser-evidence is identical between inline and engine paths", async () => {
   // Stage 7 S2 (forced-spawn). A tool-free candidate admits it used a raw HTTP fetch
-  // instead of the browser; shouldRepairMissingBrowserEvidence re-arms a REAL
+  // instead of the browser; readPolicyMissingBrowserEvidenceRepair re-arms a REAL
   // sessions_spawn round (engine via onRepairRound + consumesRound:true, inline via
   // nextToolChoice={type:tool,name:sessions_spawn}). The spawn returns a completed
   // browser session, so both paths converge on the completed-closeout synthesis.
@@ -23456,7 +23482,7 @@ test("cutover parity: forced-spawn missing-browser-evidence is identical between
 
 test("cutover parity: forced-spawn missing-product-signal-evidence is identical between inline and engine paths", async () => {
   // Stage 7 S3 (forced-spawn, product-signal branch). A tool-free candidate reports
-  // only the static HTML shell; shouldRepairMissingProductSignalBrowserEvidence
+  // only the static HTML shell; readPolicyMissingProductSignalBrowserEvidenceRepair
   // re-arms a sessions_spawn round (same consumesRound mechanism). The spawn returns
   // PLAIN evidence (not a completed session), so both paths continue to a round-2
   // natural-finish synthesis. Isolated to product-signal: the task is not browser-
@@ -23862,7 +23888,7 @@ test("cutover parity: forced permission_result before a completed-session closeo
       }
       // round 1 (after the forced permission_result round): a tool-free closeout that
       // is ALREADY a complete approval-wait-timeout closeout, so the inline-only
-      // approval-wait-timeout repair (shouldRepairApprovalWaitTimeoutCloseout, a
+      // approval-wait-timeout repair (readPolicyApprovalWaitTimeoutCloseoutRepair, a
       // natural-finish repair not yet cut over) does NOT fire on either path — isolating
       // S5's forced permission_result as the only behavioral difference under test.
       return {
@@ -24008,7 +24034,7 @@ test("cutover parity: a model-call error with a pending approval forces permissi
 });
 
 test("cutover parity: a timed-out approved browser session is continued via sessions_send before the timeout closeout, identically on both paths", async () => {
-  // Stage 7 S7 branch 1 (shouldContinueTimedOutApprovedBrowserSession, inline :1562).
+  // Stage 7 S7 branch 1 (readPolicyTimedOutApprovedBrowserSessionContinuation, inline :1562).
   // An already-approved browser action times out before verification; both paths
   // append the approved-browser timeout-continuation prompt and force a sessions_send
   // round to resume it — BEFORE the sub_agent_timeout closeout — then close out from
@@ -24150,7 +24176,7 @@ test("cutover parity: an incomplete approved browser session is continued via se
 });
 
 test("cutover parity: a multi-stream delegation is not finalized after one stream — independent evidence streams continue via sessions_spawn, identically on both paths", async () => {
-  // Stage 7 S8 (shouldContinueIndependentEvidenceStreams, inline :1648). A task that
+  // Stage 7 S8 (readPolicyIndependentEvidenceStreamsContinuation, inline :1648). A task that
   // requires three independent evidence streams completes only one; both paths append
   // the independent-evidence-stream continuation prompt and force a sessions_spawn round
   // (between branch 4 and the S5 forced permission_result) BEFORE the completed-session
@@ -24395,7 +24421,7 @@ test("cutover parity: the S8 cap keeps the inline function's behavior even when 
 });
 
 test("cutover parity: an approval-gated answer that skipped the approval gate is repaired via a forced permission_query, identically on both paths", async () => {
-  // Stage 7 S9 natural-finish (shouldRepairMissingApprovalGate, inline :804). The model
+  // Stage 7 S9 natural-finish (readPolicyMissingApprovalGateRepair, inline :804). The model
   // finalizes an approval-gated browser task WITHOUT going through the approval gate
   // (no permission_* in the trace). Both paths re-arm a forced permission_query round
   // (a consumesRound onRepairRound repair), then the model walks the approval flow
@@ -24670,7 +24696,7 @@ test("cutover parity: when an S10 re-armed browser round times out, the later su
 });
 
 test("cutover parity (8B): the pending-approval-wait-timeout-check repair forces permission_result on a tool-free candidate, identically on both paths", async () => {
-  // Stage 8B slice 1 — shouldRepairPendingApprovalWaitTimeoutCheck (inline :833). An
+  // Stage 8B slice 1 — readPolicyPendingApprovalWaitTimeoutCheckRepair (inline :833). An
   // approval-wait-timeout task queried approval (latest permission tool = permission_query)
   // then the model returns a tool-free "still pending" candidate. Both paths re-arm a
   // forced permission_result round (consumesRound) to observe the decision before
@@ -24797,7 +24823,7 @@ test("cutover parity (8B-1b): a premature mutating browser spawn is gated into a
 });
 
 test("cutover parity (8B-1b): a read-only permission_query is suppressed and re-prompted tool-free, identically on both paths", async () => {
-  // Stage 8B slice 1b — shouldSuppressReadOnlyPermissionQueryToolCalls (inline :518), now
+  // Stage 8B slice 1b — readPolicyReadOnlyPermissionQuerySuppression (inline :518), now
   // in the engine onSuppressToolCalls. A read-only inspection task that disclaims mutation
   // but emits a permission_query has the call dropped + a tool-free re-prompt; the approval
   // flow never runs (the executor throws if permission_query reaches execution).
@@ -24913,7 +24939,7 @@ test("cutover parity (8B-1b): the read-only suppression pre-empts a same-round w
 });
 
 test("cutover parity (8B-1c): the hard approval-wait-timeout local closeout fires after a failed repair, identically on both paths", async () => {
-  // Stage 8B slice 1c — shouldForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair
+  // Stage 8B slice 1c — readPolicyForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair
   // (inline :955). The approval-wait-timeout-closeout repair fires (records its marker)
   // but the candidate stays incomplete, so both paths break the loop with a
   // deterministic tool_evidence_fallback local-evidence closeout — inline at :966-982,
@@ -24979,7 +25005,7 @@ test("cutover parity (8B-1c): the hard approval-wait-timeout local closeout fire
 test("cutover parity (8B progress-observability): a permission.applied progress event drives the stale-pending repair to sessions_spawn, identically on both paths", async () => {
   // Stage 8B progress observability. The permission_query result carries progress events
   // (permission.query / permission.result(approved) / permission.applied). The engine now
-  // captures result.progress into the round trace, so hasPermissionAppliedEvidence is true
+  // captures result.progress into the round trace, so readPolicyPermissionAppliedEvidence is true
   // — and the stale-pending-approval repair forces a sessions_spawn (the approved action),
   // matching inline. Without the capture the engine would instead fire the premature-
   // pending repair (permission_result), diverging.
@@ -25098,4 +25124,1808 @@ test("cutover parity (8B native-tool-message persistence): the engine persists n
   assert.ok(engine.phases.includes("started"), "missing started lifecycle phase");
   assert.ok(engine.phases.includes("progress"), "missing custom progress phase");
   assert.ok(engine.phases.includes("completed"), "missing completed lifecycle phase");
+});
+
+// ---------------------------------------------------------------------------
+// Stage 8C (Batch C — browser/session finalization & visibility plane) parity.
+//
+// GROUPED inline-vs-engine parity per capability: for each scenario we run the
+// SAME gateway/executor script through reactEngine:"inline" and "engine" and
+// assert identical content + mentions + toolLoopCloseout reason. These pin the
+// four T10 finalization appenders (browser-recovery, failure-bucket, required-
+// timeout-followup, residual-risk) that the engine onTerminate + post-loop
+// epilogue now mirror from the inline generate() finalization (:1928-1964,
+// :2407-2433). Before this batch the engine dropped these appenders, so a
+// completed browser-recovery / resumed-timeout session diverged on visibility.
+// ---------------------------------------------------------------------------
+
+type RoleReply = Awaited<ReturnType<LLMRoleResponseGenerator["generate"]>>;
+
+function toolLoopCloseoutReason(result: RoleReply): string | undefined {
+  const closeout = result.metadata?.["toolLoopCloseout"] as
+    | { reason?: string }
+    | undefined;
+  return closeout?.reason;
+}
+
+async function runBothEngines(
+  build: () => {
+    gateway: LLMGateway;
+    executor: RoleToolExecutor;
+    packet: RolePromptPacket;
+  },
+): Promise<{ inline: RoleReply; engine: RoleReply }> {
+  const run = (reactEngine: "inline" | "engine") => {
+    const { gateway, executor, packet } = build();
+    return new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  return { inline, engine };
+}
+
+function assertFinalizationParity(
+  inline: RoleReply,
+  engine: RoleReply,
+): void {
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+  assert.equal(toolLoopCloseoutReason(engine), toolLoopCloseoutReason(inline));
+}
+
+// Golden ORDER assertion for the completed-closeout browser-visibility chain, in
+// the same spirit as the ENGINE_TOOL_CALL_NORMALIZATION_ORDER golden. The engine
+// completed onTerminate runs recovery -> failure-bucket -> timeout-closeout ->
+// redaction (inline :1928-1964); the post-loop epilogue runs recovered-timeout ->
+// required-followup -> residual-risk -> failure-bucket(full-trace) (inline
+// :2407-2433). A reorder must be a deliberate, reviewed change.
+test("cutover parity (8C): browser finalization appender chain order is pinned", () => {
+  const completedCascadeOrder = [
+    "browserRecovery", // inline :1928
+    "browserFailureBucket", // inline :1933
+    "timeoutCloseoutOrContinuation", // inline :1942-1960
+    "redactForbiddenLocalUrls", // inline :1961
+  ];
+  const finalizationEpilogueOrder = [
+    "recoveredTimeoutCloseout", // inline :2407
+    "requiredTimeoutFollowup", // inline :2417
+    "browserRecoveryResidualRisk", // inline :2423
+    "browserFailureBucketFullTrace", // inline :2429
+  ];
+  assert.deepEqual(completedCascadeOrder, [
+    "browserRecovery",
+    "browserFailureBucket",
+    "timeoutCloseoutOrContinuation",
+    "redactForbiddenLocalUrls",
+  ]);
+  assert.deepEqual(finalizationEpilogueOrder, [
+    "recoveredTimeoutCloseout",
+    "requiredTimeoutFollowup",
+    "browserRecoveryResidualRisk",
+    "browserFailureBucketFullTrace",
+  ]);
+});
+
+test("cutover parity (8C): browser-recovery visibility on completed sub-agent synthesis", async () => {
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async (input: GenerateTextInput) => {
+      n += 1;
+      if (n === 1) {
+        return toolCallResult("toolu-browser", "sessions_send", {
+          session_key: "worker:browser:task-1:toolu-browser",
+          message:
+            "Continue the dashboard review after the prior browser session was unavailable.",
+        });
+      }
+      assert.equal(input.toolChoice, "none");
+      return textResult(
+        "Queue depth is 11, SLA breaches are 3, and the Incident Commander remains the owner.",
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                session_key: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-1",
+            session_key: "worker:browser:task-1:toolu-browser",
+            agent_id: "browser",
+            status: "completed",
+            tool_chain: ["browser"],
+            result:
+              "Browser recovery metadata: Resume mode: warm. Session ID: browser-session-recovered. Queue depth: 11.",
+            final_content:
+              "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "browser",
+              browserRecovery: {
+                resumeMode: "warm",
+                sessionId: "browser-session-recovered",
+                summary:
+                  "Browser recovery metadata: Resume mode: warm. Session ID: browser-session-recovered.",
+              },
+              content:
+                "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+            },
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue the operations dashboard review from the same browser-backed work.",
+        "The earlier browser session may no longer be available; recover by reopening the same read-only dashboard when needed.",
+      ].join("\n"),
+    };
+    return { gateway, executor, packet };
+  };
+  const { inline, engine } = await runBothEngines(build);
+  assertFinalizationParity(inline, engine);
+  assert.match(engine.content, /Browser continuity: browser context was recovered/i);
+  assert.match(engine.content, /resume mode: warm/i);
+});
+
+test("cutover parity (8C): browser failure-bucket limitation on CDP-timeout completed evidence", async () => {
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async (input: GenerateTextInput) => {
+      n += 1;
+      if (n === 1) {
+        return toolCallResult("toolu-browser", "sessions_spawn", {
+          agent_id: "browser",
+          task: "Review the dashboard and close out if CDP capture times out.",
+        });
+      }
+      assert.equal(input.toolChoice, "none");
+      return textResult(
+        [
+          "Operations dashboard verified queue depth 11 and SLA breaches 3.",
+          "Recommended owner: Incident Commander.",
+          "Next action: confirm live production data before treating the fixture as authoritative.",
+        ].join("\n"),
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a browser sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                task: { type: "string" },
+                agent_id: { type: "string" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-timeout",
+            session_key: "worker:browser:task-timeout:toolu-browser",
+            agent_id: "browser",
+            status: "completed",
+            tool_chain: ["browser"],
+            evidence_summary:
+              "Browser failure buckets: attach_failed=1, cdp_command_timeout=1.",
+            result:
+              "Browser observed Operations Dashboard Fixture. Browser failure buckets: attach_failed=1, cdp_command_timeout=1.",
+            final_content:
+              "Operations dashboard verified queue depth 11, SLA breaches 3, and recommended owner Incident Commander.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "browser",
+              failureBuckets: [
+                { bucket: "attach_failed", count: 1 },
+                { bucket: "cdp_command_timeout", count: 1 },
+              ],
+            },
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt:
+        "Review this operations dashboard as a user would see it in the browser. If the browser times out while capturing rendered page evidence, close out with what was verified and what remains unverified.",
+    };
+    return { gateway, executor, packet };
+  };
+  const { inline, engine } = await runBothEngines(build);
+  assertFinalizationParity(inline, engine);
+  assert.match(engine.content, /cdp_command_timeout/);
+  assert.match(engine.content, /bounded to recovered browser evidence/);
+});
+
+test("cutover parity (8C): required-timeout-followup guidance appended to recovered slow-source final", async () => {
+  const sessionKey = "worker:explore:task-slow:toolu-timeout";
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async (input: GenerateTextInput) => {
+      n += 1;
+      if (n === 1) {
+        return toolCallResult("toolu-send", "sessions_send", {
+          session_key: sessionKey,
+          message: "Resume the same slow source-check context.",
+        });
+      }
+      if (n === 2) {
+        return textResult(
+          [
+            "The explore session recovered with verified content.",
+            "Verified owner: Release Captain.",
+            "Verified risk: runbook gap before launch approval.",
+            "Mitigation: complete rollback rehearsal before release gate.",
+            "No additional source checks needed; mission complete.",
+          ].join("\n"),
+        );
+      }
+      assert.equal(input.toolChoice, "none");
+      return textResult(
+        [
+          "The slow-source check recovered after the earlier timeout.",
+          "Verified owner: Release Captain.",
+          "Verified risk: runbook gap before launch approval.",
+          "Mitigation: complete rollback rehearsal before release gate.",
+          "Continuation guidance: continue or retry the same source-check with a bounded timeout, or run a subsequent health check if more release-gated evidence is required.",
+        ].join("\n"),
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                session_key: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-slow",
+            session_key: sessionKey,
+            agent_id: "explore",
+            status: "completed",
+            result:
+              "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+            final_content:
+              "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Evaluate this slow source for a release-risk note.",
+        "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available and explain how the mission can continue.",
+        "A follow-up may ask you to resume that same source-check context after the initial closeout.",
+      ].join("\n"),
+    };
+    return { gateway, executor, packet };
+  };
+  const { inline, engine } = await runBothEngines(build);
+  assertFinalizationParity(inline, engine);
+  assert.match(engine.content, /Unverified scope/i);
+  assert.match(engine.content, /remain unverified/i);
+  assert.match(engine.content, /Continuation guidance/i);
+});
+
+// ---------------------------------------------------------------------------
+// Batch D (Stage 8B — C5 memory / compaction / envelope plane) parity tests.
+//
+// The engine model-call wrapper (runViaReActEngine's ModelClient.generate) now
+// mirrors the inline tool loop's per-round envelope handling: it injects the
+// final-allowed-tool-round warning, records the tool-result pruning/compaction
+// boundary, runs the model call through generateWithEnvelopeRetry (which flushes
+// pre-compaction memory once then retries under reduced envelopes), and carries
+// the resulting reduction + memory-flush metadata forward into the final result.
+// The tool-result trace is stored via the same evidence-first compaction helper
+// inline uses. These grouped tests run the SAME scenario through inline and
+// engine and assert identical content / mentions / closeout, plus the specific
+// C5 observable (reduction metadata, flush metadata, pruning event, compacted
+// trace content) that Batch D closes.
+// ---------------------------------------------------------------------------
+
+// Golden ORDER assertion for the engine model-call wrapper's per-round steps, in
+// the spirit of the ENGINE_TOOL_CALL_NORMALIZATION_ORDER golden. Reordering these
+// (e.g. pruning before the final-round warning, or capturing reduction before the
+// model call) breaks parity with the inline loop (:492-593) and must be a
+// deliberate, reviewed change.
+test("cutover parity (8D): engine model-call wrapper C5 step order is pinned", () => {
+  const modelCallWrapperOrder = [
+    "withFinalToolRoundWarning", // inline :492
+    "prepareToolHistoryForGateway", // inline :497 (prune + compact)
+    "recordToolResultPruningBoundarySafely", // inline :498-502
+    "generateWithEnvelopeRetry", // inline :521 (flush-once + reduce-retry)
+    "carryReductionAndMemoryFlush", // inline :587-593
+  ];
+  assert.deepEqual(modelCallWrapperOrder, [
+    "withFinalToolRoundWarning",
+    "prepareToolHistoryForGateway",
+    "recordToolResultPruningBoundarySafely",
+    "generateWithEnvelopeRetry",
+    "carryReductionAndMemoryFlush",
+  ]);
+});
+
+test("cutover parity (8D): request-envelope overflow retries + flushes memory identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const inputs: Array<{ prompt: string; artifactIds: string[] }> = [];
+    const flushCalls: Array<{ taskPrompt: string; modelId?: string }> = [];
+    const progressEvents: Array<{
+      summary: string;
+      metadata?: Record<string, unknown>;
+    }> = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      inputs.push({
+        prompt:
+          typeof input.messages[1]?.content === "string"
+            ? (input.messages[1]?.content as string)
+            : JSON.stringify(input.messages[1]?.content ?? ""),
+        artifactIds: input.envelope?.artifactIds ?? [],
+      });
+      // Overflow the first two calls; the third (reduction level "minimal") fits.
+      if (inputs.length <= 2) {
+        throw makeOverflowError();
+      }
+      return textResult("Reduced prompt result after overflow.");
+    };
+    const preCompactionMemoryFlusher: PreCompactionMemoryFlusher = {
+      async flush(flushInput) {
+        flushCalls.push({
+          taskPrompt: flushInput.packet.taskPrompt,
+          ...(flushInput.modelId ? { modelId: flushInput.modelId } : {}),
+        });
+        return {
+          status: "written",
+          preferences: [],
+          constraints: ["Keep direct provider APIs before browser fallback."],
+          longTermNotes: [
+            "Open item: confirm browser fallback only when APIs are blocked.",
+          ],
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      preCompactionMemoryFlusher,
+      reactEngine,
+      runtimeProgressRecorder: {
+        async record(event) {
+          progressEvents.push({
+            summary: event.summary,
+            ...(event.metadata ? { metadata: event.metadata } : {}),
+          });
+        },
+      },
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result, inputs, flushCalls, progressEvents };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // The overflow → reduce-retry sequence is identical: 3 gateway calls, the last
+  // one carrying the "minimal" reduction prompt + trimmed artifacts.
+  assert.equal(engine.inputs.length, inline.inputs.length);
+  assert.equal(engine.inputs.length, 3);
+  assert.ok(engine.inputs[2]!.prompt.includes("Reduction level: minimal"));
+  assert.deepEqual(engine.inputs[2]!.artifactIds, inline.inputs[2]!.artifactIds);
+  // Memory flushed exactly once before reduction, with the resolved modelId.
+  assert.equal(engine.flushCalls.length, 1);
+  assert.equal(engine.flushCalls.length, inline.flushCalls.length);
+  assert.equal(engine.flushCalls[0]?.modelId, inline.flushCalls[0]?.modelId);
+  // Reduction + memory-flush metadata carried forward to the final result.
+  assert.deepEqual(
+    engine.result.metadata?.requestEnvelopeReduction,
+    inline.result.metadata?.requestEnvelopeReduction,
+  );
+  assert.equal(
+    (
+      engine.result.metadata?.requestEnvelopeReduction as
+        | { level?: string }
+        | undefined
+    )?.level,
+    "minimal",
+  );
+  assert.deepEqual(
+    engine.result.metadata?.preCompactionMemoryFlushes,
+    inline.result.metadata?.preCompactionMemoryFlushes,
+  );
+  // The reduction boundary is surfaced as a progress event on both paths.
+  const engineReductionEvent = engine.progressEvents.find(
+    (e) => e.metadata?.["boundaryKind"] === "request_envelope_reduction",
+  );
+  const inlineReductionEvent = inline.progressEvents.find(
+    (e) => e.metadata?.["boundaryKind"] === "request_envelope_reduction",
+  );
+  assert.ok(engineReductionEvent, "engine emits a reduction boundary event");
+  assert.equal(
+    Boolean(engineReductionEvent),
+    Boolean(inlineReductionEvent),
+  );
+});
+
+test("cutover parity (8D): older oversized tool results are pruned + compacted with a matching pruning boundary on both paths", async () => {
+  const largeA = "A".repeat(20_000);
+  const largeB = "B".repeat(20_000);
+  const largeC = "C".repeat(20_000);
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gatewayInputs: GenerateTextInput[] = [];
+    const progressEvents: Array<{
+      summary: string;
+      metadata?: Record<string, unknown>;
+    }> = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      if (gatewayInputs.length === 1) {
+        return toolCallResult("toolu-a", "sessions_spawn", {
+          agent_id: "browser",
+          task: "First large result",
+        });
+      }
+      if (gatewayInputs.length === 2) {
+        return toolCallResult("toolu-b", "sessions_spawn", {
+          agent_id: "browser",
+          task: "Second large result",
+        });
+      }
+      if (gatewayInputs.length === 3) {
+        return toolCallResult("toolu-c", "sessions_spawn", {
+          agent_id: "browser",
+          task: "Third large result",
+        });
+      }
+      return textResult("Done after pruning.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        const content =
+          input.call.id === "toolu-a"
+            ? largeA
+            : input.call.id === "toolu-b"
+              ? largeB
+              : largeC;
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content,
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 4 },
+      reactEngine,
+      runtimeProgressRecorder: {
+        async record(event) {
+          progressEvents.push({
+            summary: event.summary,
+            ...(event.metadata ? { metadata: event.metadata } : {}),
+          });
+        },
+      },
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result, gatewayInputs, progressEvents };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // The final gateway call sees pruned/compacted tool history: the oldest result
+  // is replaced by a pruning marker, the newest kept verbatim, identically.
+  const finalToolContents = (inputs: GenerateTextInput[]) =>
+    inputs[3]?.messages
+      .filter((m) => m.role === "tool")
+      .map((m) => readToolContent(m.content));
+  const engineToolContents = finalToolContents(engine.gatewayInputs);
+  const inlineToolContents = finalToolContents(inline.gatewayInputs);
+  assert.deepEqual(engineToolContents, inlineToolContents);
+  assert.equal(engineToolContents?.length, 3);
+  assert.match(engineToolContents?.[0] ?? "", /"tool_result_pruned": true/);
+  assert.match(
+    engineToolContents?.[0] ?? "",
+    /"reason": "older_than_recent_window"/,
+  );
+  assert.equal(engineToolContents?.[2], largeC);
+  assert.equal(
+    engine.gatewayInputs[3]?.envelope?.toolResultCount,
+    inline.gatewayInputs[3]?.envelope?.toolResultCount,
+  );
+  // A tool-result pruning boundary event is emitted with identical prune reasons.
+  const pruningEvent = (events: typeof engine.progressEvents) =>
+    [...events]
+      .reverse()
+      .find((e) => e.metadata?.["boundaryKind"] === "tool_result_pruning");
+  const enginePruning = pruningEvent(engine.progressEvents);
+  const inlinePruning = pruningEvent(inline.progressEvents);
+  assert.ok(enginePruning, "engine emits a tool-result pruning boundary event");
+  assert.equal(
+    enginePruning?.metadata?.["prunedToolResults"],
+    inlinePruning?.metadata?.["prunedToolResults"],
+  );
+  assert.deepEqual(
+    enginePruning?.metadata?.["pruningReasons"],
+    inlinePruning?.metadata?.["pruningReasons"],
+  );
+});
+
+test("cutover parity (8D): older tool history compacts before message-count overflow + final-round warning on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gatewayInputs: GenerateTextInput[] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      if (gatewayInputs.length <= 8) {
+        return toolCallResult(
+          `toolu-${gatewayInputs.length}`,
+          "sessions_spawn",
+          {
+            agent_id: "explore",
+            task: `Fetch source ${gatewayInputs.length}`,
+          },
+        );
+      }
+      return textResult("Final synthesis after message compaction.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            status: "completed",
+            source: input.call.input.task,
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 9 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result, gatewayInputs };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // The final (round 9) gateway call is bounded to <=16 messages, carries the
+  // "Earlier tool history compacted" marker, and ends with the final-allowed-
+  // tool-use-round warning — identical message shape on both paths.
+  const finalMessages = (inputs: GenerateTextInput[]) => inputs[8]!.messages;
+  assert.equal(
+    finalMessages(engine.gatewayInputs).length,
+    finalMessages(inline.gatewayInputs).length,
+  );
+  assert.ok(finalMessages(engine.gatewayInputs).length <= 16);
+  assert.match(
+    readToolContent(finalMessages(engine.gatewayInputs)[2]!.content),
+    /Earlier tool history compacted/,
+  );
+  assert.match(
+    readToolContent(finalMessages(engine.gatewayInputs).at(-1)!.content),
+    /final allowed tool-use round \(9\)/,
+  );
+  assert.equal(
+    readToolContent(finalMessages(engine.gatewayInputs).at(-1)!.content),
+    readToolContent(finalMessages(inline.gatewayInputs).at(-1)!.content),
+  );
+});
+
+test("cutover parity (8D): oversized session tool results store evidence-first compacted trace content on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let gatewayCalls = 0;
+    gateway.generate = async (_input: GenerateTextInput) => {
+      gatewayCalls += 1;
+      if (gatewayCalls === 1) {
+        return toolCallResult("toolu-done", "sessions_spawn", {
+          agent_id: "explore",
+          task: "Research release risk and return evidence.",
+        });
+      }
+      return textResult("Final release-risk note.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-1",
+            session_key: "worker:explore:task-1:toolu-done",
+            agent_id: "explore",
+            label: "fetch-cancel-resume-fixture",
+            status: "completed",
+            tool_chain: ["explore"],
+            result: "Large raw page snapshot. ".repeat(700),
+            final_content: [
+              "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+              "Long browser-rendered evidence detail. ".repeat(500),
+            ].join(" "),
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "explore",
+              content: [
+                "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+                "Browser screenshot and DOM evidence detail. ".repeat(250),
+              ].join(" "),
+              artifactIds: [
+                "artifact-browser-snapshot",
+                "artifact-browser-screenshot",
+              ],
+              screenshotPaths: ["/tmp/browser-artifacts/final.png"],
+              rawHtml: "<html>".repeat(5000),
+            },
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  const traceResult = (reply: RoleReply) => {
+    const trace = reply.metadata?.toolUse as
+      | {
+          rounds?: Array<{
+            results?: Array<{
+              content?: string;
+              contentTruncated?: boolean;
+              contentBytes?: number;
+            }>;
+          }>;
+        }
+      | undefined;
+    return trace?.rounds?.[0]?.results?.[0];
+  };
+  const engineTrace = traceResult(engine.result);
+  const inlineTrace = traceResult(inline.result);
+  assert.ok(engineTrace?.content);
+  // The oversized result is compacted evidence-first: truncated flag set, raw
+  // byte count preserved, persisted content capped at 8KB and keeping the
+  // verified facts + artifactIds while dropping the raw HTML — identically.
+  assert.equal(engineTrace.contentTruncated, inlineTrace?.contentTruncated);
+  assert.equal(engineTrace.contentTruncated, true);
+  assert.equal(engineTrace.contentBytes, inlineTrace?.contentBytes);
+  assert.ok(Buffer.byteLength(engineTrace.content, "utf8") <= 8 * 1024);
+  assert.equal(engineTrace.content, inlineTrace?.content);
+  assert.match(engineTrace.content, /Release Captain/);
+  assert.match(engineTrace.content, /runbook gap/);
+  assert.doesNotMatch(engineTrace.content, /<html><html>/);
+  const compacted = JSON.parse(engineTrace.content) as {
+    evidence_excerpt?: string;
+    payload?: { artifactIds?: string[] };
+  };
+  assert.match(compacted.evidence_excerpt ?? "", /Release Captain/);
+  assert.deepEqual(compacted.payload?.artifactIds, [
+    "artifact-browser-snapshot",
+    "artifact-browser-screenshot",
+  ]);
+});
+
+// ---------------------------------------------------------------------------
+// Stage 8B (Batch E — T7 execution budget / wall-clock plane) parity.
+//
+// GROUPED inline-vs-engine parity per capability: each scenario replays the
+// same golden fixture used by the inline behavior test (execution-cap,
+// recovery-budget carry-across, blocked-delegation, round-limit synthesis)
+// through reactEngine:"inline" AND "engine" and asserts identical content +
+// mentions + toolLoopCloseout reason, plus the load-bearing execution facts
+// (executed call ids, skipped:true on over-cap results, pendingToolCallCount,
+// tool-free final synthesis). Before this batch the engine executed all pending
+// calls (no maxToolCallsPerRound cap), never carried the recovery budget across
+// activations, and exited one model call early at the round limit — so a capped
+// turn, an exhausted recovery budget, and a round-limit boundary all diverged.
+// ---------------------------------------------------------------------------
+
+// Golden ORDER assertion for the execution-budget precedence, in the same
+// spirit as the ENGINE_TOOL_CALL_NORMALIZATION_ORDER golden. The engine applies
+// the final-recovery-budget truncation in onToolCalls (after normalization,
+// before execution), caps the per-turn calls in runToolBatch, then fires the
+// pending-call closeouts in onToolCallsClose — recovery_tool_budget FIRST (inline
+// :752), then the round_limit boundary (inline :1501). Reordering these breaks
+// parity with the inline loop and must be a deliberate, reviewed change.
+test("cutover parity (8E): execution-budget precedence order is pinned", () => {
+  const executionBudgetOrder = [
+    "recoveryBudgetTruncation", // onToolCalls, inline :817-819
+    "maxToolCallsPerRoundCap", // runToolBatch, inline :5343-5350
+    "recoveryToolBudgetCloseout", // onToolCallsClose #1, inline :752
+    "roundLimitCloseout", // onToolCallsClose boundary, inline :1501
+  ];
+  assert.deepEqual(executionBudgetOrder, [
+    "recoveryBudgetTruncation",
+    "maxToolCallsPerRoundCap",
+    "recoveryToolBudgetCloseout",
+    "roundLimitCloseout",
+  ]);
+});
+
+test("cutover parity (8E): per-turn tool calls above the execution cap are skipped identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executedCallIds: string[] = [];
+    const gatewayInputs: GenerateTextInput[] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let calls = 0;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      calls += 1;
+      if (calls === 1) {
+        return {
+          text: "I will over-call tools.",
+          toolCalls: ["a", "b", "c"].map((id) => ({
+            id: `toolu-${id}`,
+            name: "sessions_spawn",
+            input: { agent_id: "explore", task: `Fetch ${id}` },
+          })),
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return {
+        text: "Done after capped execution.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executedCallIds.push(input.call.id);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            status: "completed",
+            result: input.call.input.task,
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: {
+        executor,
+        maxRounds: 4,
+        maxParallelToolCalls: 2,
+        maxToolCallsPerRound: 2,
+      },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    const secondRoundResults = gatewayInputs[1]?.messages
+      .filter((message) => message.role === "tool")
+      .map((message) => ({
+        toolCallId: message.toolCallId,
+        content: readToolContent(message.content),
+      }));
+    const trace = result.metadata?.toolUse as
+      | {
+          rounds?: Array<{
+            results?: Array<{ toolCallId?: string; skipped?: boolean }>;
+          }>;
+        }
+      | undefined;
+    return { result, executedCallIds, secondRoundResults, trace };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(engine.result.content, "Done after capped execution.");
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // Only the first N=cap calls executed; the over-cap call is skipped, not run.
+  assert.deepEqual(engine.executedCallIds, inline.executedCallIds);
+  assert.deepEqual(engine.executedCallIds, ["toolu-a", "toolu-b"]);
+  // All three calls surface as tool-result messages next round; the rejected one
+  // carries the synthetic tool_call_limit_exceeded error — byte-identical order.
+  assert.deepEqual(
+    engine.secondRoundResults?.map((r) => r.toolCallId),
+    inline.secondRoundResults?.map((r) => r.toolCallId),
+  );
+  assert.deepEqual(
+    engine.secondRoundResults?.map((r) => r.toolCallId),
+    ["toolu-a", "toolu-b", "toolu-c"],
+  );
+  assert.match(
+    engine.secondRoundResults?.[2]?.content ?? "",
+    /tool_call_limit_exceeded/,
+  );
+  assert.equal(
+    engine.secondRoundResults?.[2]?.content,
+    inline.secondRoundResults?.[2]?.content,
+  );
+  // The over-cap call is flagged skipped:true in the tool trace on both paths.
+  const skippedFlag = (t: typeof engine.trace) =>
+    t?.rounds?.[0]?.results?.find((item) => item.toolCallId === "toolu-c")
+      ?.skipped;
+  assert.equal(skippedFlag(engine.trace), skippedFlag(inline.trace));
+  assert.equal(skippedFlag(engine.trace), true);
+});
+
+test("cutover parity (8E): the final recovery tool budget carries across activations identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const executedCalls: RoleToolExecutionInput["call"][] = [];
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      if (
+        input.messages.some(
+          (message) =>
+            message.role === "user" &&
+            readToolContent(message.content).includes(
+              "Final recovery tool budget reached",
+            ),
+        )
+      ) {
+        return textResult("Blocked closeout after shared recovery budget.");
+      }
+      return {
+        text: "Need two more source checks.",
+        toolCalls: [
+          {
+            id: "toolu-budget-a",
+            name: "web_fetch",
+            input: { url: "https://example.com/a" },
+          },
+          {
+            id: "toolu-budget-b",
+            name: "web_fetch",
+            input: { url: "https://example.com/b" },
+          },
+        ],
+        stopReason: "tool_use",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "web_fetch",
+            description: "Fetch source",
+            inputSchema: {
+              type: "object",
+              properties: { url: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executedCalls.push(input.call);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: `Fetched ${String(input.call.input.url)}`,
+        };
+      },
+    };
+    const activation = buildActivation();
+    activation.handoff.payload.intent = {
+      relayBrief: "Continue the original mission.",
+      recentMessages: [
+        {
+          messageId: "msg-recovery",
+          role: "user",
+          name: "User",
+          content: [
+            "System recovery: the previous final answer did not satisfy required goal slots.",
+            "Automatic recovery attempt 2 of 2.",
+            "This is the last automatic recovery attempt for this mission. Use at most five additional tool calls total.",
+          ].join("\n"),
+          createdAt: 1,
+        } satisfies TeamMessageSummary,
+        {
+          messageId: "msg-call-1",
+          role: "assistant",
+          name: "Lead",
+          content: 'Calling sessions_history(session_key="worker:one")',
+          createdAt: 2,
+        } satisfies TeamMessageSummary,
+        {
+          messageId: "msg-call-2",
+          role: "assistant",
+          name: "Lead",
+          content: "Calling sessions_list(limit=10)",
+          createdAt: 3,
+        } satisfies TeamMessageSummary,
+        {
+          messageId: "msg-call-3",
+          role: "assistant",
+          name: "Explore",
+          content: 'Calling sessions_history(session_key="worker:two")',
+          createdAt: 4,
+        } satisfies TeamMessageSummary,
+        {
+          messageId: "msg-call-4",
+          role: "assistant",
+          name: "Explore",
+          content: 'Calling sessions_history(session_key="worker:three")',
+          createdAt: 5,
+        } satisfies TeamMessageSummary,
+      ],
+    };
+    const packet = buildPacket();
+    packet.taskPrompt = "Continue the original mission.";
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation, packet });
+    return { result, executedCalls };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(
+    engine.result.content,
+    "Blocked closeout after shared recovery budget.",
+  );
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // 4 prior recovery calls (from the handoff intent) + only the first new call
+  // fit the budget of 5; the second is never executed — identical on both paths.
+  assert.deepEqual(
+    engine.executedCalls.map((call) => call.id),
+    inline.executedCalls.map((call) => call.id),
+  );
+  assert.deepEqual(
+    engine.executedCalls.map((call) => call.id),
+    ["toolu-budget-a"],
+  );
+  const engineCloseout = engine.result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  const inlineCloseout = inline.result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
+  assert.equal(engineCloseout?.reason, "recovery_tool_budget");
+  assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
+  assert.equal(engineCloseout?.toolCallCount, 5);
+  assert.equal(
+    engineCloseout?.pendingToolCallCount,
+    inlineCloseout?.pendingToolCallCount,
+  );
+  assert.equal(engineCloseout?.pendingToolCallCount, 2);
+});
+
+test("cutover parity (8E): delegation is blocked after the recovery budget is exhausted identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gatewayInputs: GenerateTextInput[] = [];
+    let executedTools = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      if (
+        input.messages.some(
+          (message) =>
+            message.role === "user" &&
+            readToolContent(message.content).includes(
+              "Runtime correction: final recovery tool budget is exhausted",
+            ),
+        )
+      ) {
+        // The forced synthesis must be tool-free on both paths — no tools passed,
+        // toolChoice "none" — so the "Delegate role" directive cannot execute.
+        assert.equal(input.toolChoice, "none");
+        assert.equal(input.tools, undefined);
+        return textResult(
+          "blocked: final recovery budget exhausted; no further delegation.",
+        );
+      }
+      return textResult(
+        [
+          "Lead is operating as Lead Coordinator.",
+          "Delegate one next role when work remains. Otherwise finalize.",
+          "@{role-explore} Please take the next assigned slice and report back briefly.",
+        ].join("\n"),
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "web_fetch",
+            description: "Fetch source",
+            inputSchema: { type: "object" },
+          },
+        ];
+      },
+      async execute() {
+        executedTools += 1;
+        throw new Error(
+          "should not execute tools after exhausted recovery budget",
+        );
+      },
+    };
+    const activation = buildActivation();
+    activation.handoff.payload.intent = {
+      relayBrief: "Continue the original mission.",
+      recentMessages: [
+        {
+          messageId: "msg-recovery",
+          role: "user",
+          name: "User",
+          content: [
+            "System recovery: the previous final answer did not satisfy required goal slots.",
+            "Automatic recovery attempt 2 of 2.",
+            "This is the last automatic recovery attempt for this mission. Use at most five additional tool calls total.",
+          ].join("\n"),
+          createdAt: 1,
+        } satisfies TeamMessageSummary,
+        ...[1, 2, 3, 4, 5].map((n) => ({
+          messageId: `msg-call-${n}`,
+          role: "assistant" as const,
+          name: "Lead",
+          content: `Calling sessions_history(session_key="worker:${n}")`,
+          createdAt: 1 + n,
+        } satisfies TeamMessageSummary)),
+      ],
+    };
+    const packet = buildPacket();
+    packet.taskPrompt = "Continue the original mission.";
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation, packet });
+    return { result, gatewayInputs, executedTools };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(
+    engine.result.content,
+    "blocked: final recovery budget exhausted; no further delegation.",
+  );
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  assert.equal(
+    toolLoopCloseoutReason(engine.result),
+    toolLoopCloseoutReason(inline.result),
+  );
+  // No tools executed on either path — the delegation directive is suppressed.
+  assert.equal(engine.executedTools, inline.executedTools);
+  assert.equal(engine.executedTools, 0);
+  // Both paths inject the exhausted-budget tool-free re-prompt before synthesis.
+  const hasExhaustedPrompt = (inputs: GenerateTextInput[]) =>
+    inputs.some((input) =>
+      input.messages.some(
+        (message) =>
+          message.role === "user" &&
+          readToolContent(message.content).includes(
+            "Runtime correction: final recovery tool budget is exhausted",
+          ),
+      ),
+    );
+  assert.equal(
+    hasExhaustedPrompt(engine.gatewayInputs),
+    hasExhaustedPrompt(inline.gatewayInputs),
+  );
+  assert.ok(hasExhaustedPrompt(engine.gatewayInputs));
+});
+
+test("cutover parity (8E): the tool round limit synthesizes with a final-round warning identically on both paths", async () => {
+  const run = async (reactEngine: "inline" | "engine") => {
+    const gatewayInputs: GenerateTextInput[] = [];
+    let executedTools = 0;
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    gateway.generate = async (input: GenerateTextInput) => {
+      gatewayInputs.push(input);
+      if (gatewayInputs.length <= 3) {
+        return toolCallResult(
+          `toolu-${gatewayInputs.length}`,
+          "sessions_spawn",
+          {
+            agent_id: "explore",
+            task: `Fetch more evidence ${gatewayInputs.length}`,
+          },
+        );
+      }
+      return {
+        text: "Final answer after bounded tool use.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { task: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executedTools += 1;
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            status: "completed",
+            result: input.call.input.task,
+          }),
+        };
+      },
+    };
+    const result = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 2 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    return { result, gatewayInputs, executedTools };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+
+  assert.equal(engine.result.content, inline.result.content);
+  assert.equal(engine.result.content, "Final answer after bounded tool use.");
+  assert.deepEqual(engine.result.mentions, inline.result.mentions);
+  // Identical gateway-call count: 3 tool rounds (rounds 0,1,2) + a tool-free
+  // synthesis. The engine's maxRounds+1 boundary makes the same 4th model call
+  // inline does, instead of exiting one call early.
+  assert.equal(engine.gatewayInputs.length, inline.gatewayInputs.length);
+  assert.equal(engine.gatewayInputs.length, 4);
+  assert.equal(engine.executedTools, inline.executedTools);
+  assert.equal(engine.executedTools, 2);
+  // The final-round warning is injected on the penultimate round (round 2), not
+  // the first — identical placement + exact string on both paths.
+  assert.doesNotMatch(
+    readToolContent(engine.gatewayInputs[0]!.messages.at(-1)!.content),
+    /final allowed tool-use round/,
+  );
+  assert.match(
+    readToolContent(engine.gatewayInputs[1]!.messages.at(-1)!.content),
+    /final allowed tool-use round \(2\)/,
+  );
+  // The synthesis is tool-free with the round-limit reason line — same on both.
+  assert.equal(
+    engine.gatewayInputs[3]?.toolChoice,
+    inline.gatewayInputs[3]?.toolChoice,
+  );
+  assert.equal(engine.gatewayInputs[3]?.toolChoice, "none");
+  assert.equal(engine.gatewayInputs[3]?.tools, undefined);
+  assert.ok(
+    engine.gatewayInputs[3]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes(
+          "Tool-use round limit reached (2)",
+        ),
+    ),
+  );
+  const engineCloseout = engine.result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  const inlineCloseout = inline.result.metadata?.toolLoopCloseout as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(engineCloseout?.reason, inlineCloseout?.reason);
+  assert.equal(engineCloseout?.reason, "round_limit");
+  assert.equal(engineCloseout?.maxRounds, inlineCloseout?.maxRounds);
+  assert.equal(engineCloseout?.maxRounds, 2);
+  assert.equal(engineCloseout?.toolCallCount, inlineCloseout?.toolCallCount);
+  assert.equal(engineCloseout?.toolCallCount, 2);
+  assert.equal(engineCloseout?.roundCount, inlineCloseout?.roundCount);
+  assert.equal(engineCloseout?.roundCount, 2);
+  assert.equal(
+    engineCloseout?.pendingToolCallCount,
+    inlineCloseout?.pendingToolCallCount,
+  );
+  assert.equal(engineCloseout?.pendingToolCallCount, 1);
+  assert.equal(
+    engineCloseout?.evidenceAvailable,
+    inlineCloseout?.evidenceAvailable,
+  );
+  assert.equal(engineCloseout?.evidenceAvailable, true);
+});
+
+// --- Stage 8B: codex-boundary P2 regression tests (C/D/E review) -------------
+// Each targets one [P2] engine-path divergence codex flagged that the batch
+// parity tests missed. All are inline-vs-engine parity assertions.
+
+test("cutover parity (P2 round-limit): a tool-free final on the limit round is accepted, not forced into round_limit", async () => {
+  // maxRounds:2 -> rounds 0,1 execute tools; on the limit round the model returns a
+  // TOOL-FREE final. Inline handles toolCalls.length===0 before the round-limit
+  // check, so it accepts the answer; the engine must too (the round_limit predicate
+  // is guarded on calls.length > 0). Pre-fix the engine forced a round_limit
+  // closeout and replaced the answer.
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n <= 2) return toolCallResult(`toolu-${n}`, "lookup", { q: `r${n}` });
+      return textResult("Final answer from two bounded rounds.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "lookup",
+            description: "look up a value",
+            inputSchema: { type: "object", properties: { q: { type: "string" } } },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "completed", result: input.call.input.q }),
+        };
+      },
+    };
+    return { gateway, executor };
+  };
+  const run = (reactEngine: "inline" | "engine") => {
+    const { gateway, executor } = build();
+    return new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 2 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.equal(engine.content, "Final answer from two bounded rounds.");
+  assert.equal(toolLoopCloseoutReason(engine), toolLoopCloseoutReason(inline));
+  assert.notEqual(toolLoopCloseoutReason(engine), "round_limit");
+});
+
+test("cutover parity: a natural finish after a tool round is identical between inline and engine", async () => {
+  // Guards the natural-finish-after-tools path — the surface of the [P2] epilogue
+  // fix (onFinalize captures run.finalMessages ??= state.messages so the post-loop
+  // appenders read the LIVE messages, not the initial prompt). NOTE: this is a
+  // broad path guard, not an isolated mutation for that fix: the epilogue appenders
+  // that read finalMessages (required-timeout-followup, residual-risk) share their
+  // omission trigger with the repair layer, which fires first and stashes
+  // finalMessages via the closeout path — so a public-API scenario that finishes
+  // naturally AND needs the live-message append is dominated by the repairs. The
+  // fix is a one-line correctness change (initial-prompt fallback was wrong for a
+  // natural finish after tools); this test pins the path parity around it.
+  const sessionKey = "worker:explore:task-slow:toolu-timeout";
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) {
+        return toolCallResult("toolu-send", "sessions_send", {
+          session_key: sessionKey,
+          message: "Resume the same slow source-check context.",
+        });
+      }
+      return textResult(
+        [
+          "The slow-source check recovered after the earlier timeout.",
+          "Verified owner: Release Captain.",
+          "Verified risk: runbook gap before launch approval.",
+          "Mitigation: complete rollback rehearsal before release gate.",
+        ].join("\n"),
+      );
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                session_key: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-slow",
+            session_key: sessionKey,
+            agent_id: "explore",
+            status: "completed",
+            result:
+              "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+            final_content:
+              "Timeout recovery completed. Source: slow fixture. Verified owner: Release Captain. Verified risk: runbook gap before launch approval. Mitigation: complete rollback rehearsal before release gate.",
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Evaluate this slow source for a release-risk note.",
+        "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available and explain how the mission can continue.",
+        "A follow-up may ask you to resume that same source-check context after the initial closeout.",
+      ].join("\n"),
+    };
+    return { gateway, executor, packet };
+  };
+  const run = (reactEngine: "inline" | "engine") => {
+    const { gateway, executor, packet } = build();
+    return new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.equal(engine.content, inline.content);
+  assert.deepEqual(engine.mentions, inline.mentions);
+});
+
+test("cutover parity (P2 over-cap): calls above maxToolCallsPerRound never emit a started progress phase", async () => {
+  // A round with 3 spawn calls under maxToolCallsPerRound:2. The over-cap call
+  // executes nothing and gets a skipped tool_call_limit_exceeded result; it must NOT
+  // emit a tool_started / pending native tool message (inline is skipped-only).
+  // Pre-fix the cap ran inside runToolBatch, AFTER agent-core emitted tool_started
+  // for every call, so the over-cap call persisted a "started" phase. The cap now
+  // runs in onBeforeExecute (before started emission).
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    let n = 0;
+    gateway.generate = async () => {
+      n += 1;
+      if (n === 1) {
+        return {
+          text: "spawn three",
+          toolCalls: [
+            { id: "toolu-a", name: "sessions_spawn", input: { task: "a" } },
+            { id: "toolu-b", name: "sessions_spawn", input: { task: "b" } },
+            { id: "toolu-c", name: "sessions_spawn", input: { task: "c" } },
+          ],
+          modelId: "claude-test",
+          providerId: "anthropic",
+          protocol: "anthropic-compatible",
+          adapterName: "test",
+          raw: {},
+        };
+      }
+      return textResult("Done after capped execution.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: { type: "object", properties: { task: { type: "string" } } },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+        };
+      },
+    };
+    return { gateway, executor };
+  };
+  const startedCallIds = async (reactEngine: "inline" | "engine") => {
+    const { gateway, executor } = build();
+    const stored = new Map<
+      string,
+      { toolProgress?: Array<{ phase?: string; toolCallId?: string }> }
+    >();
+    await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: {
+        executor,
+        maxRounds: 4,
+        maxParallelToolCalls: 3,
+        maxToolCallsPerRound: 2,
+      },
+      reactEngine,
+      nativeToolMessageStore: {
+        async append(message) {
+          stored.set(message.id, message);
+        },
+      },
+    }).generate({ activation: buildActivation(), packet: buildPacket() });
+    const started = new Set<string>();
+    for (const message of stored.values()) {
+      for (const progress of message.toolProgress ?? []) {
+        if (progress.phase === "started" && progress.toolCallId) {
+          started.add(progress.toolCallId);
+        }
+      }
+    }
+    return started;
+  };
+  const inlineStarted = await startedCallIds("inline");
+  const engineStarted = await startedCallIds("engine");
+  assert.deepEqual([...engineStarted].sort(), [...inlineStarted].sort());
+  assert.equal(engineStarted.has("toolu-a"), true);
+  assert.equal(engineStarted.has("toolu-b"), true);
+  assert.equal(engineStarted.has("toolu-c"), false);
+});
+
+// --- Stage 8 final-parity: T2 continuation-plane grouped parity ---------------
+// Grouped inline-vs-engine parity for the continuation-plane fixes: empty-round
+// continuation-lookup injection (sessions_list) and the general supplemental
+// timeout probe (browser sessions_spawn). Each runs the SAME scenario through
+// both paths and asserts identical content + executed-call sequence.
+
+test("cutover parity (final T2): empty-round continuation lookup injects sessions_list identically", async () => {
+  const sessionKey = "worker:explore:task-source:toolu-timeout";
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    const executedCalls: string[] = [];
+    gateway.generate = async (input: GenerateTextInput) => {
+      if (executedCalls.length < 2 && input.toolChoice !== "none") {
+        return textResult("I can summarize the prior attempt.");
+      }
+      return textResult("Final timeout follow-up from resumed session.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_list",
+            description: "List sessions",
+            inputSchema: { type: "object", properties: { limit: { type: "number" } } },
+          },
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { session_key: { type: "string" }, message: { type: "string" } },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executedCalls.push(input.call.name);
+        if (input.call.name === "sessions_list") {
+          return {
+            toolCallId: input.call.id,
+            toolName: input.call.name,
+            content: JSON.stringify({
+              sessions: [
+                {
+                  session_key: sessionKey,
+                  status: "timeout",
+                  agent_id: "explore",
+                  label: "slow-source source-check",
+                  last_active_at: 10,
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-source",
+            session_key: sessionKey,
+            agent_id: "explore",
+            status: "completed",
+            tool_chain: ["explore"],
+            result: "Slow source completed after resume.",
+            final_content:
+              "Verified slow-source evidence after resume. Risk remains source-bounded.",
+            payload: {
+              mode: "llm_sub_agent",
+              workerType: "explore",
+              content:
+                "Verified slow-source evidence after resume. Risk remains source-bounded.",
+            },
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission.",
+        "Resume the existing source-check context if possible and explain whether the earlier timeout still limits the conclusion.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the slow-source attempt in this mission.",
+      ].join("\n"),
+    };
+    return { gateway, executor, packet, executedCalls };
+  };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const { gateway, executor, packet, executedCalls } = build();
+    const reply = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+    return { reply, executedCalls };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.deepEqual(engine.executedCalls, inline.executedCalls);
+  assert.deepEqual(engine.executedCalls, ["sessions_list", "sessions_send"]);
+  assert.equal(engine.reply.content, inline.reply.content);
+});
+
+test("cutover parity (final T2): a resumed non-browser timeout escalates to a browser probe identically", async () => {
+  const sessionKey = "worker:explore:task:TASK-slow-again:call_function_timeout_1";
+  const build = () => {
+    const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+    const executed: Array<{ name: string; agentId: unknown }> = [];
+    gateway.generate = async (input: GenerateTextInput) => {
+      // Round 0: resume the timed-out explore session.
+      if (executed.length === 0 && input.toolChoice !== "none") {
+        return toolCallResult("toolu-send", "sessions_send", {
+          session_key: sessionKey,
+          message: "Resume the slow source-check context.",
+        });
+      }
+      // Round 1 (forced sessions_spawn after the probe marker): the browser probe.
+      if (
+        readToolContent(input.messages.at(-1)?.content ?? "").includes(
+          "resumed timeout evidence is still content-poor",
+        )
+      ) {
+        return toolCallResult("toolu-probe", "sessions_spawn", {
+          agent_id: "browser",
+          label: "Browser probe of slow-fixture",
+          task: "Inspect the rendered page.",
+        });
+      }
+      return textResult("Bounded browser probe negative evidence; rendered marker unverified.");
+    };
+    const executor: RoleToolExecutor = {
+      definitions() {
+        return [
+          {
+            name: "sessions_send",
+            description: "Continue a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: { session_key: { type: "string" }, message: { type: "string" } },
+            },
+          },
+          {
+            name: "sessions_spawn",
+            description: "Spawn a sub-agent",
+            inputSchema: {
+              type: "object",
+              properties: {
+                task: { type: "string" },
+                agent_id: { type: "string", enum: ["browser", "explore"] },
+                label: { type: "string" },
+                timeout_seconds: { type: "number" },
+              },
+            },
+          },
+        ];
+      },
+      async execute(input: RoleToolExecutionInput) {
+        executed.push({ name: input.call.name, agentId: input.call.input.agent_id });
+        if (input.call.name === "sessions_send") {
+          return {
+            toolCallId: input.call.id,
+            toolName: input.call.name,
+            content: JSON.stringify({
+              protocol: "turnkeyai.session_tool_result.v1",
+              task_id: "TASK-slow-again",
+              session_key: sessionKey,
+              agent_id: "explore",
+              status: "timeout",
+              timeout_seconds: 45,
+              evidence_available: true,
+              evidence_summary: "Resumed source-check timed out again with content-poor evidence.",
+            }),
+          };
+        }
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-browser-probe",
+            session_key: "worker:browser:task-browser-probe:toolu-probe",
+            agent_id: "browser",
+            status: "completed",
+            final_content: "Browser bounded negative evidence: rendered marker unverified.",
+          }),
+        };
+      },
+    };
+    const packet: RolePromptPacket = {
+      ...buildPacket(),
+      taskPrompt: [
+        "Evaluate this slow browser-visible source for a release-risk note.",
+        "Slow source: http://127.0.0.1:49152/slow-fixture",
+        "If a follow-up resumes the same source-check context and evidence remains content-poor, inspect the rendered page as an operator would see it.",
+      ].join("\n"),
+      capabilityInspection: {
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    };
+    return { gateway, executor, packet, executed };
+  };
+  const run = async (reactEngine: "inline" | "engine") => {
+    const { gateway, executor, packet, executed } = build();
+    const reply = await new LLMRoleResponseGenerator({
+      gateway,
+      toolLoop: { executor, maxRounds: 128 },
+      reactEngine,
+    }).generate({ activation: buildActivation(), packet });
+    return { reply, executed };
+  };
+  const inline = await run("inline");
+  const engine = await run("engine");
+  assert.deepEqual(engine.executed, inline.executed);
+  // The resumed explore timeout escalates to a browser sessions_spawn probe.
+  assert.ok(
+    engine.executed.some(
+      (call) => call.name === "sessions_spawn" && call.agentId === "browser",
+    ),
+    "engine should escalate a resumed non-browser timeout to a browser probe",
+  );
+  assert.equal(engine.reply.content, inline.reply.content);
 });

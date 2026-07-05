@@ -1,4 +1,5 @@
 import type { LLMMessage, LLMToolCall, LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
+import type { NativeToolRoundTrace } from "./native-tool-messages";
 import {
   MAX_BROWSER_OPEN_TIMEOUT_MS,
   getInstructions,
@@ -18,6 +19,10 @@ import type {
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import type { Tool, ToolContext, ToolProgressEvent, ToolResult } from "@turnkeyai/agent-core/tool";
 import { createToolkit } from "@turnkeyai/agent-core/toolkit";
+import {
+  appendAssistantToolCallMessage,
+  appendToolResultMessages,
+} from "@turnkeyai/agent-core/tool-messages";
 
 import type { RolePromptPacket } from "./prompt-policy";
 import {
@@ -51,6 +56,16 @@ import {
   serializeWorkerHistoryEntry,
   summarizeWorkerSessionEvidence,
 } from "./worker-session-transcript";
+import {
+  buildToolCallLimitExceededResult,
+  createToolExecutionSignal,
+  isAbortError,
+  resolveEffectiveToolLoopWallClockMs,
+  throwIfAborted,
+  toNativeToolProgressTrace,
+  toNativeToolResultTrace,
+} from "./tool-protocol";
+import { shouldSerializeToolBatch } from "./react/predicates";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -132,10 +147,7 @@ class AsyncSerialGate {
 
 // Moved verbatim into the reusable agent-core package; re-exported here so the
 // existing `./tool-use` import path keeps working for in-repo consumers.
-export {
-  appendAssistantToolCallMessage,
-  appendToolResultMessages,
-} from "@turnkeyai/agent-core/tool-messages";
+export { appendAssistantToolCallMessage, appendToolResultMessages };
 
 // gemini K3.5: Date.now() can repeat within the same millisecond
 // when parallel tool calls fire via Promise.all and each emits a
@@ -184,6 +196,331 @@ export async function recordRoleToolProgress(input: {
       ...(input.progress.detail ? { detail: input.progress.detail } : {}),
     },
   });
+}
+
+export async function recordRoleToolProgressSafely(input: {
+  recorder: RuntimeProgressRecorder | undefined;
+  activation: RoleActivationInput;
+  call: LLMToolCall;
+  progress: RoleToolProgressEvent;
+  defer?: boolean | undefined;
+}): Promise<void> {
+  const work = async () => {
+    await recordRoleToolProgress(input);
+  };
+  const onError = (error: unknown) => {
+    console.error("runtime tool progress recording failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      toolName: input.call.name,
+      error,
+    });
+  };
+  if (input.defer) {
+    void work().catch(onError);
+    return;
+  }
+  try {
+    await work();
+  } catch (error) {
+    onError(error);
+  }
+}
+
+export async function emitRoleToolProgressSafely(input: {
+  recorder: RuntimeProgressRecorder | undefined;
+  activation: RoleActivationInput;
+  call: LLMToolCall;
+  progress: RoleToolProgressEvent;
+  defer?: boolean | undefined;
+  onProgress?:
+    | ((
+        call: LLMToolCall,
+        progress: RoleToolProgressEvent,
+      ) => Promise<void>)
+    | undefined;
+}): Promise<void> {
+  await recordRoleToolProgressSafely(input);
+  try {
+    await input.onProgress?.(input.call, input.progress);
+  } catch (error) {
+    console.error("native tool message progress persistence failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      toolName: input.call.name,
+      error,
+    });
+  }
+}
+
+export async function executeRoleToolCalls(input: {
+  toolLoop: RoleToolLoopOptions | undefined;
+  runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
+  deferToolObservability?: boolean | undefined;
+  now: () => number;
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  toolCalls: LLMToolCall[];
+  toolLoopStartedAtMs: number;
+  signal?: AbortSignal | undefined;
+  onProgress?:
+    | ((
+        call: LLMToolCall,
+        progress: RoleToolProgressEvent,
+      ) => Promise<void>)
+    | undefined;
+  onResult?: ((result: RoleToolExecutionResult) => Promise<void>) | undefined;
+}): Promise<RoleToolExecutionResult[]> {
+  const activeToolLoop =
+    input.packet.toolUseMode === "disabled" ? undefined : input.toolLoop;
+  if (!activeToolLoop) return [];
+  const maxParallelToolCalls =
+    typeof activeToolLoop.maxParallelToolCalls === "number" &&
+    Number.isFinite(activeToolLoop.maxParallelToolCalls) &&
+    activeToolLoop.maxParallelToolCalls > 0
+      ? Math.floor(activeToolLoop.maxParallelToolCalls)
+      : input.toolCalls.length;
+  const maxToolCallsPerRound =
+    typeof activeToolLoop.maxToolCallsPerRound === "number" &&
+    Number.isFinite(activeToolLoop.maxToolCallsPerRound) &&
+    activeToolLoop.maxToolCallsPerRound > 0
+      ? Math.floor(activeToolLoop.maxToolCallsPerRound)
+      : input.toolCalls.length;
+  const results: RoleToolExecutionResult[] = [];
+  const executableCalls = input.toolCalls.slice(0, maxToolCallsPerRound);
+  const rejectedCalls = input.toolCalls.slice(maxToolCallsPerRound);
+  const effectiveMaxParallelToolCalls = shouldSerializeToolBatch(
+    executableCalls,
+  )
+    ? 1
+    : maxParallelToolCalls;
+  const emitProgress = (
+    call: LLMToolCall,
+    progress: RoleToolProgressEvent,
+  ) =>
+    emitRoleToolProgressSafely({
+      recorder:
+        input.toolLoop?.runtimeProgressRecorder ?? input.runtimeProgressRecorder,
+      activation: input.activation,
+      call,
+      progress,
+      defer: input.deferToolObservability,
+      onProgress: input.onProgress,
+    });
+  for (
+    let index = 0;
+    index < executableCalls.length;
+    index += effectiveMaxParallelToolCalls
+  ) {
+    throwIfAborted(input.signal);
+    const chunk = executableCalls.slice(
+      index,
+      index + effectiveMaxParallelToolCalls,
+    );
+    const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
+      ...(activeToolLoop.maxWallClockMs !== undefined
+        ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
+        : {}),
+      toolCalls: chunk,
+    });
+    const toolExecutionSignal = createToolExecutionSignal({
+      elapsedMs: input.now() - input.toolLoopStartedAtMs,
+      ...(input.signal ? { parentSignal: input.signal } : {}),
+      ...(maxWallClockMs ? { maxWallClockMs } : {}),
+    });
+    try {
+      const chunkResults = await Promise.all(
+        chunk.map(async (call) => {
+          throwIfAborted(input.signal);
+          await emitProgress(call, {
+            phase: "started",
+            toolName: call.name,
+            summary: `Tool call started: ${call.name}`,
+          });
+          try {
+            throwIfAborted(input.signal);
+            const result = await activeToolLoop.executor.execute({
+              call,
+              activation: input.activation,
+              packet: input.packet,
+              ...(toolExecutionSignal.signal
+                ? { signal: toolExecutionSignal.signal }
+                : {}),
+            });
+            throwIfAborted(input.signal);
+            for (const progress of result.progress ?? []) {
+              await emitProgress(call, progress);
+            }
+            await emitProgress(call, {
+              phase: result.cancelled
+                ? "cancelled"
+                : result.isError
+                  ? "failed"
+                  : "completed",
+              toolName: call.name,
+              summary: result.cancelled
+                ? `Tool call cancelled: ${call.name}`
+                : result.isError
+                  ? `Tool call failed: ${call.name}`
+                  : `Tool call completed: ${call.name}`,
+            });
+            await input.onResult?.(result);
+            return result;
+          } catch (error) {
+            if (isAbortError(error)) {
+              throw error;
+            }
+            const content =
+              error instanceof Error ? error.message : String(error);
+            await emitProgress(call, {
+              phase: "failed",
+              toolName: call.name,
+              summary: `Tool call failed: ${call.name}: ${content}`,
+            });
+            const result = {
+              toolCallId: call.id,
+              toolName: call.name,
+              content,
+              isError: true,
+            };
+            await input.onResult?.(result);
+            return result;
+          }
+        }),
+      );
+      results.push(...chunkResults);
+    } finally {
+      toolExecutionSignal.dispose();
+    }
+  }
+  for (const call of rejectedCalls) {
+    throwIfAborted(input.signal);
+    const result: RoleToolExecutionResult = buildToolCallLimitExceededResult(
+      call,
+      maxToolCallsPerRound,
+      input.toolCalls.length,
+    );
+    for (const progress of result.progress ?? []) {
+      await emitProgress(call, progress);
+    }
+    await input.onResult?.(result);
+    results.push(result);
+  }
+  return results;
+}
+
+export interface RuntimeForcedToolRoundObserver {
+  observeRuntimeForcedToolRound(input: {
+    round: number;
+    messages: LLMMessage[];
+    assistantText: string;
+    toolCalls: LLMToolCall[];
+    executeToolCalls(handlers: {
+      onProgress(
+        call: LLMToolCall,
+        progress: RoleToolProgressEvent,
+      ): Promise<void>;
+      onResult(result: RoleToolExecutionResult): Promise<void>;
+    }): Promise<RoleToolExecutionResult[]>;
+  }): Promise<{ messages: LLMMessage[]; toolResults: RoleToolExecutionResult[] }>;
+}
+
+export async function executeRuntimeForcedToolRound(input: {
+  toolLoop: RoleToolLoopOptions | undefined;
+  runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
+  deferToolObservability?: boolean | undefined;
+  now: () => number;
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  observer?: RuntimeForcedToolRoundObserver | undefined;
+  toolCalls: LLMToolCall[];
+  round: number;
+  toolLoopStartedAtMs: number;
+  signal?: AbortSignal | undefined;
+  assistantText: string;
+  persistNativeToolTrace(options?: {
+    forceBlocking?: boolean | undefined;
+  }): Promise<void>;
+  recordProviderToolProtocolRound(input: {
+    round: number;
+    toolCalls: LLMToolCall[];
+    toolResults: RoleToolExecutionResult[];
+    messages: LLMMessage[];
+  }): Promise<void>;
+}): Promise<{ messages: LLMMessage[]; toolResults: RoleToolExecutionResult[] }> {
+  if (input.observer) {
+    return input.observer.observeRuntimeForcedToolRound({
+      round: input.round,
+      messages: input.messages,
+      assistantText: input.assistantText,
+      toolCalls: input.toolCalls,
+      executeToolCalls: ({ onProgress, onResult }) =>
+        executeRoleToolCalls({
+          toolLoop: input.toolLoop,
+          runtimeProgressRecorder: input.runtimeProgressRecorder,
+          deferToolObservability: input.deferToolObservability,
+          now: input.now,
+          activation: input.activation,
+          packet: input.packet,
+          toolCalls: input.toolCalls,
+          toolLoopStartedAtMs: input.toolLoopStartedAtMs,
+          ...(input.signal ? { signal: input.signal } : {}),
+          onProgress,
+          onResult,
+        }),
+    });
+  }
+
+  const roundTrace: NativeToolRoundTrace = {
+    round: input.round,
+    calls: input.toolCalls.map((call) => ({
+      id: call.id,
+      name: call.name,
+      input: call.input,
+    })),
+    results: [],
+    progress: [],
+  };
+  input.toolTrace.push(roundTrace);
+  const toolResults = await executeRoleToolCalls({
+    toolLoop: input.toolLoop,
+    runtimeProgressRecorder: input.runtimeProgressRecorder,
+    deferToolObservability: input.deferToolObservability,
+    now: input.now,
+    activation: input.activation,
+    packet: input.packet,
+    toolCalls: input.toolCalls,
+    toolLoopStartedAtMs: input.toolLoopStartedAtMs,
+    ...(input.signal ? { signal: input.signal } : {}),
+    onProgress: async (call, progress) => {
+      roundTrace.progress?.push(
+        toNativeToolProgressTrace(call, progress, input.now()),
+      );
+      await input.persistNativeToolTrace({
+        forceBlocking: progress.phase === "started",
+      });
+    },
+    onResult: async (toolResult) => {
+      roundTrace.results.push(toNativeToolResultTrace(toolResult));
+      await input.persistNativeToolTrace();
+    },
+  });
+  let messages = appendAssistantToolCallMessage(input.messages, {
+    text: input.assistantText,
+    toolCalls: input.toolCalls,
+  });
+  messages = appendToolResultMessages(messages, toolResults);
+  await input.recordProviderToolProtocolRound({
+    round: input.round,
+    toolCalls: input.toolCalls,
+    toolResults,
+    messages,
+  });
+  return { messages, toolResults };
 }
 
 export function createWorkerSessionToolExecutor(options: {

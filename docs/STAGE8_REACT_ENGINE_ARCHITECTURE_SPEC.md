@@ -1091,6 +1091,24 @@ Gate:
 - producer-side missing fields have tracked follow-up tasks
 - no behavior change in inline path
 
+### Stage 8C.1: Neutral Shared Helper Extraction
+
+Deliverables:
+
+- extract pure text, URL, session-continuation, browser-evidence, approval-gate detector, and compatibility normalizer helpers shared by inline and engine code into a neutral role-runtime module outside `react-engine/`
+- make both the inline reference path and later `react-engine/*` modules import the same neutral helpers
+- preserve helper logic, strings, regexes, and call order exactly; this stage relocates shared code only
+- keep `react-engine/*` forbidden from importing `llm-response-generator.ts`
+- keep the inline path forbidden from importing engine policy/controller modules
+
+Gate:
+
+- typecheck green
+- inline parity green
+- engine parity 272/0/0-skip
+- no behavior change in inline path beyond parity-proven import-site relocation
+- no helper is exported from `llm-response-generator.ts` to satisfy engine imports
+
 ### Stage 8D: Policy Runtime Context
 
 Deliverables:

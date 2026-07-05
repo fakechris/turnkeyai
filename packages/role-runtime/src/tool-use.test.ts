@@ -8,12 +8,315 @@ import type {
   WorkerRuntime,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
+import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
+import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { TaskToolService } from "./task-tool-service";
 import type { RolePromptPacket } from "./prompt-policy";
 import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
-import { createWorkerSessionToolExecutor } from "./tool-use";
+import {
+  createWorkerSessionToolExecutor,
+  executeRoleToolCalls,
+  executeRuntimeForcedToolRound,
+  emitRoleToolProgressSafely,
+  recordRoleToolProgressSafely,
+  type RoleToolProgressEvent,
+} from "./tool-use";
+
+test("recordRoleToolProgressSafely records runtime tool progress", async () => {
+  const events: Array<{
+    progressId: string;
+    summary: string;
+    phase: string;
+    metadata?: Record<string, unknown>;
+  }> = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: { agent_id: "browser" },
+  };
+  const progress: RoleToolProgressEvent = {
+    phase: "completed",
+    toolName: "sessions_spawn",
+    summary: "Tool call completed: sessions_spawn",
+    detail: { status: "ok" },
+  };
+
+  await recordRoleToolProgressSafely({
+    recorder: {
+      async record(event) {
+        events.push(event as (typeof events)[number]);
+      },
+    },
+    activation: buildActivation(),
+    call,
+    progress,
+  });
+
+  assert.equal(events.length, 1);
+  assert.match(events[0]!.progressId, /^progress:tool:/);
+  assert.equal(events[0]!.phase, "completed");
+  assert.equal(events[0]!.summary, "Tool call completed: sessions_spawn");
+  assert.deepEqual(events[0]!.metadata, {
+    toolCallId: "call-1",
+    toolName: "sessions_spawn",
+    detail: { status: "ok" },
+  });
+});
+
+test("recordRoleToolProgressSafely swallows recorder failures", async () => {
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    await recordRoleToolProgressSafely({
+      recorder: {
+        async record() {
+          throw new Error("progress recorder unavailable");
+        },
+      },
+      activation: buildActivation(),
+      call: {
+        id: "call-1",
+        name: "sessions_spawn",
+        input: {},
+      },
+      progress: {
+        phase: "started",
+        toolName: "sessions_spawn",
+        summary: "Tool call started: sessions_spawn",
+      },
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.[0], "runtime tool progress recording failed");
+});
+
+test("emitRoleToolProgressSafely records runtime progress and forwards to observer", async () => {
+  const events: unknown[] = [];
+  const forwarded: Array<{ call: LLMToolCall; progress: RoleToolProgressEvent }> = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: {},
+  };
+  const progress: RoleToolProgressEvent = {
+    phase: "started",
+    toolName: "sessions_spawn",
+    summary: "Tool call started: sessions_spawn",
+  };
+
+  await emitRoleToolProgressSafely({
+    recorder: {
+      async record(event) {
+        events.push(event);
+      },
+    },
+    activation: buildActivation(),
+    call,
+    progress,
+    onProgress: async (progressCall, progressEvent) => {
+      forwarded.push({ call: progressCall, progress: progressEvent });
+    },
+  });
+
+  assert.equal(events.length, 1);
+  assert.deepEqual(forwarded, [{ call, progress }]);
+});
+
+test("emitRoleToolProgressSafely swallows observer progress failures", async () => {
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    await emitRoleToolProgressSafely({
+      recorder: undefined,
+      activation: buildActivation(),
+      call: {
+        id: "call-1",
+        name: "sessions_spawn",
+        input: {},
+      },
+      progress: {
+        phase: "started",
+        toolName: "sessions_spawn",
+        summary: "Tool call started: sessions_spawn",
+      },
+      onProgress: async () => {
+        throw new Error("observer unavailable");
+      },
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.[0], "native tool message progress persistence failed");
+});
+
+test("executeRoleToolCalls emits lifecycle progress and forwards tool results", async () => {
+  const forwarded: RoleToolProgressEvent[] = [];
+  const results: unknown[] = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: {},
+  };
+
+  const executed = await executeRoleToolCalls({
+    toolLoop: {
+      executor: {
+        definitions: () => [],
+        async execute() {
+          return {
+            toolCallId: "call-1",
+            toolName: "sessions_spawn",
+            content: "done",
+            progress: [
+              {
+                phase: "progress",
+                toolName: "sessions_spawn",
+                summary: "running",
+              },
+            ],
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    deferToolObservability: false,
+    now: () => 1000,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    toolCalls: [call],
+    toolLoopStartedAtMs: 900,
+    onProgress: async (_call, progress) => {
+      forwarded.push(progress);
+    },
+    onResult: async (result) => {
+      results.push(result);
+    },
+  });
+
+  assert.equal(executed.length, 1);
+  assert.equal(results.length, 1);
+  assert.deepEqual(
+    forwarded.map((progress) => progress.phase),
+    ["started", "progress", "completed"],
+  );
+});
+
+test("executeRoleToolCalls emits skipped results for calls over the per-round cap", async () => {
+  const forwarded: RoleToolProgressEvent[] = [];
+  const executed = await executeRoleToolCalls({
+    toolLoop: {
+      maxToolCallsPerRound: 1,
+      executor: {
+        definitions: () => [],
+        async execute(input) {
+          return {
+            toolCallId: input.call.id,
+            toolName: input.call.name,
+            content: "done",
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    deferToolObservability: false,
+    now: () => 1000,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    toolCalls: [
+      { id: "call-1", name: "sessions_spawn", input: {} },
+      { id: "call-2", name: "web_fetch", input: {} },
+    ],
+    toolLoopStartedAtMs: 900,
+    onProgress: async (_call, progress) => {
+      forwarded.push(progress);
+    },
+  });
+
+  assert.equal(executed.length, 2);
+  assert.equal(executed[1]?.skipped, true);
+  assert.equal(executed[1]?.isError, true);
+  assert.deepEqual(
+    forwarded.map((progress) => progress.summary),
+    [
+      "Tool call started: sessions_spawn",
+      "Tool call completed: sessions_spawn",
+      "Skipped web_fetch: per-turn tool call limit exceeded.",
+    ],
+  );
+});
+
+test("executeRuntimeForcedToolRound records native trace, appends messages, and records provider protocol", async () => {
+  const toolTrace: NativeToolRoundTrace[] = [];
+  const persistCalls: Array<{ forceBlocking?: boolean | undefined }> = [];
+  const providerRounds: Array<{ round: number; messagesLength: number }> = [];
+  const call: LLMToolCall = {
+    id: "call-1",
+    name: "sessions_spawn",
+    input: {},
+  };
+
+  const result = await executeRuntimeForcedToolRound({
+    toolLoop: {
+      executor: {
+        definitions: () => [],
+        async execute() {
+          return {
+            toolCallId: "call-1",
+            toolName: "sessions_spawn",
+            content: "done",
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    deferToolObservability: false,
+    now: () => 1234,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    messages: [{ role: "user", content: "run it" }],
+    toolTrace,
+    toolCalls: [call],
+    round: 4,
+    toolLoopStartedAtMs: 1200,
+    assistantText: "I'll run it.",
+    persistNativeToolTrace: async (options) => {
+      persistCalls.push(options ?? {});
+    },
+    recordProviderToolProtocolRound: async (input) => {
+      providerRounds.push({
+        round: input.round,
+        messagesLength: input.messages.length,
+      });
+    },
+  });
+
+  assert.equal(result.toolResults.length, 1);
+  assert.equal(result.messages.at(-2)?.role, "assistant");
+  assert.equal(result.messages.at(-1)?.role, "tool");
+  assert.equal(toolTrace.length, 1);
+  assert.equal(toolTrace[0]?.round, 4);
+  assert.equal(toolTrace[0]?.progress?.[0]?.phase, "started");
+  assert.equal(toolTrace[0]?.results[0]?.toolCallId, "call-1");
+  assert.deepEqual(persistCalls, [
+    { forceBlocking: true },
+    { forceBlocking: false },
+    {},
+  ]);
+  assert.deepEqual(providerRounds, [{ round: 4, messagesLength: 3 }]);
+});
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {
   const executor = createWorkerSessionToolExecutor({
@@ -7143,6 +7446,18 @@ function buildActivation(): RoleActivationInput {
       },
       createdAt: 1,
     },
+  };
+}
+
+function buildPacket(): RolePromptPacket {
+  return {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead",
+    systemPrompt: "Lead role.",
+    taskPrompt: "Inspect history.",
+    outputContract: "Return a concise answer.",
+    suggestedMentions: [],
   };
 }
 

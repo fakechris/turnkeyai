@@ -111,8 +111,11 @@ export interface ReActHooks<Ctx extends ToolContext> {
     | "rethrow"
     | { messages: LLMMessage[] }
     | Promise<ReActSynthesis | "rethrow" | { messages: LLMMessage[] }>;
-  /** Normalize/rewrite the requested tool calls before execution. */
-  onToolCalls?(calls: LLMToolCall[], round: number, ctx: Ctx): LLMToolCall[];
+  /** Normalize/rewrite the requested tool calls before execution. Receives the
+   *  loop `state` (mirroring `onToolCallsClose`) so a host can rewrite calls using
+   *  the live message history — e.g. session-continuation directives derived from
+   *  the latest user direction. The round index is `state.round`. */
+  onToolCalls?(calls: LLMToolCall[], state: ReActState, ctx: Ctx): LLMToolCall[];
   /** Suppress the round's pending tool calls BEFORE execution: drop them, inject
    *  guidance, and force the next round. Return a directive (rewritten messages +
    *  optional forced tool choice) to suppress + re-prompt, or null to proceed to
@@ -222,7 +225,7 @@ export interface ReActLoopOptions<Ctx extends ToolContext> {
    * Convenience seam equivalent to `hooks.onToolCalls`. When both are provided,
    * `hooks.onToolCalls` wins.
    */
-  onToolCalls?: (calls: LLMToolCall[], round: number, ctx: Ctx) => LLMToolCall[];
+  onToolCalls?: (calls: LLMToolCall[], state: ReActState, ctx: Ctx) => LLMToolCall[];
   /** Full host-policy hook surface (see {@link ReActHooks}). */
   hooks?: ReActHooks<Ctx>;
 }

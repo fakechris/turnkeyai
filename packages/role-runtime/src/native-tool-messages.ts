@@ -1,4 +1,10 @@
-import type { RoleActivationInput, TeamMessage } from "@turnkeyai/core-types/team";
+import type {
+  RoleActivationInput,
+  TeamMessage,
+  TeamMessageStore,
+} from "@turnkeyai/core-types/team";
+import type { RoleToolExecutionResult } from "./tool-use";
+import { parseSessionToolResult } from "./session-tool-result-protocol";
 
 export interface NativeToolTrace {
   rounds: NativeToolRoundTrace[];
@@ -29,6 +35,39 @@ export interface NativeToolProgressTrace {
   summary: string;
   detail?: Record<string, unknown>;
   ts: number;
+}
+
+export function canonicalizeSessionToolTraceCalls(
+  roundTrace: NativeToolRoundTrace,
+  toolResults: RoleToolExecutionResult[],
+): boolean {
+  let changed = false;
+  for (const result of toolResults) {
+    if (
+      result.toolName !== "sessions_send" &&
+      result.toolName !== "sessions_history"
+    ) {
+      continue;
+    }
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed?.session_key) {
+      continue;
+    }
+    const call = roundTrace.calls.find((item) => item.id === result.toolCallId);
+    if (!call || call.input.session_key === parsed.session_key) {
+      continue;
+    }
+    call.input = {
+      ...call.input,
+      session_key: parsed.session_key,
+    };
+    changed = true;
+  }
+  return changed;
+}
+
+export function countNativeToolCalls(rounds: NativeToolRoundTrace[]): number {
+  return rounds.reduce((sum, round) => sum + round.calls.length, 0);
 }
 
 export function buildNativeToolMessages(
@@ -135,6 +174,45 @@ export function buildNativeToolMessages(
   }
 
   return messages;
+}
+
+export async function persistNativeToolTraceSafely(input: {
+  activation: RoleActivationInput;
+  toolTrace: NativeToolRoundTrace[];
+  nativeToolMessageStore?: Pick<TeamMessageStore, "append"> | undefined;
+  now: () => number;
+  defer?: boolean | undefined;
+  forceBlocking?: boolean | undefined;
+}): Promise<void> {
+  const nativeToolMessageStore = input.nativeToolMessageStore;
+  if (!nativeToolMessageStore) return;
+  const work = async () => {
+    const messages = buildNativeToolMessages(
+      input.activation,
+      { toolUse: { rounds: input.toolTrace } },
+      input.now(),
+    );
+    for (const message of messages) {
+      await nativeToolMessageStore.append(message);
+    }
+  };
+  const onError = (error: unknown) => {
+    console.error("native tool message persistence failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      error,
+    });
+  };
+  if (input.defer && !input.forceBlocking) {
+    void work().catch(onError);
+    return;
+  }
+  try {
+    await work();
+  } catch (error) {
+    onError(error);
+  }
 }
 
 export function omitToolUseTrace(metadata: Record<string, unknown>): Record<string, unknown> {

@@ -1,0 +1,706 @@
+import type {
+  RoleActivationInput,
+  RuntimeProgressRecorder,
+} from "@turnkeyai/core-types/team";
+import type { ToolResult } from "@turnkeyai/agent-core/tool";
+import type {
+  LLMContentBlock,
+  LLMMessage,
+  LLMToolCall,
+} from "@turnkeyai/llm-adapter/index";
+
+import { sliceUtf8 } from "./tool-protocol";
+
+export interface ToolResultPruningLimits {
+  historyMaxMessages: number;
+  recentFullCount: number;
+  totalMaxBytes: number;
+  softMaxBytes: number;
+  hardMaxBytes: number;
+}
+
+export interface ToolResultPruningSnapshot {
+  prunedToolResults: number;
+  reasons: string[];
+  compactedHistory: boolean;
+  toolResultCountBefore: number;
+  toolResultCountAfter: number;
+  toolResultBytesBefore: number;
+  toolResultBytesAfter: number;
+  messageCountBefore: number;
+  messageCountAfter: number;
+  limits: ToolResultPruningLimits;
+}
+
+const ROLE_TOOL_HISTORY_MAX_MESSAGES = 16;
+const TOOL_RESULT_RECENT_FULL_COUNT = 2;
+const TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES = 32 * 1024;
+const TOOL_RESULT_SOFT_PRUNE_MAX_BYTES = 16 * 1024;
+const TOOL_RESULT_HARD_PRUNE_MAX_BYTES = 64 * 1024;
+
+export function readToolResultPruningLimits(
+  env: NodeJS.ProcessEnv = process.env,
+): ToolResultPruningLimits {
+  const recentFullCount = readPositiveIntegerEnv(
+    env,
+    "TURNKEYAI_TOOL_RESULT_RECENT_FULL_COUNT",
+    TOOL_RESULT_RECENT_FULL_COUNT,
+  );
+  return {
+    historyMaxMessages: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_HISTORY_MAX_MESSAGES",
+      ROLE_TOOL_HISTORY_MAX_MESSAGES,
+    ),
+    recentFullCount,
+    totalMaxBytes: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES",
+      TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES,
+    ),
+    softMaxBytes: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_RESULT_SOFT_PRUNE_MAX_BYTES",
+      TOOL_RESULT_SOFT_PRUNE_MAX_BYTES,
+    ),
+    hardMaxBytes: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_RESULT_HARD_PRUNE_MAX_BYTES",
+      TOOL_RESULT_HARD_PRUNE_MAX_BYTES,
+    ),
+  };
+}
+
+export function deriveToolResultEnvelope(messages: LLMMessage[]): {
+  toolResultCount: number;
+  toolResultBytes: number;
+} {
+  const toolMessages = messages.filter((message) => message.role === "tool");
+  return {
+    toolResultCount: toolMessages.length,
+    toolResultBytes: Buffer.byteLength(
+      JSON.stringify(toolMessages.map((message) => message.content)),
+      "utf8",
+    ),
+  };
+}
+
+export function prepareToolHistoryForGateway(
+  messages: LLMMessage[],
+): LLMMessage[] {
+  const limits = readToolResultPruningLimits();
+  return compactOlderToolHistoryForGateway(
+    pruneToolResultMessagesForGateway(messages, limits),
+    limits,
+  );
+}
+
+export function summarizeToolResultPruning(
+  beforeMessages: LLMMessage[],
+  afterMessages: LLMMessage[],
+  limits: ToolResultPruningLimits = readToolResultPruningLimits(),
+): ToolResultPruningSnapshot | undefined {
+  const prunedToolContents = afterMessages
+    .filter((message) => message.role === "tool")
+    .map((message) => readToolResultContentText(message.content))
+    .filter(isPrunedToolResultContent);
+  const compactedHistory = afterMessages.some((message) =>
+    readToolResultContentText(message.content).startsWith(
+      "Earlier tool history compacted to fit the request envelope:",
+    ),
+  );
+  if (prunedToolContents.length === 0 && !compactedHistory) {
+    return undefined;
+  }
+  const beforeEnvelope = deriveToolResultEnvelope(beforeMessages);
+  const afterEnvelope = deriveToolResultEnvelope(afterMessages);
+  return {
+    prunedToolResults: prunedToolContents.length,
+    reasons: [
+      ...new Set(
+        prunedToolContents
+          .map(readPrunedToolResultReason)
+          .filter((reason): reason is string => Boolean(reason)),
+      ),
+    ],
+    compactedHistory,
+    toolResultCountBefore: beforeEnvelope.toolResultCount,
+    toolResultCountAfter: afterEnvelope.toolResultCount,
+    toolResultBytesBefore: beforeEnvelope.toolResultBytes,
+    toolResultBytesAfter: afterEnvelope.toolResultBytes,
+    messageCountBefore: beforeMessages.length,
+    messageCountAfter: afterMessages.length,
+    limits,
+  };
+}
+
+export async function recordToolResultPruningBoundarySafely(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  snapshot?: ToolResultPruningSnapshot | undefined;
+}): Promise<void> {
+  try {
+    await recordToolResultPruningBoundary(input);
+  } catch (error) {
+    console.error("runtime tool-result pruning boundary recording failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      error,
+    });
+  }
+}
+
+async function recordToolResultPruningBoundary(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+  snapshot?: ToolResultPruningSnapshot | undefined;
+}): Promise<void> {
+  const { activation, runtimeProgressRecorder, selection, snapshot } = input;
+  if (!runtimeProgressRecorder || !snapshot) {
+    return;
+  }
+  await runtimeProgressRecorder.record({
+    progressId: `progress:tool-result-pruning:${activation.handoff.taskId}:${Date.now()}`,
+    threadId: activation.thread.threadId,
+    chainId: `flow:${activation.flow.flowId}`,
+    spanId: `role:${activation.runState.runKey}`,
+    ...(activation.runState.lastDequeuedTaskId
+      ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
+      : {}),
+    subjectKind: "role_run",
+    subjectId: activation.runState.runKey,
+    phase: "degraded",
+    progressKind: "boundary",
+    heartbeatSource: "control_path",
+    continuityState: "alive",
+    summary: `Tool result history pruned for prompt input (${snapshot.prunedToolResults} result(s)).`,
+    recordedAt: Date.now(),
+    flowId: activation.flow.flowId,
+    taskId: activation.handoff.taskId,
+    roleId: activation.runState.roleId,
+    metadata: {
+      boundaryKind: "tool_result_pruning",
+      ...(selection.modelId ? { modelId: selection.modelId } : {}),
+      ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+      prunedToolResults: snapshot.prunedToolResults,
+      pruningReasons: snapshot.reasons,
+      compactedHistory: snapshot.compactedHistory,
+      toolResultCountBefore: snapshot.toolResultCountBefore,
+      toolResultCountAfter: snapshot.toolResultCountAfter,
+      toolResultBytesBefore: snapshot.toolResultBytesBefore,
+      toolResultBytesAfter: snapshot.toolResultBytesAfter,
+      messageCountBefore: snapshot.messageCountBefore,
+      messageCountAfter: snapshot.messageCountAfter,
+      pruningLimits: snapshot.limits,
+    },
+  });
+}
+
+export async function recordProviderToolProtocolRoundSafely(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  now: () => number;
+  defer?: boolean | undefined;
+  round: number;
+  toolCalls: LLMToolCall[];
+  toolResults: ToolResult[];
+  messages: LLMMessage[];
+}): Promise<void> {
+  const work = () => recordProviderToolProtocolRound(input);
+  const onError = (error: unknown) => {
+    console.error("provider tool protocol progress recording failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      round: input.round,
+      error,
+    });
+  };
+  if (input.defer) {
+    void work().catch(onError);
+    return;
+  }
+  try {
+    await work();
+  } catch (error) {
+    onError(error);
+  }
+}
+
+export async function recordRuntimeForcedToolRoundProviderProtocolSafely(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  now: () => number;
+  defer?: boolean | undefined;
+  round: number;
+  toolCalls: LLMToolCall[];
+  toolResults: ToolResult[];
+  messages: LLMMessage[];
+}): Promise<void> {
+  await recordProviderToolProtocolRoundSafely(input);
+}
+
+async function recordProviderToolProtocolRound(input: {
+  activation: RoleActivationInput;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  now: () => number;
+  round: number;
+  toolCalls: LLMToolCall[];
+  toolResults: ToolResult[];
+  messages: LLMMessage[];
+}): Promise<void> {
+  const {
+    activation,
+    runtimeProgressRecorder,
+    now: readNow,
+    round,
+    toolCalls,
+    toolResults,
+    messages,
+  } = input;
+  if (!runtimeProgressRecorder) {
+    return;
+  }
+  const assistantMessageIndex = findLatestAssistantToolUseMessageIndex(messages);
+  const toolMessageIndexes = findFollowingToolMessageIndexes(
+    messages,
+    assistantMessageIndex,
+  );
+  const toolCallIds = toolCalls.map((call) => call.id);
+  const toolResultIds = toolResults.map((result) => result.toolCallId);
+  const now = readNow();
+  await runtimeProgressRecorder.record({
+    progressId: `progress:provider-tool-protocol:${activation.handoff.taskId}:${round}:${now}`,
+    threadId: activation.thread.threadId,
+    chainId: `flow:${activation.flow.flowId}`,
+    spanId: `role:${activation.runState.runKey}`,
+    ...(activation.runState.lastDequeuedTaskId
+      ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
+      : {}),
+    subjectKind: "role_run",
+    subjectId: activation.runState.runKey,
+    phase: "completed",
+    progressKind: "boundary",
+    heartbeatSource: "activity_echo",
+    continuityState: "resolved",
+    summary: `Provider tool protocol round ${round} appended assistant tool call(s) and matching tool result message(s).`,
+    recordedAt: now,
+    flowId: activation.flow.flowId,
+    taskId: activation.handoff.taskId,
+    roleId: activation.runState.roleId,
+    metadata: {
+      boundaryKind: "provider_tool_protocol_round",
+      round,
+      providerToolCallsReturned: toolCalls.length,
+      assistantToolUseBlockCount: countToolUseBlocks(
+        messages[assistantMessageIndex],
+      ),
+      roleToolResultMessageCount: toolMessageIndexes.length,
+      toolResultBlockCount: countToolResultBlocks(messages, toolMessageIndexes),
+      assistantBeforeToolResults:
+        assistantMessageIndex >= 0 &&
+        toolMessageIndexes.every((index) => index > assistantMessageIndex),
+      allToolResultsMatchAssistantToolCalls:
+        toolResultIds.length > 0 &&
+        toolResultIds.every((id) => toolCallIds.includes(id)),
+      nextProviderRequestWillIncludeToolResults: toolMessageIndexes.length > 0,
+      toolCallIds,
+      toolResultIds,
+      matchingToolCallIds: toolResultIds.filter((id) =>
+        toolCallIds.includes(id),
+      ),
+      toolNames: toolCalls.map((call) => call.name),
+    },
+  });
+}
+
+export function pruneToolResultMessagesForGateway(
+  messages: LLMMessage[],
+  limits: ToolResultPruningLimits,
+): LLMMessage[] {
+  const toolMessageIndexes = messages
+    .map((message, index) => (message.role === "tool" ? index : -1))
+    .filter((index) => index >= 0);
+  const recentFullIndexes = new Set(
+    toolMessageIndexes.slice(-limits.recentFullCount),
+  );
+
+  const prunedMessages = messages.map((message, index) => {
+    if (message.role !== "tool") {
+      return message;
+    }
+    const content = readToolResultContentText(message.content);
+    const contentBytes = Buffer.byteLength(content, "utf8");
+    const shouldHardPrune = contentBytes > limits.hardMaxBytes;
+    const shouldSoftPrune =
+      !recentFullIndexes.has(index) && contentBytes > limits.softMaxBytes;
+    if (!shouldHardPrune && !shouldSoftPrune) {
+      return message;
+    }
+    const prunedContent = JSON.stringify(
+      {
+        tool_result_pruned: true,
+        tool_call_id: message.toolCallId ?? null,
+        tool_name: message.name ?? null,
+        original_bytes: contentBytes,
+        reason: shouldHardPrune
+          ? "over_hard_limit"
+          : "older_than_recent_window",
+        retained_summary: summarizeToolResultContent(content),
+      },
+      null,
+      2,
+    );
+    return replaceToolResultContent(message, prunedContent);
+  });
+
+  return pruneToolResultsToTotalBudget(
+    prunedMessages,
+    recentFullIndexes,
+    limits,
+  );
+}
+
+export function compactOlderToolHistoryForGateway(
+  messages: LLMMessage[],
+  limits: ToolResultPruningLimits,
+): LLMMessage[] {
+  if (messages.length <= limits.historyMaxMessages) {
+    return messages;
+  }
+  const toolMessageIndexes = messages
+    .map((message, index) => (message.role === "tool" ? index : -1))
+    .filter((index) => index >= 0);
+  if (toolMessageIndexes.length <= limits.recentFullCount) {
+    return messages;
+  }
+
+  for (
+    let keepToolCount = limits.recentFullCount;
+    keepToolCount >= 1;
+    keepToolCount -= 1
+  ) {
+    const firstKeptToolIndex = toolMessageIndexes.slice(-keepToolCount)[0];
+    if (firstKeptToolIndex === undefined) continue;
+    const keepStart = findToolCallAssistantIndex(messages, firstKeptToolIndex);
+    if (keepStart <= 2) continue;
+    const compactedHistory = messages.slice(2, keepStart);
+    const summary = buildCompactedToolHistoryMessage(compactedHistory);
+    const compacted: LLMMessage[] = [
+      ...messages.slice(0, 2),
+      summary,
+      ...messages.slice(keepStart),
+    ];
+    if (compacted.length <= limits.historyMaxMessages) {
+      return compacted;
+    }
+  }
+
+  return messages;
+}
+
+export function findLatestAssistantToolUseMessageIndex(
+  messages: LLMMessage[],
+): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant" && countToolUseBlocks(message) > 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+export function findFollowingToolMessageIndexes(
+  messages: LLMMessage[],
+  assistantMessageIndex: number,
+): number[] {
+  if (assistantMessageIndex < 0) {
+    return [];
+  }
+  const indexes: number[] = [];
+  for (
+    let index = assistantMessageIndex + 1;
+    index < messages.length;
+    index += 1
+  ) {
+    if (messages[index]?.role === "tool") {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
+
+export function countToolUseBlocks(message: LLMMessage | undefined): number {
+  if (!message || !Array.isArray(message.content)) {
+    return 0;
+  }
+  return message.content.filter((block) => block.type === "tool_use").length;
+}
+
+export function countToolResultBlocks(
+  messages: LLMMessage[],
+  indexes: number[],
+): number {
+  return indexes.reduce((count, index) => {
+    const message = messages[index];
+    if (!message || !Array.isArray(message.content)) {
+      return count;
+    }
+    return (
+      count +
+      message.content.filter((block) => block.type === "tool_result").length
+    );
+  }, 0);
+}
+
+export function readToolResultContentText(
+  content: LLMMessage["content"],
+): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .map((block) => {
+      if (block.type === "tool_result") return block.content;
+      if (block.type === "text") return block.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function readPositiveIntegerEnv(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: number,
+): number {
+  const raw = env[key];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function findToolCallAssistantIndex(
+  messages: LLMMessage[],
+  toolMessageIndex: number,
+): number {
+  const toolMessage = messages[toolMessageIndex];
+  const toolCallId =
+    toolMessage?.role === "tool" ? toolMessage.toolCallId : undefined;
+  for (let index = toolMessageIndex - 1; index >= 2; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    const toolUseIds = extractAssistantToolUseIds(message);
+    if (!toolCallId || toolUseIds.includes(toolCallId)) {
+      return index;
+    }
+  }
+  return toolMessageIndex;
+}
+
+function extractAssistantToolUseIds(message: LLMMessage): string[] {
+  if (!Array.isArray(message.content)) return [];
+  return message.content
+    .map((block) => (block.type === "tool_use" ? block.id : ""))
+    .filter((id) => id.length > 0);
+}
+
+function buildCompactedToolHistoryMessage(messages: LLMMessage[]): LLMMessage {
+  const lines = ["Earlier tool history compacted to fit the request envelope:"];
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      const calls = Array.isArray(message.content)
+        ? message.content.filter(
+            (block): block is Extract<LLMContentBlock, { type: "tool_use" }> =>
+              block.type === "tool_use",
+          )
+        : [];
+      for (const call of calls) {
+        lines.push(
+          `- called ${call.name} (${call.id}): ${summarizeToolArgs(call.input)}`,
+        );
+      }
+      continue;
+    }
+    if (message.role === "tool") {
+      const content = readToolResultContentText(message.content);
+      lines.push(
+        `- result ${message.name ?? "tool"} (${message.toolCallId ?? "unknown"}): ${summarizeToolResultContent(content)}`,
+      );
+    }
+  }
+  return {
+    role: "user",
+    content: sliceUtf8(lines.join("\n"), 6 * 1024),
+  };
+}
+
+function summarizeToolArgs(input: Record<string, unknown>): string {
+  const json = JSON.stringify(input);
+  if (!json) return "{}";
+  return json.length > 300 ? `${json.slice(0, 300)}...` : json;
+}
+
+function pruneToolResultsToTotalBudget(
+  messages: LLMMessage[],
+  recentFullIndexes: Set<number>,
+  limits: ToolResultPruningLimits,
+): LLMMessage[] {
+  let totalBytes = deriveToolResultEnvelope(messages).toolResultBytes;
+  if (totalBytes <= limits.totalMaxBytes) {
+    return messages;
+  }
+
+  let nextMessages = messages;
+  const olderToolIndexes = messages
+    .map((message, index) =>
+      message.role === "tool" && !recentFullIndexes.has(index) ? index : -1,
+    )
+    .filter((index) => index >= 0);
+
+  for (const index of olderToolIndexes) {
+    const message = nextMessages[index];
+    if (!message || message.role !== "tool") continue;
+    const content = readToolResultContentText(message.content);
+    if (isPrunedToolResultContent(content)) continue;
+
+    const prunedContent = JSON.stringify(
+      {
+        tool_result_pruned: true,
+        tool_call_id: message.toolCallId ?? null,
+        tool_name: message.name ?? null,
+        original_bytes: Buffer.byteLength(content, "utf8"),
+        reason: "aggregate_tool_result_budget",
+        retained_summary: summarizeToolResultContent(content),
+      },
+      null,
+      2,
+    );
+    nextMessages = [...nextMessages];
+    nextMessages[index] = replaceToolResultContent(message, prunedContent);
+    totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
+    if (totalBytes <= limits.totalMaxBytes) {
+      return nextMessages;
+    }
+  }
+
+  // Pathological case: the recent window alone can exceed the aggregate
+  // cap. Keep the newest result intact when possible, but compact the
+  // rest so final synthesis still gets a valid request envelope.
+  const recentExceptNewest = [...recentFullIndexes].slice(0, -1);
+  for (const index of recentExceptNewest) {
+    const message = nextMessages[index];
+    if (!message || message.role !== "tool") continue;
+    const content = readToolResultContentText(message.content);
+    if (isPrunedToolResultContent(content)) continue;
+
+    const prunedContent = JSON.stringify(
+      {
+        tool_result_pruned: true,
+        tool_call_id: message.toolCallId ?? null,
+        tool_name: message.name ?? null,
+        original_bytes: Buffer.byteLength(content, "utf8"),
+        reason: "aggregate_tool_result_budget_recent_window",
+        retained_summary: summarizeToolResultContent(content),
+      },
+      null,
+      2,
+    );
+    nextMessages = nextMessages.map((candidate, candidateIndex) =>
+      candidateIndex === index
+        ? replaceToolResultContent(message, prunedContent)
+        : candidate,
+    );
+    totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
+    if (totalBytes <= limits.totalMaxBytes) {
+      return nextMessages;
+    }
+  }
+
+  for (const index of [...recentFullIndexes].reverse()) {
+    const message = nextMessages[index];
+    if (!message || message.role !== "tool") continue;
+    const content = readToolResultContentText(message.content);
+    if (isPrunedToolResultContent(content)) continue;
+
+    const prunedContent = JSON.stringify(
+      {
+        tool_result_pruned: true,
+        tool_call_id: message.toolCallId ?? null,
+        tool_name: message.name ?? null,
+        original_bytes: Buffer.byteLength(content, "utf8"),
+        reason: "single_tool_result_exceeds_aggregate_budget",
+        retained_summary: summarizeToolResultContent(content),
+      },
+      null,
+      2,
+    );
+    nextMessages = nextMessages.map((candidate, candidateIndex) =>
+      candidateIndex === index
+        ? replaceToolResultContent(message, prunedContent)
+        : candidate,
+    );
+    totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
+    if (totalBytes <= limits.totalMaxBytes) {
+      return nextMessages;
+    }
+  }
+
+  return nextMessages;
+}
+
+function replaceToolResultContent(
+  message: LLMMessage,
+  content: string,
+): LLMMessage {
+  if (typeof message.content === "string") {
+    return { ...message, content };
+  }
+  return {
+    ...message,
+    content: message.content.map((block) =>
+      block.type === "tool_result"
+        ? {
+            ...block,
+            content,
+          }
+        : block,
+    ),
+  };
+}
+
+function summarizeToolResultContent(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "(empty tool result)";
+  }
+  return normalized.length > 512
+    ? `${normalized.slice(0, 512)}...`
+    : normalized;
+}
+
+function isPrunedToolResultContent(content: string): boolean {
+  return content.includes('"tool_result_pruned": true');
+}
+
+function readPrunedToolResultReason(content: string): string | undefined {
+  try {
+    const parsed = JSON.parse(content) as { reason?: unknown };
+    return typeof parsed.reason === "string" ? parsed.reason : undefined;
+  } catch {
+    const match = content.match(/"reason"\s*:\s*"([^"]+)"/);
+    return match?.[1];
+  }
+}

@@ -1,0 +1,327 @@
+{
+  "version": 1,
+  "installedHookOrder": [
+    "onToolCalls",
+    "onSuppressToolCalls",
+    "onToolCallsClose",
+    "onBeforeExecute",
+    "runToolBatch",
+    "onAfterExecuteContinue",
+    "onAfterExecute",
+    "onRoundEmpty",
+    "onRepairRound",
+    "onTerminate",
+    "onModelCallError",
+    "onFinalize"
+  ],
+  "contractModuleOpOrder": [
+    "ToolCallNormalizer.normalize",
+    "ExecutionBudgetController.truncateRecoveryBudgetCalls",
+    "PermissionPolicy.applySuppressToolCallsHook",
+    "CloseoutPolicyRegistry.applyPendingCallsCloseoutHook",
+    "ExecutionBudgetController.applyEngineBeforeExecuteHook",
+    "ExecutionBudgetController.runEngineToolBatchHook",
+    "ContinuationController.applyAfterExecuteContinuationHook",
+    "CloseoutPolicyRegistry.applyPostExecuteCloseoutHook",
+    "ContinuationController.applyRoundEmptyHook",
+    "RepairPolicyRegistry.applyNaturalFinishRepairHook",
+    "EngineRunState.captureFinalMessages",
+    "CloseoutPolicyRegistry.evaluateTerminateHook",
+    "TerminalCloseoutController.handleTerminalCloseoutHook",
+    "EngineRunState.captureFinalMessages",
+    "TerminalCloseoutController.completeModelCallErrorHook",
+    "EngineRunState.captureFinalMessagesIfAbsent"
+  ],
+  "decisionVocabulary": [
+    {
+      "hook": "onToolCalls",
+      "scenario": "normalize pending calls",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCalls:normalize",
+        "outcome": "applied",
+        "reason": "normalized 1 pending call(s)"
+      }
+    },
+    {
+      "hook": "onSuppressToolCalls",
+      "scenario": "no suppression",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onSuppressToolCalls",
+        "outcome": "skipped",
+        "reason": "no directive"
+      }
+    },
+    {
+      "hook": "onSuppressToolCalls",
+      "scenario": "suppression applied",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onSuppressToolCalls",
+        "outcome": "applied",
+        "reason": "directive applied"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "no closeout",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose",
+        "outcome": "skipped",
+        "reason": "no closeout"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "closeout recovery_tool_budget",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose:recovery_tool_budget",
+        "outcome": "matched",
+        "reason": "recovery_tool_budget"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "closeout operator_cancelled",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose:operator_cancelled",
+        "outcome": "matched",
+        "reason": "operator_cancelled"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "closeout pseudo_tool_call",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose:pseudo_tool_call",
+        "outcome": "matched",
+        "reason": "pseudo_tool_call"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "closeout wall_clock_budget",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose:wall_clock_budget",
+        "outcome": "matched",
+        "reason": "wall_clock_budget"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "closeout round_limit",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose:round_limit",
+        "outcome": "matched",
+        "reason": "round_limit"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "closeout repeated_tool_failure",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose:repeated_tool_failure",
+        "outcome": "matched",
+        "reason": "repeated_tool_failure"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "closeout repeated_session_inspection",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose:repeated_session_inspection",
+        "outcome": "matched",
+        "reason": "repeated_session_inspection"
+      }
+    },
+    {
+      "hook": "onToolCallsClose",
+      "scenario": "closeout excessive_session_continuation",
+      "entry": {
+        "phase": "tool_calls",
+        "policyId": "onToolCallsClose:excessive_session_continuation",
+        "outcome": "matched",
+        "reason": "excessive_session_continuation"
+      }
+    },
+    {
+      "hook": "onBeforeExecute",
+      "scenario": "within cap",
+      "entry": {
+        "phase": "before_execute",
+        "policyId": "onBeforeExecute:maxToolCallsPerRound",
+        "outcome": "skipped",
+        "reason": "within per-round cap"
+      }
+    },
+    {
+      "hook": "onBeforeExecute",
+      "scenario": "over cap",
+      "entry": {
+        "phase": "before_execute",
+        "policyId": "onBeforeExecute:maxToolCallsPerRound",
+        "outcome": "applied",
+        "reason": "capped 1 over-budget call(s)"
+      }
+    },
+    {
+      "hook": "runToolBatch",
+      "scenario": "execute batch",
+      "entry": {
+        "phase": "before_execute",
+        "policyId": "runToolBatch:execute",
+        "outcome": "applied",
+        "reason": "executed 0 tool result(s)"
+      }
+    },
+    {
+      "hook": "onAfterExecuteContinue",
+      "scenario": "no continuation",
+      "entry": {
+        "phase": "after_execute_continue",
+        "policyId": "onAfterExecuteContinue",
+        "outcome": "skipped",
+        "reason": "no directive"
+      }
+    },
+    {
+      "hook": "onAfterExecuteContinue",
+      "scenario": "continuation applied",
+      "entry": {
+        "phase": "after_execute_continue",
+        "policyId": "onAfterExecuteContinue",
+        "outcome": "applied",
+        "reason": "directive applied"
+      }
+    },
+    {
+      "hook": "onAfterExecute",
+      "scenario": "no post-execute closeout",
+      "entry": {
+        "phase": "after_execute",
+        "policyId": "onAfterExecute",
+        "outcome": "skipped",
+        "reason": "no closeout"
+      }
+    },
+    {
+      "hook": "onAfterExecute",
+      "scenario": "post-execute completed_sub_agent_final",
+      "entry": {
+        "phase": "after_execute",
+        "policyId": "onAfterExecute:completed_sub_agent_final",
+        "outcome": "matched",
+        "reason": "completed_sub_agent_final"
+      }
+    },
+    {
+      "hook": "onAfterExecute",
+      "scenario": "post-execute sub_agent_timeout",
+      "entry": {
+        "phase": "after_execute",
+        "policyId": "onAfterExecute:sub_agent_timeout",
+        "outcome": "matched",
+        "reason": "sub_agent_timeout"
+      }
+    },
+    {
+      "hook": "onRoundEmpty",
+      "scenario": "terminate",
+      "entry": {
+        "phase": "round_empty",
+        "policyId": "onRoundEmpty:terminate",
+        "outcome": "skipped",
+        "reason": "terminate"
+      }
+    },
+    {
+      "hook": "onRoundEmpty",
+      "scenario": "inject calls",
+      "entry": {
+        "phase": "round_empty",
+        "policyId": "onRoundEmpty:injectCalls",
+        "outcome": "applied",
+        "reason": "injected continuation calls"
+      }
+    },
+    {
+      "hook": "onRepairRound",
+      "scenario": "no repair",
+      "entry": {
+        "phase": "repair_round",
+        "policyId": "onRepairRound:none",
+        "outcome": "skipped",
+        "reason": "no repair"
+      }
+    },
+    {
+      "hook": "onRepairRound",
+      "scenario": "resynthesize",
+      "entry": {
+        "phase": "repair_round",
+        "policyId": "onRepairRound:resynthesize",
+        "outcome": "applied",
+        "reason": "repair directive"
+      }
+    },
+    {
+      "hook": "onRepairRound",
+      "scenario": "closeout tool_evidence_fallback",
+      "entry": {
+        "phase": "repair_round",
+        "policyId": "onRepairRound:closeout:tool_evidence_fallback",
+        "outcome": "matched",
+        "reason": "tool_evidence_fallback"
+      }
+    },
+    {
+      "hook": "onTerminate",
+      "scenario": "terminate round_limit",
+      "entry": {
+        "phase": "terminate",
+        "policyId": "onTerminate:round_limit",
+        "outcome": "applied",
+        "reason": "round_limit"
+      }
+    },
+    {
+      "hook": "onModelCallError",
+      "scenario": "rethrow",
+      "entry": {
+        "phase": "terminate",
+        "policyId": "onModelCallError:rethrow",
+        "outcome": "matched",
+        "reason": "rethrow"
+      }
+    },
+    {
+      "hook": "onModelCallError",
+      "scenario": "forced continuation",
+      "entry": {
+        "phase": "terminate",
+        "policyId": "onModelCallError:continue",
+        "outcome": "applied",
+        "reason": "forced continuation"
+      }
+    },
+    {
+      "hook": "onModelCallError",
+      "scenario": "fallback synthesis",
+      "entry": {
+        "phase": "terminate",
+        "policyId": "onModelCallError:fallback",
+        "outcome": "matched",
+        "reason": "model-error fallback synthesis"
+      }
+    }
+  ]
+}

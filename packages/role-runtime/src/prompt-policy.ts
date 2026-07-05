@@ -12,6 +12,7 @@ import type {
   RolePromptPacketLike,
   RoleSlot,
   PromptAssemblyContextDiagnostics,
+  RuntimeProgressRecorder,
   WorkerKind,
 } from "@turnkeyai/core-types/team";
 import {
@@ -60,6 +61,85 @@ export interface RolePromptPacket extends RolePromptPacketLike {
 
 export interface RolePromptPolicy {
   buildPacket(input: RoleActivationInput): Promise<RolePromptPacket>;
+}
+
+export async function recordPromptAssemblyBoundarySafely(input: {
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+}): Promise<void> {
+  try {
+    await recordPromptAssemblyBoundary(input);
+  } catch (error) {
+    console.error("runtime assembly boundary recording failed", {
+      threadId: input.activation.thread.threadId,
+      flowId: input.activation.flow.flowId,
+      taskId: input.activation.handoff.taskId,
+      error,
+    });
+  }
+}
+
+async function recordPromptAssemblyBoundary(input: {
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  selection: {
+    modelId?: string | undefined;
+    modelChainId?: string | undefined;
+  };
+}): Promise<void> {
+  const { activation, packet, runtimeProgressRecorder, selection } = input;
+  const compactedSegments = packet.promptAssembly?.compactedSegments ?? [];
+  if (!runtimeProgressRecorder || compactedSegments.length === 0) {
+    return;
+  }
+  await runtimeProgressRecorder.record({
+    progressId: `progress:prompt-assembly:${activation.handoff.taskId}:${Date.now()}`,
+    threadId: activation.thread.threadId,
+    chainId: `flow:${activation.flow.flowId}`,
+    spanId: `role:${activation.runState.runKey}`,
+    ...(activation.runState.lastDequeuedTaskId
+      ? { parentSpanId: `dispatch:${activation.runState.lastDequeuedTaskId}` }
+      : {}),
+    subjectKind: "role_run",
+    subjectId: activation.runState.runKey,
+    phase: "degraded",
+    progressKind: "boundary",
+    heartbeatSource: "control_path",
+    continuityState: "alive",
+    summary: `Prompt assembly entered compact boundary with ${compactedSegments.length} compacted segment(s).`,
+    recordedAt: Date.now(),
+    flowId: activation.flow.flowId,
+    taskId: activation.handoff.taskId,
+    roleId: activation.runState.roleId,
+    metadata: {
+      boundaryKind: "prompt_compaction",
+      ...(selection.modelId ? { modelId: selection.modelId } : {}),
+      ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+      ...(packet.promptAssembly?.assemblyFingerprint
+        ? { assemblyFingerprint: packet.promptAssembly.assemblyFingerprint }
+        : {}),
+      ...(packet.promptAssembly?.sectionOrder
+        ? { sectionOrder: packet.promptAssembly.sectionOrder }
+        : {}),
+      ...(packet.promptAssembly?.tokenEstimate
+        ? { tokenEstimate: packet.promptAssembly.tokenEstimate }
+        : {}),
+      ...(packet.promptAssembly?.contextDiagnostics
+        ? { contextDiagnostics: packet.promptAssembly.contextDiagnostics }
+        : {}),
+      ...(packet.promptAssembly?.envelopeHint
+        ? { envelopeHint: packet.promptAssembly.envelopeHint }
+        : {}),
+      compactedSegments,
+      usedArtifacts: packet.promptAssembly?.usedArtifacts ?? [],
+    },
+  });
 }
 
 interface ModelSelectionDescriber {
