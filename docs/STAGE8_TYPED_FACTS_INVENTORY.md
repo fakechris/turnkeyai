@@ -1,7 +1,7 @@
 # Stage 8 Typed Facts Inventory
 
 **Branch:** `feat/stage8-engine-cleanup`
-**Status:** Stage 8 producer boundary checkpoint
+**Status:** Stage 8 closeout decomposition landed
 **Rule:** New policy code may consume typed facts or registered legacy fallbacks only.
 
 ## Stage Checkpoints
@@ -13,7 +13,7 @@
 | 3 | Complete | `EvidenceSnapshot.permission` now owns wait-timeout-compatible, pending, applied, and denied permission facts. These facts intentionally preserve text/runtime-progress compatibility until the permission producer is fully typed upstream. |
 | 4 | Complete | `TaskFactsSnapshot` now owns requested table/provider-schema, browser-visible, product-signal dashboard, timeout-recovery, awaiting-context, and required independent-stream intent facts. The browser/stream/timeout fields remain text-derived compatibility facts until upstream producers expose stronger typed signals. |
 | 5 | Complete | `legacy-text-detectors.ts` now has a metadata-backed detector registry with positive/negative fixtures and `legacyImporterOnly` metadata. `legacy-trace-importer.ts` is the importer boundary. `architecture-guard.test.ts` blocks new regex detector branches in policy owner modules. |
-| 8 | Complete | Active inline/engine policy booleans no longer import `tool-loop-shared.ts` or renamed legacy shims. `tool-loop-shared.ts` is a one-line legacy facade, `runtime-policy/inline-policy-runner.ts` routes inline decisions through policy cores, and structural guards pin the dependency direction. |
+| 8 | Complete | Active inline/engine policy booleans no longer import `tool-loop-shared.ts`, `policy-text-facts.ts`, or renamed legacy shims. Both facade files are deleted. `runtime-policy/inline-policy-runner.ts` routes inline decisions through policy cores, and structural guards pin dependency direction, import allowlists, export budgets, and inline/core ordering compatibility. |
 
 ## Migration Classes
 
@@ -38,4 +38,16 @@
 | independent_evidence_streams | `shouldContinueIndependentEvidenceStreams` and stream-count detectors | task prompt, completed sessions, tool trace | `ContinuationController`, `ToolCallNormalizer` | `present_only_as_text` for required count; completed-stream evidence still follows legacy session evidence | `TaskFactsSnapshot.requiredIndependentEvidenceStreams`; future `EvidenceSnapshot.completedStreamLabels[]` remains debt | 4 complete / evidence debt | two-source comparison, AsiaWalk streams, continued session not new stream |
 | timeout_recovery_intent | timeout continuation directive helpers | task prompt, messages, timeout result | `ContinuationController`, finalization visibility | `present_only_as_text`; typed intent produced but not used to rewrite bounded-timeout routing in this stage | `TaskFactsSnapshot.timeoutRecoveryRequested`; future `EvidenceSnapshot.resumableTimeouts[]` remains debt | 4 complete / evidence debt | explicit continue, no timeout JSON, listed session |
 | awaiting_context_setup | `shouldSuppressToolsForAwaitingContextSetup` | task prompt | `PermissionPolicy` | `present_only_as_text` | `TaskFactsSnapshot.awaitingContextSetupOnly` | 4 complete | setup-only no-tool suppression and memory recall negative |
-| legacy_fallbacks | producer-owned compatibility functions in `runtime-facts/policy-text-facts.ts`; `tool-loop-shared.ts` is facade-only | mixed text messages/tool payloads | `runtime-facts/*`, `runtime-policy/inline-policy-runner.ts`, engine owner modules through typed facts/policy cores | mixed | `LEGACY_TEXT_DETECTORS` registry rows with target field, producer, feasibility class, inventory row, fixtures, and `legacyImporterOnly`; future narrower typed producers replace each fallback family | 5/8 complete; typed replacement debt remains | `legacy-text-detectors.test.ts`, `legacy-trace-importer.test.ts`, architecture guard no-new-policy-regex/no-tool-loop/no-readLegacy/no-inline-shim |
+| legacy_fallbacks | producer-owned compatibility functions in `runtime-facts/text-fallback-readers.ts`; repair idempotency markers in `runtime-facts/repair-marker-facts.ts`; render-only text effects in `runtime-policy/prompt-renderers.ts` and `runtime-policy/synthesis-visibility.ts` | mixed text messages/tool payloads | `runtime-facts/*`, `runtime-policy/inline-policy-runner.ts`, engine owner modules through typed facts/policy cores | mixed | `LEGACY_TEXT_DETECTORS` registry rows plus the fallback export budget; future narrower typed producers replace each fallback family and lower the budget | 5/8 complete; typed replacement debt remains | `legacy-text-detectors.test.ts`, `legacy-trace-importer.test.ts`, `text-fallback-readers.test.ts`, architecture guard no-new-policy-regex/no-tool-loop/no-policy-text-facts/no-readLegacy/no-inline-shim |
+
+## Export Budget
+
+The checked-in budget is the remaining typed-facts burn-down metric:
+
+| Module | Budget | Meaning |
+| --- | ---: | --- |
+| `runtime-facts/text-fallback-readers.ts` | 169 | Legacy fallback reader/predicate exports still awaiting narrower typed producers. |
+| `runtime-facts/repair-marker-facts.ts` | 9 | Prompt idempotency marker readers. |
+
+The architecture guard allows these numbers to stay flat or shrink only. Any
+typed replacement must lower the relevant budget in the same commit.
