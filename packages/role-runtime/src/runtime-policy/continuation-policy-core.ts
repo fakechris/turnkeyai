@@ -3,7 +3,7 @@ import type {
   MissingApprovalGateContinuationFacts,
   TimeoutContinuationPolicyFacts,
 } from "../runtime-facts/continuation-policy-facts";
-import { buildPolicyIdRenderRequest } from "./renderers";
+import { buildPolicyIdRenderRequest } from "./prompt-renderers";
 import type { RuntimeContinuationDecision } from "./types";
 
 export type RuntimeContinuationPolicyId =

@@ -2,7 +2,7 @@ import type {
   CompletedSynthesisRepairPolicyFacts,
   NaturalFinishRepairPolicyFacts,
 } from "../runtime-facts/repair-policy-facts";
-import { buildPolicyIdRenderRequest } from "./renderers";
+import { buildPolicyIdRenderRequest } from "./prompt-renderers";
 import type { RuntimeRepairDecision } from "./types";
 
 export const RUNTIME_NATURAL_FINISH_REPAIR_POLICY_ORDER = [

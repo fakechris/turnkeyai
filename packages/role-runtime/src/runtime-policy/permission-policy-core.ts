@@ -1,5 +1,5 @@
 import type { PermissionSuppressionFacts } from "../runtime-facts/permission-policy-facts";
-import { buildPolicyIdRenderRequest } from "./renderers";
+import { buildPolicyIdRenderRequest } from "./prompt-renderers";
 import type { RuntimePermissionDecision } from "./types";
 
 export interface SelectPermissionSuppressionInput {
