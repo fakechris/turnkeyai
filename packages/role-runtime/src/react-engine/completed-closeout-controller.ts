@@ -7,8 +7,8 @@ import type {
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
+import { dedupeStrings } from "../tool-protocol";
 import {
-  dedupeStrings,
   maybeAppendBrowserFailureBucketVisibility,
   maybeAppendBrowserRecoveryVisibility,
   maybeAppendRecoveredTimeoutCloseoutVisibility,
@@ -16,8 +16,8 @@ import {
   maybeRedactForbiddenLocalUrls,
   shouldAppendRecoveredTimeoutCloseoutVisibility,
   shouldAppendTimeoutContinuationVisibility,
-  shouldPreserveRecoveredTimeoutCloseout,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-policy/synthesis-visibility";
+import { shouldPreserveRecoveredTimeoutCloseout } from "../runtime-facts/text-fallback-readers";
 import { readRuntimeBrowserSummariesFromTrace } from "../runtime-facts/browser-recovery-summary-producer";
 import { recordRepairPrompt } from "../task-facts-shared";
 import {

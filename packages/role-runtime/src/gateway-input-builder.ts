@@ -5,12 +5,10 @@ import type {
 } from "@turnkeyai/llm-adapter/index";
 
 import type { RolePromptPacket } from "./prompt-policy";
-import {
-  escapeRegExp,
-  readPolicyRequiredFinalSynthesisDeliverables,
-  requestsStatusVisibleTextEvidenceUrlLines,
-  type SessionContinuationDirective,
-} from "./runtime-facts/policy-text-facts";
+import { escapeRegExp } from "./tool-protocol";
+import { readPolicyRequiredFinalSynthesisDeliverables } from "./runtime-facts/text-fallback-readers";
+import { requestsStatusVisibleTextEvidenceUrlLines } from "./runtime-policy/synthesis-visibility";
+import type { SessionContinuationDirective } from "./runtime-facts/text-fallback-readers";
 import {
   requestedTableColumnMessageContext,
   buildExtraneousProviderTableSchemaRepairPrompt,

@@ -1,6 +1,6 @@
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
-import { readPolicyReadOnlyPermissionQuerySuppression } from "./policy-text-facts";
+import { readPolicyReadOnlyPermissionQuerySuppression } from "./text-fallback-readers";
 
 export interface PermissionSuppressionFactInput {
   calls: LLMToolCall[];

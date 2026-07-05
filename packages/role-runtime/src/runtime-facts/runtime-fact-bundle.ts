@@ -4,7 +4,7 @@ import {
   readPolicyApprovalWaitTimeoutRuntimeEvidence,
   readPolicyCompletedSessionEvidenceText,
   readPolicySourceBoundedEvidenceText,
-} from "./policy-text-facts";
+} from "./text-fallback-readers";
 import {
   collectToolResultContentText,
   collectToolTraceResultContent,

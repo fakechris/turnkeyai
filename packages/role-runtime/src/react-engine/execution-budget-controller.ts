@@ -5,15 +5,15 @@ import type { NativeToolRoundTrace } from "../native-tool-messages";
 import { shouldSerializeToolBatch } from "../react/predicates";
 import { shouldAllowRequiredTimeoutContinuationPastWallClock } from "../tool-result-evidence";
 import type { RoleToolContext, RoleToolLoopOptions } from "../tool-use";
+import { buildFinalRecoveryBudgetCloseoutReasonLines } from "../runtime-policy/prompt-renderers";
 import {
-  buildFinalRecoveryBudgetCloseoutReasonLines,
   buildToolCallLimitExceededResult,
   createToolExecutionSignal,
   formatDurationMs,
   isAbortError,
   resolveEffectiveToolLoopWallClockMs,
   withFinalToolRoundWarning,
-} from "../runtime-facts/policy-text-facts";
+} from "../tool-protocol";
 
 // Stage 8 engine cleanup — ExecutionBudgetController.
 //

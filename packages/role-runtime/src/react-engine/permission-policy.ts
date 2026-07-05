@@ -8,9 +8,11 @@ import {
 import {
   buildContinuationDirectiveContext,
   buildReadOnlyPermissionQuerySuppressionPrompt,
+} from "../runtime-policy/prompt-renderers";
+import {
   enforceMissingApprovalGateRepairToolCalls,
   normalizeApprovalGatedBrowserSpawnCalls,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-facts/text-fallback-readers";
 import { buildPermissionSuppressionFacts } from "../runtime-facts/permission-policy-facts";
 import { selectPermissionSuppressionPolicy } from "../runtime-policy/permission-policy-core";
 import type { EngineSuppressDecision } from "./types";

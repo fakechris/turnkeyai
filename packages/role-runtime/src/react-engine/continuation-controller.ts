@@ -13,14 +13,16 @@ import {
   buildSupplementalLocalTimeoutProbePrompt,
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
+} from "../runtime-policy/prompt-renderers";
+import {
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   findIncompleteApprovedBrowserSession,
   hasExecutedSessionsSend,
-  hasLatestSupplementalLocalTimeoutProbePrompt,
   shouldRunSupplementalLocalTimeoutProbe,
-  type SubAgentToolTimeoutSignal,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-facts/text-fallback-readers";
+import { hasLatestSupplementalLocalTimeoutProbePrompt } from "../runtime-facts/repair-marker-facts";
+import type { SubAgentToolTimeoutSignal } from "../runtime-facts/text-fallback-readers";
 import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
 import {
   buildIndependentEvidenceStreamsPolicyFacts,

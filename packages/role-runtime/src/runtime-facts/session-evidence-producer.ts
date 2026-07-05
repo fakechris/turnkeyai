@@ -4,7 +4,7 @@ import {
   readBrowserRecoverySummary,
   readCompletedSessionEvidence,
   readInlineBrowserRecoverySummary,
-} from "./policy-text-facts";
+} from "./text-fallback-readers";
 import { readSessionHistoryEvidence } from "../tool-result-evidence";
 import type { RoleToolExecutionResult } from "../tool-use";
 import type {

@@ -11,10 +11,7 @@ import {
   type NativeToolRoundTrace,
 } from "../native-tool-messages";
 import { recordProviderToolProtocolRoundSafely } from "../tool-history-pruning";
-import {
-  toNativeToolProgressTrace,
-  toNativeToolResultTrace,
-} from "../runtime-facts/policy-text-facts";
+import { toNativeToolProgressTrace, toNativeToolResultTrace } from "../tool-protocol";
 import {
   appendAssistantToolCallMessage,
   appendToolResultMessages,

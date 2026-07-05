@@ -17,8 +17,8 @@ import {
   readPolicyBrowserRecoverySummariesFromToolTrace,
   readPolicyCompletedSessionEvidenceText,
   readPolicySourceBoundedEvidenceText,
-  type SubAgentToolTimeoutSignal,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-facts/text-fallback-readers";
+import type { SubAgentToolTimeoutSignal } from "../runtime-facts/text-fallback-readers";
 import { buildPermissionSuppressionFacts } from "../runtime-facts/permission-policy-facts";
 import {
   buildCompletedSynthesisRepairPolicyFacts,

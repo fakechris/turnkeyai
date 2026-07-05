@@ -179,7 +179,6 @@ const INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST = new Set<string>([
 ]);
 
 const INLINE_ADAPTER_FACT_IMPORT_MODULES = [
-  "./runtime-facts/policy-text-facts",
   "./runtime-facts/text-fallback-readers",
   "./runtime-facts/repair-marker-facts",
   "./runtime-policy/prompt-renderers",
@@ -1981,12 +1980,10 @@ test("active runtime policy boundary does not use renamed legacy fact shims", ()
 
 test("inline adapter routes policy booleans through runtime-policy runner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const producerImports = Array.from(
-    source.matchAll(
-      /import\s+\{([\s\S]*?)\}\s+from\s+["']\.\/runtime-facts\/policy-text-facts["'];/g,
-    ),
-    (match) => match[1] ?? "",
-  ).join("\n");
+  const producerImports = importedNamesFrom(source, [
+    "./runtime-facts/text-fallback-readers",
+    "./runtime-facts/repair-marker-facts",
+  ]).join("\n");
   const forbiddenProducerPolicyImports = Array.from(
     producerImports.matchAll(
       /\b(read[A-Za-z0-9_]*(?:Repair|Continuation|Suppression))\b/g,
@@ -2019,6 +2016,26 @@ test("inline adapter routes policy booleans through runtime-policy runner", () =
       `inline policy runner must use ${selector}`,
     );
   }
+});
+
+test("policy-text-facts facade is retired", () => {
+  assert.equal(
+    existsSync(path.join(RUNTIME_FACTS_DIR, "policy-text-facts.ts")),
+    false,
+    "runtime-facts/policy-text-facts.ts must not return as an active owner or compatibility facade",
+  );
+  const offenders: string[] = [];
+  for (const file of activeRuntimeBoundarySourceFiles()) {
+    const source = readFileSync(file, "utf8");
+    if (source.includes("policy-text-facts")) {
+      offenders.push(path.relative(ROLE_RUNTIME_DIR, file));
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `active runtime code must import concrete fact/render modules, not policy-text-facts:\n${offenders.join("\n")}`,
+  );
 });
 
 test("inline adapter fact imports stay inside the reviewed allowlist", () => {
@@ -2151,10 +2168,17 @@ test("tool-loop-shared does not export renamed legacy fact helpers", () => {
 
 test("tool-loop-shared remains a legacy facade, not an active fact owner", () => {
   const source = readFileSync(path.join(ROLE_RUNTIME_DIR, "tool-loop-shared.ts"), "utf8");
-  assert.match(
-    source.trim(),
-    /^export \* from "\.\/runtime-facts\/policy-text-facts";$/,
-    "tool-loop-shared must stay a compatibility facade over the producer-owned implementation",
+  const expected = [
+    'export * from "./tool-protocol";',
+    'export * from "./runtime-policy/prompt-renderers";',
+    'export * from "./runtime-policy/synthesis-visibility";',
+    'export * from "./runtime-facts/repair-marker-facts";',
+    'export * from "./runtime-facts/text-fallback-readers";',
+  ];
+  assert.deepEqual(
+    source.trim().split(/\n/),
+    expected,
+    "tool-loop-shared must stay a compatibility facade over concrete split modules",
   );
 });
 

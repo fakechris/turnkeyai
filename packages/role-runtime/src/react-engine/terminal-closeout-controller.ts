@@ -27,11 +27,9 @@ import {
 import {
   buildApprovalWaitTimeoutLocalEvidenceCloseout,
   buildLocalEvidenceCloseout,
-  containsAnyToolCallForm,
-  isAbortError,
-  maybeAppendTimeoutContinuationVisibility,
-  maybeRedactForbiddenLocalUrls,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-policy/prompt-renderers";
+import { containsAnyToolCallForm, isAbortError } from "../tool-protocol";
+import { maybeAppendTimeoutContinuationVisibility, maybeRedactForbiddenLocalUrls } from "../runtime-policy/synthesis-visibility";
 import type {
   CompletedCloseoutSynthesis,
   CompletedCloseoutTerminalInput,

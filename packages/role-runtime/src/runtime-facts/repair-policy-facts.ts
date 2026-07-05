@@ -5,7 +5,6 @@ import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
   readPolicySourceBoundedEvidenceText,
   findMissingRequiredFinalDeliverables,
-  hasMissingRequiredFinalDeliverablesRepairPrompt,
   readPolicyPendingApprovalMention,
   readPolicyForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
   readPolicyApprovalWaitTimeoutCloseoutRepair,
@@ -24,8 +23,9 @@ import {
   readPolicyStalePendingApprovalRepair,
   readPolicyTimeoutFollowupFinalGuidanceRepair,
   readPolicyWeakEvidenceSynthesisRepair,
-  type RequiredFinalDeliverable,
-} from "./policy-text-facts";
+} from "./text-fallback-readers";
+import { hasMissingRequiredFinalDeliverablesRepairPrompt } from "./repair-marker-facts";
+import type { RequiredFinalDeliverable } from "./text-fallback-readers";
 import { produceTaskIntentEnvelope } from "./task-intent-producer";
 import {
   readExtraneousProviderTableSchemaRepair,

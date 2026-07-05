@@ -1,5 +1,5 @@
 import type { NativeToolRoundTrace } from "../native-tool-messages";
-import { readPolicyBrowserRecoverySummariesFromToolTrace } from "./policy-text-facts";
+import { readPolicyBrowserRecoverySummariesFromToolTrace } from "./text-fallback-readers";
 
 export function readRuntimeBrowserSummariesFromTrace(
   toolTrace: NativeToolRoundTrace[],

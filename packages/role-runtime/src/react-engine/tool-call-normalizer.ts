@@ -8,21 +8,21 @@ import {
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
   buildContinuationDirectiveContext,
+} from "../runtime-policy/prompt-renderers";
+import {
   enforceSupplementalLocalTimeoutProbeToolCall,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
-  hasLatestSupplementalLocalTimeoutProbePrompt,
   limitIndependentEvidenceSpawnCalls,
   normalizeBoundedTimeoutDuplicateSourceSpawns,
   normalizeBoundedTimeoutSourceSpawnAgents,
   normalizeExplicitContinuationHistoryCalls,
   normalizeLocalUrlWebFetchCalls,
   normalizePrivateUrlResearchSpawnCalls,
-  normalizeSessionToolAliasCalls,
-  normalizeSessionToolCalls,
-  type SessionContinuationDirective,
-  type SessionContinuationLookupDirective,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-facts/text-fallback-readers";
+import { hasLatestSupplementalLocalTimeoutProbePrompt } from "../runtime-facts/repair-marker-facts";
+import { normalizeSessionToolAliasCalls, normalizeSessionToolCalls } from "../tool-protocol";
+import type { SessionContinuationDirective, SessionContinuationLookupDirective } from "../runtime-facts/text-fallback-readers";
 import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
 import {
   createPermissionPolicy,

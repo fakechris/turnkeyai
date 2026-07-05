@@ -13,13 +13,14 @@
 import {
   buildContinuationDirectiveContext,
   buildCompletedBrowserEvidenceDimensionCarryForwardLines,
-  containsAnyToolCallForm,
+} from "../runtime-policy/prompt-renderers";
+import { containsAnyToolCallForm, sliceUtf8 } from "../tool-protocol";
+import {
   findExcessiveSessionContinuationCall,
   findRepeatedSessionInspectionCall,
   shouldPreserveRecoveredTimeoutCloseout,
   shouldCloseoutCancelledSessionWithoutContinuation,
-  sliceUtf8,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-facts/text-fallback-readers";
 import { buildRecoveryToolBudgetCloseoutFacts } from "../runtime-facts/closeout-policy-facts";
 import { selectRecoveryToolBudgetCloseoutPolicy } from "../runtime-policy/closeout-policy-core";
 import { findRepeatedFailedToolCall } from "../react/predicates";

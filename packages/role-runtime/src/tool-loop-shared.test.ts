@@ -5,7 +5,7 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
-import { readPolicyApprovalWaitTimeoutRuntimeEvidence } from "./runtime-facts/policy-text-facts";
+import { readPolicyApprovalWaitTimeoutRuntimeEvidence } from "./runtime-facts/text-fallback-readers";
 import {
   allowsSupplementalBrowserProbe,
   buildApprovalWaitTimeoutLocalEvidenceCloseout,

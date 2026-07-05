@@ -8,8 +8,8 @@ import {
   readPolicyTimedOutApprovedBrowserSessionContinuation,
   readPolicyTimedOutSiblingSessionContinuation,
   readPolicyMissingApprovalGateRepair,
-  type SubAgentToolTimeoutSignal,
-} from "./policy-text-facts";
+} from "./text-fallback-readers";
+import type { SubAgentToolTimeoutSignal } from "./text-fallback-readers";
 import type { TaskIntentFacts } from "./types";
 
 export interface ContinuationToolDefinitionFact {
