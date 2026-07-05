@@ -7,7 +7,6 @@ import {
   findMissingRequiredFinalDeliverables,
   hasMissingRequiredFinalDeliverablesRepairPrompt,
   readPolicyPendingApprovalMention,
-  requestsApprovalGatedBrowserAction,
   readPolicyForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
   readPolicyApprovalWaitTimeoutCloseoutRepair,
   readPolicyFalseEvidenceBlockedSynthesisRepair,
@@ -25,12 +24,9 @@ import {
   readPolicyStalePendingApprovalRepair,
   readPolicyTimeoutFollowupFinalGuidanceRepair,
   readPolicyWeakEvidenceSynthesisRepair,
-  taskPromptAllowsStoppingAtPendingApproval,
-  taskPromptIsAppliedApprovalBrowserContinuation,
-  taskPromptRequestsApprovalWaitTimeoutCloseout,
-  taskPromptSaysApprovalAlreadyApplied,
   type RequiredFinalDeliverable,
 } from "./policy-text-facts";
+import { produceTaskIntentEnvelope } from "./task-intent-producer";
 import {
   readExtraneousProviderTableSchemaRepair,
   readMissingRequestedTableColumnsRepair,
@@ -212,6 +208,19 @@ function shouldSelectFinalRecoveryBudgetCloseoutRepair(
   );
 }
 
+function resolveRepairTaskFacts(
+  input: NaturalFinishRepairFactInput,
+): TaskIntentFacts {
+  return (
+    input.taskFacts ??
+    produceTaskIntentEnvelope({
+      taskPrompt: input.taskPrompt ?? "",
+      activation: input.activation,
+      messages: input.messages,
+    }).facts
+  );
+}
+
 function shouldSelectMissingApprovalGate(
   input: NaturalFinishRepairFactInput,
 ): boolean {
@@ -272,12 +281,13 @@ function shouldSelectPendingApprovalWaitTimeoutCheck(
 ): boolean {
   if (!input.taskPrompt || !input.toolTrace) return false;
   if (input.permissionFacts) {
+    const taskFacts = resolveRepairTaskFacts(input);
     return (
       !hasNaturalFinishRepairMarker(
         input.repairMarkers,
         "Runtime correction: approval decision has not arrived",
       ) &&
-      taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) &&
+      taskFacts.approvalWaitTimeoutCloseoutRequested &&
       input.permissionFacts.latestToolName === "permission_query"
     );
   }
@@ -295,17 +305,18 @@ function shouldSelectPrematurePendingApproval(
 ): boolean {
   if (!input.taskPrompt || !input.toolTrace) return false;
   if (input.permissionFacts) {
+    const taskFacts = resolveRepairTaskFacts(input);
     return (
       !hasNaturalFinishRepairMarker(
         input.repairMarkers,
         "Runtime correction: approval-gated browser action is still pending",
       ) &&
       readPolicyPendingApprovalMention(input.resultText) &&
-      requestsApprovalGatedBrowserAction(input.taskPrompt) &&
-      !taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) &&
-      !taskPromptAllowsStoppingAtPendingApproval(input.taskPrompt) &&
+      taskFacts.approvalGatedBrowserActionRequested &&
+      !taskFacts.approvalWaitTimeoutCloseoutRequested &&
+      !taskFacts.stopAtPendingApprovalAllowed &&
       !input.permissionFacts.appliedApproval &&
-      !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) &&
+      !taskFacts.approvalAlreadyApplied &&
       !hasSessionToolEvidence(input.toolTrace) &&
       (input.permissionFacts.latestToolName === "permission_query" ||
         input.permissionFacts.latestResultStatus === "pending")
@@ -325,17 +336,18 @@ function shouldSelectStalePendingApproval(
 ): boolean {
   if (!input.taskPrompt || !input.toolTrace) return false;
   if (input.permissionFacts) {
+    const taskFacts = resolveRepairTaskFacts(input);
     return (
       !hasNaturalFinishRepairMarker(
         input.repairMarkers,
         "Runtime correction: approval already applied",
       ) &&
       readPolicyPendingApprovalMention(input.resultText) &&
-      (requestsApprovalGatedBrowserAction(input.taskPrompt) ||
-        taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)) &&
+      (taskFacts.approvalGatedBrowserActionRequested ||
+        taskFacts.appliedApprovalBrowserContinuation) &&
       (input.permissionFacts.appliedApproval ||
-        taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
-        taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt))
+        taskFacts.approvalAlreadyApplied ||
+        taskFacts.appliedApprovalBrowserContinuation)
     );
   }
   return readPolicyStalePendingApprovalRepair({
@@ -352,13 +364,14 @@ function shouldSelectStaleDeniedApproval(
 ): boolean {
   if (!input.taskPrompt || !input.toolTrace) return false;
   if (input.permissionFacts) {
+    const taskFacts = resolveRepairTaskFacts(input);
     return (
       !hasNaturalFinishRepairMarker(
         input.repairMarkers,
         "Runtime correction: approval was denied",
       ) &&
       readPolicyPendingApprovalMention(input.resultText) &&
-      requestsApprovalGatedBrowserAction(input.taskPrompt) &&
+      taskFacts.approvalGatedBrowserActionRequested &&
       input.permissionFacts.deniedApproval
     );
   }

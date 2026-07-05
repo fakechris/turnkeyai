@@ -12,8 +12,19 @@ const baseTaskIntent: TaskIntentFacts = {
   browserVisibleEvidenceRequired: true,
   productSignalDashboardEvidenceRequested: false,
   timeoutRecoveryRequested: false,
+  sourceCheckContinuationRequested: false,
   awaitingContextSetupOnly: false,
   requiredIndependentEvidenceStreams: 0,
+  permissionToolsAllowed: false,
+  approvalAlreadyApplied: false,
+  approvalGatedBrowserActionRequested: false,
+  approvalWaitTimeoutCloseoutRequested: false,
+  stopAtPendingApprovalAllowed: false,
+  appliedApprovalBrowserContinuation: false,
+  coverageCriticalDelegation: false,
+  providerSearchPricingResearch: false,
+  explicitSessionContinuationRequested: false,
+  exactFinalAnswerShapeExpected: false,
 };
 
 function round(input: Partial<NativeToolRoundTrace>): NativeToolRoundTrace {

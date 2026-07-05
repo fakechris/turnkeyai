@@ -18,10 +18,10 @@ import {
   findIncompleteApprovedBrowserSession,
   hasExecutedSessionsSend,
   hasLatestSupplementalLocalTimeoutProbePrompt,
-  isAppliedApprovalBrowserContinuation,
   shouldRunSupplementalLocalTimeoutProbe,
   type SubAgentToolTimeoutSignal,
 } from "../runtime-facts/policy-text-facts";
+import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
 import {
   buildIndependentEvidenceStreamsPolicyFacts,
   buildMissingApprovalGateContinuationFacts,
@@ -62,6 +62,7 @@ export interface EmptyRoundContinuationInput {
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];
   tools?: readonly ContinuationToolDefinition[];
+  taskFacts?: TaskFactsSnapshot;
 }
 
 export interface TimeoutContinuationInput {
@@ -221,7 +222,7 @@ export class ContinuationController {
     const lookupDirective =
       !probePending &&
       !directive &&
-      !isAppliedApprovalBrowserContinuation(input.taskPrompt)
+      !appliedApprovalBrowserContinuationRequested(input)
         ? findSessionContinuationLookupDirective(
             continuationContext,
             continuationContext,
@@ -631,6 +632,19 @@ export class ContinuationController {
       executeForcedRound,
     );
   }
+}
+
+function appliedApprovalBrowserContinuationRequested(input: {
+  taskFacts?: TaskFactsSnapshot;
+  taskPrompt: string;
+}): boolean {
+  return (
+    input.taskFacts?.appliedApprovalBrowserContinuation ??
+    produceTaskIntentEnvelope({
+      taskPrompt: input.taskPrompt,
+      messages: [],
+    }).facts.appliedApprovalBrowserContinuation
+  );
 }
 
 export function createContinuationController(): ContinuationController {

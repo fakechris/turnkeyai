@@ -32,11 +32,31 @@ export function produceTaskIntentEnvelope(
         taskFactRequestsProductSignalDashboardEvidence(taskAndContextText),
       timeoutRecoveryRequested:
         taskFactRequestsTimeoutRecovery(taskAndContextText),
+      sourceCheckContinuationRequested:
+        taskFactLooksLikeSourceCheckContinuation(input.taskPrompt),
       awaitingContextSetupOnly: taskPromptRequestsAwaitingContextSetup(
         input.taskPrompt,
       ),
       requiredIndependentEvidenceStreams:
         inferTaskFactIndependentEvidenceStreamCount(input.taskPrompt),
+      permissionToolsAllowed: taskFactAllowsPermissionTools(input.taskPrompt),
+      approvalAlreadyApplied: taskFactApprovalAlreadyApplied(input.taskPrompt),
+      approvalGatedBrowserActionRequested:
+        taskFactRequestsApprovalGatedBrowserAction(input.taskPrompt),
+      approvalWaitTimeoutCloseoutRequested:
+        taskFactRequestsApprovalWaitTimeoutCloseout(input.taskPrompt),
+      stopAtPendingApprovalAllowed:
+        taskFactAllowsStoppingAtPendingApproval(input.taskPrompt),
+      appliedApprovalBrowserContinuation:
+        taskFactIsAppliedApprovalBrowserContinuation(input.taskPrompt),
+      coverageCriticalDelegation:
+        taskFactIsCoverageCriticalDelegation(input.taskPrompt),
+      providerSearchPricingResearch:
+        taskFactIsProviderSearchPricingResearch(input.taskPrompt),
+      explicitSessionContinuationRequested:
+        taskFactLooksLikeExplicitSessionContinuation(input.taskPrompt),
+      exactFinalAnswerShapeExpected:
+        taskFactExpectsExactFinalAnswerShape(input.taskPrompt),
     },
     provenance: buildTaskIntentProvenance(input),
   };
@@ -184,6 +204,213 @@ function taskFactRequestsTimeoutRecovery(text: string): boolean {
     /\b(?:timeout|timed[- ]out|bounded attempt|slow[- ]source|source[- ]check)\b|超时/i.test(
       text,
     )
+  );
+}
+
+function taskFactLooksLikeSourceCheckContinuation(taskPrompt: string): boolean {
+  return (
+    /\b(?:slow-source|slow source|slow-fixture|slow fixture|source-check|source check)\b/i.test(
+      taskPrompt,
+    ) &&
+    /\b(?:continue|retry|resume|recovered|recovery|follow-?up|same source-check context|same source check context|existing source-check context|existing source check context)\b/i.test(
+      taskPrompt,
+    ) &&
+    /\b(?:timeout|timed out|bounded attempt|release-risk|release risk|risk note|residual risk)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function taskFactAllowsPermissionTools(taskPrompt: string): boolean {
+  if (taskFactDisclaimsApprovalGatedBrowserAction(taskPrompt)) {
+    return false;
+  }
+  return (
+    /\b(?:permission_(?:query|result|applied)|permission\.(?:query|result|applied)|approval_id|approval id|pending approval|operator approval|operator decision|approval (?:gate|request|decision|granted|approved|denied|applied)|approved action|denied action)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:approve|approved|approval|permission|operator review)\b[\s\S]{0,180}\b(?:submit|submission|form|click|mutat(?:e|ion)|side[- ]effects?|browser\.form\.submit|apply|execute|dry[- ]run)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:submit|submission|form|click|mutat(?:e|ion)|side[- ]effects?|browser\.form\.submit|apply|execute|dry[- ]run)\b[\s\S]{0,180}\b(?:approve|approved|approval|permission|operator review)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function taskFactApprovalAlreadyApplied(taskPrompt: string): boolean {
+  return /\b(?:runtime\s+)?permission cache\b[\s\S]{0,120}\balready applied\b|\bpermission\.applied\b|\bpermission_applied\b/i.test(
+    taskPrompt,
+  );
+}
+
+function taskFactRequestsApprovalGatedBrowserAction(
+  taskPrompt: string,
+): boolean {
+  if (taskFactDisclaimsApprovalGatedBrowserAction(taskPrompt)) {
+    return false;
+  }
+  return (
+    /\bapproval\b/i.test(taskPrompt) &&
+    /\bbrowser\b/i.test(taskPrompt) &&
+    taskFactLooksApprovalGatedBrowserSideEffect(taskPrompt) &&
+    taskFactBrowserSpawnPerformsMutatingAction(taskPrompt)
+  );
+}
+
+function taskFactDisclaimsApprovalGatedBrowserAction(
+  taskPrompt: string,
+): boolean {
+  if (
+    /\b(?:not\s+(?:a\s+)?form submission|not\s+(?:a\s+)?browser mutation|do not mutate|don't mutate|without mutat(?:ing|ion)|no browser mutation|no form submission)\b/i.test(
+      taskPrompt,
+    )
+  ) {
+    return true;
+  }
+  if (!/\bread[- ]only\b/i.test(taskPrompt)) {
+    return false;
+  }
+  return (
+    /\bno\b[^.\n]{0,180}\b(?:browser\s+)?(?:form|click|navigation|submit|submission|mutation|side[- ]effect|approval[- ]gated action)\b[^.\n]{0,120}\b(?:needed|required|necessary|will be performed|should run|is needed)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:do\s+not|don't|never)\b[^.\n]{0,180}\b(?:click|submit|submission|form|deposit|purchase|buy|order|book|reserve|save|update|delete|remove|archive|mutat(?:e|ion)|side[- ]effect|request approval|approval)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function taskFactLooksApprovalGatedBrowserSideEffect(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  const hasApprovalContext =
+    /\b(?:approval|approve|approved|permission|authorize|authorized|operator\s+review|gate|gated|dry-?run)\b/i.test(
+      normalized,
+    ) || /\bbrowser\.[a-z0-9_.-]+\b/i.test(normalized);
+  const hasBrowserMutation =
+    /\b(?:submit|click|press|type|fill|select|upload|download|delete|save|apply|confirm|purchase|checkout|sign\s*in|log\s*in|form)\b/i.test(
+      normalized,
+    ) ||
+    /\bbrowser\.(?:form\.submit|click|input|type|select|upload|download|permission)\b/i.test(
+      normalized,
+    );
+  return hasApprovalContext && hasBrowserMutation;
+}
+
+function taskFactBrowserSpawnPerformsMutatingAction(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /\b(?:submit|submission|form\.submit)\b[\s\S]{0,80}\b(?:form|button|control|page|browser|action|mutation|side[- ]effect|approval|approved|dry[- ]run)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:form|button|control|page|browser|action|mutation|side[- ]effect|approval|approved|dry[- ]run)\b[\s\S]{0,80}\b(?:submit|submission|form\.submit)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:click|press|type|fill|select|upload|download|delete|save|apply|confirm|purchase|checkout|sign\s*in|log\s*in)\b/i.test(
+      normalized,
+    ) ||
+    /\bbrowser\.(?:form\.submit|click|input|type|select|upload|download|permission)\b/i.test(
+      normalized,
+    )
+  );
+}
+
+function taskFactRequestsApprovalWaitTimeoutCloseout(
+  taskPrompt: string,
+): boolean {
+  return (
+    /\b(?:operator decision|approval|permission)\b[\s\S]{0,180}\b(?:does not arrive|doesn't arrive|does not come through|doesn't come through|no decision arrives|no approval arrives|wait timeout|wait-timeout|timed out|timeout|during this attempt|attempt cycle)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\bif\b[\s\S]{0,120}\b(?:decision|approval|permission)\b[\s\S]{0,120}\b(?:not arrive|pending|timeout|timed out|wait)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function taskFactAllowsStoppingAtPendingApproval(taskPrompt: string): boolean {
+  return /\bstop\b[\s\S]{0,80}\b(?:approval request|permission request)\b[\s\S]{0,120}\b(?:wait|operator decision|approval|decision)\b|\bwait for (?:the )?operator decision\b[\s\S]{0,160}\bdo not (?:apply|submit|execute|proceed)/i.test(
+    taskPrompt,
+  );
+}
+
+function taskFactIsAppliedApprovalBrowserContinuation(
+  taskPrompt: string,
+): boolean {
+  return (
+    taskFactApprovalAlreadyApplied(taskPrompt) &&
+    /\b(?:browser\.form\.submit|approved scoped action|approved point|operator approved|call sessions_spawn|agent_id="?browser"?|browser result|form submission|dry[- ]run)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function taskFactIsCoverageCriticalDelegation(taskPrompt: string): boolean {
+  if (taskFactIsProviderSearchPricingResearch(taskPrompt)) {
+    return true;
+  }
+  const text = taskPrompt.toLowerCase();
+  const sourceCount = [
+    (taskPrompt.match(/https?:\/\/\S+/g) ?? []).length,
+    (text.match(/\b(?:source|evidence stream|child session|marker)\b/g) ?? [])
+      .length,
+  ].filter((count) => count >= 3).length;
+  if (sourceCount === 0) {
+    return false;
+  }
+  return (
+    /\bdo not finalize until\b/i.test(taskPrompt) ||
+    /\ball (?:three|3|\d+) (?:child session tool results|sources|source checks|evidence streams|markers)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:three|3|\d+) independent evidence streams\b/i.test(taskPrompt) ||
+    /\bsource coverage\b/i.test(taskPrompt)
+  );
+}
+
+function taskFactIsProviderSearchPricingResearch(taskPrompt: string): boolean {
+  return (
+    /\bproviders?\b|\bvendors?\b|\bplatforms?\b|供应商|服务商|厂商|平台/iu.test(
+      taskPrompt,
+    ) &&
+    /\bweb\s*search\b|\bsearch\b|搜索|联网|检索/iu.test(taskPrompt) &&
+    /\bpric(?:e|ing)\b|\bcosts?\b|\bfees?\b|\btokens?\b|价格|价钱|费用|收费|计费|token/iu.test(
+      taskPrompt,
+    )
+  );
+}
+
+function taskFactLooksLikeExplicitSessionContinuation(
+  taskPrompt: string,
+): boolean {
+  return (
+    taskFactRequestsTimeoutFollowupContinuation(taskPrompt) ||
+    /\b(?:continue|resume|retry|follow[- ]?up)\b[\s\S]{0,180}\b(?:existing|same|previous|prior|earlier|source[- ]check|source check|session|attempt|context)\b/i.test(
+      taskPrompt,
+    ) ||
+    /\b(?:existing|same|previous|prior|earlier)\b[\s\S]{0,180}\b(?:continue|resume|retry|follow[- ]?up)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function taskFactRequestsTimeoutFollowupContinuation(
+  taskPrompt: string,
+): boolean {
+  return /\b(?:slow source|bounded attempt|source does not return|doesn't return|timed out|timeout|earlier timeout|previous timeout|prior timeout)\b/i.test(
+    taskPrompt,
+  );
+}
+
+function taskFactExpectsExactFinalAnswerShape(taskPrompt: string): boolean {
+  return /\b(?:respond with only|output only|answer only|final answer must|answer must be|use this exact final answer|exact final answer shape|valid json|json object|json array|csv only|markdown table only)\b|(?:只|仅|只需|仅需)(?:用|以)?(?:回答|输出|返回|给出)[^\n。；;]{0,24}(?:一|二|两|三|四|五|六|七|八|九|十|\d+)\s*(?:行|条|句)|^\s*Final Answer\s*:/im.test(
+    taskPrompt,
   );
 }
 

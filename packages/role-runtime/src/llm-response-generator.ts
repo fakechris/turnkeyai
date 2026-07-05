@@ -129,8 +129,6 @@ import {
   countCompletedSessionEvidenceResults,
   countRecoveryToolCallsBeforeActivation,
   dedupeStrings,
-  disclaimsApprovalGatedBrowserAction,
-  disclaimsIntendedBrowserMutation,
   enforceMissingApprovalGateRepairToolCalls,
   enforceSupplementalLocalTimeoutProbeToolCall,
   extractHttpUrls,
@@ -150,8 +148,6 @@ import {
   hasMissingRequiredFinalDeliverablesRepairPrompt,
   hasLatestSupplementalLocalTimeoutProbePrompt,
   isAbortError,
-  isAppliedApprovalBrowserContinuation,
-  isProviderSearchPricingResearchTask,
   isControlPlaneToolResultName,
   isExplicitSessionContinuationRequest,
   isLoopbackHostname,
@@ -177,7 +173,6 @@ import {
   readSessionKeyFromToolInput,
   readStringField,
   readStringInput,
-  requestsApprovalGatedBrowserAction,
   resolveRecoveryToolBudgetForActivation,
   resolveEffectiveToolLoopWallClockMs,
   shouldCloseoutCancelledSessionWithoutContinuation,
@@ -186,18 +181,13 @@ import {
   shouldAppendTimeoutContinuationVisibility,
   shouldPreserveRecoveredTimeoutCloseout,
   sliceUtf8,
-  taskAllowsPermissionTools,
-  taskPromptRequestsApprovalWaitTimeoutCloseout,
-  taskPromptIsAppliedApprovalBrowserContinuation,
-  taskPromptLooksLikeSourceCheckContinuation,
-  taskPromptSaysApprovalAlreadyApplied,
   toNativeToolProgressTrace,
   toNativeToolResultTrace,
   toolTraceHasCall,
   throwIfAborted,
   withFinalToolRoundWarning,
-  expectsExactFinalAnswerShape,
 } from "./runtime-facts/policy-text-facts";
+import { produceTaskIntentEnvelope } from "./runtime-facts/task-intent-producer";
 import {
   buildRuntimeDerivedMissionReport,
   type ToolLoopCloseoutMetadata,
@@ -450,6 +440,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // on how/where messages are stored (the Turnkey-agnostic boundary). Inline
     // owns a loop-local ledger; the engine will pass `ctx.repairMarkers`.
     const repairMarkers: LLMMessage[] = [];
+    const inlineTaskIntentFacts = produceTaskIntentEnvelope({
+      taskPrompt: input.packet.taskPrompt,
+      activation: input.activation,
+      messages: initialGatewayInput.messages,
+    }).facts;
     for (let round = 0; ; round++) {
       throwIfAborted(input.signal);
       const maxRounds =
@@ -594,7 +589,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         !supplementalLocalTimeoutProbePending &&
         !sessionContinuationDirective &&
         activeToolLoop &&
-        !isAppliedApprovalBrowserContinuation(input.packet.taskPrompt)
+        !inlineTaskIntentFacts.appliedApprovalBrowserContinuation
           ? findSessionContinuationLookupDirective(
               sessionContinuationContext,
               sessionContinuationContext,
@@ -2830,6 +2825,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ...(initialGatewayInput.tools === undefined
               ? {}
               : { tools: initialGatewayInput.tools }),
+            taskFacts,
           }),
         // Stage 6: post-synthesis repairs on the engine's tool-free candidate
         // answer (the natural-finish path), mirroring the inline tool-free cascade

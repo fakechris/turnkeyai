@@ -1,14 +1,13 @@
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "./native-tool-messages";
+import { produceTaskIntentEnvelope } from "./runtime-facts/task-intent-producer";
 import { parseSessionToolResult } from "./session-tool-result-protocol";
 import {
   dedupeStrings,
   hasApprovedBrowserTimeoutContinuationPrompt,
   hasCoverageTimeoutContinuationPrompt,
   hasExecutedSessionsSend,
-  isAppliedApprovalBrowserContinuation,
-  isCoverageCriticalDelegationTask,
   readBrowserRecoverySummary,
   readCompletedSessionEvidence,
   readInlineBrowserRecoverySummary,
@@ -320,15 +319,19 @@ export function shouldAllowRequiredTimeoutContinuationPastWallClock(input: {
   if (!sessionKey || hasExecutedSessionsSend(input.toolTrace, sessionKey)) {
     return false;
   }
+  const taskFacts = produceTaskIntentEnvelope({
+    taskPrompt: input.taskPrompt,
+    messages: [],
+  }).facts;
   if (
     hasApprovedBrowserTimeoutContinuationPrompt(input.messages) &&
-    isAppliedApprovalBrowserContinuation(input.taskPrompt)
+    taskFacts.appliedApprovalBrowserContinuation
   ) {
     return true;
   }
   return (
     hasCoverageTimeoutContinuationPrompt(input.messages) &&
-    isCoverageCriticalDelegationTask(input.taskPrompt)
+    taskFacts.coverageCriticalDelegation
   );
 }
 

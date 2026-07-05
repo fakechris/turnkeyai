@@ -129,3 +129,41 @@ test("TaskIntentProducer infers independent evidence stream counts", () => {
   assert.equal(twoSource.facts.requiredIndependentEvidenceStreams, 2);
   assert.equal(threeStream.facts.requiredIndependentEvidenceStreams, 3);
 });
+
+test("TaskIntentProducer owns approval and continuation task-language facts", () => {
+  const approval = produceTaskIntentEnvelope({
+    taskPrompt:
+      "Use the runtime permission cache already applied for the approval-gated browser.form.submit dry-run. If the operator decision does not arrive, close out safely.",
+    activation: undefined,
+    messages: [],
+  });
+  const continuation = produceTaskIntentEnvelope({
+    taskPrompt:
+      "Continue the existing slow-source source-check context after the timeout and do not finalize until all three evidence streams complete for provider pricing search.",
+    activation: undefined,
+    messages: [],
+  });
+
+  assert.equal(approval.facts.permissionToolsAllowed, true);
+  assert.equal(approval.facts.approvalAlreadyApplied, true);
+  assert.equal(approval.facts.approvalGatedBrowserActionRequested, true);
+  assert.equal(approval.facts.approvalWaitTimeoutCloseoutRequested, true);
+  assert.equal(approval.facts.appliedApprovalBrowserContinuation, true);
+  assert.equal(continuation.facts.sourceCheckContinuationRequested, true);
+  assert.equal(continuation.facts.explicitSessionContinuationRequested, true);
+  assert.equal(continuation.facts.coverageCriticalDelegation, true);
+  assert.equal(continuation.facts.providerSearchPricingResearch, true);
+});
+
+test("TaskIntentProducer distinguishes permission and exact-shape negatives", () => {
+  const envelope = produceTaskIntentEnvelope({
+    taskPrompt:
+      "Read-only browser inspection only; no form submission, mutation, or approval-gated action is needed.",
+    activation: undefined,
+    messages: [],
+  });
+
+  assert.equal(envelope.facts.permissionToolsAllowed, false);
+  assert.equal(envelope.facts.approvalGatedBrowserActionRequested, false);
+  assert.equal(envelope.facts.exactFinalAnswerShapeExpected, false);
+});

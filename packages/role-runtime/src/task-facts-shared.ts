@@ -8,6 +8,7 @@ import type { RoleActivationInput } from "@turnkeyai/core-types/team";
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import { produceTaskIntentEnvelope } from "./runtime-facts/task-intent-producer";
+import type { TaskIntentFacts } from "./runtime-facts/types";
 
 export const TASK_FACTS_MODULE = "task-facts" as const;
 
@@ -17,15 +18,7 @@ export interface TaskFactsInput {
   messages: LLMMessage[];
 }
 
-export interface TaskFactsSnapshot {
-  requestedTableColumns: string[];
-  providerSupportSchemaRequested: boolean;
-  browserVisibleEvidenceRequired: boolean;
-  productSignalDashboardEvidenceRequested: boolean;
-  timeoutRecoveryRequested: boolean;
-  awaitingContextSetupOnly: boolean;
-  requiredIndependentEvidenceStreams: number;
-}
+export interface TaskFactsSnapshot extends TaskIntentFacts {}
 
 export function buildTaskFacts(input: TaskFactsInput): TaskFactsSnapshot {
   return produceTaskIntentEnvelope(input).facts;

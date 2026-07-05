@@ -20,10 +20,10 @@ import {
   normalizePrivateUrlResearchSpawnCalls,
   normalizeSessionToolAliasCalls,
   normalizeSessionToolCalls,
-  isAppliedApprovalBrowserContinuation,
   type SessionContinuationDirective,
   type SessionContinuationLookupDirective,
 } from "../runtime-facts/policy-text-facts";
+import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
 import {
   createPermissionPolicy,
   type PermissionPolicy,
@@ -235,7 +235,7 @@ export function buildToolCallNormalizationContext(
   const sessionContinuationLookupDirective =
     !probePending &&
     !sessionContinuationDirective &&
-    !isAppliedApprovalBrowserContinuation(input.taskPrompt)
+    !appliedApprovalBrowserContinuationRequested(input)
       ? findSessionContinuationLookupDirective(
           sessionContinuationContext,
           sessionContinuationContext,
@@ -257,6 +257,19 @@ export function buildToolCallNormalizationContext(
       ? {}
       : { permissionPolicy: input.permissionPolicy }),
   };
+}
+
+function appliedApprovalBrowserContinuationRequested(input: {
+  taskFacts?: TaskFactsSnapshot;
+  taskPrompt: string;
+}): boolean {
+  return (
+    input.taskFacts?.appliedApprovalBrowserContinuation ??
+    produceTaskIntentEnvelope({
+      taskPrompt: input.taskPrompt,
+      messages: [],
+    }).facts.appliedApprovalBrowserContinuation
+  );
 }
 
 export function normalizeEngineToolCalls(

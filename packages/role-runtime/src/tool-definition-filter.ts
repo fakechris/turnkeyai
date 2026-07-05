@@ -5,12 +5,11 @@ import type {
 } from "@turnkeyai/llm-adapter/index";
 
 import { readToolResultContentText } from "./tool-history-pruning";
+import { produceTaskIntentEnvelope } from "./runtime-facts/task-intent-producer";
 import {
   continuationRequestPrefersResumableSession,
   extractLatestUserContinuationText,
   isExplicitSessionContinuationRequest,
-  taskAllowsPermissionTools,
-  taskPromptLooksLikeSourceCheckContinuation,
 } from "./tool-loop-shared";
 
 const FOCUSED_MEMORY_RECALL_TOOL_NAMES = new Set([
@@ -44,10 +43,14 @@ export function filterToolDefinitionsForTask(
 ): GenerateTextInput["tools"] {
   if (!tools?.length) return tools;
   let filtered = tools;
-  if (!taskAllowsPermissionTools(taskPrompt)) {
+  const taskFacts = produceTaskIntentEnvelope({
+    taskPrompt,
+    messages: [],
+  }).facts;
+  if (!taskFacts.permissionToolsAllowed) {
     filtered = filtered.filter((tool) => !PERMISSION_TOOL_NAMES.has(tool.name));
   }
-  if (!taskAllowsTaskTrackingTools(taskPrompt)) {
+  if (!taskAllowsTaskTrackingTools(taskPrompt, taskFacts)) {
     filtered = filtered.filter(
       (tool) => !TASK_TRACKING_TOOL_NAMES.has(tool.name),
     );
@@ -103,9 +106,12 @@ export function taskRequestsFocusedDurableMemoryRecall(
   return true;
 }
 
-export function taskAllowsTaskTrackingTools(taskPrompt: string): boolean {
+export function taskAllowsTaskTrackingTools(
+  taskPrompt: string,
+  taskFacts = produceTaskIntentEnvelope({ taskPrompt, messages: [] }).facts,
+): boolean {
   if (
-    taskPromptLooksLikeSourceCheckContinuation(taskPrompt) &&
+    taskFacts.sourceCheckContinuationRequested &&
     !taskPromptExplicitlyRequestsTaskTracking(taskPrompt)
   ) {
     return false;

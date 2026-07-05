@@ -53,8 +53,19 @@ export interface TaskIntentFacts {
   browserVisibleEvidenceRequired: boolean;
   productSignalDashboardEvidenceRequested: boolean;
   timeoutRecoveryRequested: boolean;
+  sourceCheckContinuationRequested: boolean;
   awaitingContextSetupOnly: boolean;
   requiredIndependentEvidenceStreams: number;
+  permissionToolsAllowed: boolean;
+  approvalAlreadyApplied: boolean;
+  approvalGatedBrowserActionRequested: boolean;
+  approvalWaitTimeoutCloseoutRequested: boolean;
+  stopAtPendingApprovalAllowed: boolean;
+  appliedApprovalBrowserContinuation: boolean;
+  coverageCriticalDelegation: boolean;
+  providerSearchPricingResearch: boolean;
+  explicitSessionContinuationRequested: boolean;
+  exactFinalAnswerShapeExpected: boolean;
 }
 
 export interface CompletedSessionFact {

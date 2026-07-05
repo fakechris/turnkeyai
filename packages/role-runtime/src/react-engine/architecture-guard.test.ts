@@ -166,7 +166,6 @@ const INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST = new Set<string>([
   "hasTimeoutContinuationGuidance",
   "hasMissingRequiredFinalDeliverablesRepairPrompt",
   "hasLatestSupplementalLocalTimeoutProbePrompt",
-  "isProviderSearchPricingResearchTask",
   "limitIndependentEvidenceSpawnCalls",
   "resolveRecoveryToolBudgetForActivation",
   "resolveEffectiveToolLoopWallClockMs",
@@ -177,17 +176,6 @@ const INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST = new Set<string>([
   "shouldPreserveRecoveredTimeoutCloseout",
   "toolTraceHasCall",
 
-  // DETECTOR(temporary): migrate into TaskIntentFacts in Task 2.
-  "disclaimsApprovalGatedBrowserAction",
-  "disclaimsIntendedBrowserMutation",
-  "isAppliedApprovalBrowserContinuation",
-  "requestsApprovalGatedBrowserAction",
-  "taskAllowsPermissionTools",
-  "taskPromptRequestsApprovalWaitTimeoutCloseout",
-  "taskPromptIsAppliedApprovalBrowserContinuation",
-  "taskPromptLooksLikeSourceCheckContinuation",
-  "taskPromptSaysApprovalAlreadyApplied",
-  "expectsExactFinalAnswerShape",
 ]);
 
 const INLINE_ADAPTER_FACT_IMPORT_MODULES = [
@@ -235,6 +223,9 @@ const INLINE_REPAIR_POLICY_NAME_MAP = new Map<string, string>([
 ]);
 
 const REPAIR_POLICY_CORE = path.join(RUNTIME_POLICY_DIR, "repair-policy-core.ts");
+
+const TASK_LANGUAGE_HELPER_REFERENCE_PATTERN =
+  /\b(taskPrompt[A-Za-z0-9_]*|taskLooksLike[A-Za-z0-9_]*|taskAllows[A-Za-z0-9_]*|requestsApproval[A-Za-z0-9_]*|expectsExact[A-Za-z0-9_]*|disclaimsApprovalGatedBrowserAction|is(?:AppliedApprovalBrowserContinuation|CoverageCriticalDelegationTask|ProviderSearchPricingResearchTask|TwoSourceComparisonTask))\s*\(/g;
 
 /** Forbidden import specifiers: the composition root and any known re-exporter. */
 const FORBIDDEN_IMPORT_PATTERNS: RegExp[] = [
@@ -2067,6 +2058,25 @@ test("text fallback export budget only shrinks", () => {
       `${rel} exports ${count} > budget ${max}; typed replacements must shrink, never grow`,
     );
   }
+});
+
+test("active policy and adapter code do not call task-language detector helpers", () => {
+  const offenders: string[] = [];
+  for (const file of [
+    LLM_RESPONSE_GENERATOR,
+    ...ACTIVE_ENGINE_POLICY_FILES.map((name) => path.join(ENGINE_DIR, name)),
+    ...runtimePolicyCoreFiles(),
+  ]) {
+    const source = readFileSync(file, "utf8");
+    for (const match of source.matchAll(TASK_LANGUAGE_HELPER_REFERENCE_PATTERN)) {
+      offenders.push(`${path.relative(ROLE_RUNTIME_DIR, file)}: ${match[1]}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `task-language parsing must go through TaskIntentFacts:\n${offenders.join("\n")}`,
+  );
 });
 
 test("inline repair policy call order stays compatible with policy-core order", () => {

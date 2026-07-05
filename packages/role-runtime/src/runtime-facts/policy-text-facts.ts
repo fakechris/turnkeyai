@@ -23,6 +23,7 @@ import {
   requestedColumnsLookLikeProviderSearchPricing,
   resolveRequestedTableColumns,
 } from "../task-facts-shared";
+import { produceTaskIntentEnvelope } from "./task-intent-producer";
 
 export interface SessionContinuationDirective {
   sessionKey: string;
@@ -103,6 +104,13 @@ export const readMissingRequestedNextActionRepair =
 export const readFalseEvidenceBlockedSynthesisRepair =
   readPolicyFalseEvidenceBlockedSynthesisRepair;
 
+function taskIntentFactsForPrompt(taskPrompt: string) {
+  return produceTaskIntentEnvelope({
+    taskPrompt,
+    messages: [],
+  }).facts;
+}
+
 export function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(value));
 }
@@ -116,16 +124,6 @@ export function containsAnyToolCallForm(result: {
   }
   return /<\s*(?:minimax:)?tool_call\b|<\s*invoke\b|<\/\s*(?:minimax:)?tool_call\s*>|\btool_calls?\s*[:=]/i.test(
     result.text,
-  );
-}
-
-export function taskPromptLooksLikeSourceCheckContinuation(taskPrompt: string): boolean {
-  return (
-    /\b(?:slow-source|slow source|slow-fixture|slow fixture|source-check|source check)\b/i.test(taskPrompt) &&
-    /\b(?:continue|retry|resume|recovered|recovery|follow-?up|same source-check context|same source check context|existing source-check context|existing source check context)\b/i.test(
-      taskPrompt,
-    ) &&
-    /\b(?:timeout|timed out|bounded attempt|release-risk|release risk|risk note|residual risk)\b/i.test(taskPrompt)
   );
 }
 
@@ -290,52 +288,7 @@ export function limitIndependentEvidenceSpawnCalls(
 }
 
 export function readPolicyIndependentEvidenceStreamCount(taskPrompt: string): number {
-  if (isTwoSourceComparisonTask(taskPrompt)) {
-    return Math.min(6, uniqueHttpUrlCount(taskPrompt));
-  }
-  if (/\b(?:three|3) independent evidence streams\b/i.test(taskPrompt)) {
-    return 3;
-  }
-  if (
-    /\b(?:three|3)\b[\s\S]{0,80}\b(?:separate|independent|distinct)\b[\s\S]{0,80}\bevidence streams\b/i.test(
-      taskPrompt,
-    ) ||
-    /\b(?:route|budget|live readiness)\b[\s\S]{0,120}\b(?:separate|independent|distinct)\b[\s\S]{0,80}\bevidence streams\b/i.test(
-      taskPrompt,
-    )
-  ) {
-    return 3;
-  }
-  if (
-    /\bgather evidence from (?:three|3) independent child sessions\b/i.test(
-      taskPrompt,
-    )
-  ) {
-    return 3;
-  }
-  const sourceLineCount = taskPrompt
-    .split(/\r?\n/)
-    .filter((line) =>
-      /^\s*(?:[-*]\s*)?(?:Research source|Capability source|Route source|Budget source|Live signal dashboard|Live readiness dashboard|[A-Z][\w -]{2,30}: use (?:an? )?(?:explore|browser) session)\b/i.test(
-        line,
-      ),
-    ).length;
-  return sourceLineCount >= 3 ? sourceLineCount : 0;
-}
-
-export function isTwoSourceComparisonTask(taskPrompt: string): boolean {
-  if (uniqueHttpUrlCount(taskPrompt) !== 2) return false;
-  return (
-    /\b(?:compare|comparison|between|versus|vs\.?|tradeoff|recommendation)\b/i.test(taskPrompt) ||
-    /\b(?:review|check|inspect|fetch|extract)\b[\s\S]{0,120}\b(?:two|2)\b[\s\S]{0,80}\b(?:source pages?|sources?|urls?)\b/i.test(
-      taskPrompt,
-    ) ||
-    /比较|对比|两个来源|两个页面|两个\s*URL/i.test(taskPrompt)
-  );
-}
-
-export function uniqueHttpUrlCount(text: string): number {
-  return new Set(extractHttpUrls(text)).size;
+  return taskIntentFactsForPrompt(taskPrompt).requiredIndependentEvidenceStreams;
 }
 
 export function countCompletedSessionEvidenceResults(
@@ -612,13 +565,14 @@ export function readPolicyMissingApprovalGateRepair(input: {
   if (!hasToolDefinition(input.tools, "permission_query")) {
     return false;
   }
-  if (taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
+  if (taskIntentFactsForPrompt(input.taskPrompt).approvalAlreadyApplied) {
     return false;
   }
   if (readPolicyPermissionGateEvidence(input.toolTrace)) {
     return false;
   }
-  return requestsApprovalGatedBrowserAction(input.taskPrompt);
+  return taskIntentFactsForPrompt(input.taskPrompt)
+    .approvalGatedBrowserActionRequested;
 }
 
 export function readPolicyReadOnlyPermissionQuerySuppression(
@@ -635,7 +589,8 @@ export function readPolicyReadOnlyPermissionQuerySuppression(
       isClearlyUnrequestedReadOnlyPermissionQuery(callText, context.taskPrompt) ||
       disclaimsIntendedBrowserMutation(callText) ||
       (disclaimsIntendedBrowserMutation(context.taskPrompt) &&
-        !requestsApprovalGatedBrowserAction(context.taskPrompt))
+        !taskIntentFactsForPrompt(context.taskPrompt)
+          .approvalGatedBrowserActionRequested)
     );
   });
 }
@@ -657,7 +612,7 @@ function isClearlyUnrequestedReadOnlyPermissionQuery(
   callText: string,
   taskPrompt: string,
 ): boolean {
-  if (taskAllowsPermissionTools(taskPrompt)) {
+  if (taskIntentFactsForPrompt(taskPrompt).permissionToolsAllowed) {
     return false;
   }
   if (!/\b(?:browser\.form\.submit|form submission|approval-gated browser form submission)\b/i.test(callText)) {
@@ -677,23 +632,6 @@ export function buildReadOnlyPermissionQuerySuppressionPrompt(): string {
   ].join("\n");
 }
 
-export function taskAllowsPermissionTools(taskPrompt: string): boolean {
-  if (disclaimsApprovalGatedBrowserAction(taskPrompt)) {
-    return false;
-  }
-  return (
-    /\b(?:permission_(?:query|result|applied)|permission\.(?:query|result|applied)|approval_id|approval id|pending approval|operator approval|operator decision|approval (?:gate|request|decision|granted|approved|denied|applied)|approved action|denied action)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\b(?:approve|approved|approval|permission|operator review)\b[\s\S]{0,180}\b(?:submit|submission|form|click|mutat(?:e|ion)|side[- ]effects?|browser\.form\.submit|apply|execute|dry[- ]run)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\b(?:submit|submission|form|click|mutat(?:e|ion)|side[- ]effects?|browser\.form\.submit|apply|execute|dry[- ]run)\b[\s\S]{0,180}\b(?:approve|approved|approval|permission|operator review)\b/i.test(
-      taskPrompt,
-    )
-  );
-}
-
 export function hasMissingApprovalGateRepairPrompt(messages: readonly LLMMessage[]): boolean {
   return messages.some(
     (message) =>
@@ -701,12 +639,6 @@ export function hasMissingApprovalGateRepairPrompt(messages: readonly LLMMessage
       readMessageContentText(message.content).includes(
         "Runtime correction: approval-gated browser action",
       ),
-  );
-}
-
-export function taskPromptSaysApprovalAlreadyApplied(taskPrompt: string): boolean {
-  return /\b(?:runtime\s+)?permission cache\b[\s\S]{0,120}\balready applied\b|\bpermission\.applied\b|\bpermission_applied\b/i.test(
-    taskPrompt,
   );
 }
 
@@ -719,39 +651,6 @@ export function buildMissingApprovalGateRepairPrompt(): string {
     "Only after permission_applied succeeds, call sessions_spawn with agent_id=browser and include the exact URL, approved action, and verification requirement in the task.",
     "After the browser tool result returns, synthesize only from that permission and browser evidence.",
   ].join("\n");
-}
-
-export function requestsApprovalGatedBrowserAction(taskPrompt: string): boolean {
-  if (disclaimsApprovalGatedBrowserAction(taskPrompt)) {
-    return false;
-  }
-  return (
-    /\bapproval\b/i.test(taskPrompt) &&
-    /\bbrowser\b/i.test(taskPrompt) &&
-    looksApprovalGatedBrowserSideEffect(taskPrompt) &&
-    browserSpawnPerformsMutatingAction(taskPrompt)
-  );
-}
-
-export function disclaimsApprovalGatedBrowserAction(taskPrompt: string): boolean {
-  if (
-    /\b(?:not\s+(?:a\s+)?form submission|not\s+(?:a\s+)?browser mutation|do not mutate|don't mutate|without mutat(?:ing|ion)|no browser mutation|no form submission)\b/i.test(
-      taskPrompt,
-    )
-  ) {
-    return true;
-  }
-  if (!/\bread[- ]only\b/i.test(taskPrompt)) {
-    return false;
-  }
-  return (
-    /\bno\b[^.\n]{0,180}\b(?:browser\s+)?(?:form|click|navigation|submit|submission|mutation|side[- ]effect|approval[- ]gated action)\b[^.\n]{0,120}\b(?:needed|required|necessary|will be performed|should run|is needed)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\b(?:do\s+not|don't|never)\b[^.\n]{0,180}\b(?:click|submit|submission|form|deposit|purchase|buy|order|book|reserve|save|update|delete|remove|archive|mutat(?:e|ion)|side[- ]effect|request approval|approval)\b/i.test(
-      taskPrompt,
-    )
-  );
 }
 
 export function readPolicyTimeoutFollowupContinuationRequest(taskPrompt: string): boolean {
@@ -919,7 +818,7 @@ export function readPolicyWeakEvidenceSynthesisRepair(input: {
   ) {
     return true;
   }
-  if (expectsExactFinalAnswerShape(input.taskPrompt, input.resultText)) {
+  if (allowsExactFinalAnswerShapeBypass(input.taskPrompt, input.resultText)) {
     return false;
   }
   if (matchesAny(input.resultText, WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS)) {
@@ -1235,7 +1134,8 @@ export function readPolicyCompletedSessionLabelCarryForwardRepair(input: {
     return false;
   }
   const labelSensitiveTask =
-    (requestsApprovalGatedBrowserAction(input.taskPrompt) &&
+    (taskIntentFactsForPrompt(input.taskPrompt)
+      .approvalGatedBrowserActionRequested &&
       hasAppliedApprovalEvidenceText(input.evidenceText)) ||
     /\b(?:source labels?|source URLs?|evidence streams?|source streams?|source checks?|sources?)\b/i.test(
       input.taskPrompt,
@@ -1958,13 +1858,6 @@ export function hasSupplementalLocalTimeoutProbePrompt(
   );
 }
 
-export function isAppliedApprovalBrowserContinuation(taskPrompt: string): boolean {
-  return (
-    taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
-    requestsApprovalGatedBrowserAction(taskPrompt)
-  );
-}
-
 export function hasExecutedSessionsSend(
   toolTrace: NativeToolRoundTrace[],
   sessionKey: string,
@@ -2002,7 +1895,10 @@ export function readPolicyTimedOutApprovedBrowserSessionContinuation(input: {
   if (hasApprovedBrowserTimeoutContinuationPrompt(input.messages)) {
     return false;
   }
-  if (!isAppliedApprovalBrowserContinuation(input.taskPrompt)) {
+  if (
+    !taskIntentFactsForPrompt(input.taskPrompt)
+      .appliedApprovalBrowserContinuation
+  ) {
     return false;
   }
   return true;
@@ -2029,7 +1925,7 @@ export function readPolicyTimedOutSiblingSessionContinuation(input: {
   if (hasCoverageTimeoutContinuationPrompt(input.messages)) {
     return false;
   }
-  return isCoverageCriticalDelegationTask(input.taskPrompt);
+  return taskIntentFactsForPrompt(input.taskPrompt).coverageCriticalDelegation;
 }
 
 export function hasApprovedBrowserTimeoutContinuationPrompt(
@@ -2223,18 +2119,19 @@ export function findIncompleteApprovedBrowserSession(input: {
   toolTrace: NativeToolRoundTrace[];
   tools?: readonly { name: string }[];
 }): IncompleteApprovedBrowserSessionContinuation | null {
+  const taskFacts = taskIntentFactsForPrompt(input.taskPrompt);
   if (!hasToolDefinition(input.tools, "sessions_send")) {
     return null;
   }
   if (hasIncompleteApprovedBrowserSessionContinuationPrompt(input.messages)) {
     return null;
   }
-  if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
+  if (!taskFacts.approvalGatedBrowserActionRequested) {
     return null;
   }
   if (
     !readPolicyPermissionAppliedEvidence(input.toolTrace) &&
-    !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
+    !taskFacts.approvalAlreadyApplied
   ) {
     return null;
   }
@@ -2374,19 +2271,6 @@ export function readPolicyLatestPermissionResultStatus(
   return null;
 }
 
-export function taskPromptRequestsApprovalWaitTimeoutCloseout(
-  taskPrompt: string,
-): boolean {
-  return (
-    /\b(?:operator decision|approval|permission)\b[\s\S]{0,180}\b(?:does not arrive|doesn't arrive|does not come through|doesn't come through|no decision arrives|no approval arrives|wait timeout|wait-timeout|timed out|timeout|during this attempt|attempt cycle)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\bif\b[\s\S]{0,120}\b(?:decision|approval|permission)\b[\s\S]{0,120}\b(?:not arrive|pending|timeout|timed out|wait)\b/i.test(
-      taskPrompt,
-    )
-  );
-}
-
 export function readPolicyPendingApprovalWaitTimeoutCheckRepair(input: {
   taskPrompt: string;
   resultText: string;
@@ -2397,7 +2281,10 @@ export function readPolicyPendingApprovalWaitTimeoutCheckRepair(input: {
   if (hasPendingApprovalWaitTimeoutCheckRepairPrompt(input.repairMarkers)) {
     return false;
   }
-  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+  if (
+    !taskIntentFactsForPrompt(input.taskPrompt)
+      .approvalWaitTimeoutCloseoutRequested
+  ) {
     return false;
   }
   return readPolicyLatestPermissionToolName(input.toolTrace) === "permission_query";
@@ -2431,24 +2318,25 @@ export function readPolicyPrematurePendingApprovalFinalRepair(input: {
   repairMarkers: readonly LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
+  const taskFacts = taskIntentFactsForPrompt(input.taskPrompt);
   if (hasPrematurePendingApprovalRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
     !readPolicyPendingApprovalMention(input.resultText) ||
-    !requestsApprovalGatedBrowserAction(input.taskPrompt)
+    !taskFacts.approvalGatedBrowserActionRequested
   ) {
     return false;
   }
   if (
-    taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt) ||
-    taskPromptAllowsStoppingAtPendingApproval(input.taskPrompt)
+    taskFacts.approvalWaitTimeoutCloseoutRequested ||
+    taskFacts.stopAtPendingApprovalAllowed
   ) {
     return false;
   }
   if (
     readPolicyPermissionAppliedEvidence(input.toolTrace) ||
-    taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
+    taskFacts.approvalAlreadyApplied
   ) {
     return false;
   }
@@ -2493,14 +2381,6 @@ export function readPolicyPendingApprovalMention(text: string): boolean {
   );
 }
 
-export function taskPromptAllowsStoppingAtPendingApproval(
-  taskPrompt: string,
-): boolean {
-  return /\bstop\b[\s\S]{0,80}\b(?:approval request|permission request)\b[\s\S]{0,120}\b(?:wait|operator decision|approval|decision)\b|\bwait for (?:the )?operator decision\b[\s\S]{0,160}\bdo not (?:apply|submit|execute|proceed)/i.test(
-    taskPrompt,
-  );
-}
-
 export function buildPrematurePendingApprovalRepairPrompt(): string {
   return [
     "Runtime correction: approval-gated browser action is still pending, but this task requires carrying the approved action through instead of finalizing at the pending request.",
@@ -2518,20 +2398,21 @@ export function readPolicyStalePendingApprovalRepair(input: {
   repairMarkers: readonly LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
+  const taskFacts = taskIntentFactsForPrompt(input.taskPrompt);
   if (hasStalePendingApprovalRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
     !readPolicyPendingApprovalMention(input.resultText) ||
-    (!requestsApprovalGatedBrowserAction(input.taskPrompt) &&
-      !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt))
+    (!taskFacts.approvalGatedBrowserActionRequested &&
+      !taskFacts.appliedApprovalBrowserContinuation)
   ) {
     return false;
   }
   return (
     readPolicyPermissionAppliedEvidence(input.toolTrace) ||
-    taskPromptSaysApprovalAlreadyApplied(input.taskPrompt) ||
-    taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
+    taskFacts.approvalAlreadyApplied ||
+    taskFacts.appliedApprovalBrowserContinuation
   );
 }
 
@@ -2544,17 +2425,6 @@ function hasStalePendingApprovalRepairPrompt(
       readMessageContentText(message.content).includes(
         "Runtime correction: approval already applied",
       ),
-  );
-}
-
-export function taskPromptIsAppliedApprovalBrowserContinuation(
-  taskPrompt: string,
-): boolean {
-  return (
-    taskPromptSaysApprovalAlreadyApplied(taskPrompt) &&
-    /\b(?:browser\.form\.submit|approved scoped action|approved point|operator approved|call sessions_spawn|agent_id="?browser"?|browser result|form submission|dry[- ]run)\b/i.test(
-      taskPrompt,
-    )
   );
 }
 
@@ -2573,12 +2443,13 @@ export function readPolicyStaleDeniedApprovalRepair(input: {
   repairMarkers: readonly LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
+  const taskFacts = taskIntentFactsForPrompt(input.taskPrompt);
   if (hasStaleDeniedApprovalRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
     !readPolicyPendingApprovalMention(input.resultText) ||
-    !requestsApprovalGatedBrowserAction(input.taskPrompt)
+    !taskFacts.approvalGatedBrowserActionRequested
   ) {
     return false;
   }
@@ -2615,7 +2486,10 @@ export function readPolicyApprovalWaitTimeoutCloseoutRepair(input: {
   if (hasApprovalWaitTimeoutCloseoutRepairPrompt(input.repairMarkers)) {
     return false;
   }
-  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+  if (
+    !taskIntentFactsForPrompt(input.taskPrompt)
+      .approvalWaitTimeoutCloseoutRequested
+  ) {
     return false;
   }
   if (!hasApprovalWaitTimeoutEvidence(input.toolTrace)) {
@@ -2631,7 +2505,10 @@ export function readPolicyForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair
   repairMarkers: readonly LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+  if (
+    !taskIntentFactsForPrompt(input.taskPrompt)
+      .approvalWaitTimeoutCloseoutRequested
+  ) {
     return false;
   }
   if (!hasApprovalWaitTimeoutCloseoutRepairPrompt(input.repairMarkers)) {
@@ -2773,7 +2650,7 @@ export function buildLocalEvidenceCloseout(input: {
   error: unknown;
 }): GenerateTextResult | null {
   if (
-    expectsExactFinalAnswerShape(
+    allowsExactFinalAnswerShapeBypass(
       input.packet.taskPrompt,
       input.packet.outputContract,
     )
@@ -2823,7 +2700,8 @@ export function buildLocalEvidenceCloseout(input: {
   }
   const combinedEvidence = allEvidence.join("\n\n");
   if (
-    taskPromptRequestsApprovalWaitTimeoutCloseout(input.packet.taskPrompt) &&
+    taskIntentFactsForPrompt(input.packet.taskPrompt)
+      .approvalWaitTimeoutCloseoutRequested &&
     messagesHaveApprovalWaitTimeoutEvidence(input.messages)
   ) {
     return buildApprovalWaitTimeoutLocalEvidenceCloseout({
@@ -2851,12 +2729,12 @@ export function buildLocalEvidenceCloseout(input: {
   ]);
   if (
     requestedColumnsLookLikeProviderSearchPricing(requestedTableColumns) &&
-    !isProviderSearchPricingResearchTask(
+    !taskIntentFactsForPrompt(
       [
         input.packet.taskPrompt,
         ...buildOriginalRequestTableColumnContext(input.activation),
       ].join("\n"),
-    )
+    ).providerSearchPricingResearch
   ) {
     requestedTableColumns = [];
   }
@@ -3177,18 +3055,19 @@ export function readPolicyIncompleteApprovedBrowserActionRepair(input: {
   repairMarkers: readonly LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
+  const taskFacts = taskIntentFactsForPrompt(input.taskPrompt);
   if (hasIncompleteApprovedBrowserActionRepairPrompt(input.repairMarkers)) {
     return false;
   }
   if (
-    !requestsApprovalGatedBrowserAction(input.taskPrompt) &&
-    !taskPromptIsAppliedApprovalBrowserContinuation(input.taskPrompt)
+    !taskFacts.approvalGatedBrowserActionRequested &&
+    !taskFacts.appliedApprovalBrowserContinuation
   ) {
     return false;
   }
   if (
     !readPolicyPermissionAppliedEvidence(input.toolTrace) &&
-    !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)
+    !taskFacts.approvalAlreadyApplied
   ) {
     return false;
   }
@@ -3225,7 +3104,10 @@ export function buildForcedPendingApprovalWaitTimeoutPermissionResultCall(input:
   toolTrace: NativeToolRoundTrace[];
   tools?: readonly { name: string }[];
 }): LLMToolCall | null {
-  if (!taskPromptRequestsApprovalWaitTimeoutCloseout(input.taskPrompt)) {
+  if (
+    !taskIntentFactsForPrompt(input.taskPrompt)
+      .approvalWaitTimeoutCloseoutRequested
+  ) {
     return null;
   }
   if (!hasToolDefinition(input.tools, "permission_result")) {
@@ -3329,41 +3211,6 @@ export function allowsSupplementalBrowserProbe(packet: RolePromptPacket): boolea
   const unavailable =
     packet.capabilityInspection?.unavailableCapabilities ?? [];
   return !unavailable.some((capability) => /\bbrowser\b/i.test(capability));
-}
-
-export function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {
-  if (isProviderSearchPricingResearchTask(taskPrompt)) {
-    return true;
-  }
-  const text = taskPrompt.toLowerCase();
-  const sourceCount = [
-    (taskPrompt.match(/https?:\/\/\S+/g) ?? []).length,
-    (text.match(/\b(?:source|evidence stream|child session|marker)\b/g) ?? [])
-      .length,
-  ].filter((count) => count >= 3).length;
-  if (sourceCount === 0) {
-    return false;
-  }
-  return (
-    /\bdo not finalize until\b/i.test(taskPrompt) ||
-    /\ball (?:three|3|\d+) (?:child session tool results|sources|source checks|evidence streams|markers)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\b(?:three|3|\d+) independent evidence streams\b/i.test(taskPrompt) ||
-    /\bsource coverage\b/i.test(taskPrompt)
-  );
-}
-
-export function isProviderSearchPricingResearchTask(taskPrompt: string): boolean {
-  return (
-    /\bproviders?\b|\bvendors?\b|\bplatforms?\b|供应商|服务商|厂商|平台/iu.test(
-      taskPrompt,
-    ) &&
-    /\bweb\s*search\b|\bsearch\b|搜索|联网|检索/iu.test(taskPrompt) &&
-    /\bpric(?:e|ing)\b|\bcosts?\b|\bfees?\b|\btokens?\b|价格|价钱|费用|收费|计费|token/iu.test(
-      taskPrompt,
-    )
-  );
 }
 
 function hasToolDefinition(
@@ -3584,7 +3431,7 @@ export function readPolicyForceSlowSourceRecoveryContinuation(context: string): 
     /\bSystem recovery:\s*the previous final answer did not satisfy required goal slots\b/i.test(
       context,
     ) &&
-    taskPromptLooksLikeSourceCheckContinuation(context) &&
+    taskIntentFactsForPrompt(context).sourceCheckContinuationRequested &&
     contextHasTimeoutSessionResult(context) &&
     /\b(?:Resume or retry the same slow source-check context|same source-check context|required release-risk slots|release-risk slots)\b/i.test(
       context,
@@ -4695,7 +4542,7 @@ export function normalizeExplicitContinuationHistoryCalls(
   taskPrompt: string,
 ): LLMToolCall[] {
   if (
-    !taskLooksLikeExplicitSessionContinuation(taskPrompt) ||
+    !taskIntentFactsForPrompt(taskPrompt).explicitSessionContinuationRequested ||
     readPolicySessionTranscriptRequest(taskPrompt)
   ) {
     return toolCalls;
@@ -4726,18 +4573,6 @@ export function normalizeExplicitContinuationHistoryCalls(
       },
     };
   });
-}
-
-export function taskLooksLikeExplicitSessionContinuation(taskPrompt: string): boolean {
-  return (
-    readPolicyTimeoutFollowupContinuationRequest(taskPrompt) ||
-    /\b(?:continue|resume|retry|follow[- ]?up)\b[\s\S]{0,180}\b(?:existing|same|previous|prior|earlier|source[- ]check|source check|session|attempt|context)\b/i.test(
-      taskPrompt,
-    ) ||
-    /\b(?:existing|same|previous|prior|earlier)\b[\s\S]{0,180}\b(?:continue|resume|retry|follow[- ]?up)\b/i.test(
-      taskPrompt,
-    )
-  );
 }
 
 export function normalizeLocalUrlWebFetchCalls(
@@ -5001,7 +4836,7 @@ export function normalizeApprovalGatedBrowserSpawnCalls(
   );
   if (
     prematureMutatingBrowserSpawn &&
-    !taskPromptSaysApprovalAlreadyApplied(context.taskPrompt) &&
+    !taskIntentFactsForPrompt(context.taskPrompt).approvalAlreadyApplied &&
     !readPolicyPermissionGateContextEvidence(context.sessionContext) &&
     !readPolicyPermissionGateEvidence(context.toolTrace) &&
     !toolCalls.some((call) => call.name.startsWith("permission_"))
@@ -5136,7 +4971,8 @@ export function enforceMissingApprovalGateRepairToolCalls(
 ): LLMToolCall[] {
   if (
     !hasMissingApprovalGateRepairPrompt(context.repairMarkers) ||
-    !requestsApprovalGatedBrowserAction(context.taskPrompt) ||
+    !taskIntentFactsForPrompt(context.taskPrompt)
+      .approvalGatedBrowserActionRequested ||
     readPolicyPermissionGateEvidence(context.toolTrace) ||
     toolCalls.some((call) => call.name === "permission_query")
   ) {
@@ -5551,7 +5387,7 @@ export function maybeAppendBrowserFailureBucketVisibility(input: {
   if (buckets.length === 0) {
     return input.result;
   }
-  if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
+  if (allowsExactFinalAnswerShapeBypass(input.taskPrompt, input.result.text)) {
     return input.result;
   }
   const missingBuckets = buckets.filter(
@@ -5585,7 +5421,7 @@ export function maybeAppendBrowserRecoveryVisibility(input: {
   if (isBrowserRecoveryVisible(input.result.text, input.browserRecoverySummaries)) {
     return input.result;
   }
-  if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
+  if (allowsExactFinalAnswerShapeBypass(input.taskPrompt, input.result.text)) {
     return input.result;
   }
   const joinedSummaries = input.browserRecoverySummaries.join("\n");
@@ -6018,11 +5854,10 @@ export function forbidsFinalUrls(text: string): boolean {
   );
 }
 
-export function expectsExactFinalAnswerShape(
+function allowsExactFinalAnswerShapeBypass(
   taskPrompt: string,
   resultText: string,
 ): boolean {
-  const combined = `${taskPrompt}\n${resultText}`;
   if (/^\s*(?:\{[\s\S]*\}|\[[\s\S]*\])\s*$/.test(resultText)) {
     try {
       JSON.parse(resultText);
@@ -6031,9 +5866,7 @@ export function expectsExactFinalAnswerShape(
       // Fall through to prompt-shape checks.
     }
   }
-  return /\b(?:respond with only|output only|answer only|final answer must|answer must be|use this exact final answer|exact final answer shape|valid json|json object|json array|csv only|markdown table only)\b|(?:只|仅|只需|仅需)(?:用|以)?(?:回答|输出|返回|给出)[^\n。；;]{0,24}(?:一|二|两|三|四|五|六|七|八|九|十|\d+)\s*(?:行|条|句)|^\s*Final Answer\s*:/im.test(
-    combined,
-  );
+  return taskIntentFactsForPrompt(taskPrompt).exactFinalAnswerShapeExpected;
 }
 
 export function shouldAppendTimeoutContinuationVisibility(input: {
