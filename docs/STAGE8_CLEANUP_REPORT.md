@@ -107,5 +107,5 @@ Stage 9 should start only when it targets one of these explicit debts:
   pass, 272 / 272.
 - `npx tsx --test packages/agent-core/src/*.test.ts`: pass, 53 / 53.
 - `npm run parity:inline`: pass, 272 / 272.
-- `npm run parity:engine`: pass, 271 / 271 across all 14 chunks.
+- `npm run parity:engine`: pass, 272 / 272 across all 14 chunks.
 - `git diff --check`: pass.
