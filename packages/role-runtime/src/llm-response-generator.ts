@@ -308,9 +308,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     this.deferToolObservability = options.deferToolObservability === true;
     this.reactEngine =
       options.reactEngine ??
-      (typeof process !== "undefined" && process.env?.TURNKEYAI_REACT_ENGINE === "engine"
-        ? "engine"
-        : "inline");
+      (typeof process !== "undefined" && process.env?.TURNKEYAI_REACT_ENGINE === "inline"
+        ? "inline"
+        : "engine");
   }
 
   async generate(input: {
