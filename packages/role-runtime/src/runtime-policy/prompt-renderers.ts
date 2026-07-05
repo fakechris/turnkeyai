@@ -81,7 +81,7 @@ import {
   readPolicyProductSignalDashboardEvidenceRequest,
   shouldPreservePreApprovalBrowserInspection,
   summarizeProductSignalDashboardMetrics,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-facts/text-fallback-readers";
 import type {
   RuntimePolicyRenderKind,
   RuntimePolicyRenderRequest,

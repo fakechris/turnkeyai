@@ -55,7 +55,6 @@ import {
   extractLatestUserContinuationText,
   hasSessionTimeoutEvidence,
   hasTimeoutCloseoutGuidance,
-  hasTimeoutContinuationGuidance,
   isExplicitSessionContinuationRequest,
   readPolicyBrowserEvidenceRequirement,
   readPolicyBrowserFailureBucketNames,
@@ -66,7 +65,8 @@ import {
   readPolicyUnverifiedTimeoutCloseoutRequest,
   toolTraceHasCall,
   toolTraceHasTimeoutResult,
-} from "../runtime-facts/policy-text-facts";
+} from "../runtime-facts/text-fallback-readers";
+import { hasTimeoutContinuationGuidance } from "../runtime-facts/repair-marker-facts";
 
 function taskIntentFactsForPrompt(taskPrompt: string) {
   return produceTaskIntentEnvelope({
