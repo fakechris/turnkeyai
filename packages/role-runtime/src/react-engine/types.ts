@@ -71,6 +71,7 @@ export type EngineCloseoutReason =
   | "excessive_session_continuation"
   | "sub_agent_timeout"
   | "completed_sub_agent_final"
+  | "partial_sub_agent_final"
   | "tool_evidence_fallback"
   | "model_error";
 

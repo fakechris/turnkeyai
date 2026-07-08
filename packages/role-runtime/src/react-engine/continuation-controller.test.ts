@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
@@ -298,7 +299,7 @@ function independentEvidenceTrace(): NativeToolRoundTrace[] {
 function completedSessionResult(
   toolCallId: string,
   finalContent: string,
-): NativeToolRoundTrace["results"][number] {
+): NativeToolRoundTrace["results"][number] & ToolResult {
   return {
     toolCallId,
     toolName: "sessions_spawn",

@@ -1417,7 +1417,7 @@ export class TerminalCloseoutController {
     const localEvidenceMessages = withCompletedSessionToolResultMessages({
       messages: input.messages,
       toolResults:
-        input.completedCloseoutHook.state.completedSessionToolResults(),
+        input.completedCloseoutHook.state.completedSessionToolResults() ?? [],
     });
     const localResult = buildLocalEvidenceCloseout({
       ...(input.completedCloseoutHook.activation

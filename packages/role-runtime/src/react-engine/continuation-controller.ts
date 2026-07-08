@@ -699,9 +699,10 @@ function findPartialSessionSendCloseoutEvidence(
       continue;
     }
     const sessionKey = parsed.session_key;
+    const currentToolCallId = readResultToolCallId(result);
     const repeated = previousSessionsSendExists(input.toolTrace, {
       sessionKey,
-      currentToolCallId: readResultToolCallId(result),
+      ...(currentToolCallId === undefined ? {} : { currentToolCallId }),
     });
     if (!repeated && !isSessionSynthesisFollowupTask(input.taskPrompt)) {
       continue;
