@@ -200,6 +200,58 @@ class FakeBrowser extends EventEmitter {
   }
 }
 
+test("direct-cdp adapter resolves HTTP CDP endpoints to websocket debugger URLs", async () => {
+  const rootSession = new FakeRootCdpSession();
+  const connectedEndpoints: string[] = [];
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    assert.equal(req.url, "/json/version");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/browser-id" }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  try {
+    const adapter = new DirectCdpBrowserAdapter(
+      {
+        artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-http-endpoint-test",
+        transportMode: "direct-cdp",
+        directCdp: {
+          endpoint: `http://127.0.0.1:${address.port}`,
+        },
+      },
+      {
+        connectBrowser: async (endpoint) => {
+          connectedEndpoints.push(endpoint);
+          return new FakeBrowser(rootSession) as any;
+        },
+      }
+    );
+
+    const targets = await adapter.getRawCdpExpertLane().listExpertTargets("browser-session-1");
+    assert.equal(targets.length, 2);
+    assert.deepEqual(connectedEndpoints, ["ws://127.0.0.1:9222/devtools/browser/browser-id"]);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+});
+
 test("direct-cdp adapter exposes raw expert lane list/attach/send/drain/detach flow", async () => {
   const rootSession = new FakeRootCdpSession();
   const adapter = new DirectCdpBrowserAdapter(

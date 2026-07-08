@@ -470,7 +470,8 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
       // browser. The race matters because reconnect() best-effort closes the
       // old browser asynchronously — the close fires `disconnected` on the
       // OLD browser, which would otherwise overwrite freshly-cached state.
-      const attempt: Promise<Browser> = this.connectBrowser(this.endpoint)
+      const attempt: Promise<Browser> = this.resolveBrowserConnectEndpoint()
+        .then((endpoint) => this.connectBrowser(endpoint))
         .then((browser) => {
           browser.on("disconnected", () => {
             if (this.browserPromise === attempt) {
@@ -492,6 +493,24 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
     }
 
     return this.browserPromise;
+  }
+
+  private async resolveBrowserConnectEndpoint(): Promise<string> {
+    if (!/^https?:\/\//i.test(this.endpoint)) {
+      return this.endpoint;
+    }
+
+    const normalized = this.endpoint.replace(/\/+$/, "");
+    const versionUrl = normalized.endsWith("/json/version") ? normalized : `${normalized}/json/version`;
+    const response = await fetch(versionUrl);
+    if (!response.ok) {
+      throw new Error(`CDP version endpoint returned ${response.status} ${response.statusText}`);
+    }
+    const body = (await response.json()) as { webSocketDebuggerUrl?: unknown };
+    if (typeof body.webSocketDebuggerUrl !== "string" || !body.webSocketDebuggerUrl.trim()) {
+      throw new Error("CDP version endpoint did not return webSocketDebuggerUrl");
+    }
+    return body.webSocketDebuggerUrl.trim();
   }
 
   private async getOrCreateRootCdpSession(): Promise<CDPSession> {

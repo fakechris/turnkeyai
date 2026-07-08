@@ -1577,6 +1577,13 @@ export class ChromeSessionManager {
       throw new Error(`${action.kind} actions must be armed by the browser task executor`);
     }
 
+    if (action.kind === "screenshot") {
+      const injectedFailure = maybeInjectBrowserE2eFailure(action.kind);
+      if (injectedFailure) {
+        throw injectedFailure;
+      }
+    }
+
     const screenshotPath = path.join(
       sessionDir,
       `${String(stepIndex).padStart(2, "0")}-${sanitizeLabel(action.label ?? action.kind)}.png`
@@ -3301,7 +3308,7 @@ function maybeInjectBrowserE2eFailure(stage: BrowserE2eFailureStage): Error | nu
     return null;
   }
   const targetAction = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION?.trim() || "snapshot";
-  if (targetAction !== stage) {
+  if (targetAction !== stage && !(targetAction === "snapshot" && stage === "screenshot")) {
     return null;
   }
   if (process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT !== "1" && browserE2eFailureInjected) {

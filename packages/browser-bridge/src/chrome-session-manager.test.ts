@@ -2418,6 +2418,69 @@ test("chrome session manager executes bounded storage actions", async () => {
   assert.equal(output.traceOutput?.value, "abc");
 });
 
+test("chrome session manager injects browser E2E snapshot failures into screenshots", async () => {
+  const previousBucket = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET;
+  const previousAction = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION;
+  const previousRepeat = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT;
+  const screenshotCalls: string[] = [];
+  const fakePage = {
+    async screenshot(input: { path: string }) {
+      screenshotCalls.push(input.path);
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "screenshot"; label: string };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET = "cdp_command_timeout";
+  process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION = "snapshot";
+  delete process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT;
+  try {
+    await assert.rejects(
+      internal.executeAction({
+        page: fakePage,
+        action: { kind: "screenshot", label: "after-open" },
+        stepIndex: 1,
+        sessionDir: ".daemon-data/test-browser-artifacts",
+        requestedUrl: "https://example.com",
+        lastStatusCode: 200,
+        knownRefs: new Map(),
+        browserSessionId: "browser-session-1",
+      }),
+      /cdp_command_timeout: browser screenshot CDP command timed out/
+    );
+    assert.deepEqual(screenshotCalls, []);
+  } finally {
+    if (previousBucket === undefined) {
+      delete process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET;
+    } else {
+      process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET = previousBucket;
+    }
+    if (previousAction === undefined) {
+      delete process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION;
+    } else {
+      process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION = previousAction;
+    }
+    if (previousRepeat === undefined) {
+      delete process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT;
+    } else {
+      process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT = previousRepeat;
+    }
+  }
+});
+
 test("chrome session manager rejects storage mutations without a browser storage key", async () => {
   const values = new Map<string, string>();
   const browserStorage = {
