@@ -3051,9 +3051,11 @@ export function applySessionContinuationLookupDirective(
   );
   if (sendIndex >= 0) {
     const sent = toolCalls[sendIndex]!;
-    const agentId = readPolicyWorkerKindFromSessionKey(
-      readStringInput(sent.input, "session_key"),
-    );
+    const agentId =
+      directive.agentId ??
+      readPolicyWorkerKindFromSessionKey(
+        readStringInput(sent.input, "session_key"),
+      );
     return [
       ...toolCalls
         .slice(0, sendIndex)
@@ -3079,7 +3081,23 @@ export function applySessionContinuationLookupDirective(
     ];
   }
   if (toolCalls.some((call) => call.name === "sessions_list")) {
-    return toolCalls.filter((call) => call.name !== "sessions_spawn");
+    return toolCalls
+      .filter((call) => call.name !== "sessions_spawn")
+      .map((call) =>
+        call.name === "sessions_list"
+          ? {
+              ...call,
+              input: {
+                ...call.input,
+                limit: readNumberInput(call.input, "limit") ?? 5,
+                ...(directive.agentId
+                  ? { agent_id: directive.agentId, kinds: [directive.agentId] }
+                  : {}),
+                reason: `continuation lookup: ${directive.messageHint}`,
+              },
+            }
+          : call,
+      );
   }
   const spawnIndex = toolCalls.findIndex(
     (call) => call.name === "sessions_spawn",
@@ -3088,7 +3106,7 @@ export function applySessionContinuationLookupDirective(
     return toolCalls;
   }
   const spawned = toolCalls[spawnIndex]!;
-  const agentId = readStringInput(spawned.input, "agent_id");
+  const agentId = directive.agentId ?? readStringInput(spawned.input, "agent_id");
   return [
     ...toolCalls.slice(0, spawnIndex),
     {
@@ -3104,6 +3122,16 @@ export function applySessionContinuationLookupDirective(
       .slice(spawnIndex + 1)
       .filter((call) => call.name !== "sessions_spawn"),
   ];
+}
+
+function readNumberInput(
+  input: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = input[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function allowsExactFinalAnswerShapeBypass(

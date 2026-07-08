@@ -238,6 +238,84 @@ test("normalizeEngineToolCalls rewrites Source URL continuations to the matching
   assert.equal(result[0]?.input["session_key"], routeSessionKey);
 });
 
+test("normalizeEngineToolCalls constrains slow-source continuation lookup to explore sessions", () => {
+  const calls: LLMToolCall[] = [
+    {
+      id: "call-1",
+      name: "sessions_list",
+      input: {
+        agent_id: "browser",
+        kinds: ["browser"],
+        limit: 10,
+        reason: "look for the prior session",
+      },
+    },
+  ];
+
+  const result = normalizeEngineToolCalls(
+    calls,
+    baseContext({
+      sessionContinuationLookupDirective: {
+        messageHint:
+          "Continue from the slow-source attempt in this mission.",
+        agentId: "explore",
+      },
+    }),
+  );
+
+  assert.deepEqual(result, [
+    {
+      id: "call-1",
+      name: "sessions_list",
+      input: {
+        agent_id: "explore",
+        kinds: ["explore"],
+        limit: 10,
+        reason:
+          "continuation lookup: Continue from the slow-source attempt in this mission.",
+      },
+    },
+  ]);
+});
+
+test("normalizeEngineToolCalls lets slow-source lookup override a stale browser sessions_send key", () => {
+  const calls: LLMToolCall[] = [
+    {
+      id: "call-1",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:task:TASK-4:call_function_browser_1",
+        message: "Continue the stale browser sibling.",
+      },
+    },
+  ];
+
+  const result = normalizeEngineToolCalls(
+    calls,
+    baseContext({
+      sessionContinuationLookupDirective: {
+        messageHint:
+          "Continue from the slow-source attempt in this mission.",
+        agentId: "explore",
+      },
+    }),
+  );
+
+  assert.deepEqual(result, [
+    {
+      id: "call-1",
+      name: "sessions_list",
+      input: {
+        agent_id: "explore",
+        kinds: ["explore"],
+        limit: 5,
+        reason:
+          "continuation lookup: Continue from the slow-source attempt in this mission.",
+      },
+    },
+  ]);
+});
+
 test("applyEngineToolCallsHook normalizes before recovery-budget truncation", () => {
   const calls: LLMToolCall[] = [
     { id: "call-1", name: "sessions_history", input: {} },

@@ -12289,6 +12289,8 @@ test("llm role response generator refreshes stale session list when timeout foll
       executedCalls.push(input.call);
       if (input.call.name === "sessions_list") {
         assert.match(String(input.call.input.reason), /continuation lookup/);
+        assert.equal(input.call.input.agent_id, "explore");
+        assert.deepEqual(input.call.input.kinds, ["explore"]);
         return {
           toolCallId: input.call.id,
           toolName: input.call.name,

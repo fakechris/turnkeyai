@@ -254,6 +254,12 @@ export class ContinuationController {
         name: "sessions_list",
         input: {
           limit: 5,
+          ...(lookupDirective.agentId
+            ? {
+                agent_id: lookupDirective.agentId,
+                kinds: [lookupDirective.agentId],
+              }
+            : {}),
           reason: `continuation lookup: ${lookupDirective.messageHint}`,
         },
       };
@@ -489,6 +495,48 @@ export class ContinuationController {
     };
   }
 
+  continueResolvedSessionList(
+    input: Pick<
+      AfterExecuteContinuationInput,
+      "messages" | "taskPrompt" | "results" | "toolTrace" | "tools"
+    >,
+  ): EngineContinueAction {
+    if (
+      !hasToolDefinition(input.tools, "sessions_send") ||
+      !input.results.some((result) => result.toolName === "sessions_list")
+    ) {
+      return { kind: "none" };
+    }
+    const currentResultContext = input.results
+      .filter((result) => result.toolName === "sessions_list")
+      .map((result) => result.content)
+      .join("\n");
+    const directive = findSessionContinuationDirective(
+      [
+        buildContinuationDirectiveContext(input.taskPrompt, input.messages),
+        currentResultContext,
+      ].join("\n"),
+    );
+    if (
+      !directive ||
+      hasExecutedSessionsSend(input.toolTrace, directive.sessionKey)
+    ) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "continue",
+      messages: [
+        ...input.messages,
+        {
+          role: "user",
+          content: buildResolvedSessionListContinuationPrompt(directive),
+        },
+      ],
+      forceToolChoice: { name: "sessions_send" },
+      reason: "resolved_session_list_continuation",
+    };
+  }
+
   applyContinueAction(
     action: EngineContinueAction,
     options: ContinueActionApplicationOptions = {},
@@ -537,6 +585,19 @@ export class ContinuationController {
         ],
         forceToolChoice: "none",
       };
+    }
+
+    const resolvedSessionList = this.applyContinueAction(
+      this.continueResolvedSessionList({
+        messages: input.messages,
+        taskPrompt: input.taskPrompt,
+        results: input.results,
+        toolTrace: input.toolTrace,
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
+      }),
+    );
+    if (resolvedSessionList) {
+      return resolvedSessionList;
     }
 
     const timeoutContinuation = this.onAfterExecuteTimeoutContinuation({
@@ -685,6 +746,25 @@ export class ContinuationController {
       executeForcedRound,
     );
   }
+}
+
+function buildResolvedSessionListContinuationPrompt(
+  directive: {
+    sessionKey: string;
+    messageHint: string;
+    label?: string;
+  },
+): string {
+  return [
+    "Runtime continuity: sessions_list resolved the requested continuation session.",
+    `Resolved session_key: "${directive.sessionKey}".`,
+    "Call sessions_send exactly once for that session before finalizing.",
+    "Do not call sessions_list, sessions_history, or sessions_spawn before that sessions_send.",
+    directive.label ? `Use label: ${directive.label}.` : "",
+    `[user]: ${directive.messageHint}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function findPartialSessionSendCloseoutEvidence(

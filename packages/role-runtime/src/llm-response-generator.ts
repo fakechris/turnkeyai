@@ -760,6 +760,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             name: "sessions_list",
             input: {
               limit: 5,
+              ...(sessionContinuationLookupDirective.agentId
+                ? {
+                    agent_id: sessionContinuationLookupDirective.agentId,
+                    kinds: [sessionContinuationLookupDirective.agentId],
+                  }
+                : {}),
               reason: `continuation lookup: ${sessionContinuationLookupDirective.messageHint}`,
             },
           },

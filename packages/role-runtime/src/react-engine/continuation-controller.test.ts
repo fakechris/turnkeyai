@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ToolResult } from "@turnkeyai/agent-core/tool";
-import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
+import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import { createContinuationController } from "./continuation-controller";
@@ -481,6 +481,119 @@ test("ContinuationController injects sessions_list when continuation lacks a ses
     String(action.kind === "inject_calls" && action.calls[0]?.input["reason"]),
     /^continuation lookup: Continue from the slow-source attempt in this mission/,
   );
+});
+
+test("ContinuationController scopes truncated slow-source continuation lookup to explore", () => {
+  const controller = createContinuationController();
+
+  const action = controller.onRoundEmpty({
+    active: true,
+    messages: [],
+    round: 0,
+    taskPrompt: [
+      "Task brief:",
+      "<relay_brief>",
+      "[sessions_spawn]: {",
+      '"status": "timeout",',
+      '"agent_id": "explore",',
+      '"label": "slow-fixture-fetch",',
+      '"session_key": "worker:explore:task:TASK-4:call_function_timeout_…"',
+      "}",
+      "[user]: Continue from the slow-source attempt in this mission.",
+      "</relay_brief>",
+    ].join("\n"),
+    toolTrace: [],
+    tools: [{ name: "sessions_list" }],
+  });
+
+  assert.equal(action.kind, "inject_calls");
+  assert.equal(
+    action.kind === "inject_calls" && action.calls[0]?.name,
+    "sessions_list",
+  );
+  assert.equal(
+    action.kind === "inject_calls" && action.calls[0]?.input["agent_id"],
+    "explore",
+  );
+  assert.deepEqual(
+    action.kind === "inject_calls" && action.calls[0]?.input["kinds"],
+    ["explore"],
+  );
+});
+
+test("ContinuationController forces the next model round to sessions_send after sessions_list resolves a truncated slow-source continuation", async () => {
+  const controller = createContinuationController();
+  const resolvedSessionKey =
+    "worker:explore:task:TASK-4:call_function_timeout_1";
+  const result: ToolResult = {
+    toolCallId: "toolu-list",
+    toolName: "sessions_list",
+    content: JSON.stringify({
+      sessions: [
+        {
+          session_key: "worker:browser:task:TASK-4:call_function_browser_1",
+          agent_id: "browser",
+          status: "resumable",
+          label: "slow-fixture-release-risk",
+          last_active_at: 100,
+        },
+        {
+          session_key: resolvedSessionKey,
+          agent_id: "explore",
+          status: "resumable",
+          label: "slow-fixture-fetch",
+          last_active_at: 200,
+        },
+      ],
+    }),
+  };
+  const forcedCalls: LLMToolCall[] = [];
+
+  const action = await controller.applyAfterExecuteContinuationHook(
+    {
+      messages: [],
+      taskPrompt: [
+        "Task brief:",
+        "[sessions_spawn]: {",
+        '"status": "timeout",',
+        '"agent_id": "explore",',
+        '"label": "slow-fixture-fetch",',
+        '"session_key": "worker:explore:task:TASK-4:call_function_timeout_…"',
+        "}",
+        "[user]: Continue from the slow-source attempt in this mission.",
+      ].join("\n"),
+      toolTrace: [],
+      results: [result],
+      repairMarkers: [],
+      tools: [{ name: "sessions_send" }, { name: "sessions_list" }],
+      browserAvailable: true,
+      observer: { onProviderToolProtocolRound: async () => {} },
+      evidence: {
+        currentRound() {
+          return {
+            timeoutSignals: [],
+            completedSessions: [],
+            roundEvidenceText: "",
+          };
+        },
+      },
+    },
+    async (forced) => {
+      forcedCalls.push(...forced.calls);
+      return { messages: [{ role: "tool", content: "continued" }] };
+    },
+  );
+
+  assert.deepEqual(action?.forceToolChoice, { name: "sessions_send" });
+  assert.match(
+    String(action?.messages.at(-1)?.content),
+    new RegExp(resolvedSessionKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  );
+  assert.match(
+    String(action?.messages.at(-1)?.content),
+    /Do not call sessions_list, sessions_history, or sessions_spawn before that sessions_send/,
+  );
+  assert.deepEqual(forcedCalls, []);
 });
 
 test("ContinuationController resumes the original research thread from a same-thread session list", () => {

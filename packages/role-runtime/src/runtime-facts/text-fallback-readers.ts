@@ -232,6 +232,7 @@ export interface SessionContinuationDirective {
 
 export interface SessionContinuationLookupDirective {
   messageHint: string;
+  agentId?: string;
 }
 
 export interface SubAgentToolTimeoutSignal {
@@ -2899,6 +2900,7 @@ export function findSessionContinuationLookupDirective(
             taskPrompt,
             latestUserText,
           ),
+          ...optionalLookupAgentId(context, latestUserText),
         }
       : null;
   }
@@ -2907,7 +2909,59 @@ export function findSessionContinuationLookupDirective(
       taskPrompt,
       latestUserText,
     ),
+    ...optionalLookupAgentId(context, latestUserText),
   };
+}
+
+function optionalLookupAgentId(
+  context: string,
+  latestUserText: string,
+): { agentId: string } | {} {
+  const agentId = inferSessionContinuationLookupAgentId(
+    context,
+    latestUserText,
+  );
+  return agentId ? { agentId } : {};
+}
+
+function inferSessionContinuationLookupAgentId(
+  context: string,
+  latestUserText: string,
+): string | null {
+  let selectedAgentId: string | null = null;
+  let selectedPriority = 0;
+  for (const result of extractSessionToolResultRecords(context)) {
+    const agentId = result["agent_id"];
+    if (typeof agentId !== "string" || !agentId.trim()) {
+      continue;
+    }
+    const priority = sessionToolResultContinuationPriority(
+      result,
+      latestUserText,
+    );
+    if (priority > selectedPriority) {
+      selectedAgentId = agentId.trim();
+      selectedPriority = priority;
+    }
+  }
+  if (selectedAgentId) {
+    return selectedAgentId;
+  }
+  if (
+    /\b(?:slow-source|slow source|source-check|source check|release-risk|release risk)\b/i.test(
+      latestUserText,
+    ) &&
+    /"agent_id"\s*:\s*"explore"/i.test(context)
+  ) {
+    return "explore";
+  }
+  if (
+    /\b(?:browser|dashboard|rendered|visual|page)\b/i.test(latestUserText) &&
+    /"agent_id"\s*:\s*"browser"/i.test(context)
+  ) {
+    return "browser";
+  }
+  return null;
 }
 
 export function readPolicyForceSlowSourceRecoveryContinuation(context: string): boolean {
