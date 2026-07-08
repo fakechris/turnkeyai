@@ -97,7 +97,11 @@ export function buildMissionObservabilitySnapshot(input: {
   const evidenceText = collectEvidenceText(events);
   const sourceLabels = collectEvidenceSourceLabels(events);
   const browserProfileFallbacks = collectBrowserProfileFallbacks(events);
-  const browserFailureBuckets = collectBrowserFailureBuckets(events);
+  const browserFailureBucketEvents = [
+    ...events,
+    ...runtimeProgressBrowserFailureEvents(input.mission.id, input.progressEvents ?? []),
+  ];
+  const browserFailureBuckets = collectBrowserFailureBuckets(browserFailureBucketEvents);
   const recoveryEvents = events
     .filter((event) => event.kind === "recovery")
     .filter((event) => !isStaleIncompleteFinalRecovery(input.mission, event, finalAnswer));
@@ -435,10 +439,13 @@ function extractMetricNumericValues(text: string): Map<string, string[]> {
     if (!/\d/u.test(fragment)) continue;
     for (const match of fragment.matchAll(METRIC_VALUE_RE)) {
       if (match.index == null) continue;
+      if (numericMatchIsInsideUrlToken(fragment, match.index, match[0] ?? "")) {
+        continue;
+      }
       const labelWindow = fragment.slice(Math.max(0, match.index - 120), match.index);
-      const labelMatch = labelWindow.match(METRIC_LABEL_BEFORE_VALUE_RE);
-      const label = normalizeMetricLabel(labelMatch?.[1] ?? "");
-      const value = normalizeTrackedNumericValue(match[0] ?? "");
+      const rawValue = match[0] ?? "";
+      const label = inferMetricLabel(labelWindow, rawValue);
+      const value = normalizeTrackedNumericValue(rawValue);
       if (!label || !value) continue;
       const values = metrics.get(label) ?? new Set<string>();
       values.add(value);
@@ -448,13 +455,49 @@ function extractMetricNumericValues(text: string): Map<string, string[]> {
   return new Map([...metrics.entries()].map(([label, values]) => [label, [...values]]));
 }
 
+function inferMetricLabel(labelWindow: string, value: string): string {
+  if (value.trim().startsWith("$") && /\b(?:price|pricing)\b/i.test(labelWindow)) {
+    return "price";
+  }
+  const labelMatch = labelWindow.match(METRIC_LABEL_BEFORE_VALUE_RE);
+  return normalizeMetricLabel(labelMatch?.[1] ?? "");
+}
+
+function numericMatchIsInsideUrlToken(fragment: string, index: number, value: string): boolean {
+  const start = findTokenBoundary(fragment, index, -1);
+  const end = findTokenBoundary(fragment, index + value.length, 1);
+  const token = fragment.slice(start, end);
+  return /(?:https?:\/\/|localhost|127\.0\.0\.1|0\.0\.0\.0|\/[^\s|)]*)/i.test(token);
+}
+
+function findTokenBoundary(text: string, index: number, direction: -1 | 1): number {
+  let cursor = index;
+  while (cursor >= 0 && cursor <= text.length) {
+    const next = direction === -1 ? cursor - 1 : cursor;
+    const char = text[next];
+    if (char === undefined || /[\s`"'()[\]{}<>|]/u.test(char)) {
+      break;
+    }
+    cursor += direction;
+  }
+  return direction === -1 ? cursor : cursor;
+}
+
 function normalizeMetricLabel(label: string): string {
   const afterPrefix = label.includes(":") ? label.slice(label.lastIndexOf(":") + 1) : label;
-  return afterPrefix
+  const normalized = afterPrefix
     .replace(/[-_/]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim()
     .toLowerCase();
+  return canonicalMetricLabel(normalized);
+}
+
+function canonicalMetricLabel(label: string): string {
+  if (label === "pricing" || label === "npricing") {
+    return "price";
+  }
+  return label;
 }
 
 function formatMetricLabel(label: string): string {
@@ -843,6 +886,7 @@ function countEvidenceEvents(events: ActivityEvent[]): number {
     if (event.kind !== "tool") return count;
     if (event.runtime?.toolPhase !== "result") return count;
     if (event.runtime.admission === "skipped") return count;
+    if (isControlPlaneRecoveryMemoryResult(event)) return count;
     return count + countToolEvidenceUnits(event);
   }, 0);
 }
@@ -854,10 +898,18 @@ function collectEvidenceText(events: ActivityEvent[]): string {
       if (event.kind === "browser" || event.kind === "doc" || event.kind === "artifact") return true;
       if (event.kind !== "tool") return false;
       if (event.runtime?.toolPhase !== "result") return false;
-      return event.runtime.admission !== "skipped";
+      return event.runtime.admission !== "skipped" && !isControlPlaneRecoveryMemoryResult(event);
     })
     .map(eventTextBlob)
     .join("\n\n");
+}
+
+function isControlPlaneRecoveryMemoryResult(event: ActivityEvent): boolean {
+  if (event.runtime?.toolName !== "memory_search") return false;
+  const text = eventTextBlob(event);
+  return /\b(?:System recovery|Automatic recovery attempt|missing or unverified final-answer slots|Previous incomplete answer signals)\b/i.test(
+    text
+  );
 }
 
 function collectEvidenceSourceLabels(events: ActivityEvent[]): string[] {
@@ -1002,7 +1054,8 @@ function addSourceLabel(labels: Map<string, string>, value: string | undefined):
 function isInternalSourceTransportLabel(normalizedLabel: string): boolean {
   return (
     /\braw\s+(?:fetch|source|html|page)\b|\b(?:fetch|source|html|page)\s+raw\b/.test(normalizedLabel) ||
-    /\bbounded\s+probe\b/.test(normalizedLabel)
+    /\bbounded\s+probe\b/.test(normalizedLabel) ||
+    /\bagent\s+workbench\s+brief\s+collector\b/.test(normalizedLabel)
   );
 }
 
@@ -1182,6 +1235,7 @@ const GENERIC_SOURCE_LABEL_TOKENS = new Set([
   "open",
   "opened",
   "page",
+  "raw",
   "research",
   "researcher",
   "report",
@@ -1348,6 +1402,69 @@ function collectBrowserFailureBuckets(events: ActivityEvent[]): BrowserFailureBu
   return [...byBucket.values()].sort((left, right) => right.latestAtMs - left.latestAtMs || left.bucket.localeCompare(right.bucket));
 }
 
+function runtimeProgressBrowserFailureEvents(missionId: Mission["id"], progressEvents: RuntimeProgressEvent[]): ActivityEvent[] {
+  return progressEvents
+    .filter((event) => event.workerType === "browser" || /\bbrowser\b/i.test(event.summary))
+    .map((event) => {
+      const metadataText = safeJsonStringify(event.metadata);
+      const runtime: Record<string, string> = {
+        runtimeSource: "runtime_progress",
+        progressId: event.progressId,
+        progressPhase: event.phase,
+        subjectKind: event.subjectKind,
+        subjectId: event.subjectId,
+      };
+      const toolName = readRuntimeProgressToolName(event);
+      if (toolName) runtime.toolName = toolName;
+      if (event.workerType) runtime.workerType = event.workerType;
+      if (event.closeKind) runtime.closeKind = event.closeKind;
+      if (event.continuityState) runtime.continuityState = event.continuityState;
+      return {
+        id: `runtime-progress:${event.progressId}`,
+        missionId,
+        tMs: event.recordedAt,
+        kind: "browser",
+        actor: "runtime",
+        text: [event.summary, event.statusReason ?? "", metadataText].filter(Boolean).join(" "),
+        tags: [
+          "runtime-progress",
+          "browser",
+          ...(toolName ? [toolName] : []),
+          event.phase,
+        ],
+        runtime,
+        ...(event.phase === "completed" ? { emph: "success" as const } : {}),
+        ...(event.phase === "failed" || event.phase === "cancelled" ? { emph: "danger" as const } : {}),
+      };
+    });
+}
+
+function readRuntimeProgressToolName(event: RuntimeProgressEvent): string | null {
+  const direct = readStringRecordValue(event.metadata, "toolName");
+  if (direct) return direct;
+  const detail = readRecordValue(event.metadata, "detail");
+  return readStringRecordValue(detail, "toolName");
+}
+
+function readRecordValue(record: Record<string, unknown> | undefined, key: string): Record<string, unknown> | undefined {
+  const value = record?.[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function readStringRecordValue(record: Record<string, unknown> | undefined, key: string): string | null {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function safeJsonStringify(value: unknown): string {
+  if (value === undefined) return "";
+  try {
+    return JSON.stringify(value).slice(0, 2_000);
+  } catch {
+    return "";
+  }
+}
+
 function extractBrowserFailureBucket(event: ActivityEvent): string | null {
   const explicitBrowserBucket = normalizeBrowserFailureBucket(event.runtime?.browserDiagnosticBucket ?? "");
   if (explicitBrowserBucket) return explicitBrowserBucket;
@@ -1356,6 +1473,15 @@ function extractBrowserFailureBucket(event: ActivityEvent): string | null {
   const sessionBrowserBucket = extractSessionBrowserRecoveryBucket(event, text);
   if (sessionBrowserBucket) return sessionBrowserBucket;
   if (isColdBrowserRecoveryEvidence(event, text)) return "session_not_found";
+
+  const progressBucket = normalizeBrowserFailureBucket(matchBrowserFailureBucket(text) ?? "");
+  if (
+    progressBucket &&
+    event.kind === "browser" &&
+    hasPositiveBrowserFailureBucketLine(text, progressBucket)
+  ) {
+    return progressBucket;
+  }
 
   const isBrowserFailureEvidence = isBrowserFailureEvidenceEvent(event);
   if (isBrowserFailureEvidence) {
@@ -1388,16 +1514,61 @@ function extractSessionBrowserRecoveryBucket(event: ActivityEvent, text: string)
   if (!/"agent_id"\s*:\s*"browser"/i.test(text) && !/\bbrowserRecovery\b|\bfailureBuckets\b/i.test(text)) {
     return null;
   }
-  return normalizeBrowserFailureBucket(matchBrowserFailureBucket(text) ?? "");
+  for (const candidateText of structuredSessionBrowserFailureTexts(event.runtime?.resultContent)) {
+    const structuredBucket = normalizeBrowserFailureBucket(matchBrowserFailureBucket(candidateText) ?? "");
+    if (!structuredBucket) continue;
+    if (hasStructuredBrowserFailureBucketRecord(candidateText, structuredBucket)) return structuredBucket;
+    if (hasPositiveBrowserFailureBucketLine(candidateText, structuredBucket)) return structuredBucket;
+    if (!hasNegatedBrowserFailureBucketLine(candidateText, structuredBucket)) return structuredBucket;
+  }
+  const bucket = normalizeBrowserFailureBucket(matchBrowserFailureBucket(text) ?? "");
+  if (!bucket) return null;
+  if (hasStructuredBrowserFailureBucketRecord(text, bucket)) return bucket;
+  if (hasPositiveBrowserFailureBucketLine(text, bucket)) return bucket;
+  if (hasNegatedBrowserFailureBucketLine(text, bucket)) return null;
+  return null;
+}
+
+function structuredSessionBrowserFailureTexts(content: unknown): string[] {
+  if (typeof content !== "string" || !content.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  const record = parsed as Record<string, unknown>;
+  const values: string[] = [];
+  for (const key of ["evidence_summary", "result", "final_content", "evidence_excerpt"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) values.push(value);
+  }
+  const payload = record.payload;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const browserRecovery = (payload as Record<string, unknown>).browserRecovery;
+    if (browserRecovery && typeof browserRecovery === "object" && !Array.isArray(browserRecovery)) {
+      const recovery = browserRecovery as Record<string, unknown>;
+      const summary = recovery.summary;
+      if (typeof summary === "string" && summary.trim()) values.push(summary);
+      const failureBuckets = recovery.failureBuckets;
+      if (failureBuckets !== undefined) values.push(safeJsonStringify(failureBuckets));
+    }
+  }
+  return values;
 }
 
 function isColdBrowserRecoveryEvidence(event: ActivityEvent, text: string): boolean {
   if (!/\bbrowser\b/i.test(text)) return false;
-  if (
-    !/\b(?:cold[-\s]?recovered\s+session|new browser session|session not found|browser session not found|session (?:was )?unavailable|previous session (?:was )?unavailable|prior browser session (?:was )?unavailable|fresh browser opened|recovery confirmed)\b/i.test(
+  const explicitRecovery =
+    /\b(?:cold[-\s]?recovered\s+session|session not found|browser session not found|session (?:was )?unavailable|previous session (?:was )?unavailable|prior browser session (?:was )?unavailable|fresh browser opened|recovery confirmed)\b/i.test(
       text
-    )
-  ) {
+    ) ||
+    /\b(?:recovered|reopened|recreated|cold[-\s]?recreat(?:ed|ion))\b[\s\S]{0,120}\bnew browser session\b/i.test(text) ||
+    /\bnew browser session\b[\s\S]{0,120}\b(?:after|because|following)\b[\s\S]{0,80}\b(?:session_not_found|session not found|session (?:was )?unavailable|previous session (?:was )?unavailable|prior session (?:was )?unavailable)\b/i.test(
+      text
+    );
+  if (!explicitRecovery) {
     return false;
   }
   if (event.kind === "recovery") return true;
@@ -1414,6 +1585,46 @@ function matchBrowserFailureBucket(text: string): string | null {
       /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|transport_failure|owner_mismatch|lease_conflict)\b/i
     )?.[1] ?? null
   );
+}
+
+function hasStructuredBrowserFailureBucketRecord(text: string, bucket: string): boolean {
+  const escaped = escapeRegExp(bucket);
+  return new RegExp(
+    `"failureBuckets"[\\s\\S]{0,600}\\b${escaped}\\b|"browserRecovery"[\\s\\S]{0,800}\\b${escaped}\\b|\\b${escaped}\\b[\\s\\S]{0,160}"count"\\s*:\\s*[1-9]`,
+    "i"
+  ).test(text);
+}
+
+function hasPositiveBrowserFailureBucketLine(text: string, bucket: string): boolean {
+  const escaped = escapeRegExp(bucket);
+  const bucketPattern = new RegExp(`\\b${escaped}\\b`, "i");
+  const positivePatterns = [
+    new RegExp(`\\bBrowser failure buckets?\\b[^\\n]{0,180}\\b${escaped}\\b`, "i"),
+    new RegExp(`\\b${escaped}\\b\\s*=\\s*[1-9]\\d*\\b`, "i"),
+    new RegExp(`\\b${escaped}\\b[^\\n]{0,140}\\b(?:occurred|detected|reported|during|after|recovered|bucket|failure bucket)\\b`, "i"),
+    new RegExp(`\\b(?:after|from|despite|following)\\b[^\\n]{0,80}\\b${escaped}\\b`, "i"),
+  ];
+  return text
+    .split(/\r?\n/)
+    .some((line) => bucketPattern.test(line) && !isNegatedBrowserFailureBucketLine(line, bucket) && positivePatterns.some((pattern) => pattern.test(line)));
+}
+
+function hasNegatedBrowserFailureBucketLine(text: string, bucket: string): boolean {
+  return text
+    .split(/\r?\n/)
+    .some((line) => isNegatedBrowserFailureBucketLine(line, bucket));
+}
+
+function isNegatedBrowserFailureBucketLine(line: string, bucket: string): boolean {
+  const escaped = escapeRegExp(bucket);
+  return new RegExp(
+    `\\b${escaped}\\b[^\\n]{0,160}\\b(?:not verified|not present|not observed|not encountered|not seen|did not occur|absent|none|false|0)\\b|\\b(?:not verified|not present|not observed|not encountered|not seen|did not occur|absent|none|false|0)\\b[^\\n]{0,160}\\b${escaped}\\b`,
+    "i"
+  ).test(line);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isBrowserFailureEvidenceEvent(event: ActivityEvent): boolean {
@@ -1539,8 +1750,16 @@ function structuredToolResultStatus(event: ActivityEvent): string | null {
     }
   }
   const text = eventTextBlob(event);
-  const returnedCompleted = /\bTool\s+\S+\s+returned\b/i.test(text) && /"status"\s*:\s*"completed"/i.test(text);
-  if (returnedCompleted) return "completed";
+  const explicitStatus = text.match(/"status"\s*:\s*"(completed|failed|cancelled|timeout)"/i)?.[1]?.toLowerCase();
+  if (
+    explicitStatus === "completed" ||
+    explicitStatus === "failed" ||
+    explicitStatus === "cancelled" ||
+    explicitStatus === "timeout"
+  ) {
+    return explicitStatus;
+  }
+  if (/\bTool\s+\S+\s+returned\b/i.test(text)) return "completed";
   return null;
 }
 

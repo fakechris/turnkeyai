@@ -1469,7 +1469,7 @@ function mirrorMissionWhilePostRuns(input: {
 
 function startApprovalDecisionContinuationInBackground(input: {
   deps: MissionRouteDeps;
-  approval: { id: string; missionId: string; action: string };
+  approval: { id: string; missionId: string; action: string; payload?: Record<string, unknown> };
   decision: "approved" | "denied";
   permissionApplied?: boolean;
 }): void {
@@ -1490,11 +1490,25 @@ function startApprovalDecisionContinuationInBackground(input: {
     if (workingMission !== mission) {
       await input.deps.missionStore.putRaw(workingMission);
     }
+    if (input.decision === "approved" && input.permissionApplied === true) {
+      if (await shouldPostAppliedApprovalContinuation(input)) {
+        startMissionFollowUpInBackground({
+          deps: input.deps,
+          orchestrator,
+          mission: workingMission,
+          threadId: mission.threadId,
+          content: buildAppliedApprovalContinuationMessage({
+            approvalId: input.approval.id,
+            action: input.approval.action,
+          }),
+        });
+      }
+      return;
+    }
     const content = buildApprovalDecisionContinuationMessage({
       approvalId: input.approval.id,
       action: input.approval.action,
       decision: input.decision,
-      permissionApplied: input.permissionApplied === true,
     });
     startMissionFollowUpInBackground({
       deps: input.deps,
@@ -1512,17 +1526,44 @@ function startApprovalDecisionContinuationInBackground(input: {
   });
 }
 
+async function shouldPostAppliedApprovalContinuation(input: {
+  deps: MissionRouteDeps;
+  approval: { missionId: string; payload?: Record<string, unknown> };
+}): Promise<boolean> {
+  const toolCallId = readApprovalToolPermissionToolCallId(input.approval.payload);
+  if (!toolCallId) {
+    return true;
+  }
+  const events = await input.deps.activityStore.listByMission(input.approval.missionId);
+  return events.some(
+    (event) =>
+      event.runtime?.["toolCallId"] === toolCallId &&
+      event.runtime?.["toolPhase"] === "result"
+  );
+}
+
+function buildAppliedApprovalContinuationMessage(input: {
+  approvalId: string;
+  action: string;
+}): string {
+  return [
+    `Operator decision recorded for approval ${input.approvalId}.`,
+    `Action: ${input.action}.`,
+    "The operator approved it and the runtime permission cache is already applied.",
+    "Continue the approved scoped action now; do not stop at the pending approval summary.",
+    "Do not call permission_result or permission_applied again for this approval.",
+    "Use the existing warm browser session when available, or spawn a focused browser worker, to perform only the approved scoped action and verify the resulting page state before finalizing.",
+  ].join("\n");
+}
+
 function buildApprovalDecisionContinuationMessage(input: {
   approvalId: string;
   action: string;
   decision: "approved" | "denied";
-  permissionApplied?: boolean;
 }): string {
   const outcome =
     input.decision === "approved"
-      ? input.permissionApplied
-        ? "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied. Do not call permission tools again. Continue from the approved point: call sessions_spawn with agent_id=\"browser\" and a self-contained task to perform only the approved scoped action now. Verify the browser result before the final answer, and do not finalize with a pending-approval summary."
-        : "The operator approved it. Continue from the paused approval point: call permission_result for this approval_id, call permission_applied, then perform only the approved scoped action."
+      ? "The operator approved it. Continue from the paused approval point: call permission_result for this approval_id, call permission_applied, then perform only the approved scoped action."
       : [
           "The operator denied it.",
           "Continue from the paused approval point: call permission_result for this approval_id exactly once, do not call permission_applied, and do not perform the denied action.",
@@ -1563,12 +1604,23 @@ async function applyApprovedPermissionDecision(input: {
 }
 
 function readApprovalToolPermissionThreadId(payload: Record<string, unknown> | undefined): string | null {
+  return readApprovalToolPermissionString(payload, "threadId");
+}
+
+function readApprovalToolPermissionToolCallId(payload: Record<string, unknown> | undefined): string | null {
+  return readApprovalToolPermissionString(payload, "toolCallId");
+}
+
+function readApprovalToolPermissionString(
+  payload: Record<string, unknown> | undefined,
+  field: string
+): string | null {
   const toolPermission = payload?.["toolPermission"];
   if (!isRecord(toolPermission)) {
     return null;
   }
-  const threadId = toolPermission["threadId"];
-  return typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
+  const value = toolPermission[field];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

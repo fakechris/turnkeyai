@@ -143,6 +143,24 @@ export function evaluateMissionCompletion(input: {
     return typedTerminal;
   }
 
+  const latestAnswerBeforeIncompleteCheck = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  const stalledBeforeIncompleteFinal =
+    latestAnswerBeforeIncompleteCheck &&
+    hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latestAnswerBeforeIncompleteCheck.index)
+      ? findStalledLeadToolTurn(mission, messages, input.workerSessions)
+      : null;
+  if (stalledBeforeIncompleteFinal) {
+    if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
+      return { action: "none", reason: "active_execution" };
+    }
+    return {
+      action: "update",
+      reason: "stalled_tool_turn",
+      patch: { status: "blocked", blockers: 1 },
+      recovery: { kind: "stalled_tool_turn", ...stalledBeforeIncompleteFinal },
+    };
+  }
+
   const incompleteFinal = findIncompleteLeadFinalAnswer(mission, messages);
   if (incompleteFinal) {
     if (hasActiveExecutionAfterAnswer(input.roleRuns, input.workerSessions, incompleteFinal.message.createdAt)) {
@@ -169,7 +187,11 @@ export function evaluateMissionCompletion(input: {
     };
   }
 
-  if (mission.status === "done" && hasUserFollowUpAfterLatestLeadAnswer(mission, messages)) {
+  if (
+    mission.status === "done" &&
+    hasUserFollowUpAfterLatestLeadAnswer(mission, messages) &&
+    !findLatestLeadToolMessageAfterLatestUser(mission, messages)
+  ) {
     if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
       return {
         action: "update",
@@ -184,7 +206,7 @@ export function evaluateMissionCompletion(input: {
     };
   }
 
-  if (mission.status === "done") {
+  if (mission.status === "done" && hasFinalLeadAssistantMessage(mission, messages)) {
     return { action: "none", reason: "terminal" };
   }
 

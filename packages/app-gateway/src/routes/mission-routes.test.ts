@@ -1312,7 +1312,7 @@ describe("mission-routes", () => {
       }
     });
 
-    it("approval decisions resume linked mission threads", async () => {
+    it("auto-applied in-flight runtime approval decisions do not post duplicate continuations", async () => {
       const t = tmpDir();
       try {
         const deps = composeMissionDeps({ dataDir: t.dir, clock });
@@ -1331,6 +1331,9 @@ describe("mission-routes", () => {
         assert.equal(getStatus(), 201);
         const mission = getJson() as Mission;
         await waitUntil("initial mission post", () => posts.length === 1);
+        await waitUntil("initial mission tick", () => ticks.length >= 1);
+        await flushMicrotasks();
+        const tickCountBeforeDecision = ticks.length;
 
         const latest = await deps.missionStore.get(mission.id);
         assert.ok(latest);
@@ -1398,19 +1401,125 @@ describe("mission-routes", () => {
         });
         assert.equal(decisionResponse.getStatus(), 200);
         assert.deepEqual(applied, [{ threadId: mission.threadId!, approvalId: "ap.linked-browser-submit" }]);
-        await waitUntil("approval continuation post", () => posts.length === 2);
-        assert.equal(posts[1]?.threadId, mission.threadId);
-        assert.match(posts[1]?.content ?? "", /ap\.linked-browser-submit/);
-        assert.match(posts[1]?.content ?? "", /already recorded permission\.result and permission\.applied/);
-        assert.match(posts[1]?.content ?? "", /runtime permission cache is already applied/);
-        assert.match(posts[1]?.content ?? "", /Do not call permission tools again/);
-        assert.match(posts[1]?.content ?? "", /sessions_spawn/);
-        assert.match(posts[1]?.content ?? "", /agent_id="browser"/);
-        assert.match(posts[1]?.content ?? "", /do not finalize with a pending-approval summary/i);
-        assert.doesNotMatch(posts[1]?.content ?? "", /permission_applied/);
-        await waitUntil("approval continuation tick", () => ticks.filter((id) => id === mission.id).length >= 2);
+        await waitUntil(
+          "approval auto-apply state sync",
+          async () => (await deps.missionStore.get(mission.id))?.status === "working"
+        );
+        await flushMicrotasks();
+        assert.equal(posts.length, 1);
+        assert.equal(ticks.length, tickCountBeforeDecision);
         const resumed = await deps.missionStore.get(mission.id);
         assert.equal(resumed?.status, "working");
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("auto-applied approval decisions post a continuation after the original tool turn ended", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator, posts, ticks } = buildOrchestrator();
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "Approval gated browser task", desc: "Open a local form and dry-run submit", mode: "browser" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 201);
+        const mission = getJson() as Mission;
+        await waitUntil("initial mission post", () => posts.length === 1);
+        await waitUntil("initial mission tick", () => ticks.length >= 1);
+        await flushMicrotasks();
+        const tickCountBeforeDecision = ticks.length;
+
+        const latest = await deps.missionStore.get(mission.id);
+        assert.ok(latest);
+        await deps.missionStore.putRaw({
+          ...latest,
+          status: "needs_approval",
+          pendingApprovals: 1,
+        });
+        await deps.approvalStore.put({
+          id: "ap.ended-browser-submit",
+          severity: "med",
+          missionId: mission.id,
+          missionTitle: mission.title,
+          agent: "role-lead",
+          action: "browser.form.submit",
+          title: "Dry-run submit",
+          affects: [],
+          risk: "isolated local dry-run",
+          requestedAt: "now",
+          requestedAtMs: clock.now(),
+          requestedAgo: "now",
+          policyHint: "approval",
+          payload: {
+            toolPermission: {
+              threadId: mission.threadId,
+              toolCallId: "call-ended",
+              action: "browser.form.submit",
+              scope: "mutate",
+              requirement: {
+                level: "approval",
+                scope: "mutate",
+                reason: "browser form submit",
+                cacheKey: `${mission.threadId}:browser:mutate:approval:browser.form.submit`,
+              },
+            },
+          },
+        });
+        await deps.activityStore.append({
+          id: "ev.ended-browser-submit-result",
+          missionId: mission.id,
+          tMs: clock.now(),
+          kind: "tool",
+          actor: "role-lead",
+          text: "Tool sessions_spawn returned a pending approval summary.",
+          runtime: {
+            toolName: "sessions_spawn",
+            toolCallId: "call-ended",
+            toolPhase: "result",
+          },
+        });
+
+        const decisionResponse = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/approvals/ap.ended-browser-submit/decision",
+            body: { decision: "approved", decidedBy: "operator" },
+          }),
+          res: decisionResponse.res,
+          url: new URL("http://127.0.0.1/approvals/ap.ended-browser-submit/decision"),
+          deps: {
+            ...deps,
+            orchestrator,
+            toolPermissionService: {
+              async apply(input) {
+                return {
+                  status: "applied",
+                  approvalId: input.approvalId,
+                  cacheKey: `${mission.threadId}:browser:mutate:approval:browser.form.submit`,
+                  message: `Permission request ${input.approvalId} applied.`,
+                };
+              },
+            },
+          },
+        });
+        assert.equal(decisionResponse.getStatus(), 200);
+        await waitUntil("approval auto-apply continuation post", () => posts.length === 2);
+        assert.ok(ticks.length > tickCountBeforeDecision);
+        const content = posts[1]?.content ?? "";
+        assert.match(content, /permission cache is already applied/i);
+        assert.match(content, /continue the approved scoped action/i);
+        assert.match(content, /do not call permission_result or permission_applied/i);
+        assert.match(content, /browser\.form\.submit/);
       } finally {
         t.cleanup();
       }

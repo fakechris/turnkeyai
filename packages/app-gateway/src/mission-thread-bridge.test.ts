@@ -752,6 +752,423 @@ describe("MissionThreadBridge", () => {
     assert.doesNotMatch(content, /Source\/provider labels/i);
   });
 
+  it("uses rewrite-only recovery for completed browser evidence closeout wording", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: [
+        "Open the complex browser page and produce a browser-visible review.",
+        "Summarize the embedded frame, shadow review component, details popup, operational state, owner, approval requirement, and residual risk.",
+        "Use only browser-visible page state.",
+      ].join("\n"),
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Operational State: Backlog 7 is visible in the rendered browser page.",
+            "Owner: Frame Captain.",
+            "Approval Requirement: risk desk approval and packet P-42 manager acknowledgement.",
+            "Residual Risk: popup drill risk is visible.",
+            "Browser evidence observed: embedded frame, shadow review component, details popup, DOM snapshot, and screenshot artifact captured.",
+            "Rendered browser evidence remains unverified.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const content = followUps[0]?.content ?? "";
+    assert.match(content, /rewriting the final answer from existing browser evidence only/);
+    assert.match(content, /Do not call sessions_spawn, sessions_send, or browser tools again/);
+    assert.doesNotMatch(content, /Use available tools to verify/);
+  });
+
+  it("keeps cold-recovered browser evidence recovery rewrite-only on later attempts", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: [
+        "Re-check the rendered dashboard state and give the operator the current owner, next action, and residual uncertainty.",
+        "The follow-up answer must include Queue depth: 11, SLA breaches: 3, escalation threshold, Recommended owner: Incident Commander, recommended action, and residual uncertainty.",
+      ].join("\n"),
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore([
+      {
+        id: "prior-incomplete",
+        missionId: mission.id,
+        tMs: 150,
+        kind: "recovery",
+        actor: "system",
+        text: "mission.incomplete_final_answer",
+        tags: ["mission_incomplete_final", "goal_slots_unverified"],
+        runtime: {
+          eventType: "mission.incomplete_final_answer",
+          threadId: "thread-1",
+          messageId: "m-old",
+          reason: "goal_slots_unverified",
+        },
+      },
+    ]);
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 180),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Browser recovery metadata: Resume mode: cold. Browser failure buckets: session_not_found=1.",
+            "Rendered dashboard evidence: TURNKEYAI_DASHBOARD_TRIAGE_OK.",
+            "Queue depth: 11.",
+            "SLA breaches: 3.",
+            "Escalation threshold: queue depth above 5 or SLA breaches above 0 pages the on-call.",
+            "Recommended owner: Incident Commander.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+        {
+          ...baseMessage("m3", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "## Operations Dashboard — Operator Summary",
+            "Session: prior browser session was unavailable; cold recreation succeeded.",
+            "Queue depth: 11.",
+            "SLA breaches: 3.",
+            "Owner: Incident Commander.",
+            "Recommended action: page the on-call.",
+            "Rendered browser evidence remains unverified.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const content = followUps[0]?.content ?? "";
+    assert.match(content, /Automatic recovery attempt 2 of 2/);
+    assert.match(content, /rewriting the final answer from existing browser evidence only/);
+    assert.match(content, /Do not call sessions_spawn, sessions_send, or browser tools again/);
+    assert.doesNotMatch(content, /Use available tools to verify/);
+  });
+
+  it("uses rewrite-only recovery for completed Vendor Alpha source-risk wording", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: [
+        "Start a source-backed review of Vendor Alpha for a product lead.",
+        "Source: http://127.0.0.1/vendor-alpha",
+        "Focus on pricing, strength, and risk, and keep source labels visible in the answer.",
+      ].join("\n"),
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "## Decision Note - Vendor Alpha",
+            "Source: http://127.0.0.1/vendor-alpha.",
+            "Pricing: $19 per seat, verified from source evidence.",
+            "Strength: browser automation and traceable screenshots, verified from source evidence.",
+            "Risk: API integration catalog is still limited, verified from source evidence.",
+            "Risk or limitation: not verified.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const content = followUps[0]?.content ?? "";
+    assert.match(content, /rewriting the final answer from existing source evidence only/);
+    assert.match(content, /completed source-evidence closeout wording/);
+    assert.match(content, /Do not call sessions_spawn, sessions_send, web_fetch, browser tools, or worker tools again/);
+    assert.doesNotMatch(content, /Use available tools to verify/);
+  });
+
+  it("uses rewrite-only recovery for completed Vendor Alpha/Beta comparison evidence", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: [
+        "A product lead is deciding between Vendor Alpha and Vendor Beta.",
+        "Return a concise recommendation that compares pricing, strengths, risks, and the tradeoff that matters most.",
+      ].join("\n"),
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 150),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "sessions_spawn completed: Vendor Alpha.",
+            "Exact Marker: TURNKEYAI_VENDOR_ALPHA_OK.",
+            "Pricing: $19 per seat.",
+            "Strength: browser automation.",
+            "Risk: API integration catalog is still limited.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+        {
+          ...baseMessage("m3", "assistant", 160),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "sessions_spawn completed: Vendor Beta.",
+            "Exact Marker: TURNKEYAI_VENDOR_BETA_OK.",
+            "Pricing: $29 per workspace.",
+            "Strength: approval workflow.",
+            "Risk: separate connector required.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+        {
+          ...baseMessage("m4", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "blocked/partial Missing slots from required table columns not supported by source evidence:",
+            "是否明确支持 result separate from, 是否明确支持 search/web_search, 输入价格, 输出价格 (per 1M tokens), evidence URLs, and 关键原文摘录 are not present.",
+          ].join(" "),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const content = followUps[0]?.content ?? "";
+    assert.match(content, /rewriting the final answer from existing source evidence only/);
+    assert.match(content, /completed source-evidence comparison closeout wording/);
+    assert.match(content, /Vendor Alpha and Vendor Beta evidence/);
+    assert.match(content, /Do not call sessions_spawn, sessions_send, web_fetch, browser tools, or worker tools again/);
+    assert.doesNotMatch(content, /Use available tools to verify/);
+  });
+
+  it("does not use browser-only rewrite recovery when non-browser AsiaWalk stream slots are unverified", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      desc: [
+        "Prepare a decision-ready AsiaWalk pilot brief for a travel product lead.",
+        "Route source: http://127.0.0.1/asiawalk-route",
+        "Budget source: http://127.0.0.1/asiawalk-budget",
+        "Live readiness dashboard: http://127.0.0.1/asiawalk-live",
+        "Treat route, budget, and live readiness as separate evidence streams.",
+        "Do not finalize until all three streams have returned.",
+        "The final brief should cover the route shape, budget, readiness risks, go/no-go recommendation, and the next action for the product lead.",
+      ].join("\n"),
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const followUps: Array<{ threadId: string; content: string }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "## AsiaWalk Pilot Brief",
+            "Route Shape",
+            "Status: Evidence was pruned before retrieval - route shape, stops, waypoints, and order are not verified.",
+            "Budget: $1,280 total with a $180 contingency buffer.",
+            "Rendered readiness: browser evidence shows readiness yellow, rain risk in Taipei, and metro maintenance in Tokyo.",
+            "Recommendation: conditional go after route structure is verified.",
+          ].join("\n"),
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postIncompleteFinalFollowUp(input) {
+        followUps.push({ threadId: input.threadId, content: input.content });
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const content = followUps[0]?.content ?? "";
+    assert.match(content, /Use available tools to verify only the missing or unverified core slots/);
+    assert.doesNotMatch(content, /rewriting the final answer from existing browser evidence only/);
+    assert.doesNotMatch(content, /Do not call sessions_spawn, sessions_send, or browser tools again/);
+  });
+
   it("does not echo unverified placeholder tables into incomplete-final recovery prompts", async () => {
     counter = 0;
     const mission: Mission = {
@@ -1426,6 +1843,263 @@ describe("MissionThreadBridge", () => {
     assert.equal(updated?.progress, 0.95);
   });
 
+  it("does not recover late worker completions already delivered by a successful follow-up result", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"], status: "done", progress: 1 };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore([
+      {
+        id: "original-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_spawn",
+        tags: ["thread", "tool-call", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-spawn",
+          callInput: JSON.stringify({ task: "evaluate slow source", agent_id: "explore" }),
+        },
+      },
+      {
+        id: "original-cancelled",
+        missionId: mission.id,
+        tMs: 200,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_spawn cancelled.",
+        emph: "danger",
+        tags: ["thread", "tool-result", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-spawn",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "cancelled",
+            session_key: "worker:explore:1",
+            result: "operator cancelled active source verification",
+          }),
+        },
+      },
+      {
+        id: "follow-up-call",
+        missionId: mission.id,
+        tMs: 300,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_send",
+        tags: ["thread", "tool-call", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send-follow-up",
+          callInput: JSON.stringify({ session_key: "worker:explore:1" }),
+        },
+      },
+      {
+        id: "follow-up-result",
+        missionId: mission.id,
+        tMs: 400,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_send returned release-risk evidence.",
+        tags: ["thread", "tool-result", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send-follow-up",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "completed",
+            session_key: "worker:explore:1",
+            final_content: "Verified owner: Release Captain. Risk: runbook gap. Mitigation: rollback rehearsal.",
+          }),
+        },
+      },
+      {
+        id: "final",
+        missionId: mission.id,
+        tMs: 500,
+        kind: "thought",
+        actor: "Lead",
+        text: "Verified owner: Release Captain. Risk: runbook gap. Mitigation: rollback rehearsal. Residual risk: earlier cancellation delayed confidence.",
+        tags: ["thread", "assistant"],
+      },
+    ]);
+    const followUps: string[] = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:explore:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+            toolCallId: "call-spawn",
+            label: "cancel resume source",
+          },
+          state: {
+            workerRunKey: "worker:explore:1",
+            workerType: "explore",
+            status: "done",
+            createdAt: 100,
+            updatedAt: 450,
+            lastResult: {
+              workerType: "explore",
+              status: "completed",
+              summary: "Verified owner: Release Captain. Risk: runbook gap. Mitigation: rollback rehearsal.",
+              payload: {
+                mode: "llm_sub_agent",
+                content: "Verified owner: Release Captain. Risk: runbook gap. Mitigation: rollback rehearsal.",
+              },
+            },
+          },
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        followUps.push(input.content);
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    assert.equal(
+      activity.events.some((event) => event.runtime?.eventType === "mission.worker_late_completion"),
+      false
+    );
+    assert.equal(followUps.length, 0);
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "done");
+    assert.equal(updated?.progress, 1);
+  });
+
+  it("defers late worker recovery while the lead role run is still active", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"], progress: 0.95 };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore([
+      {
+        id: "call-1",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_spawn",
+        tags: ["thread", "tool-call", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-spawn",
+          callInput: JSON.stringify({ task: "inspect product signals" }),
+        },
+      },
+      {
+        id: "timeout-1",
+        missionId: mission.id,
+        tMs: 200,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_spawn failed: Sub-agent session timed out.",
+        emph: "danger",
+        tags: ["thread", "tool-result", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-spawn",
+          resultContent: "Sub-agent session timed out.",
+        },
+      },
+    ]);
+    const followUps: string[] = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "running",
+          iterationCount: 1,
+          maxIterations: 128,
+          inbox: [],
+          lastActiveAt: 300,
+          version: 1,
+        },
+      ]),
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:browser:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+            toolCallId: "call-spawn",
+            label: "product-signals dashboard",
+          },
+          state: {
+            workerRunKey: "worker:browser:1",
+            workerType: "browser",
+            status: "done",
+            createdAt: 100,
+            updatedAt: 300,
+            lastResult: {
+              workerType: "browser",
+              status: "completed",
+              summary:
+                "Rendered dashboard evidence: Stuck missions: 6. Weak answer rate: 24%.",
+              payload: {
+                mode: "llm_sub_agent",
+                content:
+                  "Rendered dashboard evidence: Stuck missions: 6. Weak answer rate: 24%.",
+              },
+            },
+          },
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        followUps.push(input.content);
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    assert.equal(
+      activity.events.some(
+        (event) => event.runtime?.eventType === "mission.worker_late_completion",
+      ),
+      false,
+    );
+    assert.equal(followUps.length, 0);
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "working");
+    assert.equal(updated?.progress, 0.95);
+  });
+
   it("does not repost late worker recovery after only successful follow-up sends update the worker", async () => {
     counter = 0;
     const mission: Mission = { ...baseMission, agents: ["role-lead"], progress: 0.95 };
@@ -1544,6 +2218,149 @@ describe("MissionThreadBridge", () => {
               status: "completed",
               summary: "Browser failure buckets: attach_failed=2.",
               payload: { mode: "llm_sub_agent", content: "Browser failure buckets: attach_failed=2." },
+            },
+          },
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        followUps.push(input.content);
+      },
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const recoveredEvents = activity.events.filter(
+      (event) => event.runtime?.eventType === "mission.worker_late_completion"
+    );
+    assert.equal(recoveredEvents.length, 1);
+    assert.equal(followUps.length, 0);
+  });
+
+  it("does not repost late worker recovery when a completed follow-up mentions the prior timeout", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"], progress: 0.95 };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore([
+      {
+        id: "original-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_send",
+        tags: ["thread", "tool-call", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send-original",
+          callInput: JSON.stringify({ session_key: "worker:explore:1" }),
+        },
+      },
+      {
+        id: "original-timeout",
+        missionId: mission.id,
+        tMs: 200,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_send failed: Sub-agent session timed out.",
+        emph: "danger",
+        tags: ["thread", "tool-result", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send-original",
+          resultContent: "Sub-agent session timed out.",
+        },
+      },
+      {
+        id: "late-recovery",
+        missionId: mission.id,
+        tMs: 300,
+        kind: "recovery",
+        actor: "system",
+        text: "mission.worker_late_completion: slow source evidence recovered.",
+        tags: ["worker_late_completion", "explore"],
+        runtime: {
+          eventType: "mission.worker_late_completion",
+          threadId: "thread-1",
+          workerRunKey: "worker:explore:1",
+          workerType: "explore",
+          workerUpdatedAt: "300",
+        },
+      },
+      {
+        id: "follow-up-call",
+        missionId: mission.id,
+        tMs: 400,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_send",
+        tags: ["thread", "tool-call", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send-follow-up",
+          callInput: JSON.stringify({ session_key: "worker:explore:1" }),
+        },
+      },
+      {
+        id: "follow-up-result",
+        missionId: mission.id,
+        tMs: 500,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_send returned (5.7 kB): completed slow source evidence.",
+        tags: ["thread", "tool-result", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send-follow-up",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "completed",
+            final_content: "The prior session timed out, but this retry resolved the limitation.",
+          }),
+        },
+      },
+    ]);
+    const followUps: string[] = [];
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:explore:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+            toolCallId: "call-send-original",
+            label: "slow source timeout evaluation",
+          },
+          state: {
+            workerRunKey: "worker:explore:1",
+            workerType: "explore",
+            status: "done",
+            createdAt: 100,
+            updatedAt: 600,
+            lastResult: {
+              workerType: "explore",
+              status: "completed",
+              summary: "The prior session timed out, but this retry resolved the limitation.",
+              payload: {
+                mode: "llm_sub_agent",
+                content: "The prior session timed out, but this retry resolved the limitation.",
+              },
             },
           },
         },

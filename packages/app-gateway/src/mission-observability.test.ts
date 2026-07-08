@@ -145,6 +145,46 @@ test("buildMissionObservabilitySnapshot does not count completed session results
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot ignores recovery memory text when counting tool timeouts", () => {
+  const mission = baseMission({ status: "done" });
+  const result = tool(
+    "result-memory",
+    3_000,
+    "result",
+    "memory_search",
+    "call-memory",
+    "Tool memory_search returned (7.9 kB)."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 5_000,
+    events: [
+      tool("call-memory", 1_000, "call", "memory_search", "call-memory", "Calling memory_search"),
+      {
+        ...result,
+        runtime: {
+          ...result.runtime,
+          resultContent: JSON.stringify({
+            query: "ops-dashboard browser session session_key rendered evidence",
+            total_hits: 1,
+            memories: [
+              {
+                content:
+                  "Constraint: Automatic recovery attempt 2 of 2. Missing or unverified final-answer slots: rendered browser evidence (unverified). Earlier timeout wording is only recovery context.",
+              },
+            ],
+          }),
+        },
+      },
+      event("final-1", "thought", 4_000, "role-lead", "Final answer with verified browser evidence and residual risk."),
+    ],
+  });
+
+  assert.equal(snapshot.tool.timeouts, 0);
+  assert.equal(snapshot.qualityGate.evidenceEvents, 0);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "failure_free")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot ignores stale incomplete-final recovery after mission is done", () => {
   const mission = baseMission({
     status: "done",
@@ -812,6 +852,54 @@ test("buildMissionObservabilitySnapshot accepts rendered facts with bounded scre
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot counts browser failure buckets from runtime progress events", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Natural browser CDP timeout closeout",
+      desc: [
+        "Review the operations dashboard at http://127.0.0.1:54581/ops-dashboard as a user would see it in the browser.",
+        "If the browser times out while capturing the rendered page, close out with verified and unverified scope.",
+      ].join("\n"),
+    }),
+    nowMs: 7_000,
+    events: [
+      tool("result-1", 2_000, "result", "sessions_spawn", "call-1", "Browser worker returned rendered dashboard evidence."),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "## Browser CDP Timeout Closeout",
+          "What Was Verified: Page title Operations Dashboard Fixture; queue depth 11; SLA breaches 3; owner Incident Commander.",
+          "What remains unverified: full DOM structure because the browser snapshot timed out.",
+          "Next action: retry capture with a longer CDP timeout if full page structure is required.",
+          "Residual risk: browser evidence is bounded to recovered visible text.",
+        ].join("\n")
+      ),
+    ],
+    progressEvents: [
+      {
+        progressId: "progress-browser-bucket",
+        threadId: "thread-1",
+        subjectKind: "worker_run",
+        subjectId: "worker:browser:1",
+        phase: "completed",
+        summary: "Browser failure buckets: cdp_command_timeout=5. Browser rendered evidence recovered via console probe.",
+        recordedAt: 3_000,
+        workerType: "browser",
+        metadata: { toolName: "browser_snapshot" },
+      },
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, [
+    { bucket: "cdp_command_timeout", count: 1, latestAtMs: 3_000 },
+  ]);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
+});
+
 test("buildMissionObservabilitySnapshot accepts authorized bounded browser failure closeouts for rendered browser slots", () => {
   const desc = [
     "Review the operations dashboard at http://127.0.0.1:53117/ops-dashboard as a user would see it in the browser.",
@@ -1276,6 +1364,149 @@ test("buildMissionObservabilitySnapshot accepts verified pricing with bounded un
   });
 
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot accepts multi-source price evidence with price/pricing label variants", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Compare Vendor Alpha and Vendor Beta pricing.",
+      desc: "Gather Vendor Alpha and Vendor Beta pricing, then recommend a source-bounded choice with residual risk.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare Vendor Alpha and Vendor Beta pricing."),
+      tool(
+        "result-alpha",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-alpha",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          label: "Vendor Alpha",
+          evidence_summary: "Explore worker fetched Vendor Alpha Evidence.\nPrice lines: Pricing: $19 per seat.",
+        })
+      ),
+      tool(
+        "result-beta",
+        3_000,
+        "result",
+        "sessions_spawn",
+        "call-beta",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          label: "Vendor Beta",
+          evidence_summary: "Explore worker fetched Vendor Beta Evidence.\nPrice lines: Pricing: $29 per workspace.",
+          final_content: "| Field | Verified Value |\n|---|---|\n| Price | $29 per workspace |",
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        [
+          "source coverage",
+          "- Vendor Alpha (TURNKEYAI_VENDOR_ALPHA_OK): price $19 per seat, strength browser automation and traceable screenshots, risk API integration catalog is still limited.",
+          "- Vendor Beta (TURNKEYAI_VENDOR_BETA_OK): price $29 per workspace, strength approval workflow and team handoff history, risk browser control requires a separate connector.",
+          "recommendation",
+          "- recommendation: TURNKEYAI_MISSION_REALISTIC_BRIEF_OK - select Vendor Alpha for agent workbench effort, driven by lower price $19 per seat versus $29 per workspace and browser-native automation eliminating the separate connector risk present in Vendor Beta.",
+          "residual risk",
+          "- residual risk: pricing recurrence and external availability are source-bounded to local fixtures.",
+        ].join("\n")
+      ),
+    ],
+  });
+
+  const valueCheck = snapshot.qualityGate.checks.find((check) => check.name === "evidence_value_consistency");
+  assert.equal(valueCheck?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot ignores localhost URL numbers in source evidence values", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Compare Vendor Alpha pricing.",
+      desc: "Gather Vendor Alpha pricing from the local source page.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare Vendor Alpha pricing."),
+      tool(
+        "result-alpha",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-alpha",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          label: "Vendor Alpha",
+          evidence_summary: [
+            "Explore worker fetched Vendor Alpha Evidence.",
+            "Final URL: http://127.0.0.1:62013/vendor-alpha",
+            "Price lines: Pricing: $19 per seat.",
+          ].join("\n"),
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        "Vendor Alpha source coverage: price $19 per seat; residual risk is source-bounded to the local fixture."
+      ),
+    ],
+  });
+
+  const valueCheck = snapshot.qualityGate.checks.find((check) => check.name === "evidence_value_consistency");
+  assert.equal(valueCheck?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot blocks vendor price contradictions instead of URL digit mismatches", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Compare Vendor Alpha pricing.",
+      desc: "Gather Vendor Alpha pricing from the local source page.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare Vendor Alpha pricing."),
+      tool(
+        "result-alpha",
+        2_000,
+        "result",
+        "sessions_spawn",
+        "call-alpha",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          label: "Vendor Alpha",
+          evidence_summary: [
+            "Explore worker fetched Vendor Alpha Evidence.",
+            "Final URL: http://127.0.0.1:62013/vendor-alpha",
+            "Price lines: Pricing: $19 per seat.",
+          ].join("\n"),
+        })
+      ),
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        "Vendor Alpha source coverage: price $10 per seat; residual risk is source-bounded to the local fixture."
+      ),
+    ],
+  });
+
+  const valueCheck = snapshot.qualityGate.checks.find((check) => check.name === "evidence_value_consistency");
+  assert.equal(valueCheck?.status, "fail");
+  assert.match(valueCheck?.detail ?? "", /Price final=\$10, evidence=\$19/);
+  assert.doesNotMatch(valueCheck?.detail ?? "", /Vendor alpha final=\$10, evidence=1/);
 });
 
 test("buildMissionObservabilitySnapshot accepts a concrete price with unverified pricing sub-scope notes", () => {
@@ -2116,6 +2347,44 @@ test("buildMissionObservabilitySnapshot accepts natural source-label stems witho
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot ignores internal agent workbench collector source labels", () => {
+  const collectorResult = tool(
+    "result-collector",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-collector",
+    "Agent workbench collector returned product-orchestration, product-bridge, and product-signals evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...collectorResult,
+        runtime: {
+          ...collectorResult.runtime,
+          sourceLabel: "agent-workbench-brief-collector",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "product-orchestration verified Mission Control as the default release story.",
+          "product-bridge verified browser bridge setup risk.",
+          "product-signals verified Stuck missions: 6 and Weak answer rate: 24%.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot accepts independent researcher labels when final answer names role and URL", () => {
   const researcherA = tool(
     "result-researcher-a",
@@ -2770,6 +3039,55 @@ test("buildMissionObservabilitySnapshot treats local URL fetch as a generic sour
         runtime: {
           ...fetchResult.runtime,
           sourceLabel: "local-url-fetch",
+        },
+      },
+      {
+        ...betaResult,
+        runtime: {
+          ...betaResult.runtime,
+          sourceLabel: "Vendor Beta",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Vendor Alpha and Vendor Beta were both verified; residual risk remains source freshness."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot treats raw evidence as a generic source label suffix", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-alpha",
+    "Vendor Alpha raw evidence returned pricing, strength, and risk facts."
+  );
+  const betaResult = tool(
+    "result-beta",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-beta",
+    "Vendor Beta evidence returned comparison facts."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha raw evidence",
         },
       },
       {
@@ -3817,6 +4135,114 @@ test("buildMissionObservabilitySnapshot surfaces browser recovery buckets from c
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot surfaces browser buckets from top-level session evidence summary", () => {
+  const sessionResult = {
+    protocol: "turnkeyai.session_tool_result.v1",
+    status: "completed",
+    agent_id: "browser",
+    session_key: "worker:browser:1",
+    task_id: "task-browser",
+    evidence_summary: [
+      "Browser failure buckets: browser_cdp_unavailable=4.",
+      "## Result: Connection Failed",
+      "All connection attempts returned browser_cdp_unavailable: fetch failed.",
+    ].join("\n"),
+    final_content: [
+      "Browser limitation: browser_cdp_unavailable occurred during browser work.",
+      "Treat verified page facts as bounded; no additional browser-visible facts are claimed.",
+    ].join("\n"),
+    result: "Browser failure buckets: browser_cdp_unavailable=4. ## Result: Connection Failed",
+    tool_chain: ["browser"],
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-browser", 2_000, "call", "sessions_spawn", "call-browser", "Calling sessions_spawn"),
+      tool("result-browser", 4_000, "result", "sessions_spawn", "call-browser", JSON.stringify(sessionResult)),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer reports browser_cdp_unavailable and leaves rendered dashboard state unverified."
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, [
+    { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 4_000 },
+  ]);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
+});
+
+test("buildMissionObservabilitySnapshot surfaces browser failure bucket progress on completed browser events", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...event(
+          "browser-progress",
+          "browser",
+          4_000,
+          "browser",
+          "Browser failure buckets: browser_cdp_unavailable=3. Browser task closed out with bounded unavailable evidence."
+        ),
+        emph: "success",
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer reports browser_cdp_unavailable and leaves rendered dashboard state unverified."
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, [
+    { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 4_000 },
+  ]);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
+});
+
+test("buildMissionObservabilitySnapshot ignores negated browser failure bucket mentions in completed browser evidence", () => {
+  const sessionResult = {
+    protocol: "turnkeyai.session_tool_result.v1",
+    status: "completed",
+    agent_id: "browser",
+    session_key: "worker:browser:1",
+    task_id: "task-browser",
+    evidence_excerpt: [
+      "Rendered dashboard evidence recovered.",
+      "Stuck missions: 6.",
+      "Weak answer rate: 24%.",
+      "Degradation indicators:",
+      "| transport_failure | not verified — not present in rendered text |",
+      "| lease_conflict | not observed |",
+    ].join("\n"),
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-browser", 2_000, "call", "sessions_spawn", "call-browser", "Calling sessions_spawn"),
+      tool("result-browser", 4_000, "result", "sessions_spawn", "call-browser", JSON.stringify(sessionResult)),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Rendered dashboard evidence recovered: Stuck missions: 6, Weak answer rate: 24%. Residual risk remains local fixture scope."
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, []);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot maps cold browser recovery evidence to session_not_found", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),
@@ -3845,6 +4271,29 @@ test("buildMissionObservabilitySnapshot maps cold browser recovery evidence to s
     { bucket: "session_not_found", count: 2, latestAtMs: 5_000 },
   ]);
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
+});
+
+test("buildMissionObservabilitySnapshot does not treat suggested browser respawn as session_not_found", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "working" }),
+    nowMs: 6_000,
+    events: [
+      event(
+        "incomplete-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "No session evidence has been returned to this thread.",
+          "The task cannot be answered without the browser delegation returning its findings.",
+          "How to continue: inspect sessions_history for the earlier delegation, or re-spawn a new browser session targeting the localhost evidence source.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, []);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "pass");
 });
 
 test("buildMissionObservabilitySnapshot does not infer browser buckets from unrelated text", () => {

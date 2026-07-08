@@ -5,6 +5,7 @@ import {
   evaluateFinalQuality,
   findWeakAnswerSignals,
   findWeakEvidenceSignals,
+  PRODUCT_WORKBENCH_BRIDGE_EVIDENCE_PATTERN,
   type ScenarioSpec,
 } from "../../../scripts/mission-tool-use-e2e";
 
@@ -44,6 +45,56 @@ test("mission E2E quality gate accepts plain section labels without a status pre
   const quality = evaluateFinalQuality(
     ["evidence", "- evidence: TURNKEYAI_FINAL_OK; TURNKEYAI_EVIDENCE_OK with residual risk stated."].join("\n"),
     buildSpec()
+  );
+
+  assert.deepEqual(quality.failures, []);
+});
+
+test("mission E2E product workbench quality accepts natural bridge-boundary phrasing", () => {
+  const quality = evaluateFinalQuality(
+    [
+      "evidence",
+      "- bridge evidence: Bridge capability research; TURNKEYAI_PRODUCT_BRIDGE_OK; browser bridge controls include opening pages, inspecting rendered DOM, acting on coordinates and forms after approval, and collecting screenshots, console output, and artifacts; boundary is browser work is a means for mission completion and does not extend to desktop control; risk is command-line setup and provider configuration still block first-run adoption.",
+      "- recommendation: TURNKEYAI_FINAL_OK - choose Mission Control as the default entry.",
+      "- residual risk: local fixture only.",
+    ].join("\n"),
+    {
+      ...buildSpec(),
+      evidenceMarkers: ["TURNKEYAI_PRODUCT_BRIDGE_OK"],
+      answerTerms: ["residual risk"],
+      expectedBullets: 3,
+      evidenceLinePatterns: [
+        {
+          label: "bridge evidence line",
+          pattern: PRODUCT_WORKBENCH_BRIDGE_EVIDENCE_PATTERN,
+        },
+      ],
+    }
+  );
+
+  assert.deepEqual(quality.failures, []);
+});
+
+test("mission E2E product workbench quality accepts compact browser-only bridge boundary phrasing", () => {
+  const quality = evaluateFinalQuality(
+    [
+      "evidence",
+      "- bridge evidence: Bridge capability research; TURNKEYAI_PRODUCT_BRIDGE_OK; browser bridge controls; boundary: browser-only (bridge does not control desktop outside browser); risk: command-line setup and provider configuration still block first-run adoption.",
+      "- recommendation: TURNKEYAI_FINAL_OK - choose Mission Control as the default entry.",
+      "- residual risk: local fixture only.",
+    ].join("\n"),
+    {
+      ...buildSpec(),
+      evidenceMarkers: ["TURNKEYAI_PRODUCT_BRIDGE_OK"],
+      answerTerms: ["residual risk"],
+      expectedBullets: 3,
+      evidenceLinePatterns: [
+        {
+          label: "bridge evidence line",
+          pattern: PRODUCT_WORKBENCH_BRIDGE_EVIDENCE_PATTERN,
+        },
+      ],
+    }
   );
 
   assert.deepEqual(quality.failures, []);

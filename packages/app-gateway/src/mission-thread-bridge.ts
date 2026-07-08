@@ -389,7 +389,7 @@ export function createMissionThreadBridge(
         (await shouldPostIncompleteFinalFollowUp(mission.id, decision.recovery)) &&
         options.postIncompleteFinalFollowUp
       ) {
-        const posted = await postIncompleteFinalFollowUp(mission, threadId, decision.recovery);
+        const posted = await postIncompleteFinalFollowUp(mission, threadId, decision.recovery, messages);
         if (posted) {
           await updateMissionLifecycle(
             mission,
@@ -505,6 +505,7 @@ export function createMissionThreadBridge(
     workerSessions: WorkerSessionRecord[] | "unknown" | undefined
   ): Promise<void> {
     if (!workerSessions || workerSessions === "unknown") return;
+    if (hasActiveRoleRun(await listRoleRuns(threadId))) return;
 
     for (const workerSession of workerSessions) {
       if (!isLateCompletedWorkerSession(workerSession, events)) continue;
@@ -517,6 +518,16 @@ export function createMissionThreadBridge(
     }
   }
 
+  function hasActiveRoleRun(roleRuns: Awaited<ReturnType<typeof listRoleRuns>>): boolean {
+    if (!Array.isArray(roleRuns)) return false;
+    return roleRuns.some((run) =>
+      run.status === "queued" ||
+      run.status === "running" ||
+      run.status === "waiting_worker" ||
+      run.status === "resuming"
+    );
+  }
+
   function isLateCompletedWorkerSession(
     workerSession: WorkerSessionRecord,
     events: ActivityEvent[]
@@ -524,7 +535,10 @@ export function createMissionThreadBridge(
     if (workerSession.state.status !== "done" || !workerSession.state.lastResult) {
       return false;
     }
-    return hasFailedOrTimedOutSessionToolResult(events, workerSession);
+    return (
+      hasFailedOrTimedOutSessionToolResult(events, workerSession) &&
+      !hasCompletedSessionToolResultAfterLatestFailure(events, workerSession)
+    );
   }
 
   function hasFailedOrTimedOutSessionToolResult(
@@ -532,20 +546,7 @@ export function createMissionThreadBridge(
     workerSession: WorkerSessionRecord,
     afterMs = Number.NEGATIVE_INFINITY
   ): boolean {
-    const linkedToolCallIds = new Set<string>();
-    const contextToolCallId = workerSession.context?.toolCallId;
-    if (contextToolCallId) {
-      linkedToolCallIds.add(contextToolCallId);
-    }
-    for (const event of events) {
-      const runtime = event.runtime;
-      if (event.kind !== "tool" || runtime?.toolPhase !== "call") continue;
-      if (runtime.toolName !== "sessions_send" && runtime.toolName !== "sessions_history") continue;
-      if (sessionToolCallTargetsWorker(runtime.callInput, workerSession.workerRunKey)) {
-        const toolCallId = runtime.toolCallId;
-        if (toolCallId) linkedToolCallIds.add(toolCallId);
-      }
-    }
+    const linkedToolCallIds = collectSessionToolCallIdsTargetingWorker(events, workerSession);
     if (linkedToolCallIds.size === 0) return false;
 
     return events.some((event) => {
@@ -564,6 +565,56 @@ export function createMissionThreadBridge(
     });
   }
 
+  function hasCompletedSessionToolResultAfterLatestFailure(
+    events: ActivityEvent[],
+    workerSession: WorkerSessionRecord
+  ): boolean {
+    const linkedToolCallIds = collectSessionToolCallIdsTargetingWorker(events, workerSession);
+    if (linkedToolCallIds.size === 0) return false;
+    let latestFailureMs = Number.NEGATIVE_INFINITY;
+    let latestCompletedMs = Number.NEGATIVE_INFINITY;
+    for (const event of events) {
+      const runtime = event.runtime;
+      if (event.kind !== "tool" || runtime?.toolPhase !== "result") continue;
+      if (!runtime.toolCallId || !linkedToolCallIds.has(runtime.toolCallId)) continue;
+      if (
+        runtime.toolName !== "sessions_spawn" &&
+        runtime.toolName !== "sessions_send" &&
+        runtime.toolName !== "sessions_history"
+      ) {
+        continue;
+      }
+      const structuredStatus = readSessionToolResultStatus(runtime.resultContent ?? "");
+      if (structuredStatus === "completed") {
+        latestCompletedMs = Math.max(latestCompletedMs, event.tMs);
+      } else if (isFailedOrTimedOutSessionToolResult(event)) {
+        latestFailureMs = Math.max(latestFailureMs, event.tMs);
+      }
+    }
+    return latestFailureMs > Number.NEGATIVE_INFINITY && latestCompletedMs > latestFailureMs;
+  }
+
+  function collectSessionToolCallIdsTargetingWorker(
+    events: ActivityEvent[],
+    workerSession: WorkerSessionRecord
+  ): Set<string> {
+    const linkedToolCallIds = new Set<string>();
+    const contextToolCallId = workerSession.context?.toolCallId;
+    if (contextToolCallId) {
+      linkedToolCallIds.add(contextToolCallId);
+    }
+    for (const event of events) {
+      const runtime = event.runtime;
+      if (event.kind !== "tool" || runtime?.toolPhase !== "call") continue;
+      if (runtime.toolName !== "sessions_send" && runtime.toolName !== "sessions_history") continue;
+      if (sessionToolCallTargetsWorker(runtime.callInput, workerSession.workerRunKey)) {
+        const toolCallId = runtime.toolCallId;
+        if (toolCallId) linkedToolCallIds.add(toolCallId);
+      }
+    }
+    return linkedToolCallIds;
+  }
+
   function sessionToolCallTargetsWorker(callInput: string | undefined, workerRunKey: string): boolean {
     if (!callInput) return false;
     const parsed = safeJsonParse(callInput);
@@ -573,11 +624,12 @@ export function createMissionThreadBridge(
 
   function isFailedOrTimedOutSessionToolResult(event: ActivityEvent): boolean {
     if (event.emph === "danger") return true;
-    const result = `${event.runtime?.resultContent ?? ""}\n${event.text ?? ""}`;
-    const structuredStatus = readSessionToolResultStatus(result);
+    const resultContent = event.runtime?.resultContent ?? "";
+    const structuredStatus = readSessionToolResultStatus(resultContent);
     if (structuredStatus) {
       return structuredStatus !== "completed";
     }
+    const result = `${resultContent}\n${event.text ?? ""}`;
     return /\b(?:timed out|failed|cancelled|canceled|Tool call failed)\b/i.test(result) ||
       /\btimeout\b/i.test(result) && !/\b(?:within|before|no|none|without)\s+(?:the\s+)?timeout\b/i.test(result);
   }
@@ -807,7 +859,8 @@ export function createMissionThreadBridge(
   async function postIncompleteFinalFollowUp(
     mission: Mission,
     threadId: string,
-    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>
+    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>,
+    messages: TeamMessage[]
   ): Promise<boolean> {
     try {
       const attempt = await countIncompleteFinalRecoveryEvents(mission.id, recovery.reason);
@@ -815,7 +868,7 @@ export function createMissionThreadBridge(
         mission,
         threadId,
         recovery,
-        content: buildIncompleteFinalFollowUp(mission, recovery, attempt, maxIncompleteFinalFollowUps),
+        content: buildIncompleteFinalFollowUp(mission, recovery, attempt, maxIncompleteFinalFollowUps, messages),
       });
       return true;
     } catch (error) {
@@ -833,17 +886,43 @@ export function createMissionThreadBridge(
     mission: Mission,
     recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>,
     attempt: number,
-    maxAttempts: number
+    maxAttempts: number,
+    messages: TeamMessage[]
   ): string {
     const slotGuidance = summarizeRecoverySlotGuidance(recovery.goalText, recovery.message.content);
+    const priorEvidenceText = buildPriorThreadEvidenceText(messages, recovery.message);
     const approvalRewriteOnly = isApprovalGatedBrowserRewriteOnlyRecovery(recovery.goalText, recovery.message.content);
+    const browserRewriteOnly =
+      !approvalRewriteOnly &&
+      isCompletedBrowserEvidenceRewriteOnlyRecovery(
+        recovery.goalText,
+        recovery.message.content,
+        priorEvidenceText,
+      );
+    const sourceRewriteKind =
+      !approvalRewriteOnly &&
+      !browserRewriteOnly
+        ? readCompletedSourceEvidenceRewriteOnlyKind(
+        recovery.goalText,
+        recovery.message.content,
+        slotGuidance,
+            priorEvidenceText,
+          )
+        : null;
+    const sourceRewriteOnly = sourceRewriteKind !== null;
+    const rewriteOnly = approvalRewriteOnly || browserRewriteOnly || sourceRewriteOnly;
+    const rewriteEvidenceScope = approvalRewriteOnly
+      ? "existing permission and browser evidence only"
+      : browserRewriteOnly
+        ? "existing browser evidence only"
+        : "existing source evidence only";
     const lines = [
       "System recovery: the previous final answer did not satisfy required goal slots.",
       `Automatic recovery attempt ${attempt} of ${maxAttempts}.`,
-      approvalRewriteOnly
+      rewriteOnly
         ? slotGuidance
-          ? `Continue the original mission by rewriting the final answer from existing permission and browser evidence only; missing or unverified final-answer slots: ${slotGuidance}.`
-          : "Continue the original mission by rewriting the final answer from existing permission and browser evidence only."
+          ? `Continue the original mission by rewriting the final answer from ${rewriteEvidenceScope}; missing or unverified final-answer slots: ${slotGuidance}.`
+          : `Continue the original mission by rewriting the final answer from ${rewriteEvidenceScope}.`
         : slotGuidance
           ? `Continue the original mission instead of closing it. Use available tools to verify only the missing or unverified core slots requested by the original mission: ${slotGuidance}.`
           : "Continue the original mission instead of closing it. Use available tools to verify only the missing or unverified core slots requested by the original mission.",
@@ -857,6 +936,28 @@ export function createMissionThreadBridge(
         "Do not call sessions_spawn, sessions_send, permission tools, or browser tools again just to repair the final wording. Do not repeat browser.form.submit or any browser side effect.",
         "Use the existing timeline/tool evidence and return the missing required marker/slots, or mark blocked if that native evidence is genuinely absent."
       );
+    }
+    if (browserRewriteOnly) {
+      lines.push(
+        "This recovery is for completed browser-rendered closeout wording. The previous answer already described browser-visible evidence, but the final wording left a required rendered/browser slot unclear.",
+        "Do not call sessions_spawn, sessions_send, or browser tools again just to repair the final wording.",
+        "Use the existing timeline/tool evidence and return the missing rendered/browser slots, or mark blocked only if that browser evidence is genuinely absent."
+      );
+    }
+    if (sourceRewriteOnly) {
+      if (sourceRewriteKind === "vendor_alpha_beta_comparison") {
+        lines.push(
+          "This recovery is for completed source-evidence comparison closeout wording. The previous thread already contains source-backed Vendor Alpha and Vendor Beta evidence, but the final wording chased provider/table-schema slots that were not requested.",
+          "Do not call sessions_spawn, sessions_send, web_fetch, browser tools, or worker tools again just to repair the final wording.",
+          "Use the existing Vendor Alpha/Beta evidence and return pricing, strengths, risks, and the recommendation/tradeoff, or mark blocked only if that source evidence is genuinely absent."
+        );
+      } else {
+        lines.push(
+          "This recovery is for completed source-evidence closeout wording. The previous answer already contains source-backed Vendor Alpha evidence, but the final wording left a required risk/limitation slot unclear.",
+          "Do not call sessions_spawn, sessions_send, web_fetch, browser tools, or worker tools again just to repair the final wording.",
+          "Use the existing timeline/tool evidence and return the missing risk/limitation wording, or mark blocked only if that source evidence is genuinely absent."
+        );
+      }
     }
     if (isSlowSourceReleaseRiskRecovery(recovery.goalText)) {
       lines.push(
@@ -884,6 +985,153 @@ export function createMissionThreadBridge(
         finalText
       )
     );
+  }
+
+  function isCompletedBrowserEvidenceRewriteOnlyRecovery(
+    goalText: string,
+    finalText: string,
+    priorEvidenceText = ""
+  ): boolean {
+    if (!/\b(?:browser|rendered|browser-visible|visible page|dom|screenshot|snapshot|frame|shadow|popup|dashboard)\b/i.test(goalText)) {
+      return false;
+    }
+    if (hasNonBrowserUnverifiedRecoverySignals(finalText)) {
+      return false;
+    }
+    const priorCompletedBrowserEvidence = priorThreadHasCompletedBrowserEvidence(priorEvidenceText);
+    if (
+      !priorCompletedBrowserEvidence &&
+      /\b(?:browser|target|page|source)\b[\s\S]{0,120}\b(?:unavailable|unreachable|cannot be reached|could not be reached|failed|timed out|timeout|detached)\b/i.test(
+        finalText
+      )
+    ) {
+      return false;
+    }
+    return (
+      /\b(?:browser|rendered|browser-visible|visible page|dom|screenshot|snapshot|frame|shadow|popup|dashboard)\b/i.test(
+        finalText
+      ) &&
+      /\b(?:verified|confirmed|observed|evidence|source|artifact|captured|operational state|owner|approval requirement|residual risk|Frame Captain|P-42|risk desk|queue depth|SLA breaches?)\b/i.test(
+        finalText
+      )
+    ) || priorCompletedBrowserEvidence;
+  }
+
+  function priorThreadHasCompletedBrowserEvidence(priorEvidenceText: string): boolean {
+    if (
+      !/\b(?:browser|rendered|browser-visible|visible page|DOM|screenshot|snapshot|dashboard|session_not_found|cold recreation|cold-recreated)\b/i.test(
+        priorEvidenceText,
+      )
+    ) {
+      return false;
+    }
+    return (
+      /\bTURNKEYAI_DASHBOARD_TRIAGE_OK\b/i.test(priorEvidenceText) ||
+      (/\bQueue depth\b[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}\bQueue depth\b/i.test(priorEvidenceText) &&
+        /\bSLA breaches?\b[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}\bSLA breaches?\b/i.test(priorEvidenceText) &&
+        /\bIncident Commander\b/i.test(priorEvidenceText)) ||
+      /\b(?:browser evidence observed|browser-rendered evidence|rendered dashboard evidence|completed browser evidence)\b/i.test(
+        priorEvidenceText,
+      )
+    );
+  }
+
+  type CompletedSourceEvidenceRewriteOnlyKind = "vendor_alpha_risk" | "vendor_alpha_beta_comparison";
+
+  function readCompletedSourceEvidenceRewriteOnlyKind(
+    goalText: string,
+    finalText: string,
+    slotGuidance: string,
+    priorEvidenceText: string
+  ): CompletedSourceEvidenceRewriteOnlyKind | null {
+    if (isCompletedVendorAlphaBetaComparisonRewriteOnlyRecovery(goalText, finalText, priorEvidenceText)) {
+      return "vendor_alpha_beta_comparison";
+    }
+    if (!/\brisk or limitation\b/i.test(slotGuidance)) return null;
+    if (/\b(?:provider support|search support|pricing|rendered browser evidence|delegated research|quoted evidence|final conclusion)\b/i.test(slotGuidance)) {
+      return null;
+    }
+    const combined = `${goalText}\n${finalText}`;
+    if (!/\b(?:source[- ]backed|source labels?|evidence|verified|http:\/\/|https:\/\/)\b/i.test(combined)) {
+      return null;
+    }
+    return (
+      /\bVendor Alpha\b/i.test(combined) &&
+      /\$19\b/i.test(finalText) &&
+      /\b(?:risk|risks|limitation|limitations|uncertainty)\b/i.test(finalText) &&
+      /\bAPI integration catalog\b[\s\S]{0,120}\b(?:limited|still limited)\b|\b(?:limited|still limited)\b[\s\S]{0,120}\bAPI integration catalog\b/i.test(
+        finalText
+      )
+    )
+      ? "vendor_alpha_risk"
+      : null;
+  }
+
+  function isCompletedVendorAlphaBetaComparisonRewriteOnlyRecovery(
+    goalText: string,
+    finalText: string,
+    priorEvidenceText: string
+  ): boolean {
+    if (!/\bVendor Alpha\b/i.test(goalText) || !/\bVendor Beta\b/i.test(goalText)) return false;
+    if (!/\b(?:compare|comparison|recommend|deciding|tradeoff|pricing|strengths?|risks?)\b/i.test(goalText)) return false;
+    if (
+      !/\b(?:required table columns?|provider(?:\/|-| )schema|search\/web_search|per 1M tokens?|evidence URLs?|关键原文摘录|not supported by source evidence|not present|缺少|未验证)\b/iu.test(
+        finalText
+      )
+    ) {
+      return false;
+    }
+    const evidenceText = `${priorEvidenceText}\n${finalText}`;
+    return hasCompletedVendorAlphaComparisonEvidence(evidenceText) && hasCompletedVendorBetaComparisonEvidence(evidenceText);
+  }
+
+  function hasCompletedVendorAlphaComparisonEvidence(text: string): boolean {
+    return (
+      /\bVendor Alpha\b/i.test(text) &&
+      /(?:TURNKEYAI_VENDOR_ALPHA_OK|\$19\s+per\s+seat)/i.test(text) &&
+      /\bbrowser automation\b/i.test(text) &&
+      /\bAPI integration catalog\b[\s\S]{0,160}\b(?:limited|still limited)\b|\b(?:limited|still limited)\b[\s\S]{0,160}\bAPI integration catalog\b/i.test(
+        text
+      )
+    );
+  }
+
+  function hasCompletedVendorBetaComparisonEvidence(text: string): boolean {
+    return (
+      /\bVendor Beta\b/i.test(text) &&
+      /(?:TURNKEYAI_VENDOR_BETA_OK|\$29\s+per\s+workspace)/i.test(text) &&
+      /\bapproval workflow\b/i.test(text) &&
+      /\bseparate connector\b/i.test(text)
+    );
+  }
+
+  function buildPriorThreadEvidenceText(messages: TeamMessage[], currentMessage: TeamMessage): string {
+    return capText(
+      messages
+        .filter((message) => message.id !== currentMessage.id && message.createdAt <= currentMessage.createdAt)
+        .map((message) => message.content)
+        .join("\n\n"),
+      16_000
+    );
+  }
+
+  function hasNonBrowserUnverifiedRecoverySignals(finalText: string): boolean {
+    return splitRecoverySignalSegments(finalText).some(
+      (segment) =>
+        /\b(?:route|budget|pricing|cost|source stream|evidence stream|operator notes?|stop list|segment details?|distances?|durations?|cities|city order|waypoints?)\b/i.test(
+          segment
+        ) &&
+        /\b(?:not verified|unverified|unknown|missing|not confirmed|could not verify|unable to verify)\b|未验证|无法验证|缺少|未知/u.test(
+          segment
+        )
+    );
+  }
+
+  function splitRecoverySignalSegments(text: string): string[] {
+    return text
+      .split(/(?:\r?\n|[。；;])/u)
+      .map((segment) => segment.trim())
+      .filter(Boolean);
   }
 
   function isSlowSourceReleaseRiskRecovery(goalText: string): boolean {

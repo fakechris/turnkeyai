@@ -171,8 +171,10 @@ function slotHasUnverifiedCoreClaim(slot: MissionGoalSlot, text: string, goalTex
       slot === "rendered_browser" && isRenderedBrowserEvidenceUnverifiedClaim(segment);
     if (!mentionsUnverified(segment) && !renderedBrowserUnverified) continue;
     if (looksLikeResidualUpdateBoundary(segment)) continue;
+    if (looksLikeEvidenceUrlOnlyUnverifiedSubScope(slot, text, segment)) continue;
     if (looksLikeBoundedUnverifiedSubScope(slot, text, segment)) continue;
     if (looksLikeRenderedBrowserResidualSubScope(slot, text, segment)) continue;
+    if (looksLikeConcreteBlockedRiskFact(slot, segment)) continue;
     if (looksLikeSourceBoundedRiskSubScope(slot, text, segment)) continue;
     if (
       slot === "risk_or_limitation" &&
@@ -208,11 +210,55 @@ function mentionsSearch(text: string): boolean {
 }
 
 function mentionsPricing(text: string): boolean {
-  return /\bpric(?:e|ing)\b|\bcosts?\b|\bfees?\b|\btokens?\b|价格|价钱|费用|收费|计费|token/iu.test(text);
+  return splitClaimSegments(text).some((segment) => {
+    if (looksLikePricingProhibitionOrBoundary(segment)) return false;
+    if (looksLikeLiteralTokenSyntaxInstruction(segment)) return false;
+    return /\bpric(?:e|ing)\b|\bcosts?\b|\bfees?\b|\btokens?\b|价格|价钱|费用|收费|计费|token/iu.test(
+      segment
+    );
+  });
+}
+
+function looksLikeLiteralTokenSyntaxInstruction(text: string): boolean {
+  return /\bliteral\s+tokens?\b/i.test(text);
+}
+
+function looksLikePricingProhibitionOrBoundary(text: string): boolean {
+  return (
+    /\b(?:do\s+not|don't|never)\b[\s\S]{0,80}\b(?:infer|claim|assume|invent|use|search|report)\b[\s\S]{0,80}\b(?:external\s+)?(?:pricing|price|costs?|fees?|tokens?)\b/iu.test(
+      text
+    ) ||
+    /\b(?:external\s+)?(?:pricing|price|costs?|fees?|tokens?)\b[\s\S]{0,80}\b(?:do\s+not|don't|never)\b[\s\S]{0,80}\b(?:infer|claim|assume|invent|use|search|report)\b/iu.test(
+      text
+    ) ||
+    /(?:不要|不得|别|禁止)[\s\S]{0,32}(?:推断|声称|假设|编造|使用|搜索|报告)[\s\S]{0,32}(?:价格|价钱|费用|收费|计费|token)/u.test(
+      text
+    )
+  );
 }
 
 function mentionsRenderedBrowserEvidence(text: string): boolean {
-  return /\b(?:browser|rendered|rendering|screenshot|snapshot|DOM|client[- ]side|javascript|JS)\b|\bvisible\s+(?:text|page|content|element|panel|dashboard|screen|view|UI)\b|\b(?:page|browser|dashboard|DOM|client[- ]side|screen|UI)\b[\s\S]{0,40}\bvisible\b|浏览器|渲染|页面显示|截图|快照|(?:页面|网页|看板|仪表盘|元素|文本|屏幕|界面)[\s\S]{0,20}可见/iu.test(
+  return splitClaimSegments(text).some((segment) => {
+    if (looksLikeBrowserToolProhibition(segment)) return false;
+    return (
+      /\b(?:rendered|rendering|screenshot|snapshot|DOM|client[- ]side|javascript|JS|browser[- ]visible|browser[- ]rendered)\b/iu.test(
+        segment
+      ) ||
+      /\bvisible\s+(?:text|page|content|element|panel|dashboard|screen|view|UI|evidence)\b|\b(?:page|dashboard|DOM|client[- ]side|screen|UI)\b[\s\S]{0,40}\bvisible\b/iu.test(
+        segment
+      ) ||
+      /\bbrowser\b[\s\S]{0,80}\b(?:evidence|visible|rendered|rendering|javascript|DOM|screenshot|snapshot|page|dashboard|fixture|inspect|open|navigate|worker|task)\b|\b(?:evidence|visible|rendered|rendering|javascript|DOM|screenshot|snapshot|page|dashboard|fixture|inspect|open|navigate|worker|task)\b[\s\S]{0,80}\bbrowser\b/iu.test(
+        segment
+      ) ||
+      /浏览器证据|浏览器|渲染|页面显示|截图|快照|(?:页面|网页|看板|仪表盘|元素|文本|屏幕|界面)[\s\S]{0,20}可见/iu.test(
+        segment
+      )
+    );
+  });
+}
+
+function looksLikeBrowserToolProhibition(text: string): boolean {
+  return /\b(?:do\s+not|don't|never)\b[\s\S]{0,80}\b(?:call|use)\b[\s\S]{0,80}\bbrowser\s+tools?\b|\b(?:browser\s+tools?)\b[\s\S]{0,80}\b(?:do\s+not|don't|never)\b[\s\S]{0,80}\b(?:call|use)\b/iu.test(
     text
   );
 }
@@ -261,8 +307,13 @@ function mentionsEvidenceStreamCount(text: string, countPattern: RegExp): boolea
 }
 
 function mentionsRiskOrLimitationRequest(text: string): boolean {
-  return /\b(?:risk|risks|limitation|limitations|constraint|constraints|caveat|caveats|avoid|do not use|don't use)\b|风险|限制|局限|缺口|注意事项|不要用于|不得用于|避免用于|使用时最重要/iu.test(
-    text
+  return (
+    /\b(?:risk|risks|limitation|limitations|constraint|constraints|caveat|caveats)\b|风险|限制|局限|缺口|注意事项|使用时最重要/iu.test(
+      text
+    ) ||
+    /\b(?:avoid|do not use|don't use|not for|must not)\b[\s\S]{0,80}\b(?:production|operations?|deployment|release|customer|decision|external)\b|不要用于|不得用于|避免用于/iu.test(
+      text
+    )
   );
 }
 
@@ -310,17 +361,26 @@ function isRequiredEvidenceStreamUnverifiedClaim(goalText: string, text: string)
   if (!mentionsDelegatedIndependentResearch(goalText)) return false;
   const streamPatterns = requiredEvidenceStreamPatterns(goalText);
   if (streamPatterns.length === 0) return false;
-  const streamUnavailable =
-    /\b(?:not verified|unverified|not confirmed|missing|unavailable|pruned before retrieval|before retrieval|could not retrieve|could not be retrieved|not captured|no structural data|no source data)\b/i.test(
+  if (!streamPatterns.some((pattern) => pattern.test(text))) return false;
+  return looksLikeUnavailableRequiredEvidenceStream(text);
+}
+
+function looksLikeUnavailableRequiredEvidenceStream(text: string): boolean {
+  const unavailableSource =
+    "(?:not verified|unverified|not confirmed|missing|unavailable|pruned before retrieval|before retrieval|could not retrieve|could not be retrieved|not captured|no structural data|no source data)";
+  const streamSource = "(?:stream|source|page|evidence)";
+  const unavailableNearEvidence =
+    new RegExp(`\\b${streamSource}\\b[\\s\\S]{0,100}\\b${unavailableSource}\\b`, "iu").test(text) ||
+    new RegExp(`\\b${unavailableSource}\\b[\\s\\S]{0,100}\\b${streamSource}\\b`, "iu").test(text);
+  if (unavailableNearEvidence) return true;
+  const unavailableRetrieval =
+    /\b(?:pruned before retrieval|before retrieval|could not retrieve|could not be retrieved|not captured|no structural data|no source data)\b/i.test(
       text
-    ) || /未验证|未确认|未获取|无法验证|无法确认|缺失|不可用/u.test(text);
-  if (!streamUnavailable) return false;
-  const streamScope =
-    /\b(?:stream|source|page|evidence|shape|structure|structural|data|status|retriev(?:e|al|ed)?|pruned|captured)\b/i.test(
-      text
-    ) || /证据流|来源|页面|证据|结构|数据|状态/u.test(text);
-  if (!streamScope) return false;
-  return streamPatterns.some((pattern) => pattern.test(text));
+    );
+  if (unavailableRetrieval) return true;
+  return /(?:证据流|来源|页面|证据)[\s\S]{0,40}(?:未验证|未确认|未获取|无法验证|无法确认|缺失|不可用)|(?:未验证|未确认|未获取|无法验证|无法确认|缺失|不可用)[\s\S]{0,40}(?:证据流|来源|页面|证据)/u.test(
+    text
+  );
 }
 
 function requiredEvidenceStreamPatterns(goalText: string): RegExp[] {
@@ -384,6 +444,13 @@ function looksLikeBoundedUnverifiedSubScope(
 ): boolean {
   if (slot === "provider" || slot === "search") {
     if (!hasConcreteProviderSearchEvidence(fullText)) return false;
+    if (
+      /\b(?:additional|other|extra|unlisted|not-listed|not listed|outside|beyond)\b[\s\S]{0,100}\bproviders?\b|\bproviders?\b[\s\S]{0,100}\b(?:additional|other|extra|unlisted|not-listed|not listed|outside|elsewhere|beyond|exist elsewhere)\b|(?:其他|额外|未列出|列表之外|来源之外|页面之外)[\s\S]{0,40}(?:provider|providers|提供商|供应商)|(?:provider|providers|提供商|供应商)[\s\S]{0,40}(?:其他|额外|未列出|列表之外|来源之外|页面之外)/iu.test(
+        text
+      )
+    ) {
+      return true;
+    }
     return /\b(?:source[- ]bounded|local fixture|production|production freshness|external availability|outside (?:the )?source|not verified elsewhere|not verified from (?:the )?source|source updates?|provider docs?|official docs?)\b|生产|线上|外部|来源之外|后续更新|官方文档/iu.test(
       text
     ) ||
@@ -401,6 +468,25 @@ function looksLikeBoundedUnverifiedSubScope(
     return true;
   }
   if (
+    hasConcretePricingEvidence(fullText) &&
+    /\b(?:source[- ]bounded|local fixture|local fixtures?|fixture sources?|two local fixture sources|external availability|outside (?:the )?source|not verified elsewhere|not verified from (?:the )?source)\b[\s\S]{0,160}\b(?:pricing|price|feature depth|feature coverage|pricing depth)\b[\s\S]{0,120}\b(?:not (?:been )?independently verified|not verified|unverified|not confirmed|needs verification|not verified elsewhere)\b|\b(?:pricing|price|feature depth|feature coverage|pricing depth)\b[\s\S]{0,120}\b(?:not (?:been )?independently verified|not verified|unverified|not confirmed|needs verification|not verified elsewhere)\b[\s\S]{0,160}\b(?:source[- ]bounded|local fixture|local fixtures?|fixture sources?|two local fixture sources|external availability|outside (?:the )?source|not verified elsewhere|not verified from (?:the )?source)\b/i.test(
+      text
+    )
+  ) {
+    return true;
+  }
+  if (
+    hasConcretePricingEvidence(fullText) &&
+    /\b(?:source[- ]bounded|local fixture|local fixtures?|fixture sources?|two local fixture sources|outside (?:the )?source)\b/i.test(
+      fullText
+    ) &&
+    /\b(?:pricing|price|feature depth|feature coverage|pricing depth)\b[\s\S]{0,120}\b(?:not (?:been )?independently verified|not verified|unverified|not confirmed|needs verification|not verified elsewhere)\b/i.test(
+      text
+    )
+  ) {
+    return true;
+  }
+  if (
     hasConcretePricingEvidence(text) &&
     /\b(?:source[- ]bounded|local fixture|not live production|external availability|outside (?:the )?source|not verified elsewhere|not verified from (?:the )?source)\b|来源之外|生产|线上|官方文档|后续更新|新鲜度/iu.test(
       text
@@ -408,17 +494,20 @@ function looksLikeBoundedUnverifiedSubScope(
   ) {
     return true;
   }
+  if (hasConcretePricingEvidence(fullText) && looksLikeAdditionalPricingDimensionScope(text)) {
+    return true;
+  }
   if (
     /\b(?:source[- ]bounded|local fixture|outside (?:the )?source|not verified elsewhere|not verified from (?:the )?source)\b|来源之外|生产|线上|官方文档|后续更新|新鲜度/iu.test(
       text
     ) &&
-    /\b(?:external availability|deeper pricing tiers|enterprise|annual plans?|usage tiers?|feature[- ]gated tiers?|seat minimums?|minimums?|billing cycles?|billing periods?|trial terms?)\b|企业|年度|年付|阶梯|计费周期|套餐|生产决策|生产使用|官方文档|文档新鲜度/iu.test(
+    /\b(?:external availability|deeper pricing tiers|pricing periods?|plan tier counts?|enterprise|annual plans?|usage tiers?|feature[- ]gated tiers?|seat minimums?|minimums?|billing cycles?|billing periods?|trial terms?)\b|企业|年度|年付|阶梯|计费周期|套餐|生产决策|生产使用|官方文档|文档新鲜度/iu.test(
       text
     )
   ) {
     return true;
   }
-  return /\b(?:only confirmed pricing|only confirmed pricing detail|only confirmed price|no enterprise|annual plans?|usage tiers?|feature[- ]gated tiers?|seat minimums?|minimums?|seat[- ]count equivalence|equivalence not confirmed|billing cycles?|billing periods?|billing model|trial terms?)\b/i.test(
+  return /\b(?:only confirmed pricing|only confirmed pricing detail|only confirmed price|no enterprise|pricing periods?|plan tier counts?|annual plans?|usage tiers?|feature[- ]gated tiers?|seat minimums?|minimums?|seat[- ]count equivalence|equivalence not confirmed|billing cycles?|billing periods?|billing model|trial terms?)\b/i.test(
       text
     ) ||
     /(?:仅|只)(?:确认|验证)[\s\S]{0,40}(?:价格|输入价格|输出价格|计费)|(?:企业|年度|年付|阶梯|计费周期|套餐|官方文档|生产决策|生产使用|文档新鲜度)[\s\S]{0,80}(?:未验证|未确认|待验证|需要验证)/u.test(
@@ -429,12 +518,45 @@ function looksLikeBoundedUnverifiedSubScope(
     );
 }
 
+function looksLikeEvidenceUrlOnlyUnverifiedSubScope(
+  slot: MissionGoalSlot,
+  fullText: string,
+  text: string
+): boolean {
+  if (slot !== "provider" && slot !== "search" && slot !== "pricing") return false;
+  if (!hasConcreteProviderSearchEvidence(fullText)) return false;
+  if (!hasConcretePricingEvidence(fullText)) return false;
+  const unverifiedEvidenceUrlCell =
+    /\|\s*(?:not verified|unverified|未验证|未确认)\s*\|\s*(?:Provider name|Model:|Search capability|Input token pricing|Output token pricing|关键原文|摘录)/iu.test(
+      text
+    );
+  const unverifiedEvidenceUrlColumn =
+    /\b(?:evidence\s*URL|source\s*URL)\s+(?:column\s+)?(?:is\s+)?(?:not verified|unverified|not confirmed)\b|(?:证据|来源)\s*URL[\s\S]{0,32}(?:未验证|未确认)/iu.test(
+      text
+    );
+  if (!unverifiedEvidenceUrlCell && !unverifiedEvidenceUrlColumn) return false;
+  return /\b(?:evidence\s*URL|source\s*URL)\b|证据\s*URL|来源\s*URL/iu.test(text);
+}
+
+function looksLikeAdditionalPricingDimensionScope(text: string): boolean {
+  return (
+    /\b(?:not verified|unverified|not confirmed|unknown|not present|not provided|missing|unavailable|needs verification)\b/i.test(
+      text
+    ) &&
+    /\b(?:pricing completeness|pricing periods?|plan tier counts?|tiers?\s*\/\s*plans?|tiers?|plans?|free\s+(?:tier|plan|trial)|trial|enterprise\s+(?:pricing|price|tiers?)|enterprise|annual plans?|usage tiers?|feature[- ]gated tiers?|seat minimums?|minimums?|billing cycles?|billing periods?|trial terms?)\b/i.test(
+      text
+    )
+  );
+}
+
 function hasConcreteProviderSearchEvidence(text: string): boolean {
   return (
     (mentionsProvider(text) || /\b(?:provider|platform|API|model host|model router)\b/i.test(text)) &&
-    /\b(?:model|target model|requested model|API)\b/i.test(text) &&
+    (/\b(?:model|target model|requested model|API)\b/i.test(text) || hasConcretePricingEvidence(text)) &&
     (/\b(?:web_search|web search|search)\b/i.test(text) || /搜索|检索|联网/u.test(text)) &&
-    (/\b(?:support|supported|supports|not support|does not support)\b/i.test(text) || /支持|不支持/u.test(text))
+    (/\b(?:support|supported|supports|supporting|not support|does not support)\b/i.test(text) ||
+      /\|\s*(?:yes|no|true|false|supported|unsupported|not supported|web_search)[^|\n]*\|/i.test(text) ||
+      /支持|不支持/u.test(text))
   );
 }
 
@@ -451,7 +573,12 @@ function looksLikeRenderedBrowserResidualSubScope(
 ): boolean {
   if (slot !== "rendered_browser") return false;
   if (!hasConcreteRenderedBrowserFacts(fullText)) return false;
+  if (looksLikeRenderedBrowserUnverifiedSubScopeHeading(segment)) return true;
   if (looksLikeBoundedRenderedBrowserLimitation(segment)) return true;
+  if (looksLikeRenderedComplexBrowserAdditionalDimensionSubScope(segment)) {
+    return true;
+  }
+  if (looksLikeRenderedDashboardAdditionalDimensionSubScope(segment)) return true;
   return (
     /\b(?:residual risk|unverified scope|could not be verified|not verified|unverified|unknown|could not confirm|cannot confirm)\b/i.test(
       segment
@@ -459,6 +586,39 @@ function looksLikeRenderedBrowserResidualSubScope(
     /\b(?:local fixture|production|real production|prod(?:uction)? incident|on-call notification|notification was actually dispatched|downstream dependencies|downstream paging|paging workflow|interactive controls?|operator action|historical trend|upstream services|source updates?|changed after|outside (?:the )?browser check|outside (?:the )?captured page|external mutation|external side[- ]effects?|external network call|downstream system mutation|distances?|segment durations?|detailed waypoint steps?|waypoints?|route details?|turn-by-turn details?|not visible in (?:the )?(?:rendered )?(?:source|page|dashboard))\b/i.test(
       segment
     )
+  );
+}
+
+function looksLikeRenderedComplexBrowserAdditionalDimensionSubScope(segment: string): boolean {
+  const unavailable =
+    /\b(?:unverified dimensions?|not verified|unverified|not confirmed|not captured|not present|not found|not rendered|not visible|not shown|not detected|absent|missing|could not verify|unable to verify)\b/i.test(
+      segment
+    );
+  if (!unavailable) return false;
+  return /\b(?:full shadow DOM|shadow DOM internal|nested shadow|complete embedded frame|full embedded frame|iframe source|frame content beyond|additional frame content|popup form controls?|additional popup fields?|popup controls?|popup close|dismiss mechanism|scrollable popup|full field set)\b/i.test(
+    segment
+  );
+}
+
+function looksLikeRenderedBrowserUnverifiedSubScopeHeading(segment: string): boolean {
+  return /^\s*(?:#{1,6}\s*)?(?:still\s+)?(?:what\s+remains\s+)?(?:unverified|not verified)\s+(?:on|for|in)\s+(?:this\s+)?(?:rendered\s+)?(?:page|dashboard|browser view)\s*[:：]?\s*$/i.test(
+    segment
+  );
+}
+
+function looksLikeRenderedDashboardAdditionalDimensionSubScope(segment: string): boolean {
+  const unavailable =
+    /\b(?:unverified dimensions?|not present|not found|not rendered|not visible|not shown|not detected|absent|missing)\b/i.test(
+      segment
+    );
+  if (!unavailable) return false;
+  const renderedScope =
+    /\b(?:rendered dashboard|rendered page|rendered source|rendered on (?:the )?(?:page|dashboard)|browser-rendered|browser-visible)\b/i.test(
+      segment
+    );
+  if (!renderedScope) return false;
+  return /\b(?:dimensions?|sub[- ]?scope|active incidents?|incident ids?|alert(?:\/warning)? detail rows?|detail rows?|per-service|service owner|owner mapping|queued item identities?|queue item|risk breakdown|charts?|graphs?|trend(?: data)?|time-series|contact name|handle|durations?|ages?|timestamps?|drill[- ]down|hidden content|below[- ]fold|additional panels?|interactive controls?|service list|structured escalation policy rules? table)\b/i.test(
+    segment
   );
 }
 
@@ -475,8 +635,25 @@ function looksLikeBoundedRenderedBrowserLimitation(segment: string): boolean {
 
 function hasConcreteRenderedBrowserFacts(text: string): boolean {
   const browserEvidenceVisible = mentionsRenderedBrowserEvidence(text) || /\b(?:browser-visible|page shows|observed via browser|captured|screenshot|snapshot)\b/i.test(text);
-  const operationalFactsVisible = hasConcreteRenderedDashboardFacts(text) || hasConcreteRenderedApprovalFacts(text);
+  const operationalFactsVisible =
+    hasConcreteRenderedDashboardFacts(text) ||
+    hasConcreteRenderedApprovalFacts(text) ||
+    hasConcreteRenderedComplexBrowserFacts(text);
   return browserEvidenceVisible && operationalFactsVisible;
+}
+
+function hasConcreteRenderedComplexBrowserFacts(text: string): boolean {
+  return (
+    /\b(?:embedded source frame|embedded frame|iframe|frame panel)\b[\s\S]{0,160}\b(?:backlog\s*7|Frame Captain)\b|\b(?:backlog\s*7|Frame Captain)\b[\s\S]{0,160}\b(?:embedded source frame|embedded frame|iframe|frame panel)\b/i.test(
+      text
+    ) &&
+    /\b(?:shadow review|shadow component|shadow DOM|review component)\b[\s\S]{0,160}\brisk desk approval required\b|\brisk desk approval required\b[\s\S]{0,160}\b(?:shadow review|shadow component|shadow DOM|review component)\b/i.test(
+      text
+    ) &&
+    /\b(?:details popup|popup drill|popup)\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\b(?:details popup|popup drill|popup)\b/i.test(
+      text
+    )
+  );
 }
 
 function hasConcreteRenderedDashboardFacts(text: string): boolean {
@@ -527,13 +704,31 @@ function looksLikeSourceBoundedRiskSubScope(
   ) {
     return true;
   }
+  if (
+    hasConcreteSourceBoundedRiskFacts(fullText) &&
+    looksLikeAdditionalRiskDimensionScope(segment)
+  ) {
+    return true;
+  }
+  if (
+    hasConcreteSourceBoundedRiskFacts(fullText) &&
+    looksLikeOperationalFollowUpUnverifiedSubScope(segment)
+  ) {
+    return true;
+  }
+  if (
+    hasConcreteSourceBoundedRiskFacts(fullText) &&
+    looksLikeRiskCloseoutScopeLabel(segment)
+  ) {
+    return true;
+  }
   if (!/\b(?:residual risk|risk dimension|source ledger|source[- ]bounded|evidence state)\b/i.test(fullText)) {
     return looksLikeGenericSourceBoundedRiskCaveat(fullText, segment);
   }
   if (!/[|]/.test(segment) && !hasConcreteSourceBoundedRiskFacts(fullText)) return false;
-  return /\b(?:unverified|not verified|not explicitly described|outside (?:the )?scope|local fixture|fixture evidence|not live production|not audited production|production freshness|fixture-data|source pages?|evidence)\b|未验证|未确认|来源之外|证据|官方文档|生产|线上|新鲜度/iu.test(
+  return /\b(?:unverified|unvalidated|not verified|not validated|not explicitly described|outside (?:the )?scope|outside (?:the )?local environment|local fixture|fixture evidence|not live production|not audited production|production freshness|fixture-data|source pages?|evidence)\b|未验证|未确认|来源之外|证据|官方文档|生产|线上|新鲜度/iu.test(
     segment
-  ) && /\b(?:local fixture|fixture evidence|not live production|not audited production|production|prod(?:uction)?|production freshness|customer impact|customer adoption|adoption|real users?|production telemetry|post[- ]run|source updates?|outside (?:the )?scope|outside (?:the )?captured sources?|external validation)\b|生产|线上|官方文档|来源之外|后续更新|新鲜度|外部验证/iu.test(segment);
+  ) && /\b(?:local fixture|fixture evidence|not live production|not audited production|production|prod(?:uction)?|production freshness|customer impact|customer adoption|adoption|real[- ]world|real[- ]world validation|real[- ]world LLM scenario quality|user onboarding friction|real users?|production telemetry|post[- ]run|source updates?|outside (?:the )?scope|outside (?:the )?local environment|outside (?:the )?captured sources?|external validation)\b|生产|线上|官方文档|来源之外|后续更新|新鲜度|外部验证/iu.test(segment);
 }
 
 function looksLikeGenericSourceBoundedRiskCaveat(fullText: string, segment: string): boolean {
@@ -546,12 +741,106 @@ function looksLikeGenericSourceBoundedRiskCaveat(fullText: string, segment: stri
   );
 }
 
+function looksLikeConcreteBlockedRiskFact(slot: MissionGoalSlot, segment: string): boolean {
+  if (slot !== "risk_or_limitation") return false;
+  if (looksLikeConcreteResidualRiskFact(segment)) return true;
+  if (looksLikeConcreteBlockedGateFact(segment)) return true;
+  if (!/\bblocked\s+by\b/i.test(segment)) return false;
+  if (
+    /\b(?:not completed|not verified|unverified|not confirmed|unknown|missing|tbd|could not|unable to|cannot)\b/i.test(
+      segment
+    )
+  ) {
+    return false;
+  }
+  return /\b(?:risk|risks|limitation|limitations|gap|boundary|constraint|constraints|caveat|caveats)\b[\s\S]{0,160}\bblocked\s+by\b/i.test(
+    segment
+  );
+}
+
+function looksLikeConcreteBlockedGateFact(segment: string): boolean {
+  if (!/\bblocked\b/i.test(segment)) return false;
+  const hasGateSubject = /\b(?:external announcement|external commitments?|announcement|launch|release|gate|hard constraint|constraint)\b/i.test(
+    segment
+  );
+  const hasConcreteCondition = /\b(?:pending|conditional|until|legal review|data[- ]processing addendum|sign[- ]off|approval)\b/i.test(
+    segment
+  );
+  return hasGateSubject && hasConcreteCondition;
+}
+
+function looksLikeConcreteResidualRiskFact(segment: string): boolean {
+  if (!/\b(?:residual risks?|carry[- ]forward risks?|risks?|limitations?)\b/i.test(segment)) return false;
+  if (!/\b(?:not verified|unverified|not confirmed|pending|still open|unresolved)\b/i.test(segment)) {
+    return false;
+  }
+  if (/\b(?:risk|limitation|constraint|caveat)\s*(?:is|remains?|still|:|-|\|)?\s*(?:not verified|unverified|not confirmed|unknown|missing)\b/i.test(segment)) {
+    return false;
+  }
+  return /\b(?:vendor dry[- ]run|dry[- ]run|external commitments?|external announcement|legal review|data[- ]processing addendum|sign[- ]off|approval|launch gate|release gate|customer commitment|production telemetry|source freshness|API integration catalog|API catalog|integration catalog|missing integrations?|expansion roadmap)\b/i.test(
+    segment
+  );
+}
+
+function looksLikeRiskCloseoutScopeLabel(segment: string): boolean {
+  return /\b(?:blocked\s+closeout|closeout)\b[\s\S]{0,120}\b(?:risk|risks|limitation|limitations)\b[\s\S]{0,120}\b(?:evidence\s+exhausted|source\s+exhausted|available evidence exhausted)\b/i.test(
+    segment
+  );
+}
+
+function looksLikeAdditionalRiskDimensionScope(segment: string): boolean {
+  const unavailable =
+    /\b(?:not verified|unverified|not confirmed|unknown|not present|not provided|absent|missing|unavailable|cannot be verified|could not be verified|unable to verify)\b/i.test(
+      segment
+    );
+  if (!unavailable) return false;
+  const additionalRiskDimension =
+    /\b(?:additional|other|extra|further|remaining|more)\b[\s\S]{0,100}\b(?:risks?|limitations?|constraints?|caveats?|details?|dimensions?|slots?)\b/i.test(
+      segment
+    ) ||
+    /\b(?:risks?|limitations?|constraints?|caveats?)\b[\s\S]{0,100}\b(?:additional|other|extra|further|remaining|details?|dimensions?|slots?)\b/i.test(
+      segment
+    );
+  if (!additionalRiskDimension) return false;
+  return (
+    /\b(?:source|page|documentation|docs?|provided|original task|not present|not provided|contains?|available evidence)\b/i.test(
+      segment
+    ) ||
+    /\bbeyond\b[\s\S]{0,80}\b(?:risk|risks|limitation|limitations|constraint|constraints|caveat|caveats|gap|runbook)\b/i.test(
+      segment
+    )
+  );
+}
+
+function looksLikeOperationalFollowUpUnverifiedSubScope(segment: string): boolean {
+  const unavailable =
+    /\b(?:not verified|unverified|not confirmed|unknown|not present|not provided|absent|missing|unavailable|cannot be verified|could not be verified|unable to verify)\b/i.test(
+      segment
+    );
+  if (!unavailable) return false;
+  return /\b(?:guide availability|guide confirmation|guide coverage|indoor alternates?|operator confirmation|operator follow[- ]up|pre[- ]deposit confirmation|deposit readiness|booking readiness)\b/i.test(
+    segment
+  );
+}
+
 function hasConcreteSourceBoundedRiskFacts(text: string): boolean {
   return (
     /\b(?:evidence streams?|source[- ]backed|source ledger|verified evidence|browser evidence|rendered evidence|dashboard evidence|provider evidence|pricing evidence)\b/i.test(text) ||
     /\b(?:risk|risks|limitation|limitations|constraint|constraints|caveat|tradeoff|gap)\b[\s\S]{0,160}\b(?:verified|source|evidence|browser|dashboard|pricing|provider|metric|owner|runbook|transport)\b/i.test(text) ||
+    hasQuotedOrSourcedRiskLimitationFact(text) ||
     /\b(?:queue depth|SLA breaches?|escalation|readiness|status|health|owner|price|pricing|input price|output price)\b[\s\S]{0,100}\b(?:\d+(?:\.\d+)?%?|[$￥¥]\s*\d|\bverified\b|\bevidence\b)\b/i.test(text) ||
     /(?:风险|限制|局限|缺口|权衡)[\s\S]{0,80}(?:证据|来源|已验证|价格|看板|指标|负责人|浏览器)/u.test(text)
+  );
+}
+
+function hasQuotedOrSourcedRiskLimitationFact(text: string): boolean {
+  return (
+    /\b(?:risks?\s*\/\s*limitations?|risks?|limitations?|constraints?|caveats?)\b[\s\S]{0,260}["“][^"”]{8,}["”][\s\S]{0,180}\b(?:source|https?:\/\/)\b/i.test(
+      text
+    ) ||
+    /\b(?:limited|limitation|constraint|caveat|avoid|not for|must not)\b[\s\S]{0,180}\b(?:source|https?:\/\/)\b/i.test(
+      text
+    )
   );
 }
 

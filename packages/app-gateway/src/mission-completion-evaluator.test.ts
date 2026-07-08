@@ -86,6 +86,35 @@ describe("MissionCompletionEvaluator", () => {
     });
   });
 
+  it("accepts setup acknowledgements with tool and formatting prohibitions", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        title: "Mission route durable memory recall setup",
+        desc: [
+          "Prepare a follow-up-only durable memory recall acceptance test.",
+          "Do not use tools. Reply with one Markdown bullet containing TURNKEYAI_MISSION_MEMORY_SETUP_OK and the word setup.",
+          "Do not use tables, links, code fences, or bold/italic markup.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "- TURNKEYAI_MISSION_MEMORY_SETUP_OK setup",
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
   it("does not treat prematurely done missions with pending approvals as terminal", () => {
     const decision = evaluateMissionCompletion({
       mission: { ...mission, status: "done", progress: 1, pendingApprovals: 1 },
@@ -758,6 +787,69 @@ describe("MissionCompletionEvaluator", () => {
         "**Owner:** Incident Commander.",
         "**Recommended Next Action:** Page the on-call.",
         "**Residual risk / unverified scope:** No interactive control was rendered on the dashboard itself; the action must be triggered through the downstream paging workflow, and production data freshness remains unverified outside this browser check.",
+      ].join("\n"),
+      source: { type: "worker", chatType: "group", route: "lead-role", speakerType: "Role", speakerName: "Lead" },
+    } satisfies TeamMessage;
+
+    const decision = evaluateMissionCompletion({
+      mission: browserMission,
+      messages: [message("u1", "user", 1), final],
+      roleRuns: [],
+      workerSessions: [],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("accepts rendered dashboard facts with unverified dimensions absent from the rendered page", () => {
+    const browserMission: Mission = {
+      ...mission,
+      title: "Natural browser dashboard operator task",
+      desc: [
+        "An operator asks for help reading a live operations dashboard in the browser before paging anyone.",
+        "Dashboard: http://127.0.0.1:62424/ops-dashboard",
+        "The important state may appear only after client-side rendering finishes.",
+        "Explain the current operational state, whether the escalation policy is triggered, who should own the next action, and what risk remains after your check.",
+        "Use only evidence gathered during this mission, and separate verified dashboard facts from anything still unverified.",
+      ].join("\n"),
+    };
+    const final = {
+      ...message("a-browser-final", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      content: [
+        "## Operations Dashboard Assessment",
+        "**Dashboard:** `http://127.0.0.1:62424/ops-dashboard`",
+        "**Page Title:** Operations Dashboard Fixture",
+        "### Verified Dashboard Facts",
+        "| Metric | Value | Escalation Triggered? |",
+        "|--------|-------|-----------------------|",
+        "| Dashboard Status | `TURNKEYAI_DASHBOARD_TRIAGE_OK` | - |",
+        "| Queue Depth | 11 | **YES** - threshold is >5 |",
+        "| SLA Breaches | 3 | **YES** - threshold is >0 |",
+        '| Escalation Policy | "queue depth above 5 OR SLA breaches above 0 pages the on-call" | Policy is active |',
+        "### Escalation Policy Status: **TRIGGERED**",
+        "Both conditions are met simultaneously:",
+        "- Queue depth 11 exceeds threshold of 5.",
+        "- SLA breaches 3 exceeds threshold of 0.",
+        "The on-call should be paged per policy.",
+        "### Next Action Owner: **Incident Commander**",
+        "The dashboard explicitly recommends escalating to the Incident Commander.",
+        "### Unverified Dimensions (not present on rendered dashboard)",
+        "- Active incident IDs or descriptions",
+        "- Alert/warning detail rows",
+        "- Structured escalation policy rules table",
+        '- On-call contact name/handle beyond "Incident Commander" label',
+        "- SLA breach ages / time-since-breach durations",
+        "### Residual Risk",
+        "The dashboard is a **local dynamic dashboard fixture only** - not a live production ops system.",
+        "**Evidence / Sources:**",
+        '- `ops-dashboard-rendered` - browser snapshot at `http://127.0.0.1:62424/ops-dashboard`; page title "Operations Dashboard Fixture"; full visible text confirms queue depth 11, SLA breaches 3, escalation threshold logic, recommended owner "Incident Commander", residual risk "local dynamic dashboard fixture only".',
+        "- `ops-dashboard full render` - browser_scroll confirms no additional panels or hidden content below fold. Screenshot artifact: `TASK-...:browser-step:1:screenshot`.",
       ].join("\n"),
       source: { type: "worker", chatType: "group", route: "lead-role", speakerType: "Role", speakerName: "Lead" },
     } satisfies TeamMessage;
@@ -2016,6 +2108,53 @@ describe("MissionCompletionEvaluator", () => {
     });
   });
 
+  it("accepts provider search pricing finals with extra-provider residual scope", () => {
+    const decision = evaluateMissionCompletion({
+      mission: {
+        ...mission,
+        desc: [
+          "A product manager needs a source-backed DeepSeek V4 Flash API provider note.",
+          "Identify which providers are listed, whether each provider supports search, and the input/output token pricing for each provider.",
+          "Call out the lowest-cost option, the option that supports search, and the main risk or limitation for using this data in a production decision.",
+        ].join("\n"),
+      },
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: [
+            "A product manager needs a source-backed DeepSeek V4 Flash API provider note.",
+            "Identify which providers are listed, whether each provider supports search, and the input/output token pricing for each provider.",
+            "Call out the lowest-cost option, the option that supports search, and the main risk or limitation for using this data in a production decision.",
+          ].join("\n"),
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "**Source:** `http://127.0.0.1:57380/deepseek-provider-pricing` (HTTP 200; verbatim only).",
+            "| Provider | Search | Input | Output |",
+            "|---|---|---|---|",
+            "| OpenRouter | Yes (`web_search`) | $0.28 / 1M tokens | $0.42 / 1M tokens |",
+            "| Together | No | $0.20 / 1M tokens | $0.40 / 1M tokens |",
+            "| Fireworks | No | $0.25 / 1M tokens | $0.45 / 1M tokens |",
+            "**Lowest-cost option:** Together.",
+            "**Search-supporting option:** OpenRouter.",
+            "**Main production risk:** production provider pages may change.",
+            "**What remains unverified:** whether additional providers beyond the three listed on this page exist elsewhere.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
   it("accepts vendor comparison pricing caveats as bounded risk rather than incomplete pricing", () => {
     const vendorMission: Mission = {
       ...mission,
@@ -2447,6 +2586,44 @@ describe("MissionCompletionEvaluator", () => {
           roleId: "role-lead",
           name: "Lead",
           toolCalls: [{ id: "call-1", name: "sessions_send", arguments: { session_key: "worker:browser:1" } }],
+          toolStatus: "pending" as const,
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "stalled_tool_turn");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+      assert.equal(decision.recovery?.status, "pending");
+    }
+  });
+
+  it("reopens a done mission when a follow-up has a later stalled lead tool turn", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, status: "done", progress: 1 },
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Initial task.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Initial final answer.",
+        },
+        {
+          ...message("u-2", "user", 200),
+          content: "Continue from the previous work.",
+        },
+        {
+          ...message("a-tool", "assistant", 300),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "I will continue the existing session.",
+          toolCalls: [{ id: "call-1", name: "sessions_send", arguments: { session_key: "worker:explore:1" } }],
           toolStatus: "pending" as const,
         },
       ],
