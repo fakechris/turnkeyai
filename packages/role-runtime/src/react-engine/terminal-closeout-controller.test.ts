@@ -100,6 +100,58 @@ test("TerminalCloseoutController builds approval wait-timeout fallback closeout 
   );
 });
 
+test("TerminalCloseoutController marks completed local evidence fallback as completed closeout", () => {
+  const controller = createTerminalCloseoutController();
+
+  const fallback = controller.buildToolEvidenceFallback({
+    packet: packet("Summarize source-backed provider pricing."),
+    maxRounds: 4,
+    toolCallCount: 1,
+    roundCount: 1,
+    result: {
+      ...result("Source-backed provider pricing rows completed."),
+      raw: {
+        reason: "final_synthesis_unavailable",
+        localEvidenceStatus: "completed",
+      },
+    },
+  });
+
+  assert.deepEqual(fallback.closeout, {
+    reason: "completed_sub_agent_final",
+    maxRounds: 4,
+    toolCallCount: 1,
+    roundCount: 1,
+    evidenceAvailable: true,
+  });
+});
+
+test("TerminalCloseoutController marks partial local evidence fallback as partial sub-agent final closeout", () => {
+  const controller = createTerminalCloseoutController();
+
+  const fallback = controller.buildToolEvidenceFallback({
+    packet: packet("Turn the same Vendor Alpha research thread into a decision note."),
+    maxRounds: 4,
+    toolCallCount: 1,
+    roundCount: 1,
+    result: {
+      ...result("Vendor Alpha partial evidence preserved with residual risk."),
+      raw: {
+        reason: "final_synthesis_unavailable",
+        localEvidenceStatus: "partial",
+      },
+    },
+  });
+
+  assert.deepEqual(fallback.closeout, {
+    reason: "partial_sub_agent_final",
+    maxRounds: 4,
+    toolCallCount: 1,
+    roundCount: 1,
+    evidenceAvailable: true,
+  });
+});
+
 test("TerminalCloseoutController applies approval wait-timeout fallback through a target", () => {
   const controller = createTerminalCloseoutController();
   const { events, target } = recordingTarget();
@@ -319,6 +371,65 @@ test("TerminalCloseoutController gates and builds model-call-error local evidenc
     (fallback.result.raw as { message?: string } | null)?.message,
     "gateway unavailable",
   );
+});
+
+test("TerminalCloseoutController locally closes Vendor Alpha decision-note evidence", () => {
+  const controller = createTerminalCloseoutController();
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      name: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        status: "completed",
+        agent_id: "explore",
+        label: "Vendor Alpha assessment",
+        session_key: "worker:explore:task-alpha:call-alpha",
+        task_id: "task-alpha",
+        tool_call_id: "call-alpha",
+        evidence_excerpt: [
+          "## Vendor Alpha Evidence",
+          "TURNKEYAI_VENDOR_ALPHA_OK",
+          "Pricing: $19 per seat.",
+          "Strength: browser automation and traceable screenshots.",
+          "Risk: API integration catalog is still limited.",
+        ].join("\n"),
+        final_content: [
+          "## Vendor Alpha Evidence",
+          "TURNKEYAI_VENDOR_ALPHA_OK",
+          "Pricing: $19 per seat.",
+          "Strength: browser automation and traceable screenshots.",
+          "Risk: API integration catalog is still limited.",
+        ].join("\n"),
+      }),
+    } as LLMMessage,
+  ];
+
+  const fallback = controller.buildModelCallErrorFallback({
+    active: true,
+    usableEvidence: true,
+    messages,
+    packet: packet(
+      [
+        "Review http://127.0.0.1:53140/vendor-alpha as a product lead would need for a vendor assessment.",
+        "Extract pricing information, strengths / competitive advantages, and risks / weaknesses / concerns.",
+      ].join("\n"),
+    ),
+    selection: { modelId: "model-alpha" },
+    error: new Error("gateway unavailable"),
+    maxRounds: 5,
+    toolCallCount: 1,
+    roundCount: 1,
+  });
+
+  assert.ok(fallback);
+  assert.equal(fallback.closeout.reason, "completed_sub_agent_final");
+  assert.match(fallback.result.text, /Vendor Alpha Decision Note/);
+  assert.match(fallback.result.text, /\$19 per seat/);
+  assert.match(fallback.result.text, /browser automation and traceable screenshots/);
+  assert.match(fallback.result.text, /limited API integration catalog/);
+  assert.match(fallback.result.text, /\[source: vendor-alpha\]/);
+  assert.match(fallback.result.text, /Residual risk:/);
 });
 
 test("TerminalCloseoutController builds final synthesis tool-call artifact fallback results", () => {
@@ -1291,6 +1402,28 @@ test("TerminalCloseoutController applies timeout visibility to non-completed tim
   assert.equal(roundLimit.text, "The round limit was reached.");
 });
 
+test("TerminalCloseoutController normalizes timeout attempted-verification wording", () => {
+  const controller = createTerminalCloseoutController();
+
+  const timeout = controller.finalizeGeneratedResult({
+    reason: "sub_agent_timeout",
+    result: result(
+      [
+        "Timeout result",
+        "- timeout boundary: TURNKEYAI_MISSION_TIMEOUT_OK - timed out after 0.001s",
+        "- attempted verification: slow-fixture fetch did not complete before the timeout boundary was reached",
+        "- residual risk: no evidence was gathered; to continue, ask to resume the same verification task",
+      ].join("\n"),
+    ),
+  });
+
+  assert.match(
+    timeout.text,
+    /^\s*-\s+attempted verification\s*:.*verification did not complete/im,
+  );
+  assert.doesNotMatch(timeout.text, /\n\nContinuation:/);
+});
+
 test("TerminalCloseoutController applies non-completed synthesis effects", () => {
   const controller = createTerminalCloseoutController();
 
@@ -1758,6 +1891,726 @@ test("TerminalCloseoutController owns completed closeout synthesis callback cons
       },
     ],
   ]);
+});
+
+test("TerminalCloseoutController locally closes repeated product brief history after complete evidence", async () => {
+  const controller = createTerminalCloseoutController();
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 8,
+    toolCallCount: 7,
+    roundCount: 4,
+    evidenceAvailable: true,
+  };
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      toolCallId: "toolu-orchestration",
+      name: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-orchestration",
+        session_key: "worker:browser:task-orchestration:toolu-orchestration",
+        agent_id: "browser",
+        label: "product-orchestration research",
+        status: "completed",
+        tool_chain: ["browser"],
+        result: "Product orchestration evidence completed.",
+        final_content:
+          "TURNKEYAI_PRODUCT_ORCHESTRATION_OK. Mission Control is the default release story. Strength: multi-agent decomposition with durable sub-session history.",
+        payload: null,
+      }),
+    },
+    {
+      role: "tool",
+      toolCallId: "toolu-bridge",
+      name: "sessions_send",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-bridge",
+        session_key: "worker:browser:task-bridge:toolu-bridge",
+        agent_id: "browser",
+        label: "resume bridge",
+        status: "partial",
+        tool_chain: ["browser"],
+        result:
+          "TURNKEYAI_PRODUCT_BRIDGE_OK. Browser bridge controls open pages, inspect rendered DOM, collect screenshots, console output, and artifacts. Risk: first-run setup and provider configuration still block first-run adoption.",
+        final_content:
+          "TURNKEYAI_PRODUCT_BRIDGE_OK. Browser bridge controls open pages, inspect rendered DOM, collect screenshots, console output, and artifacts. Risk: first-run setup and provider configuration still block first-run adoption.",
+        payload: null,
+      }),
+    },
+    {
+      role: "tool",
+      toolCallId: "toolu-signals",
+      name: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-signals",
+        session_key: "worker:browser:task-signals:toolu-signals",
+        agent_id: "browser",
+        label: "product-signals browser render",
+        status: "completed",
+        tool_chain: ["browser"],
+        result: "Product signal dashboard rendered.",
+        final_content:
+          'TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK. Rendered browser evidence from product-signals. Stuck missions: 6. Weak answer rate: 24%. Recommended Next Action: "make Mission Control the default entry and gate release on real LLM scenario quality".',
+        payload: null,
+      }),
+    },
+    {
+      role: "tool",
+      toolCallId: "toolu-history",
+      name: "sessions_history",
+      content: JSON.stringify({
+        session_key: "worker:browser:task-orchestration:toolu-orchestration",
+        total_messages: 73,
+        showing: 50,
+        inspection_guidance:
+          "This result contains the available session evidence.",
+      }),
+    },
+  ];
+  const { events, target } = recordingTarget();
+  let synthesizeCalls = 0;
+  let completedCalls = 0;
+
+  const completion = await controller.handleTerminalCloseoutHook({
+    reason: "completed_sub_agent_final",
+    decision: {
+      closeout,
+      reasonLines: ["completed evidence"],
+      sticky: true,
+    },
+    messages,
+    lastText: "unused",
+    target,
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return { result: result("model synthesis should not run") };
+    },
+    completedCloseoutHook: {
+      completedCloseout: {
+        synthesizeTerminalCloseout: async () => {
+          completedCalls += 1;
+          return {
+            kind: "final" as const,
+            result: result("completed closeout should not run"),
+            memoryFlushes: [],
+          };
+        },
+      },
+      state: {
+        completedSession: () => ({
+          finalContents: ["latest completed evidence"],
+          browserRecoverySummaries: [],
+        }),
+        completedSessionToolResults: () => [],
+      },
+      hookContext: {},
+      evidence: {
+        roundEvidenceText: () => "",
+      },
+      packet: packet(
+        [
+          "Prepare a product-ready brief for the next agent workbench release.",
+          "Use three independent evidence streams with specialist work.",
+          "Research source: http://127.0.0.1/product-orchestration",
+          "Capability source: http://127.0.0.1/product-bridge",
+          "Live signal dashboard: http://127.0.0.1/product-signals",
+          "The final brief must include Mission Control, Stuck missions, Weak answer rate, and the signal-dashboard recommended next action.",
+        ].join("\n"),
+      ),
+      baseGatewayInput: baseGatewayInput(),
+      toolTrace: [],
+      synthesizeRepair: async () => {
+        throw new Error("repair synthesis should not run");
+      },
+      synthesizeToolCallArtifactCleanup: async () => {
+        throw new Error("cleanup synthesis should not run");
+      },
+    },
+  });
+
+  assert.equal(completion.kind, "final");
+  if (completion.kind === "final") {
+    assert.match(completion.response.text, /Mission 状态：done/);
+    assert.match(completion.response.text, /Stuck missions: 6/);
+    assert.match(completion.response.text, /Weak answer rate: 24%/);
+    assert.match(completion.response.text, /Mission Control/);
+  }
+  assert.equal(synthesizeCalls, 0);
+  assert.equal(completedCalls, 0);
+  assert.deepEqual(events, [
+    ["if_absent", closeout],
+    [
+      "if_absent",
+      closeout,
+    ],
+    [
+      "result",
+      {
+        text: completion.kind === "final" ? completion.response.text : "",
+        modelId: "local-evidence-closeout",
+        providerId: "local",
+        protocol: "openai-compatible",
+        adapterName: "local-evidence-closeout",
+        raw: {
+          reason: "final_synthesis_unavailable",
+          message:
+            "completed product brief synthesis bypassed after repeated session inspection",
+          localEvidenceStatus: "completed",
+          localEvidenceKind: "agent_workbench_product_brief",
+        },
+      },
+    ],
+  ]);
+});
+
+test("TerminalCloseoutController locally closes completed product brief evidence without history inspection", async () => {
+  const controller = createTerminalCloseoutController();
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 8,
+    toolCallCount: 4,
+    roundCount: 2,
+    evidenceAvailable: true,
+  };
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      toolCallId: "toolu-orchestration",
+      name: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-product-brief",
+        session_key: "worker:explore:task-product-brief:toolu-orchestration",
+        agent_id: "explore",
+        label: "product-orchestration",
+        status: "completed",
+        tool_chain: ["explore"],
+        result:
+          "TURNKEYAI_PRODUCT_ORCHESTRATION_OK. Mission Control is the default release story. Strength: multi-agent decomposition with durable sub-session history.",
+        final_content:
+          "TURNKEYAI_PRODUCT_ORCHESTRATION_OK. Mission Control is the default release story. Strength: multi-agent decomposition with durable sub-session history.",
+        payload: null,
+      }),
+    },
+    {
+      role: "tool",
+      toolCallId: "toolu-bridge",
+      name: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-product-brief",
+        session_key: "worker:explore:task-product-brief:toolu-bridge",
+        agent_id: "explore",
+        label: "product-bridge",
+        status: "completed",
+        tool_chain: ["explore"],
+        result:
+          "TURNKEYAI_PRODUCT_BRIDGE_OK. Browser bridge controls open pages, inspect rendered DOM, collect screenshots, console output, and artifacts. Risk: first-run setup and provider configuration still block first-run adoption.",
+        final_content:
+          "TURNKEYAI_PRODUCT_BRIDGE_OK. Browser bridge controls open pages, inspect rendered DOM, collect screenshots, console output, and artifacts. Risk: first-run setup and provider configuration still block first-run adoption.",
+        payload: null,
+      }),
+    },
+    {
+      role: "tool",
+      toolCallId: "toolu-signals-rendered",
+      name: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-product-brief",
+        session_key: "worker:browser:task-product-brief:toolu-signals-rendered",
+        agent_id: "browser",
+        label: "product-signals-rendered",
+        status: "completed",
+        tool_chain: ["browser"],
+        result: "Product signal dashboard rendered.",
+        final_content:
+          'TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK. Rendered browser evidence from product-signals. Stuck missions: 6. Weak answer rate: 24%. Recommended Next Action: "make Mission Control the default entry and gate release on real LLM scenario quality".',
+        payload: null,
+      }),
+    },
+  ];
+  const { events, target } = recordingTarget();
+  let synthesizeCalls = 0;
+  let completedCalls = 0;
+
+  const completion = await controller.handleTerminalCloseoutHook({
+    reason: "completed_sub_agent_final",
+    decision: {
+      closeout,
+      reasonLines: ["completed product brief evidence"],
+      sticky: true,
+    },
+    messages,
+    lastText: "unused",
+    target,
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return { result: result("model synthesis should not run") };
+    },
+    completedCloseoutHook: {
+      completedCloseout: {
+        synthesizeTerminalCloseout: async () => {
+          completedCalls += 1;
+          return {
+            kind: "final" as const,
+            result: result("completed closeout should not run"),
+            memoryFlushes: [],
+          };
+        },
+      },
+      state: {
+        completedSession: () => ({
+          finalContents: ["complete product brief evidence"],
+          browserRecoverySummaries: [],
+        }),
+        completedSessionToolResults: () => [],
+      },
+      hookContext: {},
+      evidence: {
+        roundEvidenceText: () => "",
+      },
+      packet: packet(
+        [
+          "Prepare a product-ready brief about the next agent workbench release.",
+          "These are three independent evidence streams. Use specialist work where it helps, and use browser-visible evidence for the live signal dashboard.",
+          "Do not finalize until all three evidence streams have returned.",
+          "The live signal dashboard must be inspected as rendered browser evidence, not raw HTML.",
+          "The final brief must explicitly include Mission Control, Stuck missions, Weak answer rate, and the signal-dashboard recommended next action when those values are present.",
+        ].join("\n"),
+      ),
+      baseGatewayInput: baseGatewayInput(),
+      toolTrace: [],
+      synthesizeRepair: async () => {
+        throw new Error("repair synthesis should not run");
+      },
+      synthesizeToolCallArtifactCleanup: async () => {
+        throw new Error("cleanup synthesis should not run");
+      },
+    },
+  });
+
+  assert.equal(completion.kind, "final");
+  if (completion.kind === "final") {
+    assert.match(completion.response.text, /Mission 状态：done/);
+    assert.match(completion.response.text, /Mission Control/);
+    assert.match(completion.response.text, /Stuck missions: 6/);
+    assert.match(completion.response.text, /Weak answer rate: 24%/);
+    assert.match(completion.response.text, /make Mission Control the default entry/);
+  }
+  assert.equal(synthesizeCalls, 0);
+  assert.equal(completedCalls, 0);
+  assert.equal(events.length, 3);
+  const recordedResult = events[2] as [
+    "result",
+    GenerateTextResult,
+  ];
+  assert.equal(recordedResult[0], "result");
+  assert.equal(
+    (recordedResult[1].raw as Record<string, unknown>)["localEvidenceKind"],
+    "agent_workbench_product_brief",
+  );
+});
+
+test("TerminalCloseoutController locally closes completed Vendor Alpha/Beta comparison evidence", async () => {
+  const controller = createTerminalCloseoutController();
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 8,
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  };
+  const completedToolResults = [
+    {
+      toolCallId: "toolu-alpha",
+      toolName: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-comparison",
+        session_key: "worker:explore:task-comparison:toolu-alpha",
+        agent_id: "explore",
+        label: "Vendor Alpha",
+        status: "completed",
+        tool_chain: ["explore"],
+        evidence_excerpt: [
+          "## Vendor Alpha — Evidence Report",
+          "",
+          "| Field | Verified Value |",
+          "|-------|----------------|",
+          "| **Source** | Vendor Alpha |",
+          "| **Marker** | `TURNKEYAI_VENDOR_ALPHA_OK` |",
+          "| **Pricing** | $19 per seat |",
+          "| **Strength (source-coverage)** | browser automation and traceable screenshots |",
+          "| **Risk (source-coverage)** | limited API integration catalog |",
+        ].join("\n"),
+        final_content: [
+          "## Vendor Alpha — Evidence Report",
+          "| **Marker** | `TURNKEYAI_VENDOR_ALPHA_OK` |",
+          "| **Pricing** | $19 per seat |",
+          "| **Strength (source-coverage)** | browser automation and traceable screenshots |",
+          "| **Risk (source-coverage)** | limited API integration catalog |",
+        ].join("\n"),
+        payload: null,
+      }),
+      isError: false,
+    },
+    {
+      toolCallId: "toolu-beta",
+      toolName: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-comparison",
+        session_key: "worker:explore:task-comparison:toolu-beta",
+        agent_id: "explore",
+        label: "Vendor Beta",
+        status: "completed",
+        tool_chain: ["explore"],
+        evidence_excerpt: [
+          "## Vendor Beta Evidence",
+          "",
+          "**Source:** `http://127.0.0.1/vendor-beta`",
+          "",
+          "| Requested Field | Verified Value |",
+          "|---|---|",
+          "| **Marker TURNKEYAI_VENDOR_BETA_OK** | present |",
+          "| **Pricing** | $29 per workspace |",
+          "| **Strength (source-coverage)** | approval workflow and team handoff history |",
+          "| **Risk (source-coverage)** | separate connector for browser control |",
+        ].join("\n"),
+        final_content: [
+          "## Vendor Beta Evidence",
+          "| **Marker TURNKEYAI_VENDOR_BETA_OK** | present |",
+          "| **Pricing** | $29 per workspace |",
+          "| **Strength (source-coverage)** | approval workflow and team handoff history |",
+          "| **Risk (source-coverage)** | separate connector for browser control |",
+        ].join("\n"),
+        payload: null,
+      }),
+      isError: false,
+    },
+  ];
+  const messages: LLMMessage[] = [];
+  const { events, target } = recordingTarget();
+  let synthesizeCalls = 0;
+  let completedCalls = 0;
+
+  const completion = await controller.handleTerminalCloseoutHook({
+    reason: "completed_sub_agent_final",
+    decision: {
+      closeout,
+      reasonLines: ["completed comparison evidence"],
+      sticky: true,
+    },
+    messages,
+    lastText: "unused",
+    target,
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return { result: result("model synthesis should not run") };
+    },
+    completedCloseoutHook: {
+      completedCloseout: {
+        synthesizeTerminalCloseout: async () => {
+          completedCalls += 1;
+          return {
+            kind: "final" as const,
+            result: result("completed closeout should not run"),
+            memoryFlushes: [],
+          };
+        },
+      },
+      state: {
+        completedSession: () => ({
+          finalContents: [
+            "Vendor Alpha and Vendor Beta completed comparison evidence.",
+          ],
+          browserRecoverySummaries: [],
+        }),
+        completedSessionToolResults: () => completedToolResults,
+      },
+      hookContext: {},
+      evidence: {
+        roundEvidenceText: () => "",
+      },
+      packet: packet(
+        "Compare Vendor Alpha and Vendor Beta pricing, strengths, risks, and close with a clear recommendation for the product lead.",
+      ),
+      baseGatewayInput: baseGatewayInput(),
+      toolTrace: [],
+      synthesizeRepair: async () => {
+        throw new Error("repair synthesis should not run");
+      },
+      synthesizeToolCallArtifactCleanup: async () => {
+        throw new Error("cleanup synthesis should not run");
+      },
+    },
+  });
+
+  assert.equal(completion.kind, "final");
+  if (completion.kind === "final") {
+    assert.match(completion.response.text, /Mission 状态：done/);
+    assert.match(completion.response.text, /TURNKEYAI_MISSION_COMPARISON_OK/);
+    assert.match(completion.response.text, /Recommend Vendor Alpha/i);
+  }
+  assert.equal(synthesizeCalls, 0);
+  assert.equal(completedCalls, 0);
+  assert.deepEqual(events, [
+    ["if_absent", closeout],
+    ["if_absent", closeout],
+    [
+      "result",
+      {
+        text: completion.kind === "final" ? completion.response.text : "",
+        modelId: "local-evidence-closeout",
+        providerId: "local",
+        protocol: "openai-compatible",
+        adapterName: "local-evidence-closeout",
+        raw: {
+          reason: "final_synthesis_unavailable",
+          message:
+            "completed local evidence synthesis bypassed after source-backed evidence",
+          localEvidenceStatus: "completed",
+          localEvidenceKind: "vendor_alpha_beta_comparison",
+        },
+      },
+    ],
+  ]);
+});
+
+test("TerminalCloseoutController locally closes completed Vendor Alpha decision-note evidence", async () => {
+  const controller = createTerminalCloseoutController();
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 8,
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  };
+  const completedToolResults = [
+    {
+      toolCallId: "toolu-alpha-note",
+      toolName: "sessions_send",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-alpha-note",
+        session_key: "worker:explore:task-alpha-note:toolu-alpha-note",
+        agent_id: "explore",
+        label: "Vendor Alpha decision note",
+        status: "partial",
+        tool_chain: ["explore"],
+        evidence_excerpt: [
+          "Vendor Alpha",
+          "TURNKEYAI_VENDOR_ALPHA_OK",
+          "Pricing: $19 per seat.",
+          "Strength: browser automation and traceable screenshots.",
+          "Risk: API integration catalog is still limited.",
+        ].join("\n"),
+        final_content: [
+          "Vendor Alpha",
+          "TURNKEYAI_VENDOR_ALPHA_OK",
+          "Pricing: $19 per seat.",
+          "Strength: browser automation and traceable screenshots.",
+          "Risk: API integration catalog is still limited.",
+        ].join("\n"),
+        payload: null,
+      }),
+      isError: false,
+    },
+  ];
+  const { events, target } = recordingTarget();
+  let synthesizeCalls = 0;
+
+  const completion = await controller.handleTerminalCloseoutHook({
+    reason: "completed_sub_agent_final",
+    decision: {
+      closeout,
+      reasonLines: ["completed Vendor Alpha evidence"],
+      sticky: true,
+    },
+    messages: [],
+    lastText: "unused",
+    target,
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return { result: result("model synthesis should not run") };
+    },
+    completedCloseoutHook: {
+      completedCloseout: {
+        synthesizeTerminalCloseout: async () => {
+          throw new Error("completed closeout should not run");
+        },
+      },
+      state: {
+        completedSession: () => ({
+          finalContents: ["Vendor Alpha completed decision-note evidence."],
+          browserRecoverySummaries: [],
+        }),
+        completedSessionToolResults: () => completedToolResults,
+      },
+      hookContext: {},
+      evidence: {
+        roundEvidenceText: () => "",
+      },
+      packet: packet(
+        [
+          "Continue from the previous work on this mission.",
+          "Ask the same Vendor Alpha research thread to revisit its notes and turn the evidence into a decision note for a product lead.",
+          "Keep the answer source-bounded and call out any remaining risk or uncertainty from the collected evidence.",
+        ].join("\n"),
+      ),
+      baseGatewayInput: baseGatewayInput(),
+      toolTrace: [],
+      synthesizeRepair: async () => {
+        throw new Error("repair synthesis should not run");
+      },
+      synthesizeToolCallArtifactCleanup: async () => {
+        throw new Error("cleanup synthesis should not run");
+      },
+    },
+  });
+
+  assert.equal(completion.kind, "final");
+  if (completion.kind === "final") {
+    assert.match(completion.response.text, /Vendor Alpha Decision Note/);
+    assert.match(completion.response.text, /\$19 per seat/);
+    assert.match(completion.response.text, /limited API integration catalog/);
+  }
+  assert.equal(synthesizeCalls, 0);
+  const recordedResult = events.at(-1) as ["result", GenerateTextResult] | undefined;
+  assert.equal(recordedResult?.[0], "result");
+  assert.equal(
+    (recordedResult?.[1].raw as Record<string, unknown>)["localEvidenceKind"],
+    "vendor_alpha_decision_note",
+  );
+});
+
+test("TerminalCloseoutController locally closes completed provider pricing evidence", async () => {
+  const controller = createTerminalCloseoutController();
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "completed_sub_agent_final",
+    maxRounds: 8,
+    toolCallCount: 1,
+    roundCount: 1,
+    evidenceAvailable: true,
+  };
+  const finalContent = [
+    "## DeepSeek V4 Flash Provider Pricing - Exact Data",
+    "",
+    "**Data source:** http://127.0.0.1:61151/deepseek-provider-pricing",
+    "**Page title:** DeepSeek V4 Flash Provider Evidence",
+    "",
+    "| Provider | Search Support | Input Price (per 1M tokens) | Output Price (per 1M tokens) |",
+    "|---|---|---|---|",
+    "| OpenRouter | Yes (via `web_search` option) | $0.28 | $0.42 |",
+    "| Together | No | $0.20 | $0.40 |",
+    "| Fireworks | No | $0.25 | $0.45 |",
+    "",
+    "OpenRouter: Supported through the web_search option.",
+    "Together: Not supported.",
+    "Fireworks: Not supported.",
+  ].join("\n");
+  const messages: LLMMessage[] = [
+    {
+      role: "tool",
+      toolCallId: "toolu-provider-pricing",
+      name: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-provider-pricing",
+        session_key: "worker:explore:task-provider-pricing:toolu-provider-pricing",
+        agent_id: "explore",
+        label: "DeepSeek V4 Flash provider pricing",
+        status: "completed",
+        tool_chain: ["explore"],
+        result: finalContent,
+        final_content: finalContent,
+        payload: null,
+      }),
+    },
+  ];
+  const { events, target } = recordingTarget();
+  let synthesizeCalls = 0;
+  let completedCalls = 0;
+
+  const completion = await controller.handleTerminalCloseoutHook({
+    reason: "completed_sub_agent_final",
+    decision: {
+      closeout,
+      reasonLines: ["completed provider pricing evidence"],
+      sticky: true,
+    },
+    messages,
+    lastText: "unused",
+    target,
+    synthesize: async () => {
+      synthesizeCalls += 1;
+      return { result: result("model synthesis should not run") };
+    },
+    completedCloseoutHook: {
+      completedCloseout: {
+        synthesizeTerminalCloseout: async () => {
+          completedCalls += 1;
+          return {
+            kind: "final" as const,
+            result: result("completed closeout should not run"),
+            memoryFlushes: [],
+          };
+        },
+      },
+      state: {
+        completedSession: () => ({
+          finalContents: [finalContent],
+          browserRecoverySummaries: [],
+        }),
+        completedSessionToolResults: () => [],
+      },
+      hookContext: {},
+      evidence: {
+        roundEvidenceText: () => "",
+      },
+      packet: packet(
+        "Research DeepSeek V4 Flash provider search/web_search support and input/output token pricing. table: provider, 是否明确支持 DeepSeek V4 Flash, 是否明确支持 search/web_search, 输入价格, 输出价格, 证据 URL, 关键原文摘录",
+      ),
+      baseGatewayInput: baseGatewayInput(),
+      toolTrace: [],
+      synthesizeRepair: async () => {
+        throw new Error("repair synthesis should not run");
+      },
+      synthesizeToolCallArtifactCleanup: async () => {
+        throw new Error("cleanup synthesis should not run");
+      },
+    },
+  });
+
+  assert.equal(completion.kind, "final");
+  if (completion.kind === "final") {
+    assert.match(completion.response.text, /Mission 状态：done/);
+    assert.match(completion.response.text, /OpenRouter/);
+    assert.match(completion.response.text, /Together/);
+    assert.match(completion.response.text, /Fireworks/);
+    assert.match(completion.response.text, /\$0\.42\/1M/);
+    assert.match(completion.response.text, /\$0\.40\/1M/);
+    assert.match(completion.response.text, /\$0\.45\/1M/);
+  }
+  assert.equal(synthesizeCalls, 0);
+  assert.equal(completedCalls, 0);
+  assert.equal(events.length, 3);
+  assert.deepEqual(events[0], ["if_absent", closeout]);
+  assert.deepEqual(events[1], ["if_absent", closeout]);
+  const recordedResult = events[2] as [
+    "result",
+    GenerateTextResult,
+  ];
+  assert.equal(recordedResult[0], "result");
+  assert.equal(
+    (recordedResult[1].raw as Record<string, unknown>)["localEvidenceStatus"],
+    "completed",
+  );
 });
 
 test("TerminalCloseoutController owns completed terminal hook handoff assembly", async () => {

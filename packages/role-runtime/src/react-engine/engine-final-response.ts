@@ -10,7 +10,7 @@ import type {
 import type { GeneratedRoleReply } from "../deterministic-response-generator";
 import {
   enforceRequestedThreeLineLabelShape,
-  extractMentions,
+  extractMentionsForFinalResponse,
 } from "../gateway-input-builder";
 import {
   summarizeModelUseTrace,
@@ -27,6 +27,7 @@ import {
   buildRuntimeDerivedMissionReport,
   type ToolLoopCloseoutMetadata,
 } from "../runtime-derived-mission-report";
+import { maybeRedactForbiddenFinalText } from "../runtime-policy/synthesis-visibility";
 import { finalizeEngineAnswer } from "./finalization-pipeline";
 import type { EnginePolicyTrace } from "./types";
 import type { RolePromptPacket } from "../prompt-policy";
@@ -38,6 +39,7 @@ export interface EngineFinalResponseReduction {
 
 export interface CreateEngineFinalResponseBuilderInput {
   taskPrompt: string;
+  redactionConstraintText?: string;
   initialMessages: readonly LLMMessage[];
   readToolTraceResultContent(messages: LLMMessage[]): string;
   policyTrace: EnginePolicyTrace;
@@ -106,6 +108,10 @@ export function createEngineFinalResponseBuilder(
       toolTrace: responseInput.toolTrace,
       evidenceText: input.readToolTraceResultContent(epilogueMessages),
     });
+    finalResult = maybeRedactForbiddenFinalText({
+      result: finalResult,
+      constraintText: input.redactionConstraintText ?? input.taskPrompt,
+    });
     const content = enforceRequestedThreeLineLabelShape({
       taskPrompt: input.taskPrompt,
       resultText: finalResult.text,
@@ -116,7 +122,9 @@ export function createEngineFinalResponseBuilder(
     );
     return {
       content,
-      mentions: extractMentions(content),
+      mentions: extractMentionsForFinalResponse(content, {
+        toolLoopCloseoutReason: responseInput.toolLoopCloseout?.reason,
+      }),
       metadata: {
         ...(metaResult
           ? {

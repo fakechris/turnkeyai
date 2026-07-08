@@ -96,6 +96,7 @@ function remainingPendingInput(
     pendingCalls: [],
     pendingToolCallCount: 1,
     pendingContinuation: false,
+    deferPseudoToolCallToRepair: false,
     lastText: "running sessions",
     wallClockBudget: null,
     taskPrompt: "Summarize the gathered evidence.",
@@ -383,6 +384,10 @@ test("CloseoutPolicyRegistry pending-call flow honors read-only suppression pree
         order.push("preview");
         return null;
       },
+      shouldDeferPseudoToolCallCloseout: () => {
+        order.push("repair");
+        return false;
+      },
       buildRecoveryToolBudgetCloseoutSnapshot: () => {
         order.push("recovery");
         return recoverySnapshot();
@@ -436,6 +441,10 @@ test("CloseoutPolicyRegistry pending-call flow applies recovery before continuat
         order.push("preview");
         return toolCall("runtime-continuation-1", "sessions_send");
       },
+      shouldDeferPseudoToolCallCloseout: () => {
+        order.push("repair");
+        return false;
+      },
       buildRecoveryToolBudgetCloseoutSnapshot: () => {
         order.push("recovery");
         return recoverySnapshot();
@@ -471,6 +480,7 @@ test("CloseoutPolicyRegistry pending-call hook computes live budget and evidence
   let evidenceMessages: unknown;
   let recoveryInput: unknown;
   let previewCalls = 0;
+  let repairProbeCalls = 0;
   let wallClockCalls = 0;
   let roundLimitCalls = 0;
   const writes: unknown[] = [];
@@ -513,6 +523,10 @@ test("CloseoutPolicyRegistry pending-call hook computes live budget and evidence
           previewCalls += 1;
           return null;
         },
+      },
+      shouldDeferPseudoToolCallCloseout() {
+        repairProbeCalls += 1;
+        return false;
       },
       executionBudget: {
         buildRecoveryToolBudgetCloseoutSnapshot(input: unknown) {
@@ -562,6 +576,7 @@ test("CloseoutPolicyRegistry pending-call hook computes live budget and evidence
     "Summarize the gathered evidence.",
   );
   assert.equal(evidenceMessages, messages);
+  assert.equal(repairProbeCalls, 0);
   assert.deepEqual(recoveryInput, {
     maxRounds: 3,
     maxToolCalls: 2,
@@ -613,6 +628,10 @@ test("CloseoutPolicyRegistry pending-call flow passes continuation preview into 
       previewEmptyRoundContinuation: () => {
         order.push("preview");
         return continuation;
+      },
+      shouldDeferPseudoToolCallCloseout: () => {
+        order.push("repair");
+        return false;
       },
       buildRecoveryToolBudgetCloseoutSnapshot: () => {
         order.push("recovery");
@@ -742,6 +761,20 @@ test("CloseoutPolicyRegistry returns pseudo tool-call closeout decision", () => 
     roundCount: 2,
     evidenceAvailable: true,
   });
+});
+
+test("CloseoutPolicyRegistry defers pseudo tool-call closeout when a natural-finish repair is pending", () => {
+  const registry = createCloseoutPolicyRegistry();
+
+  assert.equal(
+    registry.evaluateRemainingPendingCalls(remainingPendingInput({
+      pendingToolCallCount: 0,
+      pendingContinuation: false,
+      deferPseudoToolCallToRepair: true,
+      lastText: "<tool_call>permission_query</tool_call>",
+    })),
+    null,
+  );
 });
 
 test("CloseoutPolicyRegistry skips pseudo tool-call when continuation is pending", () => {
@@ -973,6 +1006,64 @@ test("CloseoutPolicyRegistry returns excessive session continuation closeout dec
     maxRounds: 3,
     pendingToolCallCount: 1,
     toolName: "sessions_send",
+    toolCallCount: 2,
+    roundCount: 2,
+    evidenceAvailable: true,
+  });
+});
+
+test("CloseoutPolicyRegistry carries completed final content count for excessive session continuation", () => {
+  const registry = createCloseoutPolicyRegistry();
+  const first = toolCall("s1", "sessions_send", {
+    session_key: "worker:explore:1",
+  });
+  const second = toolCall("s2", "sessions_send", {
+    session_key: "worker:explore:1",
+  });
+  const pending = toolCall("s3", "sessions_send", {
+    session_key: "worker:explore:1",
+  });
+  const completedContent = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    task_id: "task-1",
+    status: "completed",
+    session_key: "worker:explore:1",
+    agent_id: "explore",
+    result: "completed",
+    final_content: "Vendor Alpha verified $19/seat and limited API integration catalog.",
+  });
+
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
+    pendingCalls: [pending],
+    toolTrace: [
+      traceRound(1, [first], [
+        {
+          toolCallId: "s1",
+          toolName: "sessions_send",
+          isError: false,
+          contentBytes: 12,
+        },
+      ]),
+      traceRound(2, [second], [
+        {
+          toolCallId: "s2",
+          toolName: "sessions_send",
+          isError: false,
+          contentBytes: Buffer.byteLength(completedContent),
+          content: completedContent,
+        },
+      ]),
+    ],
+  }));
+
+  assert.equal(decision?.kind, "closeout");
+  assert.equal(decision?.reason, "excessive_session_continuation");
+  assert.deepEqual(decision?.closeout, {
+    reason: "excessive_session_continuation",
+    maxRounds: 3,
+    pendingToolCallCount: 1,
+    toolName: "sessions_send",
+    finalContentCount: 1,
     toolCallCount: 2,
     roundCount: 2,
     evidenceAvailable: true,

@@ -42,6 +42,7 @@ test("ENGINE_TOOL_CALL_NORMALIZATION_ORDER pins the engine normalizer sequence",
     "sessionContinuationLookupDirective",
     "explicitContinuationHistory",
     "sessionToolCalls",
+    "loopbackSpawnCallUrls",
     "privateUrlResearchSpawn",
     "localUrlWebFetch",
     "boundedTimeoutSourceSpawn",
@@ -137,6 +138,104 @@ test("buildToolCallNormalizationContext resolves live continuation context and w
   assert.equal(ctx.sessionContinuationLookupDirective, null);
   assert.equal(ctx.browserAvailable, true);
   assert.equal(ctx.exploreAvailable, false);
+});
+
+test("buildToolCallNormalizationContext does not inject session continuation for rewrite-only recovery", () => {
+  const sessionKey = "worker:browser:task-abc123";
+  const ctx = buildToolCallNormalizationContext({
+    taskPrompt: [
+      "Original user goal (verbatim):",
+      "Inspect the browser-visible dashboard.",
+      "Latest user direction (verbatim):",
+      "System recovery: the previous final answer did not satisfy required goal slots.",
+      "Continue the original mission by rewriting the final answer from existing browser evidence only.",
+      "Do not call sessions_spawn, sessions_send, or browser tools again just to repair the final wording.",
+    ].join("\n"),
+    messages: [
+      {
+        role: "tool",
+        toolCallId: "call-1",
+        name: "sessions_spawn",
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: sessionKey,
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Browser evidence completed.",
+          final_content: "Browser evidence completed.",
+          payload: null,
+        }),
+      },
+    ],
+    toolTrace: [],
+    repairMarkers: [],
+    capabilityInspection: {
+      availableWorkers: ["browser"],
+    },
+  });
+
+  assert.equal(ctx.sessionContinuationDirective, null);
+  assert.equal(ctx.sessionContinuationLookupDirective, null);
+});
+
+test("normalizeEngineToolCalls rewrites Source URL continuations to the matching session evidence stream", () => {
+  const routeSessionKey =
+    "worker:explore:task:TASK-asiawalk:call_function_route_1";
+  const liveSessionKey =
+    "worker:browser:task:TASK-asiawalk:call_function_live_1";
+  const calls: LLMToolCall[] = [
+    {
+      id: "call-1",
+      name: "sessions_send",
+      input: {
+        session_key: liveSessionKey,
+        message: [
+          "Source URL: http://127.0.0.1:61992/asiawalk-route",
+          "Required dimensions: route shape, operator notes, route risks, stop list, distances/durations.",
+        ].join("\n"),
+      },
+    },
+  ];
+
+  const result = normalizeEngineToolCalls(
+    calls,
+    baseContext({
+      sessionContinuationContext: [
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "TASK-asiawalk",
+          session_key: routeSessionKey,
+          agent_id: "explore",
+          label: "AsiaWalk Route Stream",
+          status: "completed",
+          tool_chain: ["explore"],
+          evidence_excerpt:
+            "## AsiaWalk Route Evidence\nSource URL: http://127.0.0.1:61992/asiawalk-route\nRoute shape: Seoul, Taipei, Tokyo.",
+          result: "AsiaWalk route evidence completed.",
+          final_content: "AsiaWalk route evidence completed.",
+          payload: null,
+        }),
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "TASK-asiawalk",
+          session_key: liveSessionKey,
+          agent_id: "browser",
+          label: "AsiaWalk Live Readiness Stream",
+          status: "completed",
+          tool_chain: ["browser"],
+          evidence_excerpt:
+            "## AsiaWalk Live Readiness\nSource URL: http://127.0.0.1:61992/asiawalk-live\nReadiness: yellow.",
+          result: "AsiaWalk live readiness browser evidence completed.",
+          final_content: "AsiaWalk live readiness browser evidence completed.",
+          payload: null,
+        }),
+      ].join("\n"),
+    }),
+  );
+
+  assert.equal(result[0]?.input["session_key"], routeSessionKey);
 });
 
 test("applyEngineToolCallsHook normalizes before recovery-budget truncation", () => {

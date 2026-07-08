@@ -236,6 +236,31 @@ test("TaskFacts owns extraneous provider schema repair prompts and markers", () 
   );
 });
 
+test("TaskFacts extraneous provider schema repair preserves exact final answer shapes", () => {
+  const prompt = buildExtraneousProviderTableSchemaRepairPrompt({
+    taskPrompt: [
+      "Compare Vendor Alpha and Vendor Beta.",
+      "Use this exact final answer shape after both child session tool results return:",
+      "## Source coverage",
+      "- Alpha evidence: TURNKEYAI_VENDOR_ALPHA_OK; $19 per seat.",
+      "- Beta evidence: TURNKEYAI_VENDOR_BETA_OK; $29 per workspace.",
+      "- comparison conclusion: TURNKEYAI_MISSION_COMPARISON_OK.",
+      "- residual risk: source-bounded to two local fixture sources.",
+      "Do not use tables, links, code fences, or bold/italic markup.",
+    ].join("\n"),
+    resultText: [
+      "| provider | 是否明确支持 search/web_search | 输入价格 | 输出价格 |",
+      "| --- | --- | --- | --- |",
+      "| A | 未验证 | 未验证 | 未验证 |",
+    ].join("\n"),
+  });
+
+  assert.match(prompt, /Preserve that shape exactly/);
+  assert.match(prompt, /Do not add a blocked\/partial preamble/);
+  assert.match(prompt, /extra bullets/);
+  assert.match(prompt, /bold\/italic markup/);
+});
+
 test("TaskFacts owns awaiting-context setup suppression and marker idempotency", () => {
   const taskPrompt =
     "No research is needed. Briefly acknowledge and continue when context is provided.";

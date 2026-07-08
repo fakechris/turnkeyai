@@ -20,7 +20,7 @@ import {
   buildGatewayInput,
   buildToolRoundGatewayRequest,
   enforceRequestedThreeLineLabelShape,
-  extractMentions,
+  extractMentionsForFinalResponse,
   hasToolDefinition,
 } from "./gateway-input-builder";
 import {
@@ -64,6 +64,7 @@ import {
   buildToolDefinitionFilterMessageContext,
   buildToolDefinitionFilterTaskContext,
   filterToolDefinitionsForTask,
+  toolRoundLimitForTask,
 } from "./tool-definition-filter";
 import {
   readToolResultContentText,
@@ -115,6 +116,7 @@ import {
   normalizeBoundedTimeoutDuplicateSourceSpawns,
   normalizeBoundedTimeoutSourceSpawnAgents,
   normalizeExplicitContinuationHistoryCalls,
+  normalizeLoopbackSpawnCallUrls,
   normalizeLocalUrlWebFetchCalls,
   normalizePrivateUrlResearchSpawnCalls,
   resolveRecoveryToolBudgetForActivation,
@@ -205,6 +207,7 @@ import {
   readApprovalWaitTimeoutCloseoutRepair,
   readBrowserRecoverySummariesFromTrace,
   readCompletedSessionEvidenceText,
+  readPolicyCoordinatorRoleHandoffEcho,
   readFalseEvidenceBlockedSynthesisRepair,
   readFinalRecoveryBudgetCloseoutRepair,
   readForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
@@ -269,6 +272,29 @@ import {
   type PreCompactionMemoryFlusher,
   type PreCompactionMemoryFlushResult,
 } from "./pre-compaction-memory-flusher";
+
+function localEvidenceCloseoutReason(
+  result: GenerateTextResult,
+): ToolLoopCloseoutMetadata["reason"] {
+  const raw = result.raw;
+  if (
+    raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    (raw as Record<string, unknown>)["localEvidenceStatus"] === "completed"
+  ) {
+    return "completed_sub_agent_final";
+  }
+  if (
+    raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    (raw as Record<string, unknown>)["localEvidenceStatus"] === "partial"
+  ) {
+    return "partial_sub_agent_final";
+  }
+  return "tool_evidence_fallback";
+}
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
@@ -455,8 +481,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     }).facts;
     for (let round = 0; ; round++) {
       throwIfAborted(input.signal);
-      const maxRounds =
-        activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+      const maxRounds = toolRoundLimitForTask(
+        buildToolDefinitionFilterTaskContext(input.activation, input.packet.taskPrompt),
+        activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+      );
       const warningMessages = withFinalToolRoundWarning(messages, {
         active: Boolean(activeToolLoop),
         round,
@@ -556,7 +584,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           throw error;
         }
         toolLoopCloseout = {
-          reason: "tool_evidence_fallback",
+          reason: localEvidenceCloseoutReason(localResult),
           maxRounds,
           toolCallCount: countNativeToolCalls(toolTrace),
           roundCount: toolTrace.length,
@@ -623,6 +651,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       toolCalls = applySessionContinuationLookupDirective(toolCalls, sessionContinuationLookupDirective);
       toolCalls = normalizeExplicitContinuationHistoryCalls(toolCalls, input.packet.taskPrompt);
       toolCalls = normalizeSessionToolCalls(toolCalls, sessionContinuationContext);
+      toolCalls = normalizeLoopbackSpawnCallUrls(toolCalls, { taskPrompt: input.packet.taskPrompt });
       toolCalls = normalizePrivateUrlResearchSpawnCalls(toolCalls, {
         browserAvailable:
           input.packet.capabilityInspection?.availableWorkers?.includes("browser") ?? false,
@@ -1888,6 +1917,22 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           evidenceAvailable: true,
         };
         toolLoopCloseout ??= completedSessionCloseout;
+        const completedLocalResult = buildLocalEvidenceCloseout({
+          activation: input.activation,
+          messages,
+          packet: input.packet,
+          selection,
+          error: new Error(
+            "completed local evidence synthesis bypassed after source-backed evidence",
+          ),
+        });
+        if (completedLocalResult) {
+          result = maybeRedactForbiddenLocalUrls({
+            result: completedLocalResult,
+            packet: input.packet,
+          });
+          break;
+        }
         throwIfAborted(input.signal);
         const generated = await synthesizeFinalAfterToolRoundLimit({
           messages,
@@ -2439,6 +2484,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       taskPrompt: input.packet.taskPrompt,
       evidenceText: collectToolTraceResultContent(toolTrace),
     });
+    result = maybeRedactForbiddenLocalUrls({
+      result,
+      packet: input.packet,
+    });
 
     const finalText = enforceRequestedThreeLineLabelShape({
       taskPrompt: input.packet.taskPrompt,
@@ -2448,7 +2497,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
     return {
       content: finalText,
-      mentions: extractMentions(finalText),
+      mentions: extractMentionsForFinalResponse(finalText, {
+        toolLoopCloseoutReason: toolLoopCloseout?.reason,
+      }),
       metadata: {
         adapterName: result.adapterName,
         providerId: result.providerId,
@@ -2567,7 +2618,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const terminalCloseout = createTerminalCloseoutController();
     const evidenceLedger = createEvidenceLedger();
     const toolLoopStartedAtMs = this.clock.now();
-    const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+    const maxRounds = toolRoundLimitForTask(
+      buildToolDefinitionFilterTaskContext(activation, packet.taskPrompt),
+      activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+    );
     // Per-run closeout state: hooks fire across different engine callbacks, so a
     // single EngineRunState instance owns what the inline loop keeps as locals
     // (toolLoopCloseout/result/reduction/memoryFlushes/completed signals).
@@ -2579,6 +2633,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     });
     const buildEngineFinalResponse = createEngineFinalResponseBuilder({
       taskPrompt: packet.taskPrompt,
+      redactionConstraintText: `${packet.taskPrompt}\n${packet.outputContract ?? ""}`,
       initialMessages: initialGatewayInput.messages,
       readToolTraceResultContent: (messages) =>
         runEvidence.snapshot(messages).toolTraceResultContent,
@@ -2735,6 +2790,25 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               evidence: runEvidence,
               now: () => this.clock.now(),
               toolLoopStartedAtMs,
+              shouldDeferPseudoToolCallCloseout: ({ recoveryUsedToolCalls }) =>
+                repairPolicy.evaluateNaturalFinish({
+                  ...(activation === undefined ? {} : { activation }),
+                  finalRecoveryBudget: recoveryToolBudget
+                    ? {
+                        maxToolCalls: recoveryToolBudget.maxToolCalls,
+                        usedToolCalls: recoveryUsedToolCalls,
+                      }
+                    : null,
+                  messages: state.messages,
+                  repairMarkers: ctx.repairMarkers ?? [],
+                  resultText: state.lastText,
+                  taskPrompt: packet.taskPrompt,
+                  toolTrace,
+                  taskFacts,
+                  ...(initialGatewayInput.tools === undefined
+                    ? {}
+                    : { tools: initialGatewayInput.tools }),
+                }) !== null,
               ...(activeToolLoop?.maxWallClockMs === undefined
                 ? {}
                 : { activeMaxWallClockMs: activeToolLoop.maxWallClockMs }),
@@ -3024,18 +3098,94 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // live state, so `??=` fills in the natural-finish case while preserving any
         // closeout-set snapshot. Returns the text unchanged.
         onFinalize: (text, state) => {
+          if (
+            activeToolLoop &&
+            hasUsableEvidence(toolTrace) &&
+            readPolicyCoordinatorRoleHandoffEcho(text)
+          ) {
+            const localResult = buildLocalEvidenceCloseout({
+              activation,
+              messages: state.messages,
+              packet,
+              selection,
+              error: new Error(
+                "final synthesis repeated coordinator handoff protocol",
+              ),
+            });
+            if (localResult) {
+              const redacted = maybeRedactForbiddenLocalUrls({
+                result: localResult,
+                packet,
+              });
+              runState.recordToolLoopCloseout({
+                reason: localEvidenceCloseoutReason(redacted),
+                maxRounds,
+                toolCallCount: countNativeToolCalls(toolTrace),
+                roundCount: toolTrace.length,
+                evidenceAvailable: true,
+              });
+              runState.recordCloseoutResult(redacted);
+              runState.captureFinalMessagesIfAbsent(state.messages);
+              return redacted.text;
+            }
+          }
           runState.captureFinalMessagesIfAbsent(state.messages);
           return text;
         },
       }, policyTrace),
     });
 
-    const finalText = await runAgent({
+    let finalText = await runAgent({
       messages: initialGatewayInput.messages,
       ctx,
       ...(signal ? { signal } : {}),
       observer,
     });
+    if (
+      activeToolLoop &&
+      hasUsableEvidence(toolTrace) &&
+      readPolicyCoordinatorRoleHandoffEcho(finalText)
+    ) {
+      const capturedCloseoutMessages = runState.finalMessages();
+      const traceCloseoutMessages = buildToolTraceLocalCloseoutMessages(
+        initialGatewayInput.messages,
+        toolTrace,
+      );
+      const buildCloseout = (
+        messages: readonly LLMMessage[],
+      ): GenerateTextResult | null =>
+        buildLocalEvidenceCloseout({
+          activation,
+          messages: [...messages],
+          packet,
+          selection,
+          error: new Error(
+            "final synthesis repeated coordinator handoff protocol",
+          ),
+        });
+      const localResult =
+        (capturedCloseoutMessages
+          ? buildCloseout(capturedCloseoutMessages)
+          : null) ?? buildCloseout(traceCloseoutMessages);
+      if (localResult) {
+        const redacted = maybeRedactForbiddenLocalUrls({
+          result: localResult,
+          packet,
+        });
+        runState.recordToolLoopCloseout({
+          reason: localEvidenceCloseoutReason(redacted),
+          maxRounds,
+          toolCallCount: countNativeToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+          evidenceAvailable: true,
+        });
+        runState.recordCloseoutResult(redacted);
+        runState.captureFinalMessagesIfAbsent(
+          capturedCloseoutMessages ?? traceCloseoutMessages,
+        );
+        finalText = redacted.text;
+      }
+    }
 
     await recordEngineReductionBoundary({
       activation,
@@ -3058,6 +3208,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     });
   }
 
+}
+
+function buildToolTraceLocalCloseoutMessages(
+  initialMessages: readonly LLMMessage[],
+  toolTrace: readonly NativeToolRoundTrace[],
+): LLMMessage[] {
+  const toolMessages = toolTrace.flatMap((round) =>
+    round.results
+      .filter((result) => typeof result.content === "string")
+      .map((result) => ({
+        role: "tool" as const,
+        content: result.content ?? "",
+        toolCallId: result.toolCallId,
+        name: result.toolName,
+      })),
+  );
+  return [...initialMessages, ...toolMessages];
 }
 
 // ORDER_DEPENDENT_TOOL_NAMES, shouldSerializeToolBatch, findRepeatedFailedToolCall

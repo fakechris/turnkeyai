@@ -9,16 +9,23 @@ import {
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildIndependentEvidenceStreamContinuationPrompt,
   buildMissingApprovalGateRepairPrompt,
+  buildRepeatedPartialSessionEvidenceCloseoutPrompt,
   buildSupplementalLocalTimeoutProbePrompt,
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
 } from "../runtime-policy/prompt-renderers";
-import { buildContinuationDirectiveContext } from "../tool-protocol";
+import {
+  buildContinuationDirectiveContext,
+  normalizeUrlForComparison,
+  readStringInput,
+} from "../tool-protocol";
+import { parseSessionToolResult } from "../session-tool-result-protocol";
 import {
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   findIncompleteApprovedBrowserSession,
   hasExecutedSessionsSend,
+  readCompletedSessionEvidence,
   shouldRunSupplementalLocalTimeoutProbe,
 } from "../runtime-facts/text-fallback-readers";
 import { hasLatestSupplementalLocalTimeoutProbePrompt } from "../runtime-facts/repair-marker-facts";
@@ -185,6 +192,13 @@ export type ForcedToolRoundExecutor = (
   messages: LLMMessage[];
 }>;
 
+interface NamedEvidenceSourceSpec {
+  label: string;
+  url: string;
+  agentId: "explore" | "browser";
+  subject: string;
+}
+
 export class ContinuationController {
   previewEmptyRoundContinuation(
     input: EmptyRoundContinuationInput,
@@ -217,6 +231,7 @@ export class ContinuationController {
         input: {
           session_key: directive.sessionKey,
           message: directive.messageHint,
+          ...(directive.label ? { label: directive.label } : {}),
         },
       };
     }
@@ -406,6 +421,16 @@ export class ContinuationController {
     if (decision.kind !== "continue") {
       return { kind: "none" };
     }
+    const forcedMissingSource = buildForcedMissingNamedEvidenceSourceCall(input);
+    if (forcedMissingSource) {
+      return {
+        kind: "forced_tool_round",
+        calls: [forcedMissingSource],
+        assistantText:
+          "Runtime correction: continuing the missing named evidence stream before final synthesis.",
+        reason: "missing_named_independent_evidence_stream",
+      };
+    }
     return {
       kind: "continue",
       messages: [
@@ -496,6 +521,24 @@ export class ContinuationController {
     input: AfterExecuteContinuationInput,
     executeForcedRound: ForcedToolRoundExecutor,
   ): Promise<ContinuationHookResult | null> {
+    const repeatedPartialEvidence =
+      findPartialSessionSendCloseoutEvidence(input);
+    if (repeatedPartialEvidence) {
+      return {
+        messages: [
+          ...input.messages,
+          {
+            role: "user",
+            content: buildRepeatedPartialSessionEvidenceCloseoutPrompt({
+              evidenceText: repeatedPartialEvidence.evidenceText,
+              repeated: repeatedPartialEvidence.repeated,
+            }),
+          },
+        ],
+        forceToolChoice: "none",
+      };
+    }
+
     const timeoutContinuation = this.onAfterExecuteTimeoutContinuation({
       messages: input.messages,
       taskPrompt: input.taskPrompt,
@@ -564,6 +607,14 @@ export class ContinuationController {
         ...(input.tools === undefined ? {} : { tools: input.tools }),
         ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
       });
+    const forcedIndependentEvidenceStreamsResult =
+      await this.applyForcedToolRoundContinuation(
+        independentEvidenceStreams,
+        executeForcedRound,
+      );
+    if (forcedIndependentEvidenceStreamsResult) {
+      return forcedIndependentEvidenceStreamsResult;
+    }
     const independentEvidenceStreamsResult =
       this.applyContinueAction(independentEvidenceStreams);
     if (independentEvidenceStreamsResult) {
@@ -633,6 +684,276 @@ export class ContinuationController {
       },
       executeForcedRound,
     );
+  }
+}
+
+function findPartialSessionSendCloseoutEvidence(
+  input: Pick<AfterExecuteContinuationInput, "results" | "taskPrompt" | "toolTrace">,
+): { evidenceText: string; repeated: boolean } | null {
+  for (const result of input.results) {
+    if (result.toolName !== "sessions_send") {
+      continue;
+    }
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed || parsed.status !== "partial") {
+      continue;
+    }
+    const sessionKey = parsed.session_key;
+    const repeated = previousSessionsSendExists(input.toolTrace, {
+      sessionKey,
+      currentToolCallId: readResultToolCallId(result),
+    });
+    if (!repeated && !isSessionSynthesisFollowupTask(input.taskPrompt)) {
+      continue;
+    }
+    const evidence = readCompletedSessionEvidence(parsed);
+    if (evidence) {
+      return { evidenceText: evidence, repeated };
+    }
+  }
+  return null;
+}
+
+function readResultToolCallId(result: { toolName: string; content: string }): string | undefined {
+  const value = (result as { toolCallId?: unknown }).toolCallId;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function isSessionSynthesisFollowupTask(taskPrompt: string): boolean {
+  const asksForSynthesis =
+    /\b(?:decision note|synthesi[sz]e|turn (?:the )?evidence into|turn .* notes into|revisit .* notes|source[- ]bounded final|product lead)\b/i.test(
+      taskPrompt,
+    );
+  if (!asksForSynthesis) {
+    return false;
+  }
+  return /\b(?:same|previous|earlier|existing|prior)\b[\s\S]{0,120}\b(?:research thread|thread|session|research|notes|evidence|work)\b|\b(?:research thread|thread|session|research|notes|evidence|work)\b[\s\S]{0,120}\b(?:same|previous|earlier|existing|prior)\b/i.test(
+    taskPrompt,
+  );
+}
+
+function previousSessionsSendExists(
+  toolTrace: readonly NativeToolRoundTrace[],
+  input: { sessionKey: string; currentToolCallId?: string | null },
+): boolean {
+  let sendCount = 0;
+  let currentRecorded = false;
+  for (const round of toolTrace) {
+    for (const call of round.calls) {
+      if (
+        call.name !== "sessions_send" ||
+        readStringInput(call.input, "session_key") !== input.sessionKey
+      ) {
+        continue;
+      }
+      sendCount += 1;
+      if (input.currentToolCallId && call.id === input.currentToolCallId) {
+        currentRecorded = true;
+      }
+    }
+  }
+  return sendCount - (currentRecorded ? 1 : 0) > 0;
+}
+
+function buildForcedMissingNamedEvidenceSourceCall(
+  input: IndependentEvidenceStreamsInput,
+): LLMToolCall | null {
+  if (!hasToolDefinition(input.tools, "sessions_spawn")) {
+    return null;
+  }
+  const sources = extractNamedEvidenceSourceSpecs(input.taskPrompt);
+  if (sources.length < 3) {
+    return null;
+  }
+  const completedTexts = collectCompletedSessionResultTexts(input.toolTrace);
+  const missing = sources.filter(
+    (source) => !sourceEvidenceTextsMatch(completedTexts, source),
+  );
+  if (missing.length !== 1) {
+    return null;
+  }
+  const [missingSource] = missing;
+  if (missingSource?.agentId !== "browser" || !isLiveBrowserSource(missingSource)) {
+    return null;
+  }
+  const matchedCount = sources.length - missing.length;
+  if (matchedCount < sources.length - 1) {
+    return null;
+  }
+  const source = missingSource;
+  return {
+    id: `runtime-independent-source-${input.toolTrace.length + 1}`,
+    name: "sessions_spawn",
+    input: {
+      agent_id: source.agentId,
+      label: source.label,
+      task: buildNamedEvidenceSourceTask(source),
+    },
+  };
+}
+
+function extractNamedEvidenceSourceSpecs(taskPrompt: string): NamedEvidenceSourceSpec[] {
+  const specs: NamedEvidenceSourceSpec[] = [];
+  for (const line of taskPrompt.split(/\r?\n/)) {
+    const match = line.match(
+      /^\s*(?:[-*]\s*)?([^:\n]{3,80}?(?:source|dashboard))\s*:\s*(https?:\/\/\S+)/i,
+    );
+    const rawLabel = match?.[1]?.trim();
+    const rawUrl = match?.[2]?.replace(/[.,;]+$/, "");
+    if (!rawLabel || !rawUrl) {
+      continue;
+    }
+    const agentId: "explore" | "browser" =
+      /\b(?:browser|rendered|visible|dashboard|live readiness|signal dashboard)\b/i.test(
+        rawLabel,
+      )
+        ? "browser"
+        : "explore";
+    specs.push({
+      label: normalizeEvidenceSourceLabel(rawLabel),
+      url: rawUrl,
+      agentId,
+      subject: evidenceSourceSubject(rawLabel, rawUrl),
+    });
+  }
+  return dedupeNamedEvidenceSourceSpecs(specs).slice(0, 6);
+}
+
+function normalizeEvidenceSourceLabel(rawLabel: string): string {
+  const label = rawLabel
+    .replace(/\bsource\b/gi, "stream")
+    .replace(/\bdashboard\b/gi, "dashboard stream")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /\bstream\b/i.test(label) ? label : `${label} Stream`;
+}
+
+function evidenceSourceSubject(rawLabel: string, rawUrl: string): string {
+  const labelSubject = rawLabel
+    .replace(/\b(?:source|dashboard|stream)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (labelSubject) {
+    return labelSubject;
+  }
+  try {
+    return (
+      new URL(rawUrl).pathname
+        .split("/")
+        .filter(Boolean)
+        .at(-1)
+        ?.replace(/[-_]+/g, " ")
+        .toLowerCase() ?? ""
+    );
+  } catch {
+    return "";
+  }
+}
+
+function dedupeNamedEvidenceSourceSpecs(
+  specs: NamedEvidenceSourceSpec[],
+): NamedEvidenceSourceSpec[] {
+  const seen = new Set<string>();
+  const deduped: NamedEvidenceSourceSpec[] = [];
+  for (const spec of specs) {
+    const key = normalizeUrlForComparison(spec.url).toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(spec);
+  }
+  return deduped;
+}
+
+function collectCompletedSessionResultTexts(
+  toolTrace: NativeToolRoundTrace[],
+): string[] {
+  const texts: string[] = [];
+  for (const round of toolTrace) {
+    for (const result of round.results) {
+      if (
+        result.toolName !== "sessions_spawn" &&
+        result.toolName !== "sessions_send"
+      ) {
+        continue;
+      }
+      if (!result.content) {
+        continue;
+      }
+      const parsed = parseSessionToolResult(result.content);
+      if (!parsed || parsed.status !== "completed") {
+        continue;
+      }
+      texts.push(
+        [
+          parsed.label ?? "",
+          parsed.evidence_summary ?? "",
+          parsed.result,
+          parsed.final_content ?? "",
+          stringifyPayload(parsed.payload),
+        ].join("\n"),
+      );
+    }
+  }
+  return texts;
+}
+
+function sourceEvidenceTextMatches(
+  evidenceText: string,
+  source: NamedEvidenceSourceSpec,
+): boolean {
+  const normalizedEvidence = evidenceText.toLowerCase();
+  const normalizedUrl = normalizeUrlForComparison(source.url).toLowerCase();
+  if (normalizedUrl && normalizedEvidence.includes(normalizedUrl)) {
+    return true;
+  }
+  try {
+    const pathname = new URL(source.url).pathname.toLowerCase();
+    if (pathname && normalizedEvidence.includes(pathname)) {
+      return true;
+    }
+  } catch {
+    // Source specs are parsed from URL lines; ignore malformed leftovers.
+  }
+  return Boolean(source.subject && normalizedEvidence.includes(source.subject));
+}
+
+function sourceEvidenceTextsMatch(
+  completedTexts: readonly string[],
+  source: NamedEvidenceSourceSpec,
+): boolean {
+  return completedTexts.some((text) => sourceEvidenceTextMatches(text, source));
+}
+
+function isLiveBrowserSource(source: NamedEvidenceSourceSpec): boolean {
+  return /\b(?:live|dashboard|signal|readiness|browser)\b/i.test(
+    `${source.label} ${source.subject}`,
+  );
+}
+
+function buildNamedEvidenceSourceTask(source: NamedEvidenceSourceSpec): string {
+  const action =
+    source.agentId === "browser"
+      ? "Inspect the rendered page as browser-visible evidence."
+      : "Collect source-backed facts from this source.";
+  return [
+    action,
+    `Source URL: ${source.url}`,
+    `Evidence stream label: ${source.label}`,
+    "Return only verified facts for this source, explicit unverified scope, residual risk, and source URL.",
+  ].join("\n");
+}
+
+function stringifyPayload(payload: unknown): string {
+  if (payload == null) {
+    return "";
+  }
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return "";
   }
 }
 

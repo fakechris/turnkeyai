@@ -58,6 +58,63 @@ test("PermissionPolicy suppresses read-only permission_query with a consumed too
   );
 });
 
+test("PermissionPolicy suppresses permission_query invented during source-backed recovery context", () => {
+  const policy = createPermissionPolicy();
+  const input = {
+    calls: [
+      {
+        id: "call-permission",
+        name: "permission_query",
+        input: {
+          action: "browser.form.submit",
+          title: "Approve local dry-run browser form submission",
+          risk: "Applies an approval-gated browser form submission in an isolated local dry-run page.",
+          scope: "mutate",
+          rationale:
+            "The user asked to carry a browser form submission through the approval gate.",
+        },
+      },
+    ],
+    taskPrompt:
+      "System recovery: verify only the missing or unverified core slots requested by the original mission.",
+    sessionContext:
+      "Original mission: Start a source-backed review of Vendor Alpha for a product lead. Focus on pricing, strength, and risk, and keep source labels visible.",
+  };
+
+  assert.equal(policy.wouldSuppressReadOnlyPermissionQuery(input), true);
+  assert.equal(policy.suppressReadOnlyPermissionQuery(input).kind, "suppress");
+});
+
+test("PermissionPolicy suppresses permission_query invented for visible approval fields in browser page reviews", () => {
+  const policy = createPermissionPolicy();
+  const input = {
+    calls: [
+      {
+        id: "call-permission",
+        name: "permission_query",
+        input: {
+          action: "browser.form.submit",
+          title: "Approve local dry-run browser form submission",
+          risk: "Applies an approval-gated browser form submission in an isolated local dry-run page.",
+          scope: "mutate",
+          rationale:
+            "The page review asks for an approval requirement and a details popup.",
+        },
+      },
+    ],
+    taskPrompt: [
+      "Review this complex browser page as an operator would see it.",
+      "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+      "Locate and click the details popup trigger, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+      "Use only what the browser-visible page state actually shows.",
+    ].join("\n"),
+    sessionContext: "",
+  };
+
+  assert.equal(policy.wouldSuppressReadOnlyPermissionQuery(input), true);
+  assert.equal(policy.suppressReadOnlyPermissionQuery(input).kind, "suppress");
+});
+
 test("PermissionPolicy does not suppress requested approval-gated browser actions", () => {
   const policy = createPermissionPolicy();
   const input = {

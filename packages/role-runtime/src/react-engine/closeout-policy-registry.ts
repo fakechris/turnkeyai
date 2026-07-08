@@ -29,6 +29,8 @@ import {
   countNativeToolCalls,
   type NativeToolRoundTrace,
 } from "../native-tool-messages";
+import { readCompletedSessionEvidenceFacts } from "../tool-result-evidence";
+import type { RoleToolExecutionResult } from "../tool-use";
 import type {
   ExecutionBudgetController,
   ExecutionBudgetCloseoutSnapshot,
@@ -137,6 +139,7 @@ export interface ExcessiveSessionContinuationCloseoutMetadata {
   maxRounds: number;
   pendingToolCallCount: number;
   toolName: string;
+  finalContentCount?: number;
   toolCallCount: number;
   roundCount: number;
   evidenceAvailable: boolean;
@@ -146,6 +149,7 @@ export interface RemainingPendingCallsCloseoutInput {
   pendingCalls: LLMToolCall[];
   pendingToolCallCount: number;
   pendingContinuation: boolean;
+  deferPseudoToolCallToRepair: boolean;
   lastText: string;
   wallClockBudget: WallClockBudgetCloseoutSignal | null;
   taskPrompt: string;
@@ -179,6 +183,10 @@ export interface PendingCallsCloseoutInput {
   recoveryToolBudget: RecoveryToolBudgetSignal | null;
   readOnlyPermissionQuerySuppressed(): boolean;
   previewEmptyRoundContinuation(): LLMToolCall | null;
+  shouldDeferPseudoToolCallCloseout(input: {
+    usedToolCalls: number;
+    recoveryUsedToolCalls: number;
+  }): boolean;
   buildRecoveryToolBudgetCloseoutSnapshot(): ExecutionBudgetCloseoutSnapshot;
   buildWallClockBudgetCloseoutSignal(
     input: PendingCallsWallClockBudgetSignalInput,
@@ -212,6 +220,10 @@ export interface PendingCallsCloseoutHookInput {
   evidence: EvidenceRunSnapshotter;
   now(): number;
   toolLoopStartedAtMs: number;
+  shouldDeferPseudoToolCallCloseout(input: {
+    usedToolCalls: number;
+    recoveryUsedToolCalls: number;
+  }): boolean;
   activeMaxWallClockMs?: number;
   tools?: readonly ContinuationToolDefinition[];
 }
@@ -518,6 +530,26 @@ export interface CloseoutPolicyRegistry {
   evaluateTerminateHook(input: TerminateCloseoutHookInput): TerminateCloseoutHookResult;
 }
 
+function completedFinalContentCountForSession(
+  toolTrace: readonly NativeToolRoundTrace[],
+  sessionKey: string,
+): { finalContentCount: number } | {} {
+  const results: RoleToolExecutionResult[] = toolTrace.flatMap((round) =>
+    round.results.map((result) => ({
+      toolCallId: result.toolCallId,
+      toolName: result.toolName,
+      content: result.content ?? "",
+      isError: result.isError,
+      ...(result.cancelled === undefined ? {} : { cancelled: result.cancelled }),
+      ...(result.skipped === undefined ? {} : { skipped: result.skipped }),
+    })),
+  );
+  const finalContentCount = readCompletedSessionEvidenceFacts(results)
+    .filter((fact) => fact.sessionKey === sessionKey)
+    .reduce((sum, fact) => sum + fact.finalContents.length, 0);
+  return finalContentCount > 0 ? { finalContentCount } : {};
+}
+
 class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
   evaluateRecoveryToolBudget(
     input: RecoveryToolBudgetCloseoutInput,
@@ -587,6 +619,9 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
       !input.pendingContinuation &&
       containsAnyToolCallForm({ text: input.lastText })
     ) {
+      if (input.deferPseudoToolCallToRepair) {
+        return null;
+      }
       return {
         kind: "closeout",
         policyId: "pseudo_tool_call",
@@ -705,6 +740,10 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
           maxRounds: input.maxRounds,
           pendingToolCallCount: input.pendingToolCallCount,
           toolName: excessiveSessionContinuation.toolName,
+          ...completedFinalContentCountForSession(
+            input.toolTrace,
+            excessiveSessionContinuation.sessionKey,
+          ),
           toolCallCount: input.usedToolCalls,
           roundCount: input.roundCount,
           evidenceAvailable: input.evidenceAvailable,
@@ -786,6 +825,14 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         pendingCalls: input.pendingCalls,
         pendingToolCallCount,
         pendingContinuation: pendingContinuation !== null,
+        deferPseudoToolCallToRepair:
+          pendingToolCallCount === 0 &&
+          pendingContinuation === null &&
+          containsAnyToolCallForm({ text: input.lastText }) &&
+          input.shouldDeferPseudoToolCallCloseout({
+            usedToolCalls: input.usedToolCalls,
+            recoveryUsedToolCalls: input.recoveryUsedToolCalls,
+          }),
         lastText: input.lastText,
         wallClockBudget: input.buildWallClockBudgetCloseoutSignal({
           pendingCalls: input.pendingCalls,
@@ -843,6 +890,8 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
               input.messages,
             ),
           }),
+        shouldDeferPseudoToolCallCloseout: (probe) =>
+          input.shouldDeferPseudoToolCallCloseout(probe),
         previewEmptyRoundContinuation: () =>
           input.continuation.previewEmptyRoundContinuation({
             active: input.active,

@@ -11,6 +11,7 @@ import { dedupeStrings } from "../tool-protocol";
 import {
   maybeAppendBrowserFailureBucketVisibility,
   maybeAppendBrowserRecoveryVisibility,
+  maybeAppendDashboardEscalationActionVisibility,
   maybeAppendRecoveredTimeoutCloseoutVisibility,
   maybeAppendTimeoutContinuationVisibility,
   maybeRedactForbiddenLocalUrls,
@@ -19,6 +20,7 @@ import {
 } from "../runtime-policy/synthesis-visibility";
 import { shouldPreserveRecoveredTimeoutCloseout } from "../runtime-facts/text-fallback-readers";
 import { readRuntimeBrowserSummariesFromTrace } from "../runtime-facts/browser-recovery-summary-producer";
+import { buildLocalEvidenceCloseout } from "../runtime-policy/prompt-renderers";
 import { recordRepairPrompt } from "../task-facts-shared";
 import {
   createRepairPolicyRegistry,
@@ -64,6 +66,7 @@ export interface CompletedCloseoutRepairLoopInput<
   TMemoryFlush = unknown,
 > {
   activation?: RoleActivationInput;
+  packet?: RolePromptPacket;
   taskPrompt: string;
   toolTrace: NativeToolRoundTrace[];
   repairMessages: LLMMessage[];
@@ -198,6 +201,7 @@ export class CompletedCloseoutController {
 
     const repairLoopResult = await this.runRepairLoop({
       ...(input.activation ? { activation: input.activation } : {}),
+      packet: input.packet,
       taskPrompt: input.packet.taskPrompt,
       toolTrace: input.toolTrace,
       repairMessages: input.messages,
@@ -263,8 +267,21 @@ export class CompletedCloseoutController {
       ...input,
       result: browserVisible,
     });
-    return maybeRedactForbiddenLocalUrls({
+    const sourceLabelVisible = appendCompletedSourceLabelVisibility({
+      ...input,
       result: timeoutVisible,
+    });
+    const approvalActionVisible = appendCompletedApprovalActionVisibility({
+      ...input,
+      result: sourceLabelVisible,
+    });
+    const approvalTargetMarkerVisible =
+      appendCompletedApprovalTargetMarkerVisibility({
+        ...input,
+        result: approvalActionVisible,
+      });
+    return maybeRedactForbiddenLocalUrls({
+      result: approvalTargetMarkerVisible,
       packet: input.packet,
     });
   }
@@ -396,6 +413,27 @@ export class CompletedCloseoutController {
         break;
       }
 
+      const localEvidenceCloseout = buildCompletedProductBriefLocalCloseout({
+        input,
+        repairMessages,
+        repairPrompt,
+      });
+      if (localEvidenceCloseout) {
+        recordRepairPrompt(input.repairMarkers, repairPrompt);
+        return {
+          kind: "final",
+          result: localEvidenceCloseout,
+          repairMessages,
+          memoryFlushes,
+          ...(synthesisReduction !== undefined
+            ? { reduction: synthesisReduction }
+            : {}),
+          ...(synthesisReductionSnapshot !== undefined
+            ? { reductionSnapshot: synthesisReductionSnapshot }
+            : {}),
+        };
+      }
+
       repairMessages = [
         ...repairMessages,
         { role: "assistant", content: synthesisResult.text },
@@ -441,6 +479,51 @@ export class CompletedCloseoutController {
 
 export function createCompletedCloseoutController(): CompletedCloseoutController {
   return new CompletedCloseoutController();
+}
+
+function buildCompletedProductBriefLocalCloseout(input: {
+  input: CompletedCloseoutRepairLoopInput;
+  repairMessages: LLMMessage[];
+  repairPrompt: string;
+}): GenerateTextResult | null {
+  if (
+    !input.repairPrompt.includes(
+      "Runtime correction: final product brief dropped required source-backed workbench evidence",
+    )
+  ) {
+    return null;
+  }
+  const localResult = buildLocalEvidenceCloseout({
+    ...(input.input.activation ? { activation: input.input.activation } : {}),
+    messages: input.repairMessages,
+    packet: input.input.packet ?? repairLoopPacket(input.input.taskPrompt),
+    selection: {},
+    error: new Error(
+      "completed product brief synthesis bypassed after source-backed evidence",
+    ),
+  });
+  return localEvidenceCloseoutKind(localResult) === "agent_workbench_product_brief"
+    ? localResult
+    : null;
+}
+
+function localEvidenceCloseoutKind(result: GenerateTextResult | null): unknown {
+  const raw = result?.raw;
+  return typeof raw === "object" && raw !== null
+    ? (raw as Record<string, unknown>)["localEvidenceKind"]
+    : undefined;
+}
+
+function repairLoopPacket(taskPrompt: string): RolePromptPacket {
+  return {
+    roleId: "role:completed-closeout",
+    roleName: "Completed Closeout",
+    seat: "member",
+    systemPrompt: "",
+    taskPrompt,
+    outputContract: "",
+    suggestedMentions: [],
+  } as RolePromptPacket;
 }
 
 function evaluateTableOrSchemaRepair(input: {
@@ -571,6 +654,15 @@ function appendCompletedBrowserVisibility(
       ...completedSession.finalContents,
     ].join("\n\n"),
   });
+  visible = maybeAppendDashboardEscalationActionVisibility({
+    result: visible,
+    taskPrompt: input.packet.taskPrompt,
+    evidenceText: [
+      input.completedSessionToolResultText,
+      ...browserRecoverySummaries,
+      ...completedSession.finalContents,
+    ].join("\n\n"),
+  });
   return visible;
 }
 
@@ -607,4 +699,201 @@ function appendCompletedTimeoutVisibility(
     return maybeAppendTimeoutContinuationVisibility(input.result);
   }
   return input.result;
+}
+
+function appendCompletedSourceLabelVisibility(
+  input: CompletedCloseoutVisibilityInput,
+): GenerateTextResult {
+  if (!input.completedSession) {
+    return input.result;
+  }
+  if (
+    !completedSourceLabelsVisibleRequired(input.packet.taskPrompt) &&
+    !completedBrowserActionSourceBindingRequired(input.packet.taskPrompt) &&
+    !completedBrowserContinuationSourceBindingRequired(input.packet.taskPrompt)
+  ) {
+    return input.result;
+  }
+  const evidenceText = [
+    input.completedSessionToolResultText,
+    ...input.completedSession.finalContents,
+  ].join("\n\n");
+  const labels = extractCompletedSourceLabels(evidenceText);
+  if (labels.length === 0) {
+    return input.result;
+  }
+  const missingLabels = labels.filter(
+    (label) => !sourceLabelVisible(input.result.text, label),
+  );
+  if (missingLabels.length === 0) {
+    return input.result;
+  }
+  const line = `Evidence / Sources: ${missingLabels
+    .map((label) => `${label} (completed delegated evidence)`)
+    .join("; ")}.`;
+  return {
+    ...input.result,
+    text: `${input.result.text.trim()}\n\n${line}`.trim(),
+  };
+}
+
+function appendCompletedApprovalActionVisibility(
+  input: CompletedCloseoutVisibilityInput,
+): GenerateTextResult {
+  if (!input.completedSession) {
+    return input.result;
+  }
+  if (/\bbrowser\.form\.submit\b/i.test(input.result.text)) {
+    return input.result;
+  }
+  if (!completedBrowserActionSourceBindingRequired(input.packet.taskPrompt)) {
+    return input.result;
+  }
+  const evidenceText = [
+    input.completedSessionToolResultText,
+    ...input.completedSession.finalContents,
+    input.result.text,
+  ].join("\n\n");
+  if (!completedApprovalGateApplied(evidenceText)) {
+    return input.result;
+  }
+  if (!completedApprovalFixtureVerified(evidenceText)) {
+    return input.result;
+  }
+  return {
+    ...input.result,
+    text: `${input.result.text.trim()}\n\nApproved action: browser.form.submit was the gated local dry-run action; the fixture evidence remains bounded to no external mutation.`.trim(),
+  };
+}
+
+function appendCompletedApprovalTargetMarkerVisibility(
+  input: CompletedCloseoutVisibilityInput,
+): GenerateTextResult {
+  if (!input.completedSession) {
+    return input.result;
+  }
+  const marker = extractCompletedApprovalTargetMarker(input.packet);
+  if (!marker || input.result.text.includes(marker)) {
+    return input.result;
+  }
+  const evidenceText = [
+    input.completedSessionToolResultText,
+    ...input.completedSession.finalContents,
+    input.result.text,
+  ].join("\n\n");
+  if (!completedApprovalGateApplied(evidenceText)) {
+    return input.result;
+  }
+  if (!completedApprovalBrowserActionCompleted(evidenceText)) {
+    return input.result;
+  }
+  return {
+    ...input.result,
+    text: `${input.result.text.trim()}\n\nTarget marker: ${marker}.`.trim(),
+  };
+}
+
+function extractCompletedApprovalTargetMarker(
+  packet: RolePromptPacket,
+): string | null {
+  const contractText = [
+    packet.taskPrompt,
+    packet.outputContract ?? "",
+  ].join("\n\n");
+  const match = contractText.match(/\bTURNKEYAI_APPROVAL_E2E_OK\b/);
+  return match?.[0] ?? null;
+}
+
+function completedSourceLabelsVisibleRequired(taskPrompt: string): boolean {
+  return /\b(?:source labels?|source URLs?|evidence streams?|source streams?|source checks?|sources?)\b/i.test(
+    taskPrompt,
+  );
+}
+
+function completedBrowserActionSourceBindingRequired(taskPrompt: string): boolean {
+  return (
+    /\b(?:approval|permission|approved|dry[- ]run|form submission|browser\.form\.submit|submit)\b/i.test(
+      taskPrompt,
+    ) &&
+    /\b(?:browser|form|approval gate|permission cache|local test data)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function completedBrowserContinuationSourceBindingRequired(taskPrompt: string): boolean {
+  return (
+    /\b(?:continue|continuation|follow[- ]?up|re-?check|same (?:browser )?context|reuse|resume)\b/i.test(
+      taskPrompt,
+    ) &&
+    /\b(?:browser|dashboard|rendered|page state|operations dashboard)\b/i.test(
+      taskPrompt,
+    )
+  );
+}
+
+function completedApprovalGateApplied(evidenceText: string): boolean {
+  return (
+    /\bpermission[._]query\b/i.test(evidenceText) &&
+    /\bpermission[._]result\b/i.test(evidenceText) &&
+    /\bpermission[._]applied\b/i.test(evidenceText)
+  );
+}
+
+function completedApprovalFixtureVerified(evidenceText: string): boolean {
+  return /\b(?:approval-gated-browser-e2e|TURNKEYAI_APPROVAL_FIXTURE_OK|no external mutation)\b/i.test(
+    evidenceText,
+  );
+}
+
+function completedApprovalBrowserActionCompleted(evidenceText: string): boolean {
+  return (
+    /\bbrowser\.form\.submit\b/i.test(evidenceText) &&
+    /\b(?:completed|executed|submitted|performed|confirmed|verified)\b/i.test(
+      evidenceText,
+    )
+  );
+}
+
+function extractCompletedSourceLabels(evidenceText: string): string[] {
+  const labels: string[] = [];
+  for (const match of evidenceText.matchAll(
+    /"(?:label|sourceLabel)"\s*:\s*"([^"\\]{3,120})"/g,
+  )) {
+    const label = match[1]?.trim();
+    if (label && isMeaningfulCompletedSourceLabel(label)) {
+      labels.push(label);
+    }
+  }
+  for (const match of evidenceText.matchAll(/\blabel\s*=\s*"([^"]{3,120})"/g)) {
+    const label = match[1]?.trim();
+    if (label && isMeaningfulCompletedSourceLabel(label)) {
+      labels.push(label);
+    }
+  }
+  return dedupeStrings(labels).slice(0, 8);
+}
+
+function isMeaningfulCompletedSourceLabel(label: string): boolean {
+  const normalized = normalizeCompletedSourceLabel(label);
+  if (!normalized) {
+    return false;
+  }
+  return !/\b(?:sessions?|tool|result|unknown|null|undefined)\b/.test(normalized);
+}
+
+function sourceLabelVisible(text: string, label: string): boolean {
+  const normalizedLabel = normalizeCompletedSourceLabel(label);
+  if (!normalizedLabel) {
+    return true;
+  }
+  return normalizeCompletedSourceLabel(text).includes(normalizedLabel);
+}
+
+function normalizeCompletedSourceLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }

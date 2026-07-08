@@ -17,6 +17,7 @@ import {
   normalizeBoundedTimeoutDuplicateSourceSpawns,
   normalizeBoundedTimeoutSourceSpawnAgents,
   normalizeExplicitContinuationHistoryCalls,
+  normalizeLoopbackSpawnCallUrls,
   normalizeLocalUrlWebFetchCalls,
   normalizePrivateUrlResearchSpawnCalls,
 } from "../runtime-facts/text-fallback-readers";
@@ -145,6 +146,10 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
   {
     name: "sessionToolCalls",
     apply: (c, x) => normalizeSessionToolCalls(c, x.sessionContinuationContext),
+  },
+  {
+    name: "loopbackSpawnCallUrls",
+    apply: (c, x) => normalizeLoopbackSpawnCallUrls(c, { taskPrompt: x.taskPrompt }),
   },
   {
     name: "privateUrlResearchSpawn",

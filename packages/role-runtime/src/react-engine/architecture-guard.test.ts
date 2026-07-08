@@ -133,6 +133,7 @@ const INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST = new Set<string>([
   "normalizeBoundedTimeoutDuplicateSourceSpawns",
   "normalizeBoundedTimeoutSourceSpawnAgents",
   "normalizeExplicitContinuationHistoryCalls",
+  "normalizeLoopbackSpawnCallUrls",
   "normalizeLocalUrlWebFetchCalls",
   "normalizePrivateUrlResearchSpawnCalls",
   "normalizeSessionToolAliasCalls",

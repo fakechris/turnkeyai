@@ -136,6 +136,35 @@ test("createEngineFinalResponseBuilder assembles engine final metadata from sele
   assert.equal(reply.metadata?.reactEngine, true);
 });
 
+test("createEngineFinalResponseBuilder suppresses completed tool-loop routing mentions", () => {
+  const builder = createEngineFinalResponseBuilder({
+    taskPrompt: "Summarize completed browser evidence.",
+    initialMessages: [{ role: "user", content: "Review dashboard." }],
+    readToolTraceResultContent: () => "browser evidence complete",
+    policyTrace: {
+      record() {},
+      snapshot: () => [],
+    },
+    enginePolicyTraceDebugEnabled: () => false,
+  });
+
+  const reply = builder({
+    finalText: "Dashboard evidence is complete. @{role-browser}",
+    toolTrace: [{ round: 1, calls: [], results: [] }],
+    modelCallTrace: [],
+    memoryFlushes: [],
+    toolLoopCloseout: {
+      reason: "completed_sub_agent_final",
+      toolCallCount: 1,
+      roundCount: 1,
+      toolName: "sessions_send",
+    },
+  });
+
+  assert.equal(reply.content, "Dashboard evidence is complete. @{role-browser}");
+  assert.deepEqual(reply.mentions, []);
+});
+
 test("createEngineFinalResponseBuilder omits policy trace metadata when debug is disabled", () => {
   const builder = createEngineFinalResponseBuilder({
     taskPrompt: "Summarize.",

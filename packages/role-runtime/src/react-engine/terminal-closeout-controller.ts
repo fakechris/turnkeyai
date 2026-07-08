@@ -54,6 +54,39 @@ export const TERMINAL_CLOSEOUT_CONTROLLER_MODULE =
 const APPROVAL_WAIT_TIMEOUT_FALLBACK_ERROR_MESSAGE =
   "approval wait-timeout repair omitted required pending evidence";
 
+function localEvidenceCloseoutCompleted(result: GenerateTextResult): boolean {
+  const raw = result.raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return false;
+  }
+  return (raw as Record<string, unknown>)["localEvidenceStatus"] === "completed";
+}
+
+function localEvidenceCloseoutPartial(result: GenerateTextResult): boolean {
+  const raw = result.raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return false;
+  }
+  return (raw as Record<string, unknown>)["localEvidenceStatus"] === "partial";
+}
+
+function localEvidenceCloseoutKind(result: GenerateTextResult): unknown {
+  const raw = result.raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  return (raw as Record<string, unknown>)["localEvidenceKind"];
+}
+
+function localEvidenceCloseoutCompletedProviderPricing(
+  result: GenerateTextResult,
+): boolean {
+  return (
+    localEvidenceCloseoutCompleted(result) &&
+    /source-backed requested provider\/search\/pricing columns/i.test(result.text)
+  );
+}
+
 export interface ApprovalWaitTimeoutFallbackInput {
   selection: {
     modelId?: string;
@@ -718,7 +751,7 @@ export class TerminalCloseoutController {
     const fallback = this.buildApprovalWaitTimeoutFallback(input);
     return this.applyCloseoutApplication(
       {
-        reason: "tool_evidence_fallback",
+        reason: fallback.closeout.reason,
         closeout: fallback.closeout,
         result: fallback.result,
       },
@@ -729,9 +762,14 @@ export class TerminalCloseoutController {
   buildToolEvidenceFallback(
     input: ToolEvidenceFallbackInput,
   ): TerminalEvidenceFallback {
+    const reason = localEvidenceCloseoutCompleted(input.result)
+      ? "completed_sub_agent_final"
+      : localEvidenceCloseoutPartial(input.result)
+        ? "partial_sub_agent_final"
+        : "tool_evidence_fallback";
     return {
       closeout: {
-        reason: "tool_evidence_fallback",
+        reason,
         maxRounds: input.maxRounds,
         toolCallCount: input.toolCallCount,
         roundCount: input.roundCount,
@@ -1023,7 +1061,7 @@ export class TerminalCloseoutController {
     }
     return this.applyCloseoutApplication(
       {
-        reason: "tool_evidence_fallback",
+        reason: fallback.closeout.reason,
         closeout: fallback.closeout,
         result: fallback.result,
       },
@@ -1334,6 +1372,103 @@ export class TerminalCloseoutController {
     };
   }
 
+  buildCompletedProductBriefHistoryFallback<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalCloseoutHookInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): GenerateTextResult | null {
+    const localResult = this.buildCompletedLocalEvidenceFallback(input);
+    if (!localResult) {
+      return null;
+    }
+    return localEvidenceCloseoutKind(localResult) ===
+      "agent_workbench_product_brief"
+      ? localResult
+      : null;
+  }
+
+  buildCompletedLocalEvidenceFallback<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalCloseoutHookInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): GenerateTextResult | null {
+    if (
+      input.reason !== "completed_sub_agent_final" ||
+      !input.completedCloseoutHook
+    ) {
+      return null;
+    }
+    const hasSessionHistory = input.messages.some(
+      (message) =>
+        message.role === "tool" && message.name === "sessions_history",
+    );
+    const localEvidenceMessages = withCompletedSessionToolResultMessages({
+      messages: input.messages,
+      toolResults:
+        input.completedCloseoutHook.state.completedSessionToolResults(),
+    });
+    const localResult = buildLocalEvidenceCloseout({
+      ...(input.completedCloseoutHook.activation
+        ? { activation: input.completedCloseoutHook.activation }
+        : {}),
+      messages: localEvidenceMessages,
+      packet: input.completedCloseoutHook.packet,
+      selection: {},
+      error: new Error(
+        hasSessionHistory
+          ? "completed product brief synthesis bypassed after repeated session inspection"
+          : "completed local evidence synthesis bypassed after source-backed evidence",
+      ),
+    });
+    if (!localResult) {
+      return null;
+    }
+    const kind = localEvidenceCloseoutKind(localResult);
+    if (localEvidenceCloseoutCompletedProviderPricing(localResult)) {
+      return localResult;
+    }
+    if (kind === "vendor_alpha_beta_comparison") {
+      return localResult;
+    }
+    if (kind === "vendor_alpha_decision_note") {
+      return localResult;
+    }
+    if (kind === "agent_workbench_product_brief") {
+      return localResult;
+    }
+    return null;
+  }
+
+  buildCompletedLocalEvidenceFallbackHook<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(
+    input: TerminalCloseoutHookInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >,
+  ): GenerateTextResult | null {
+    const localResult = this.buildCompletedLocalEvidenceFallback(input);
+    if (!localResult) {
+      return null;
+    }
+    return localResult;
+  }
+
   buildApprovalWaitTimeoutFallbackHook(
     input: ApprovalWaitTimeoutFallbackHookInput,
   ): ApprovalWaitTimeoutFallbackHookResult {
@@ -1509,6 +1644,31 @@ export class TerminalCloseoutController {
         kind: "final",
         response: this.applyApprovalWaitTimeoutFallback(
           input.approvalWaitTimeoutFallback,
+          input.target,
+        ),
+      };
+    }
+    const completedLocalEvidenceFallback =
+      this.buildCompletedLocalEvidenceFallbackHook(input);
+    if (completedLocalEvidenceFallback) {
+      this.recordStickyCloseoutIfNeeded(
+        {
+          sticky: input.decision.sticky ?? false,
+          closeout: input.decision.closeout,
+        },
+        input.target,
+      );
+      return {
+        kind: "final",
+        response: this.applyCloseoutApplication(
+          {
+            reason: input.reason,
+            closeout: input.decision.closeout,
+            result: maybeRedactForbiddenLocalUrls({
+              result: completedLocalEvidenceFallback,
+              packet: input.completedCloseoutHook!.packet,
+            }),
+          },
           input.target,
         ),
       };
@@ -1719,6 +1879,27 @@ export class TerminalCloseoutController {
     }
     return this.buildFinalResponse(input.result);
   }
+}
+
+function withCompletedSessionToolResultMessages(input: {
+  messages: readonly LLMMessage[];
+  toolResults: readonly ToolResult[];
+}): LLMMessage[] {
+  const seenToolCallIds = new Set(
+    input.messages
+      .filter((message) => message.role === "tool")
+      .map((message) => message.toolCallId)
+      .filter((toolCallId): toolCallId is string => Boolean(toolCallId)),
+  );
+  const appended = input.toolResults
+    .filter((result) => !seenToolCallIds.has(result.toolCallId))
+    .map((result) => ({
+      role: "tool" as const,
+      content: result.content,
+      toolCallId: result.toolCallId,
+      name: result.toolName,
+    }));
+  return [...input.messages, ...appended];
 }
 
 export function createTerminalCloseoutController(): TerminalCloseoutController {

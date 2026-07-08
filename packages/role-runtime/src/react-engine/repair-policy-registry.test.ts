@@ -372,6 +372,81 @@ test("RepairPolicyRegistry returns missing browser evidence repair decision", ()
   );
 });
 
+test("RepairPolicyRegistry treats pseudo browser tool calls as missing browser evidence", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["missing_browser_evidence"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      '<tool_call>{"name":"sessions_spawn","arguments":{"agent_id":"browser","task":"Open http://127.0.0.1:62914/complex-browser and inspect the rendered page."}}</tool_call>',
+    taskPrompt: [
+      "Review this complex browser page as an operator would see it.",
+      "Page: http://127.0.0.1:62914/complex-browser",
+      "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+      "Open the details popup, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+    ].join("\n"),
+    toolTrace: [],
+    tools: [{ name: "sessions_spawn" }],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "missing_browser_evidence");
+  assert.deepEqual(decision?.forceToolChoice, { name: "sessions_spawn" });
+});
+
+test("RepairPolicyRegistry treats claimed browser evidence without browser session as missing browser evidence", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const exploreResult = JSON.stringify({
+    status: "completed",
+    agent_id: "explore",
+    session_key: "worker:explore:task:TASK-1:call-explore",
+    summary: "Explore evidence verified TURNKEYAI_COMPLEX_EXPLORE_OK.",
+  });
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["missing_browser_evidence"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: [
+      "## Evidence",
+      "- explore evidence: TURNKEYAI_COMPLEX_EXPLORE_OK from the explore session.",
+      "- browser evidence: TURNKEYAI_COMPLEX_BROWSER_OK from complex browser evidence.",
+      "- final marker: TURNKEYAI_COMPLEX_E2E_OK; both source sessions were used.",
+      "- residual risk: local fixture only.",
+    ].join("\n"),
+    taskPrompt: [
+      "Run the production-grade multi-agent tool-use E2E.",
+      "Explore task: retrieve the release marker TURNKEYAI_COMPLEX_EXPLORE_OK and its deterministic source label.",
+      "Browser task: open http://127.0.0.1:62914/complex-browser in an active browser and read the rendered page as a user would see it: page title, marker TURNKEYAI_COMPLEX_BROWSER_OK, and the phrase \"complex browser evidence\" from the evidence text.",
+      "Final answer must include TURNKEYAI_COMPLEX_E2E_OK, TURNKEYAI_COMPLEX_EXPLORE_OK, and TURNKEYAI_COMPLEX_BROWSER_OK.",
+    ].join("\n"),
+    toolTrace: [
+      {
+        round: 1,
+        calls: [{ id: "call-explore", name: "sessions_spawn", input: { agent_id: "explore" } }],
+        results: [
+          {
+            toolCallId: "call-explore",
+            toolName: "sessions_spawn",
+            isError: false,
+            content: exploreResult,
+            contentBytes: exploreResult.length,
+          },
+        ],
+      },
+    ],
+    tools: [{ name: "sessions_spawn" }],
+  });
+
+  assert.equal(decision?.kind, "force_tool_round");
+  assert.equal(decision?.policyId, "missing_browser_evidence");
+  assert.deepEqual(decision?.forceToolChoice, { name: "sessions_spawn" });
+});
+
 test("RepairPolicyRegistry returns missing product-signal browser evidence repair decision", () => {
   const registry = createRepairPolicyRegistry();
 
@@ -1218,6 +1293,186 @@ test("RepairPolicyRegistry uses provided evidence text for source evidence carry
   assert.match(decision?.repairPrompt ?? "", /multi-agent decomposition/i);
 });
 
+test("RepairPolicyRegistry does not promote unrequested derived labels in exact-shape finals", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const evidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    status: "completed",
+    label: "approval-gated-browser-e2e",
+    evidence: [
+      { label: "approval-gated-browser-e2e: post-submit state", fact: "local dry-run confirmed" },
+    ],
+  });
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "- Browser fixture evidence: source approval-gated-browser-e2e; local dry-run confirmed.",
+    taskPrompt: [
+      "Use this exact final answer shape after the browser worker result returns:",
+      "## Evidence",
+      "- Approval request: TURNKEYAI_MISSION_APPROVAL_OK.",
+      "- Approval decision/application: permission.result approved the request.",
+      "- Browser fixture evidence: source approval-gated-browser-e2e; sessions_spawn(browser) verified the fixture.",
+      "- Residual risk: local fixture only.",
+      "Keep the source label approval-gated-browser-e2e visible in the final browser fixture evidence line.",
+      "Do not use tables, links, code fences, or bold/italic markup.",
+    ].join("\n"),
+    evidenceText: evidence,
+  });
+
+  assert.equal(decision, null);
+});
+
+test("RepairPolicyRegistry does not require child source labels outside the exact final shape", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const evidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    status: "completed",
+    results: [
+      { label: "Vendor Alpha", marker: "TURNKEYAI_VENDOR_ALPHA_OK" },
+      { label: "Vendor Beta", marker: "TURNKEYAI_VENDOR_BETA_OK" },
+    ],
+  });
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: [
+      "## Source coverage",
+      "- Alpha evidence: TURNKEYAI_VENDOR_ALPHA_OK; $19 per seat; browser automation and traceable screenshots; risk is limited API integration catalog.",
+      "- Beta evidence: TURNKEYAI_VENDOR_BETA_OK; $29 per workspace; approval workflow and team handoff history; risk is separate connector for browser control.",
+      "- comparison conclusion: TURNKEYAI_MISSION_COMPARISON_OK; Alpha fits browser-centric lower-cost work, while Beta fits approval-heavy team handoff work.",
+      "- residual risk: source-bounded to two local fixture sources; pricing and feature depth are not verified elsewhere.",
+    ].join("\n"),
+    taskPrompt: [
+      'Call sessions_spawn with agent_id=explore exactly twice: one child session for Vendor Alpha with label "Vendor Alpha" and one child session for Vendor Beta with label "Vendor Beta".',
+      "Each sessions_spawn input must include the exact label for its source so mission source coverage can be audited.",
+      "Use this exact final answer shape after both child session tool results return:",
+      "## Source coverage",
+      "- Alpha evidence: TURNKEYAI_VENDOR_ALPHA_OK; $19 per seat; browser automation and traceable screenshots; risk is limited API integration catalog.",
+      "- Beta evidence: TURNKEYAI_VENDOR_BETA_OK; $29 per workspace; approval workflow and team handoff history; risk is separate connector for browser control.",
+      "- comparison conclusion: TURNKEYAI_MISSION_COMPARISON_OK; Alpha fits browser-centric lower-cost work, while Beta fits approval-heavy team handoff work.",
+      "- residual risk: source-bounded to two local fixture sources; pricing and feature depth are not verified elsewhere.",
+      "Do not create separate bullets or paragraphs for markers.",
+      "Do not use tables, links, code fences, or bold/italic markup.",
+    ].join("\n"),
+    evidenceText: evidence,
+  });
+
+  assert.equal(decision, null);
+});
+
+test("RepairPolicyRegistry preserves exact-shape constraints when requested labels are missing", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const evidence = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    status: "completed",
+    label: "approval-gated-browser-e2e",
+  });
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: "- Browser fixture evidence: local dry-run confirmed.",
+    taskPrompt: [
+      "Use this exact final answer shape after the browser worker result returns:",
+      "## Evidence",
+      "- Approval request: TURNKEYAI_MISSION_APPROVAL_OK.",
+      "- Approval decision/application: permission.result approved the request.",
+      "- Browser fixture evidence: source approval-gated-browser-e2e; sessions_spawn(browser) verified the fixture.",
+      "- Residual risk: local fixture only.",
+      "Keep the source label approval-gated-browser-e2e visible in the final browser fixture evidence line.",
+      "Do not use tables, links, code fences, or bold/italic markup.",
+    ].join("\n"),
+    evidenceText: evidence,
+  });
+
+  assert.equal(decision?.policyId, "source_evidence_carry_forward");
+  assert.match(decision?.repairPrompt ?? "", /Missing exact label\(s\): approval-gated-browser-e2e/);
+  assert.match(decision?.repairPrompt ?? "", /preserve that shape exactly/i);
+  assert.match(decision?.repairPrompt ?? "", /do not add a Markdown table/i);
+});
+
+test("RepairPolicyRegistry repairs provider pricing values dropped from completed evidence", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const evidence = [
+    "final_content:",
+    "| Provider | Model | Search support | Input price | Output price |",
+    "| --- | --- | --- | --- | --- |",
+    "| OpenRouter | deepseek-v4-flash | web_search supported | $0.28 per 1M tokens | $0.42 per 1M tokens |",
+    "| Together | deepseek-v4-flash | Not supported | $0.20 per 1M tokens | $0.40 per 1M tokens |",
+    "| Fireworks | deepseek-v4-flash | Not supported | $0.25 per 1M tokens | $0.45 per 1M tokens |",
+    "evidence_excerpt: Fireworks lists DeepSeek V4 Flash at $0.25 input and $0.45 output per 1M tokens.",
+  ].join("\n");
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText: [
+      "| Provider | Model | Search support | Input price | Output price |",
+      "| --- | --- | --- | --- | --- |",
+      "| OpenRouter | deepseek-v4-flash | Supported via web_search | $0.28 per 1M tokens | $0.42 per 1M tokens |",
+      "| Together | deepseek-v4-flash | Not supported | $0.20 per 1M tokens | $0.40 per 1M tokens |",
+      "| Fireworks | deepseek-v4-flash | Not supported | $0.25 per 1M tokens | 未验证 |",
+    ].join("\n"),
+    taskPrompt:
+      "Research DeepSeek V4 Flash provider search support and input/output token pricing for OpenRouter, Together, and Fireworks.",
+    evidenceText: evidence,
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "source_evidence_carry_forward");
+  assert.equal(decision?.evidenceFormula, "source_bounded_evidence");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /source-backed provider pricing values/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /Fireworks/);
+  assert.match(decision?.repairPrompt ?? "", /\$0\.45/);
+});
+
+test("RepairPolicyRegistry repairs vendor prices contradicted in completed evidence", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const evidence = [
+    "label: Vendor Alpha",
+    "Explore worker fetched Vendor Alpha Evidence.",
+    "Final URL: http://127.0.0.1:62013/vendor-alpha",
+    "Price lines: Pricing: $19 per seat.",
+    "Strength: browser automation and traceable screenshots.",
+    "Risk: API integration catalog is still limited.",
+  ].join("\n");
+  const decision = registry.evaluateNaturalFinish({
+    enabledPolicies: ["source_evidence_carry_forward"],
+    finalRecoveryBudget: null,
+    messages: [],
+    repairMarkers: [],
+    resultText:
+      "Vendor Alpha source coverage: price $10 per seat; residual risk is source-bounded to the local fixture.",
+    taskPrompt:
+      "Compare Vendor Alpha pricing and include the exact source-backed vendor price in the final answer.",
+    evidenceText: evidence,
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "source_evidence_carry_forward");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /source-backed vendor prices/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /Vendor Alpha: \$19 per seat/);
+});
+
 test("RepairPolicyRegistry skips source evidence carry-forward after marker", () => {
   const registry = createRepairPolicyRegistry();
 
@@ -1432,6 +1687,52 @@ test("RepairPolicyRegistry returns missing required final deliverables completed
     /final answer omitted required deliverables/i,
   );
   assert.match(decision?.repairPrompt ?? "", /final one-sentence conclusion/i);
+});
+
+test("RepairPolicyRegistry repairs product workbench next actions line spelling", () => {
+  const registry = createRepairPolicyRegistry();
+
+  const decision = registry.evaluateCompletedSynthesis({
+    completedEvidenceText:
+      "TURNKEYAI_PRODUCT_ORCHESTRATION_OK. TURNKEYAI_PRODUCT_BRIDGE_OK. TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK. Stuck missions: 6. Weak answer rate: 24%.",
+    delegatedEvidenceText:
+      "TURNKEYAI_PRODUCT_ORCHESTRATION_OK. TURNKEYAI_PRODUCT_BRIDGE_OK. TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK. Stuck missions: 6. Weak answer rate: 24%.",
+    completedSessionFinalContents: [],
+    enabledPolicies: ["missing_required_final_deliverables"],
+    messages: [],
+    repairMarkers: [],
+    resultText: [
+      "evidence",
+      "- orchestration evidence: product-orchestration; TURNKEYAI_PRODUCT_ORCHESTRATION_OK.",
+      "- bridge evidence: product-bridge; TURNKEYAI_PRODUCT_BRIDGE_OK.",
+      "- browser signal evidence: product-signals; TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK.",
+      "decision",
+      "- recommendation: TURNKEYAI_MISSION_PRODUCT_WORKBENCH_OK - make Mission Control the default entry.",
+      "- next action: improve onboarding, quality gates, and bridge diagnostics.",
+      "- residual risk: source-bounded to local fixtures.",
+    ].join("\n"),
+    taskPrompt: [
+      "Prepare a decision-grade product brief for the next agent workbench release.",
+      "Gather evidence from three independent evidence streams with specialist work.",
+      "Use exactly this section skeleton for the final answer:",
+      "evidence",
+      "- orchestration evidence: product-orchestration; TURNKEYAI_PRODUCT_ORCHESTRATION_OK.",
+      "- bridge evidence: product-bridge; TURNKEYAI_PRODUCT_BRIDGE_OK.",
+      "- browser signal evidence: product-signals; TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK.",
+      "decision",
+      "- recommendation: TURNKEYAI_MISSION_PRODUCT_WORKBENCH_OK - make Mission Control the default entry.",
+      "- next actions: list exactly three concrete build actions.",
+      "- residual risk: state source-bounded validation.",
+    ].join("\n"),
+  });
+
+  assert.equal(decision?.kind, "resynthesize");
+  assert.equal(decision?.policyId, "missing_required_final_deliverables");
+  assert.match(
+    decision?.repairPrompt ?? "",
+    /product workbench next actions line/i,
+  );
+  assert.match(decision?.repairPrompt ?? "", /standalone bullet exactly labeled/i);
 });
 
 test("RepairPolicyRegistry returns missing browser evidence dimensions completed repair decision", () => {
