@@ -51,3 +51,18 @@ The checked-in budget is the remaining typed-facts burn-down metric:
 
 The architecture guard allows these numbers to stay flat or shrink only. Any
 typed replacement must lower the relevant budget in the same commit.
+
+## Stage 9 Bake Fallback Additions
+
+These entries were added during the Stage 9 engine-default bake. They remain in
+the legacy fallback pool and must be burned down by narrower typed producers or
+typed render payloads before lowering the export budget.
+
+| Export | Current owner | Why it exists | Burn-down direction |
+| --- | --- | --- | --- |
+| `readPolicyCoordinatorRoleHandoffEcho` | `runtime-facts/text-fallback-readers.ts` | Detects coordinator handoff protocol echoes in final text so terminal synthesis can replace them with user-facing evidence. | Typed renderer/final-output guard should expose a coordinator-handoff artifact flag instead of scanning final text. |
+| `VendorPriceEvidenceFact` | `runtime-facts/text-fallback-readers.ts` | Temporary shape for vendor-price facts parsed from evidence text. | Move vendor price facts into a structured provider/vendor evidence producer. |
+| `extractPolicyVendorPriceEvidenceFacts` | `runtime-facts/text-fallback-readers.ts` | Extracts vendor price facts from text evidence during comparison repair. | Replace with producer-owned vendor pricing facts from tool result payloads. |
+| `resultPreservesPolicyVendorPriceFact` | `runtime-facts/text-fallback-readers.ts` | Checks whether a final answer preserved source-backed vendor prices. | Replace with typed final-answer coverage over vendor pricing facts. |
+| `sessionContinuationRequestForbidsSessionTools` | `runtime-facts/text-fallback-readers.ts` | Detects user follow-up wording that asks for final synthesis from existing evidence only. | Add a typed continuation intent field on `TaskIntentFacts`. |
+| `normalizeLoopbackSpawnCallUrls` | `runtime-facts/text-fallback-readers.ts` | Normalizes loopback browser/explore spawn URLs for fixture-backed bake scenarios. | Move URL normalization into a neutral protocol/input normalizer outside text fallback readers. |

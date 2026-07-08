@@ -1417,7 +1417,9 @@ export class TerminalCloseoutController {
     const localEvidenceMessages = withCompletedSessionToolResultMessages({
       messages: input.messages,
       toolResults:
-        input.completedCloseoutHook.state.completedSessionToolResults() ?? [],
+        input.completedCloseout?.completedSessionToolResults ??
+        input.completedCloseoutHook.state.completedSessionToolResults() ??
+        [],
     });
     const localResult = buildLocalEvidenceCloseout({
       ...(input.completedCloseoutHook.activation
@@ -1648,8 +1650,16 @@ export class TerminalCloseoutController {
         ),
       };
     }
+    const completedCloseout =
+      input.completedCloseout ??
+      (input.completedCloseoutHook
+        ? this.buildCompletedCloseoutHookInput(input.completedCloseoutHook)
+        : undefined);
     const completedLocalEvidenceFallback =
-      this.buildCompletedLocalEvidenceFallbackHook(input);
+      this.buildCompletedLocalEvidenceFallbackHook({
+        ...input,
+        ...(completedCloseout === undefined ? {} : { completedCloseout }),
+      });
     if (completedLocalEvidenceFallback) {
       this.recordStickyCloseoutIfNeeded(
         {
@@ -1673,11 +1683,6 @@ export class TerminalCloseoutController {
         ),
       };
     }
-    const completedCloseout =
-      input.completedCloseout ??
-      (input.completedCloseoutHook
-        ? this.buildCompletedCloseoutHookInput(input.completedCloseoutHook)
-        : undefined);
     const completed =
       input.completed ??
       (input.reason === "completed_sub_agent_final" && completedCloseout
