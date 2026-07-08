@@ -50,6 +50,7 @@ interface MemoryQueryAnalysis {
 
 export const DEFAULT_RECALL_HITS = 4;
 export const EXPLICIT_RECALL_HITS = 6;
+const MAX_RECENT_MEMORY_HITS = 500;
 
 export interface RoleMemoryResolver {
   loadThreadSummary(threadId: ThreadId): Promise<ThreadSummaryRecord | null>;
@@ -76,6 +77,7 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
   private readonly threadMemoryStore: ThreadMemoryStore | undefined;
   private readonly threadSessionMemoryStore: ThreadSessionMemoryStore | undefined;
   private readonly threadJournalStore: ThreadJournalStore | undefined;
+  private readonly recentMemoryHits = new Map<string, MemoryHit>();
 
   constructor(options: DefaultRoleMemoryResolverOptions) {
     this.threadSummaryStore = options.threadSummaryStore;
@@ -106,21 +108,39 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
     const records = await this.loadMemoryRecords({ threadId: input.threadId, roleId: input.roleId });
     const query = analyzeQuery(input.queryText);
 
-    return records
+    const hits = records
       .filter((record) => !record.evidenceDigest || shouldIncludeEvidenceDigest(record.evidenceDigest, query))
       .map((record) => buildMemoryHit(record, query))
       .filter((hit) => hit.score >= minimumMemoryScore(query, hit.source))
       .sort((left, right) => right.score - left.score)
       .slice(0, query.explicitRecall ? EXPLICIT_RECALL_HITS : DEFAULT_RECALL_HITS);
+    this.cacheMemoryHits(hits);
+    return hits;
   }
 
   async getMemory(input: { threadId: ThreadId; roleId: RoleId; memoryId: string }): Promise<MemoryHit | null> {
+    const cached = this.recentMemoryHits.get(input.memoryId);
+    if (cached) {
+      return { ...cached };
+    }
     const records = await this.loadMemoryRecords({ threadId: input.threadId, roleId: input.roleId });
     const record = records.find((item) => item.memoryId === input.memoryId);
     if (!record) {
       return null;
     }
     return buildMemoryHit(record, analyzeQuery(record.content));
+  }
+
+  private cacheMemoryHits(hits: MemoryHit[]): void {
+    for (const hit of hits) {
+      this.recentMemoryHits.delete(hit.memoryId);
+      this.recentMemoryHits.set(hit.memoryId, { ...hit });
+    }
+    while (this.recentMemoryHits.size > MAX_RECENT_MEMORY_HITS) {
+      const oldestKey = this.recentMemoryHits.keys().next().value;
+      if (!oldestKey) break;
+      this.recentMemoryHits.delete(oldestKey);
+    }
   }
 
   private async loadMemoryRecords(input: { threadId: ThreadId; roleId: RoleId }): Promise<MemoryRecord[]> {
@@ -306,6 +326,9 @@ function buildMemoryHit(
   query: MemoryQueryAnalysis
 ): MemoryHit {
   let score = scoreContent(input.content, query) * (input.scoreMultiplier ?? 1) * intentWeight(input.content, query);
+  if (query.explicitRecall && looksLikeCurrentTaskInstructionEcho(input.content)) {
+    score *= 0.15;
+  }
   if (query.evidenceSeeking && input.source === "knowledge-note") {
     score = Math.max(score, 0.5);
   }
@@ -498,6 +521,9 @@ function intentWeight(content: string, query: MemoryQueryAnalysis): number {
   if (query.preferenceSeeking && /\b(preference|prefer|style|format|tone)\b/i.test(content)) {
     weight += 0.25;
   }
+  if (query.explicitRecall && /^Long-term note:/i.test(content)) {
+    weight += 0.45;
+  }
   if (query.constraintSeeking && /\b(constraint|budget|deadline|limit|required|must|cannot|can't)\b/i.test(content)) {
     weight += 0.25;
   }
@@ -522,4 +548,17 @@ function intentWeight(content: string, query: MemoryQueryAnalysis): number {
     weight += 0.05;
   }
   return weight;
+}
+
+function looksLikeCurrentTaskInstructionEcho(content: string): boolean {
+  if (
+    !/^(?:Preference|Constraint|Active task|Open question|Recent decision|Continuity|Recent journal):/i.test(
+      content
+    )
+  ) {
+    return false;
+  }
+  return /\b(?:call\s+memory_search|memory_get|sessions_spawn|sessions_send|use this exact final answer shape|final answer may include|do not call|do not use tables|do not use tools)\b/i.test(
+    content
+  );
 }

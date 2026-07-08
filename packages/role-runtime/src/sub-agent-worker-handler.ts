@@ -26,7 +26,7 @@ import { SESSION_TOOL_NAMES } from "./tool-capability-registry";
 import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor } from "./tool-use";
 import { summarizeWorkerSessionEvidence } from "./worker-session-transcript";
 
-const DEFAULT_BROWSER_SUB_AGENT_MAX_ROUNDS = 15;
+const DEFAULT_BROWSER_SUB_AGENT_MAX_ROUNDS = 8;
 const DEFAULT_EXPLORE_SUB_AGENT_MAX_ROUNDS = 8;
 const DEFAULT_GENERAL_SUB_AGENT_MAX_ROUNDS = 10;
 const DEFAULT_BROWSER_WALL_CLOCK_MS = 18 * 60 * 1000;
@@ -1763,6 +1763,7 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
       "Prefer element refIds from snapshots over selectors or visible text when interacting with a page.",
       "Capture screenshots when the parent needs visual evidence or when page state is hard to summarize from text.",
       "For complex pages, preserve verified facts separately for each browser-visible surface: the main page, frames/iframes, shadow DOM or component panels, popups, and additional tabs.",
+      "For complex pages that request frame, shadow, and popup evidence, stop after one successful evidence pass covers those requested surfaces; do not keep taking extra snapshots or screenshots after the requested facts are captured.",
       "If any browser-visible surface explicitly provides a requested field or value, carry that field into your final result instead of marking it not verified because another surface did not contain it.",
       "Prefer stable page facts and direct observations over guesses.",
     ].join("\n");

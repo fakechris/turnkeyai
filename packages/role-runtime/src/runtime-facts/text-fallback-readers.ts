@@ -23,7 +23,10 @@ import {
   requestedColumnsLookLikeProviderSearchPricing,
   resolveRequestedTableColumns,
 } from "../task-facts-shared";
-import { produceTaskIntentEnvelope } from "./task-intent-producer";
+import {
+  produceTaskIntentEnvelope,
+  taskFactLooksLikeReadOnlyBrowserPageReview,
+} from "./task-intent-producer";
 import {
   ROLE_TOOL_RESULT_TRACE_CAP_BYTES,
   SESSION_SEND_ALIAS_NAMES,
@@ -75,7 +78,6 @@ import {
   hasApprovedBrowserTimeoutContinuationPrompt,
   hasCoverageTimeoutContinuationPrompt,
   hasIncompleteApprovedBrowserSessionContinuationPrompt,
-  hasIndependentEvidenceStreamContinuationPrompt,
   hasLatestSupplementalLocalTimeoutProbePrompt,
   hasMissingApprovalGateRepairPrompt,
   hasMissingRequiredFinalDeliverablesRepairPrompt,
@@ -225,6 +227,7 @@ function hasToolDefinition(
 export interface SessionContinuationDirective {
   sessionKey: string;
   messageHint: string;
+  label?: string;
 }
 
 export interface SessionContinuationLookupDirective {
@@ -499,9 +502,6 @@ export function readPolicyIndependentEvidenceStreamsContinuation(input: {
   if (!hasToolDefinition(input.tools, "sessions_spawn")) {
     return false;
   }
-  if (hasIndependentEvidenceStreamContinuationPrompt(input.messages)) {
-    return false;
-  }
   const requiredStreams = readPolicyIndependentEvidenceStreamCount(input.taskPrompt);
   if (requiredStreams < 2) {
     return false;
@@ -576,11 +576,17 @@ export function enforceSupplementalLocalTimeoutProbeToolCall(
 export function readCompletedSessionEvidence(
   parsed: NonNullable<ReturnType<typeof parseSessionToolResult>>,
 ): string | null {
+  const evidenceExcerpt =
+    typeof parsed.evidence_excerpt === "string" &&
+    parsed.evidence_excerpt.trim().length > 0
+      ? parsed.evidence_excerpt.trim()
+      : null;
   if (typeof parsed.final_content === "string" && parsed.final_content.trim()) {
     const finalContent = parsed.final_content.trim();
     if (parsed.agent_id === "browser") {
       const browserEvidence = [
         parsed.evidence_summary,
+        evidenceExcerpt,
         finalContent,
         parsed.result,
       ]
@@ -595,13 +601,33 @@ export function readCompletedSessionEvidence(
       if (payload && typeof payload === "object" && !Array.isArray(payload)) {
         const mode = (payload as Record<string, unknown>)["mode"];
         if (mode === "llm_sub_agent") {
-          return [finalContent, readBrowserFailureBucketSummary(payload as Record<string, unknown>)]
+          return dedupeStrings([
+            parsed.evidence_summary,
+            parsed.result,
+            evidenceExcerpt,
+            finalContent,
+            readBrowserFailureBucketSummary(payload as Record<string, unknown>),
+          ]
             .filter((item): item is string => Boolean(item))
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0))
             .join("\n\n");
         }
       }
+    const completedEvidence = [
+      finalContent,
+      parsed.evidence_summary,
+      evidenceExcerpt,
+      parsed.result,
+    ]
+      .filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
+      .map((item) => item.trim());
+    return dedupeStrings(completedEvidence).join("\n\n");
   }
-  const evidence = [parsed.result, parsed.evidence_summary]
+  const evidence = [parsed.result, parsed.evidence_summary, evidenceExcerpt]
     .filter(
       (item): item is string =>
         typeof item === "string" && item.trim().length > 0,
@@ -720,17 +746,21 @@ export function readPolicyReadOnlyPermissionQuerySuppression(
   toolCalls: LLMToolCall[],
   context: { taskPrompt: string; sessionContext: string },
 ): boolean {
+  const taskContext = [context.taskPrompt, context.sessionContext]
+    .filter((text) => text.trim().length > 0)
+    .join("\n\n");
   return toolCalls.some((call) => {
     if (call.name !== "permission_query") {
       return false;
     }
     const callText = stableJson(normalizeToolInputForSignature(call.input));
     return (
-      isSourceBackedReadOnlyTask(context.taskPrompt) ||
-      isClearlyUnrequestedReadOnlyPermissionQuery(callText, context.taskPrompt) ||
+      taskFactLooksLikeReadOnlyBrowserPageReview(taskContext) ||
+      isSourceBackedReadOnlyTask(taskContext) ||
+      isClearlyUnrequestedReadOnlyPermissionQuery(callText, taskContext) ||
       disclaimsIntendedBrowserMutation(callText) ||
-      (disclaimsIntendedBrowserMutation(context.taskPrompt) &&
-        !taskIntentFactsForPrompt(context.taskPrompt)
+      (disclaimsIntendedBrowserMutation(taskContext) &&
+        !taskIntentFactsForPrompt(taskContext)
           .approvalGatedBrowserActionRequested)
     );
   });
@@ -760,7 +790,8 @@ function isClearlyUnrequestedReadOnlyPermissionQuery(
     return false;
   }
   const sourceReadOnlyTask =
-    isSourceBackedReadOnlyTask(taskPrompt);
+    isSourceBackedReadOnlyTask(taskPrompt) ||
+    taskFactLooksLikeReadOnlyBrowserPageReview(taskPrompt);
   return sourceReadOnlyTask;
 }
 
@@ -851,6 +882,8 @@ export function readPolicySourceEvidenceCarryForwardRepair(input: {
   evidenceText: string;
 }): boolean {
   return (
+    readPolicyProviderPricingEvidenceCarryForwardRepair(input) ||
+    readPolicyVendorPriceEvidenceCarryForwardRepair(input) ||
     readPolicyProductBriefEvidenceCarryForwardRepair(input) ||
     readPolicyCompletedSessionLabelCarryForwardRepair(input)
   );
@@ -878,6 +911,9 @@ export function readPolicyWeakEvidenceSynthesisRepair(input: {
   if (allowsExactFinalAnswerShapeBypass(input.taskPrompt, input.resultText)) {
     return false;
   }
+  if (readPolicyCoordinatorRoleHandoffEcho(input.resultText)) {
+    return true;
+  }
   if (matchesAny(input.resultText, WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS)) {
     return true;
   }
@@ -887,6 +923,15 @@ export function readPolicyWeakEvidenceSynthesisRepair(input: {
   return (
     !readPolicyEstimateRequest(input.taskPrompt) &&
     matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS)
+  );
+}
+
+export function readPolicyCoordinatorRoleHandoffEcho(text: string): boolean {
+  return (
+    /\bLead is operating as Lead Coordinator\b/i.test(text) &&
+    /\bDelegate one next role when work remains\.?\s+Otherwise finalize\b/i.test(text) &&
+    /@\{[^}]+\}/.test(text) &&
+    /\bPlease take the next assigned slice and report back briefly\b/i.test(text)
   );
 }
 
@@ -940,7 +985,10 @@ export function readPolicyMissingRequestedNextActionRepair(input: {
 }
 
 export type RequiredFinalDeliverable = {
-  id: "final_conclusion" | "two_row_table";
+  id:
+    | "final_conclusion"
+    | "product_workbench_next_actions_line"
+    | "two_row_table";
   label: string;
   instruction: string;
 };
@@ -963,6 +1011,17 @@ export function readPolicyRequiredFinalSynthesisDeliverables(
       label: "final one-sentence conclusion",
       instruction:
         "After the requested table or structured answer, include the requested final one-sentence conclusion with an explicit label such as `结论：` or `Conclusion:`.",
+    });
+  }
+  if (
+    readPolicyAgentWorkbenchProductBriefRequest(taskPrompt) &&
+    /^\s*[-*+]\s+next actions\s*:/im.test(taskPrompt)
+  ) {
+    deliverables.push({
+      id: "product_workbench_next_actions_line",
+      label: "product workbench next actions line",
+      instruction:
+        "Include a standalone bullet exactly labeled `- next actions:` and list the three concrete build actions from the source-backed product brief.",
     });
   }
   return deliverables;
@@ -1080,7 +1139,10 @@ export function readPolicyCompletedSessionLabelCarryForwardRepair(input: {
   if (hasCompletedSessionLabelCarryForwardRepairPrompt(input.repairMarkers)) {
     return false;
   }
-  const labels = extractCompletedSessionEvidenceLabels(input.evidenceText);
+  const labels = requiredCompletedSessionEvidenceLabelsForTask({
+    taskPrompt: input.taskPrompt,
+    labels: extractCompletedSessionEvidenceLabels(input.evidenceText),
+  });
   if (labels.length === 0) {
     return false;
   }
@@ -1098,6 +1160,32 @@ export function readPolicyCompletedSessionLabelCarryForwardRepair(input: {
     return false;
   }
   return labels.some((label) => !normalizedTextContains(input.resultText, label));
+}
+
+function requiredCompletedSessionEvidenceLabelsForTask(input: {
+  taskPrompt: string;
+  labels: string[];
+}): string[] {
+  if (!taskIntentFactsForPrompt(input.taskPrompt).exactFinalAnswerShapeExpected) {
+    return input.labels;
+  }
+  const requiredShapeText = extractExactFinalAnswerShapeBlock(input.taskPrompt) ?? input.taskPrompt;
+  return input.labels.filter((label) => normalizedTextContains(requiredShapeText, label));
+}
+
+function extractExactFinalAnswerShapeBlock(taskPrompt: string): string | null {
+  const marker = taskPrompt.match(
+    /(?:use this exact (?:phase\s*\d+\s+)?final answer shape[^\n]*:|use exactly this section skeleton[^\n]*:)\s*\n/i,
+  );
+  if (!marker?.index) {
+    if (marker?.index !== 0) return null;
+  }
+  const start = marker.index + marker[0].length;
+  const rest = taskPrompt.slice(start);
+  const end = rest.search(
+    /\n(?:Do not|Keep the|Never|Use plain|Do not include|Do not create|The first non-empty|If any|Wait for|Final answer must|Phase\s*\d+\s+final answer must)\b/i,
+  );
+  return (end >= 0 ? rest.slice(0, end) : rest).trim();
 }
 
 export function readPolicyAgentWorkbenchProductBriefRequest(taskPrompt: string): boolean {
@@ -1139,6 +1227,240 @@ function hasCompletedSessionLabelCarryForwardRepairPrompt(
 function hasAppliedApprovalEvidenceText(text: string): boolean {
   return /\bpermission\.applied\b|["']event_type["']\s*:\s*["']permission\.applied["']|\bapproval\b[\s\S]{0,120}\bapplied\b/i.test(
     text,
+  );
+}
+
+interface ProviderPricingEvidenceFact {
+  provider: string;
+  inputPrice: string;
+  outputPrice: string;
+}
+
+export interface VendorPriceEvidenceFact {
+  vendor: string;
+  price: string;
+}
+
+function readPolicyProviderPricingEvidenceCarryForwardRepair(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  evidenceText: string;
+}): boolean {
+  if (hasProviderPricingEvidenceCarryForwardRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!taskIntentFactsForPrompt(input.taskPrompt).providerSearchPricingResearch) {
+    return false;
+  }
+  const facts = extractProviderPricingEvidenceFacts(input.evidenceText);
+  if (facts.length === 0) {
+    return false;
+  }
+  return facts.some((fact) => !resultPreservesProviderPricingFact(input.resultText, fact));
+}
+
+function readPolicyVendorPriceEvidenceCarryForwardRepair(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  repairMarkers: LLMMessage[];
+  evidenceText: string;
+}): boolean {
+  if (hasVendorPriceEvidenceCarryForwardRepairPrompt(input.repairMarkers)) {
+    return false;
+  }
+  if (!/\bvendors?\b|\bVendor\s+[A-Za-z0-9_-]+\b/i.test(input.taskPrompt)) {
+    return false;
+  }
+  const facts = extractPolicyVendorPriceEvidenceFacts(input.evidenceText);
+  if (facts.length === 0) {
+    return false;
+  }
+  return facts.some((fact) => !resultPreservesPolicyVendorPriceFact(input.resultText, fact));
+}
+
+export function extractPolicyVendorPriceEvidenceFacts(
+  evidenceText: string,
+): VendorPriceEvidenceFact[] {
+  const facts: VendorPriceEvidenceFact[] = [];
+  const pattern =
+    /\b(Vendor\s+[A-Za-z0-9][A-Za-z0-9_-]{0,48})\b[\s\S]{0,700}?\b(?:price|pricing)\b[\s\S]{0,100}?(\$\d+(?:\.\d+)?(?:\s+per\s+[A-Za-z0-9_-]+)?)/gi;
+  for (const match of evidenceText.matchAll(pattern)) {
+    const vendor = normalizeVendorEvidenceLabel(match[1] ?? "");
+    const price = normalizeVendorPrice(match[2] ?? "");
+    if (!vendor || !price) {
+      continue;
+    }
+    facts.push({ vendor, price });
+  }
+  return dedupeVendorPriceFacts(facts).slice(0, 8);
+}
+
+function dedupeVendorPriceFacts(
+  facts: VendorPriceEvidenceFact[],
+): VendorPriceEvidenceFact[] {
+  const seen = new Set<string>();
+  const deduped: VendorPriceEvidenceFact[] = [];
+  for (const fact of facts) {
+    const key = `${fact.vendor.toLowerCase()}:${fact.price.toLowerCase()}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(fact);
+  }
+  return deduped;
+}
+
+export function resultPreservesPolicyVendorPriceFact(
+  resultText: string,
+  fact: VendorPriceEvidenceFact,
+): boolean {
+  const vendorEvidence = providerScopedResultText(resultText, fact.vendor);
+  if (!vendorEvidence) {
+    return false;
+  }
+  return (
+    vendorEvidence.toLowerCase().includes(fact.price.toLowerCase()) &&
+    !providerPricingMarkedUnverified(vendorEvidence)
+  );
+}
+
+function extractProviderPricingEvidenceFacts(
+  evidenceText: string,
+): ProviderPricingEvidenceFact[] {
+  const facts: ProviderPricingEvidenceFact[] = [];
+  for (const line of evidenceText.split(/\r?\n/)) {
+    if (!line.includes("|") || !/\$\d/.test(line)) {
+      continue;
+    }
+    const cells = line
+      .split("|")
+      .map((cell) => cell.trim())
+      .filter(Boolean);
+    if (cells.length < 3) {
+      continue;
+    }
+    const provider = cells[0] ?? "";
+    if (!looksLikeProviderName(provider)) {
+      continue;
+    }
+    const prices = extractDollarPrices(line);
+    if (prices.length < 2) {
+      continue;
+    }
+    facts.push({
+      provider,
+      inputPrice: prices[0]!,
+      outputPrice: prices[1]!,
+    });
+  }
+  return dedupeProviderPricingFacts(facts).slice(0, 8);
+}
+
+function dedupeProviderPricingFacts(
+  facts: ProviderPricingEvidenceFact[],
+): ProviderPricingEvidenceFact[] {
+  const seen = new Set<string>();
+  const deduped: ProviderPricingEvidenceFact[] = [];
+  for (const fact of facts) {
+    const key = `${fact.provider.toLowerCase()}:${fact.inputPrice}:${fact.outputPrice}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(fact);
+  }
+  return deduped;
+}
+
+function resultPreservesProviderPricingFact(
+  resultText: string,
+  fact: ProviderPricingEvidenceFact,
+): boolean {
+  const providerEvidence = providerScopedResultText(resultText, fact.provider);
+  if (!providerEvidence) {
+    return false;
+  }
+  return (
+    providerEvidence.includes(fact.inputPrice) &&
+    providerEvidence.includes(fact.outputPrice) &&
+    !providerPricingMarkedUnverified(providerEvidence)
+  );
+}
+
+function providerScopedResultText(
+  resultText: string,
+  provider: string,
+): string | null {
+  const providerPattern = new RegExp(escapeRegExp(provider), "i");
+  const matchingLines = resultText
+    .split(/\r?\n/)
+    .filter((line) => providerPattern.test(line));
+  if (matchingLines.length > 0) {
+    return matchingLines.join("\n");
+  }
+  const match = providerPattern.exec(resultText);
+  if (!match) {
+    return null;
+  }
+  const start = Math.max(0, match.index - 180);
+  const end = Math.min(resultText.length, match.index + provider.length + 360);
+  return resultText.slice(start, end);
+}
+
+function providerPricingMarkedUnverified(text: string): boolean {
+  return /(?:未验证|not verified|unverified|not confirmed|unconfirmed)/i.test(
+    text,
+  );
+}
+
+function looksLikeProviderName(value: string): boolean {
+  const normalized = value.trim();
+  if (!/[A-Za-z]/.test(normalized)) {
+    return false;
+  }
+  if (/^(?:provider|source|model|vendor|---+)$/i.test(normalized)) {
+    return false;
+  }
+  return normalized.length <= 80;
+}
+
+function normalizeVendorEvidenceLabel(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeVendorPrice(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function extractDollarPrices(text: string): string[] {
+  return [...text.matchAll(/\$\d+(?:\.\d+)?/g)].map((match) => match[0]);
+}
+
+function hasVendorPriceEvidenceCarryForwardRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: final answer contradicted source-backed vendor prices",
+      ),
+  );
+}
+
+function hasProviderPricingEvidenceCarryForwardRepairPrompt(
+  messages: LLMMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes(
+        "Runtime correction: final answer dropped source-backed provider pricing values",
+      ),
   );
 }
 
@@ -1312,6 +1634,9 @@ function finalDeliverableIsPresent(
   if (deliverable.id === "two_row_table") {
     return markdownTableDataRowCount(resultText) >= 2;
   }
+  if (deliverable.id === "product_workbench_next_actions_line") {
+    return /^\s*[-*+]\s+next actions\s*:/im.test(resultText);
+  }
   return true;
 }
 
@@ -1413,6 +1738,13 @@ const MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS = [
   /\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b[\s\S]{0,160}\b(?:not verified|unverified|unable to verify|was not verified|could not verify)\b/i,
 ];
 
+const CLAIMED_BROWSER_EVIDENCE_WITHOUT_SESSION_PATTERNS = [
+  /\bTURNKEYAI_COMPLEX_BROWSER_OK\b/,
+  /(?:^|\n)\s*[-*]?\s*(?:\*\*)?browser evidence(?:\*\*)?\s*:/i,
+  /\b(?:browser-observed|browser-visible|rendered page|visible page|browser session)\b[\s\S]{0,120}\b(?:verified|observed|confirmed|captured|used|cited)\b/i,
+  /\bcomplex browser evidence\b/i,
+];
+
 export function readPolicyMissingBrowserEvidenceRepair(input: {
   taskPrompt: string;
   resultText: string;
@@ -1441,7 +1773,11 @@ export function readPolicyMissingBrowserEvidenceRepair(input: {
   ) {
     return false;
   }
-  return matchesAny(input.resultText, MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS);
+  return (
+    containsAnyToolCallForm({ text: input.resultText }) ||
+    matchesAny(input.resultText, MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS) ||
+    matchesAny(input.resultText, CLAIMED_BROWSER_EVIDENCE_WITHOUT_SESSION_PATTERNS)
+  );
 }
 
 export function readPolicyMissingProductSignalBrowserEvidenceRepair(input: {
@@ -1782,6 +2118,9 @@ export function findIncompleteApprovedBrowserSession(input: {
   if (!taskFacts.approvalGatedBrowserActionRequested) {
     return null;
   }
+  if (taskFacts.approvedBrowserActionExecutionForbidden) {
+    return null;
+  }
   if (
     !readPolicyPermissionAppliedEvidence(input.toolTrace) &&
     !taskFacts.approvalAlreadyApplied
@@ -1814,6 +2153,9 @@ export function findIncompleteApprovedBrowserSession(input: {
       continue;
     }
     const evidence = readCompletedSessionEvidence(parsed) ?? "";
+    if (hasCompletedApprovedBrowserActionEvidence(evidence)) {
+      continue;
+    }
     if (!matchesAny(evidence, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS)) {
       continue;
     }
@@ -1823,6 +2165,36 @@ export function findIncompleteApprovedBrowserSession(input: {
     };
   }
   return null;
+}
+
+function hasCompletedApprovedBrowserActionEvidence(evidence: string): boolean {
+  const completedIndex = lastPatternMatchIndex(evidence, [
+    /\b(?:approved action|approved browser\.form\.submit|browser\.form\.submit)\b[\s\S]{0,180}\b(?:completed|complete|triggered|executed|performed|submitted|exercised)\b/i,
+    /\b(?:post[- ]submit|after approval|submitted locally after approval|dry-run submitted locally)\b[\s\S]{0,180}\b(?:verified|confirmed|marker|TURNKEYAI_APPROVAL_FIXTURE_OK|no external mutation)\b/i,
+    /\b(?:submitted locally after approval|dry-run submitted locally after approval|approved dry-run submit completed)\b/i,
+  ]);
+  if (completedIndex < 0) {
+    return false;
+  }
+  const incompleteIndex = lastPatternMatchIndex(
+    evidence,
+    INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS,
+  );
+  return completedIndex >= incompleteIndex;
+}
+
+function lastPatternMatchIndex(text: string, patterns: readonly RegExp[]): number {
+  let lastIndex = -1;
+  for (const pattern of patterns) {
+    const flags = pattern.flags.includes("g")
+      ? pattern.flags
+      : `${pattern.flags}g`;
+    const globalPattern = new RegExp(pattern.source, flags);
+    for (const match of text.matchAll(globalPattern)) {
+      lastIndex = Math.max(lastIndex, match.index ?? -1);
+    }
+  }
+  return lastIndex;
 }
 
 export function readPolicyPermissionAppliedEvidence(
@@ -2204,6 +2576,9 @@ export function readPolicyIncompleteApprovedBrowserActionRepair(input: {
   ) {
     return false;
   }
+  if (taskFacts.approvedBrowserActionExecutionForbidden) {
+    return false;
+  }
   if (
     !readPolicyPermissionAppliedEvidence(input.toolTrace) &&
     !taskFacts.approvalAlreadyApplied
@@ -2304,10 +2679,14 @@ export function findSessionContinuationDirective(
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
+  if (sessionContinuationRequestForbidsSessionTools(latestUserText)) {
+    return null;
+  }
   const messageHint = buildSessionContinuationMessageHint(
     taskPrompt,
     latestUserText,
   );
+  const continuationLabel = extractSessionContinuationLabel(latestUserText);
   const sessionResults = extractSessionToolResultRecords(taskPrompt);
   let selectedSessionKey: string | null = null;
   let selectedPriority = 0;
@@ -2346,7 +2725,11 @@ export function findSessionContinuationDirective(
       selectedSessionKey,
     );
     if (listedResolvedSessionKey) {
-      return { sessionKey: listedResolvedSessionKey, messageHint };
+      return {
+        sessionKey: listedResolvedSessionKey,
+        messageHint,
+        ...(continuationLabel ? { label: continuationLabel } : {}),
+      };
     }
     if (
       extractLikelyTruncatedTimeoutSessionKeyPrefixes(
@@ -2369,14 +2752,22 @@ export function findSessionContinuationDirective(
     ) {
       return null;
     }
-    return { sessionKey: selectedSessionKey, messageHint };
+    return {
+      sessionKey: selectedSessionKey,
+      messageHint,
+      ...(continuationLabel ? { label: continuationLabel } : {}),
+    };
   }
   const explicitSessionKey = selectExplicitContinuationSessionKey(
     taskPrompt,
     latestUserText,
   );
   if (explicitSessionKey) {
-    return { sessionKey: explicitSessionKey, messageHint };
+    return {
+      sessionKey: explicitSessionKey,
+      messageHint,
+      ...(continuationLabel ? { label: continuationLabel } : {}),
+    };
   }
   const listedSession = selectListedContinuationSessionKey(
     taskPrompt,
@@ -2388,7 +2779,11 @@ export function findSessionContinuationDirective(
     listedSession &&
     !(hasTruncatedTimeoutCandidate && listedSession.priority < 3)
   ) {
-    return { sessionKey: listedSession.sessionKey, messageHint };
+    return {
+      sessionKey: listedSession.sessionKey,
+      messageHint,
+      ...(continuationLabel ? { label: continuationLabel } : {}),
+    };
   }
   if (hasTruncatedTimeoutCandidate) {
     return null;
@@ -2424,7 +2819,23 @@ export function findSessionContinuationDirective(
 	    return {
 	      sessionKey,
 	      messageHint,
+	      ...(continuationLabel ? { label: continuationLabel } : {}),
 	    };
+  }
+  return null;
+}
+
+function extractSessionContinuationLabel(latestUserText: string): string | null {
+  const patterns = [
+    /\bsessions_send\s+input\s+must\s+include\s+label\s+["“]([^"”\n]+)["”]/i,
+    /\bsessions_send\b[\s\S]{0,180}\blabel\s*[:=]\s*["“]([^"”\n]+)["”]/i,
+    /\blabel\s+["“]([^"”\n]+)["”]\s+for\s+sessions_send\b/i,
+  ];
+  for (const pattern of patterns) {
+    const label = latestUserText.match(pattern)?.[1]?.trim();
+    if (label) {
+      return sliceUtf8(label, 120);
+    }
   }
   return null;
 }
@@ -2473,6 +2884,9 @@ export function findSessionContinuationLookupDirective(
       "Continue the same slow-source source-check context after the previous timeout. Resume the existing source-check session.";
   }
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
+    return null;
+  }
+  if (sessionContinuationRequestForbidsSessionTools(latestUserText)) {
     return null;
   }
   if (contextHasSessionListResult(context)) {
@@ -2602,7 +3016,15 @@ export function selectListedContinuationSessionKey(
     sessionKey: string;
     priority: number;
     lastActiveAt: number;
+    createdAt: number;
+    subjectMatched: boolean;
   } | null = null;
+  const preferEarliestSubjectSession =
+    continuationRequestPrefersEarliestSession(latestUserText) &&
+    !continuationRequestPrefersResumableSession({
+      latestUserText,
+      context: latestUserText,
+    });
   const truncatedTimeoutPrefixes =
     extractLikelyTruncatedTimeoutSessionKeyPrefixes(context, latestUserText);
   for (const parsed of parseJsonObjectsFromContext(context)) {
@@ -2637,23 +3059,70 @@ export function selectListedContinuationSessionKey(
       if (!sessionKey || priority <= 0) {
         continue;
       }
+      const relevanceText = [
+        typeof record["agent_id"] === "string" ? record["agent_id"] : "",
+        typeof record["label"] === "string" ? record["label"] : "",
+      ].join(" ");
+      const subjectMatched = continuationTextMatchesSubject(
+        relevanceText,
+        latestUserText,
+      );
+      const createdAt = readListedSessionCreatedAt(record, sessionKey);
       const lastActiveAt =
         typeof record["last_active_at"] === "number"
           ? record["last_active_at"]
           : 0;
+      if (preferEarliestSubjectSession && subjectMatched) {
+        if (
+          !selected ||
+          !selected.subjectMatched ||
+          createdAt < selected.createdAt ||
+          (createdAt === selected.createdAt && priority > selected.priority)
+        ) {
+          selected = {
+            sessionKey,
+            priority,
+            lastActiveAt,
+            createdAt,
+            subjectMatched,
+          };
+        }
+        continue;
+      }
+      if (preferEarliestSubjectSession && selected?.subjectMatched) {
+        continue;
+      }
       if (
         !selected ||
         priority > selected.priority ||
         (priority === selected.priority &&
           lastActiveAt >= selected.lastActiveAt)
       ) {
-        selected = { sessionKey, priority, lastActiveAt };
+        selected = {
+          sessionKey,
+          priority,
+          lastActiveAt,
+          createdAt,
+          subjectMatched,
+        };
       }
     }
   }
   return selected
     ? { sessionKey: selected.sessionKey, priority: selected.priority }
     : null;
+}
+
+function readListedSessionCreatedAt(
+  record: Record<string, unknown>,
+  sessionKey: string,
+): number {
+  const createdAt = record["created_at"];
+  if (typeof createdAt === "number" && Number.isFinite(createdAt)) {
+    return createdAt;
+  }
+  const match = sessionKey.match(/\bTASK-(\d{8,})\b/);
+  return match?.[1] ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }
 
 export function resolveListedSessionKeyFromPrefix(
@@ -3226,6 +3695,15 @@ export function isExplicitSessionContinuationRequest(text: string): boolean {
   );
 }
 
+export function sessionContinuationRequestForbidsSessionTools(text: string): boolean {
+  return (
+    /\bdo\s+not\s+call\s+sessions_(?:send|spawn)\b/i.test(text) ||
+    /\brewrit(?:e|ing)\s+the\s+final\s+answer\s+from\s+existing\b[\s\S]{0,120}\bevidence\s+only\b/i.test(
+      text,
+    )
+  );
+}
+
 export function extractLatestUserContinuationText(taskPrompt: string): string {
   const verbatimDirection = extractVerbatimGoalDirection(taskPrompt);
   if (verbatimDirection) {
@@ -3285,7 +3763,7 @@ export function extractVerbatimGoalSection(
 ): string | null {
   const match = taskPrompt.match(
     new RegExp(
-      `(?:^|\\n)\\s*${escapeRegExp(sectionLabel)}\\s*\\(verbatim\\):\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:Latest user direction|Original user goal)\\s*\\(verbatim\\):|\\n\\s*(?:\\[truncated\\]|The goal above is binding:|Task brief:|Recent turns:|Role scratchpad:|Retrieved memory:|Worker evidence:|Execution continuity:|Output contract:)\\b|$)`,
+      `(?:^|\\n)\\s*${escapeRegExp(sectionLabel)}\\s*\\(verbatim\\):\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:Latest user direction|Original user goal)\\s*\\(verbatim\\):|\\n\\s*(?:\\[truncated\\]|The goal above is binding:|Task brief:|Recent turns:|Role scratchpad:|Retrieved memory:|Worker evidence:|Prior tool session evidence|Execution continuity:|Output contract:)\\b|$)`,
       "i",
     ),
   );
@@ -3467,6 +3945,73 @@ export function normalizePrivateUrlResearchSpawnCalls(
       },
     };
   });
+}
+
+export function normalizeLoopbackSpawnCallUrls(
+  toolCalls: LLMToolCall[],
+  context: { taskPrompt: string },
+): LLMToolCall[] {
+  return toolCalls.map((call) => {
+    if (call.name !== "sessions_spawn") {
+      return call;
+    }
+    const nextInput: Record<string, unknown> = { ...call.input };
+    let changed = false;
+    for (const field of ["task", "message", "reason", "url", "uri", "href"] as const) {
+      const value = readStringInput(nextInput, field);
+      if (!value) {
+        continue;
+      }
+      const rewritten = rewriteLoopbackUrlsFromTaskPrompt(value, context.taskPrompt);
+      if (rewritten !== value) {
+        nextInput[field] = rewritten;
+        changed = true;
+      }
+    }
+    return changed ? { ...call, input: nextInput } : call;
+  });
+}
+
+function rewriteLoopbackUrlsFromTaskPrompt(text: string, taskPrompt: string): string {
+  let rewritten = text;
+  for (const url of extractHttpUrls(text)) {
+    const replacement = findCanonicalLoopbackTaskPromptUrl(url, taskPrompt);
+    if (replacement && replacement !== url) {
+      rewritten = rewritten.split(url).join(replacement);
+    }
+  }
+  return rewritten;
+}
+
+function findCanonicalLoopbackTaskPromptUrl(url: string, taskPrompt: string): string | null {
+  const parsed = parseUrlOrNull(url);
+  if (!parsed || !isLoopbackHostname(parsed.hostname)) {
+    return null;
+  }
+  for (const candidate of extractHttpUrls(taskPrompt)) {
+    const parsedCandidate = parseUrlOrNull(candidate);
+    if (!parsedCandidate || !isLoopbackHostname(parsedCandidate.hostname)) {
+      continue;
+    }
+    if (
+      parsedCandidate.protocol === parsed.protocol &&
+      parsedCandidate.port === parsed.port &&
+      parsedCandidate.pathname === parsed.pathname &&
+      parsedCandidate.search === parsed.search &&
+      parsedCandidate.hash === parsed.hash
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function parseUrlOrNull(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeBoundedTimeoutSourceSpawnAgents(

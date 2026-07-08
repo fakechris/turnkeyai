@@ -76,6 +76,7 @@ export function isControlPlaneToolResultName(
   return (
     toolName === "sessions_list" ||
     toolName === "sessions_history" ||
+    toolName === "memory_search" ||
     toolName === "permission_query" ||
     toolName === "permission_result" ||
     toolName === "permission_applied"
@@ -138,7 +139,9 @@ export function buildContinuationDirectiveContext(
         content.includes("session_key") || content.includes('"sessions"'),
     )
     .join("\n");
-  return toolEvidence ? `${taskPrompt}\n${toolEvidence}` : taskPrompt;
+  return toolEvidence
+    ? `${taskPrompt}\nPrior tool session evidence:\n${toolEvidence}`
+    : taskPrompt;
 }
 
 export function readPolicyWorkerKindFromSessionKey(sessionKey: unknown): string | null {
@@ -201,23 +204,246 @@ export function normalizeSessionToolCalls(
       return call;
     }
     const sessionKey = readStringInput(call.input, "session_key");
+    const sourceMatchedSessionKey =
+      call.name === "sessions_send"
+        ? resolveSourceMatchedSessionSendKey(call, sessionContext)
+        : null;
     const extractedSessionKey = sessionKey
       ? extractWorkerSessionKey(sessionKey)
       : undefined;
     const normalizedSessionKey = extractedSessionKey
       ? resolveKnownWorkerSessionKey(extractedSessionKey, knownSessionKeys)
       : undefined;
-    if (!normalizedSessionKey || normalizedSessionKey === sessionKey) {
+    const nextSessionKey = sourceMatchedSessionKey ?? normalizedSessionKey;
+    if (!nextSessionKey || nextSessionKey === sessionKey) {
       return call;
     }
     return {
       ...call,
       input: {
         ...call.input,
-        session_key: normalizedSessionKey,
+        session_key: nextSessionKey,
       },
     };
   });
+}
+
+function resolveSourceMatchedSessionSendKey(
+  call: LLMToolCall,
+  sessionContext: string,
+): string | null {
+  const message = readStringInput(call.input, "message");
+  if (!message) {
+    return null;
+  }
+  const targetUrls = extractExplicitSourceUrls(message);
+  if (targetUrls.length === 0) {
+    return null;
+  }
+  let selected: { sessionKey: string; score: number } | null = null;
+  for (const result of extractSessionToolResultRecordsFromContext(sessionContext)) {
+    const sessionKey =
+      typeof result["session_key"] === "string"
+        ? result["session_key"].trim()
+        : "";
+    if (!sessionKey) {
+      continue;
+    }
+    const score = scoreSessionResultSourceMatch(result, targetUrls);
+    if (score < 16) {
+      continue;
+    }
+    if (!selected || score > selected.score) {
+      selected = { sessionKey, score };
+    }
+  }
+  return selected?.sessionKey ?? null;
+}
+
+function extractExplicitSourceUrls(text: string): string[] {
+  const urls: string[] = [];
+  for (const match of text.matchAll(
+    /\b(?:source\s*url|evidence\s*url|url)\s*[:=]\s*`?(https?:\/\/[^\s`)"'>]+)/gi,
+  )) {
+    const url = match[1]?.replace(/[.,;]+$/, "");
+    if (url) {
+      urls.push(url);
+    }
+  }
+  return [...new Set(urls)];
+}
+
+function scoreSessionResultSourceMatch(
+  result: Record<string, unknown>,
+  targetUrls: readonly string[],
+): number {
+  const candidateText = sessionResultSourceMatchText(result);
+  const normalizedCandidateText = candidateText.toLowerCase();
+  const label =
+    typeof result["label"] === "string" ? result["label"].toLowerCase() : "";
+  let score = 0;
+  for (const targetUrl of targetUrls) {
+    const normalizedTarget = normalizeUrlForComparison(targetUrl).toLowerCase();
+    if (normalizedTarget && normalizedCandidateText.includes(normalizedTarget)) {
+      score += 20;
+    }
+    const target = readUrlParts(targetUrl);
+    if (target?.pathname && normalizedCandidateText.includes(target.pathname)) {
+      score += 12;
+    }
+    if (target?.subject && label.includes(target.subject)) {
+      score += 12;
+    }
+    if (target?.subject && normalizedCandidateText.includes(target.subject)) {
+      score += 4;
+    }
+    if (
+      target?.pathname &&
+      new RegExp(`${escapeRegExp(target.pathname)}[\\s\\S]{0,240}\\b(?:not verified|unverified|unknown|missing|not confirmed)\\b`, "i").test(
+        candidateText,
+      )
+    ) {
+      score -= 8;
+    }
+  }
+  return score;
+}
+
+function readUrlParts(url: string): { pathname: string; subject: string } | null {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname.replace(/\/+$/, "").toLowerCase();
+    const subject = pathname
+      .split("/")
+      .filter(Boolean)
+      .at(-1)
+      ?.replace(/[-_]+/g, " ")
+      .trim()
+      .toLowerCase();
+    return {
+      pathname,
+      subject: subject ?? "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sessionResultSourceMatchText(result: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of [
+    "label",
+    "task",
+    "evidence_excerpt",
+    "evidence_summary",
+    "result",
+    "final_content",
+    "summary",
+  ]) {
+    const value = result[key];
+    if (typeof value === "string") {
+      parts.push(value);
+    }
+  }
+  const payload = result["payload"];
+  if (payload && typeof payload === "object") {
+    try {
+      parts.push(JSON.stringify(payload));
+    } catch {
+      // Ignore unserializable payloads; the top-level result fields still carry
+      // enough evidence for source matching in normal traces.
+    }
+  }
+  return parts.join("\n");
+}
+
+function extractSessionToolResultRecordsFromContext(
+  context: string,
+): Array<Record<string, unknown>> {
+  const records: Array<Record<string, unknown>> = [];
+  for (const parsed of parseJsonObjectsFromContext(context)) {
+    readSessionToolResultRecords(parsed, records);
+  }
+  return records;
+}
+
+function readSessionToolResultRecords(
+  value: unknown,
+  records: Array<Record<string, unknown>>,
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  if (record["protocol"] === SESSION_TOOL_RESULT_PROTOCOL) {
+    records.push(record);
+  }
+  for (const key of ["content", "resultContent"]) {
+    const nested = record[key];
+    if (
+      typeof nested !== "string" ||
+      !nested.includes(SESSION_TOOL_RESULT_PROTOCOL)
+    ) {
+      continue;
+    }
+    for (const parsed of parseJsonObjectsFromContext(nested)) {
+      readSessionToolResultRecords(parsed, records);
+    }
+  }
+}
+
+function parseJsonObjectsFromContext(context: string): unknown[] {
+  const parsed: unknown[] = [];
+  for (let index = 0; index < context.length; index += 1) {
+    if (context[index] !== "{") {
+      continue;
+    }
+    const end = findJsonObjectEnd(context, index);
+    if (end === null) {
+      continue;
+    }
+    try {
+      parsed.push(JSON.parse(context.slice(index, end + 1)));
+      index = end;
+    } catch {
+      // Keep scanning; trace windows can contain truncated JSON fragments.
+    }
+  }
+  return parsed;
+}
+
+function findJsonObjectEnd(context: string, start: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < context.length; index += 1) {
+    const char = context[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return null;
 }
 
 export function normalizeUrlForComparison(value: string): string {

@@ -15,6 +15,7 @@ import {
   buildToolRoundGatewayRequest,
   enforceRequestedThreeLineLabelShape,
   extractMentions,
+  extractMentionsForFinalResponse,
   finalSynthesisFormatContract,
   hasToolDefinition,
   replaceInitialPromptMessages,
@@ -411,6 +412,16 @@ test("finalSynthesisFormatContract preserves requested table columns", () => {
   );
 });
 
+test("finalSynthesisFormatContract prioritizes direct rendered source evidence over cross-reference limits", () => {
+  const contract = finalSynthesisFormatContract(
+    "Inspect source A, source B, and a rendered browser dashboard.",
+    [],
+  ).join("\n");
+
+  assert.match(contract, /prefer the direct source result/i);
+  assert.match(contract, /browser-rendered evidence over raw or static HTML/i);
+});
+
 test("enforceRequestedThreeLineLabelShape normalizes requested labels only for exact three-line answers", () => {
   const taskPrompt =
     "仅需回答三行：状态、最终可见文本、证据 URL。";
@@ -440,6 +451,28 @@ test("extractMentions and hasToolDefinition expose final reply helpers", () => {
     "role:a",
     "role:b",
   ]);
+  assert.deepEqual(
+    extractMentionsForFinalResponse("completed evidence @{role:browser}", {
+      toolLoopCloseoutReason: "completed_sub_agent_final",
+    }),
+    [],
+  );
+  assert.deepEqual(
+    extractMentionsForFinalResponse("partial closeout @{role:browser}", {
+      toolLoopCloseoutReason: "round_limit",
+    }),
+    ["role:browser"],
+  );
+  assert.deepEqual(
+    extractMentionsForFinalResponse(
+      [
+        "Lead is operating as Lead Coordinator.",
+        "Delegate one next role when work remains. Otherwise finalize.",
+        "@{role-explore} Please take the next assigned slice and report back briefly.",
+      ].join("\n"),
+    ),
+    [],
+  );
   assert.equal(hasToolDefinition(tools, "web_fetch"), true);
   assert.equal(hasToolDefinition(tools, "sessions_send"), false);
 });

@@ -110,3 +110,43 @@ test("worker session evidence summary uses latest transcript evidence before sta
 
   assert.equal(summary, "Verified checkout total is $42.");
 });
+
+test("worker session evidence summary ignores no-usable-evidence timeout summaries", () => {
+  const summary = summarizeWorkerSessionEvidence({
+    workerRunKey: "worker:explore:task-1",
+    workerType: "explore",
+    status: "resumable",
+    createdAt: 1,
+    updatedAt: 5,
+    history: [
+      {
+        id: "history-generic-interrupt",
+        role: "tool",
+        content: "Sub-agent interrupted before completion.",
+        status: "partial",
+        createdAt: 3,
+      },
+      {
+        id: "history-timeout-summary",
+        role: "assistant",
+        content:
+          "## Timeout Summary - No Usable Evidence Gathered\n\nWhat Was Verified\n- Nothing. The sub-agent timed out before any verifiable evidence was collected.",
+        status: "completed",
+        createdAt: 4,
+      },
+    ],
+    continuationDigest: {
+      reason: "timeout_summary",
+      summary: "No usable evidence gathered before timeout.",
+      createdAt: 5,
+    },
+    lastResult: {
+      workerType: "explore",
+      status: "partial",
+      summary: "No verifiable evidence was captured.",
+      payload: null,
+    },
+  });
+
+  assert.equal(summary, null);
+});

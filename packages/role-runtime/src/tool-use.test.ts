@@ -1111,6 +1111,57 @@ test("sessions_spawn routes localhost read-only browser extraction to explore wh
   assert.match(result.progress?.[0]?.summary ?? "", /Started explore sub-agent/);
 });
 
+test("sessions_spawn routes explicitly non-browser read-only source checks to explore when available", async () => {
+  let capturedPreferredWorkers: unknown = null;
+  const workerRuntime = {
+    async spawn(input: WorkerInvocationInput) {
+      capturedPreferredWorkers = input.packet.preferredWorkerKinds;
+      return { workerType: "explore", workerRunKey: "worker:explore:task-no-browser" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Static source extracted.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser", "explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-static-source-no-browser",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: [
+          "Evaluate this static text source for a release-risk note.",
+          "Static source: http://127.0.0.1:55355/cancel-resume-fixture.",
+          "This is a read-only source check; no browser form, click, navigation action, or approval-gated action is needed.",
+        ].join(" "),
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Evaluate a static source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { agent_id?: string };
+  assert.deepEqual(capturedPreferredWorkers, ["explore"]);
+  assert.equal(body.agent_id, "explore");
+  assert.match(result.progress?.[0]?.summary ?? "", /Started explore sub-agent/);
+});
+
 test("sessions_spawn keeps browser for rendered, interactive, or user-session source tasks", async () => {
   let capturedPreferredWorkers: unknown = null;
   const workerRuntime = {
@@ -1147,6 +1198,58 @@ test("sessions_spawn keeps browser for rendered, interactive, or user-session so
       seat: "lead",
       systemPrompt: "Lead.",
       taskPrompt: "Review dashboard.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { agent_id?: string };
+  assert.deepEqual(capturedPreferredWorkers, ["browser"]);
+  assert.equal(body.agent_id, "browser");
+  assert.match(result.progress?.[0]?.summary ?? "", /Started browser sub-agent/);
+});
+
+test("sessions_spawn keeps browser for localhost tasks that require JavaScript rendering instead of direct fetch", async () => {
+  let capturedPreferredWorkers: unknown = null;
+  const workerRuntime = {
+    async spawn(input: WorkerInvocationInput) {
+      capturedPreferredWorkers = input.packet.preferredWorkerKinds;
+      return { workerType: "browser", workerRunKey: "worker:browser:product-signals" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Product signals dashboard rendered.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser", "explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-product-signals",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        label: "Product signals browser",
+        task: [
+          "Open http://127.0.0.1:50301/product-signals in a browser.",
+          "Wait for JavaScript rendering, then extract the marker from the rendered DOM.",
+          "Use browser tools, not direct fetch.",
+        ].join(" "),
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Review product signal dashboard.",
       outputContract: "Return result.",
       suggestedMentions: [],
     },
@@ -2817,6 +2920,96 @@ test("sessions_spawn waits for approval and resumes the same tool call before br
   assert.doesNotMatch(spawnedTaskPrompt, /Request approval before applying/i);
 });
 
+test("sessions_spawn reuses approval cache for parent-declared browser form submit", async () => {
+  const events: string[] = [];
+  let requestedAction = "";
+  let spawnedTaskPrompt = "";
+  let approvedRuntimeAction = "";
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      requestedAction = input.action;
+      events.push(`query:${input.action}`);
+      return {
+        status: "already_granted",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Already granted.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn(input: {
+      packet: {
+        taskPrompt: string;
+        runtimeApprovalContext?: {
+          browserSideEffects?: Array<{ action: string }>;
+        };
+      };
+    }) {
+      events.push("spawn");
+      spawnedTaskPrompt = input.packet.taskPrompt;
+      approvedRuntimeAction = input.packet.runtimeApprovalContext?.browserSideEffects?.[0]?.action ?? "";
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+    async send() {
+      events.push("send");
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Approved browser action completed.",
+        payload: { submitted: true },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-parent-declared-submit",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open https://example.test/account and perform the approval-gated action.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt:
+        "Request approval for browser.form.submit, apply the approval, then ask the browser sub-agent to open https://example.test/account and submit the approved form.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(events, ["query:browser.form.submit", "spawn", "send"]);
+  assert.equal(requestedAction, "browser.form.submit");
+  assert.equal(approvedRuntimeAction, "browser.form.submit");
+  assert.equal(result.progress?.[0]?.detail?.status, "already_granted");
+  assert.match(spawnedTaskPrompt, /parent runtime approval is granted/i);
+  assert.match(spawnedTaskPrompt, /permission cache is already applied/i);
+});
+
 test("sessions_spawn returns structured permission error when approval wait fails", async () => {
   const toolPermissionService: ToolPermissionService = {
     async request(input) {
@@ -3650,6 +3843,107 @@ test("sessions_spawn preserves cooperative partial evidence returned after timeo
   assert.deepEqual(body.payload?.screenshotPaths, ["/Users/chris/.turnkeyai/data/browser-artifacts/hello-world.png"]);
   assert.equal(result.progress?.at(-1)?.phase, "completed");
   assert.equal(result.progress?.at(-1)?.detail?.status, "partial");
+});
+
+test("sessions_spawn keeps timeout result when late partial has no usable evidence", async () => {
+  let sendStarted!: () => void;
+  let releasePartial!: () => void;
+  let interruptedReason: string | null = null;
+  let sendCount = 0;
+  const sendStartedPromise = new Promise<void>((resolve) => {
+    sendStarted = resolve;
+  });
+  const releasePartialPromise = new Promise<void>((resolve) => {
+    releasePartial = resolve;
+  });
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:generic-interrupt" };
+    },
+    async send() {
+      sendCount += 1;
+      if (sendCount === 1) {
+        sendStarted();
+        await releasePartialPromise;
+        return {
+          workerType: "explore",
+          status: "partial",
+          summary: "Sub-agent interrupted before completion.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            interrupted: true,
+          },
+        };
+      }
+      return null;
+    },
+    async interrupt(input: { reason?: string; preserveLateResult?: boolean }) {
+      interruptedReason = input.reason ?? null;
+      assert.equal(input.preserveLateResult, true);
+      releasePartial();
+      return {
+        workerRunKey: "worker:explore:generic-interrupt",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:generic-interrupt",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    hardTimeoutGraceMs: 50,
+  });
+
+  const executePromise = executor.execute({
+    call: {
+      id: "call-generic-interrupt-timeout",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Read a slow source.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Read a slow source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  await sendStartedPromise;
+  const result = await executePromise;
+  const body = JSON.parse(result.content) as {
+    status: string;
+    resumable: boolean;
+    evidence_available: boolean;
+    result: string;
+  };
+  assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.resumable, true);
+  assert.equal(body.evidence_available, false);
+  assert.match(body.result, /No usable evidence was gathered before timeout/);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+  assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
 });
 
 test("sessions_spawn keeps timeout result when worker returns completed after timeout interrupt", async () => {
@@ -6107,6 +6401,94 @@ test("permission tools request, observe, and apply operator approval", async () 
   ]);
 });
 
+test("permission_query carries bounded approval decision and applied progress when available", async () => {
+  const calls: string[] = [];
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolPermissionService: {
+      async request(input) {
+        calls.push(`request:${input.action}`);
+        return {
+          status: "pending",
+          approvalId: "ap.thread-1.call-permission",
+          missionId: "msn.1",
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "missing",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message:
+            "Permission request ap.thread-1.call-permission is pending operator decision.",
+        };
+      },
+      async result() {
+        throw new Error("permission_query should use waitForDecision");
+      },
+      async waitForDecision(input) {
+        calls.push(`wait:${input.approvalId}`);
+        return {
+          status: "approved",
+          approvalId: input.approvalId,
+          missionId: "msn.1",
+          action: "browser.form.submit",
+          message: "Permission request ap.thread-1.call-permission was approved.",
+        };
+      },
+      async apply(input) {
+        calls.push(`apply:${input.approvalId}`);
+        return {
+          status: "applied",
+          approvalId: input.approvalId,
+          cacheKey: "thread-1:browser:mutate:approval:browser.form.submit",
+          message: "Permission request ap.thread-1.call-permission applied.",
+        };
+      },
+    },
+  });
+
+  const query = await executor.execute({
+    call: {
+      id: "call-permission",
+      name: "permission_query",
+      input: {
+        action: "browser.form.submit",
+        title: "Submit pricing form",
+        risk: "Submits account data to the website.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The task requires checking the submitted pricing flow.",
+        worker_kind: "browser",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead" as const,
+      systemPrompt: "Lead.",
+      taskPrompt: "Submit form.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(query.isError, undefined);
+  assert.deepEqual(
+    query.progress?.map((event) => event.detail?.eventType),
+    ["permission.query", "permission.result", "permission.applied"],
+  );
+  assert.match(query.content, /"status": "applied"/);
+  assert.match(query.content, /"event_type": "permission\.applied"/);
+  assert.deepEqual(calls, [
+    "request:browser.form.submit",
+    "wait:ap.thread-1.call-permission",
+    "apply:ap.thread-1.call-permission",
+  ]);
+});
+
 test("permission_query rejects browser mutation approvals during read-only source work", async () => {
   let permissionRequested = false;
   const executor = createWorkerSessionToolExecutor({
@@ -6148,6 +6530,343 @@ test("permission_query rejects browser mutation approvals during read-only sourc
       taskPrompt:
         "Continue a source-bounded Vendor Alpha review. Revisit the existing notes and turn the evidence into a decision note for a product lead.",
       outputContract: "Return source-backed pricing, strength, risk, and remaining uncertainty.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, true);
+  assert.match(result.content, /read-only\/source-bounded/i);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+});
+
+test("permission_query allows approval-gated browser form dry-run tasks despite pre-approval no-submit wording", async () => {
+  let permissionRequested = false;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolPermissionService: {
+      async request(input) {
+        permissionRequested = true;
+        return {
+          status: "pending",
+          approvalId: "ap.thread-1.wait-timeout",
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "thread-1:browser:mutate:approval:browser.form.submit",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Approval is pending.",
+        };
+      },
+      async result() {
+        throw new Error("permission_result should not be called by permission_query");
+      },
+      async apply() {
+        throw new Error("permission_applied should not be called by permission_query");
+      },
+    },
+  });
+
+  const taskPrompt = [
+    "Open the local approval form and start a safe dry-run browser form submission attempt for operator review.",
+    "Form: http://127.0.0.1:59728/approval-form",
+    "The dry-run action under review is the form submission, not just opening the page.",
+    "If the operator decision does not arrive during this attempt, stop without submitting the form and close out with what remains pending, what did not run, and the safest next action.",
+    "Treat the page as isolated local test data, but keep the approval gate authoritative.",
+  ].join("\n");
+
+  const result = await executor.execute({
+    call: {
+      id: "call-wait-timeout-permission",
+      name: "permission_query",
+      input: {
+        action: "browser.form.submit",
+        title: "Approve local dry-run browser form submission",
+        risk: "Applies an approval-gated browser form submission in an isolated local dry-run page.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The user asked to carry a browser form submission through the approval gate before applying the action.",
+        worker_kind: "browser",
+        payload: {
+          url: "http://127.0.0.1:59728/approval-form",
+          task: [
+            "Open the local approval form at http://127.0.0.1:59728/approval-form and begin a safe dry-run browser form submission attempt for operator review.",
+            "Do NOT actually submit the form unless explicit operator approval is granted.",
+            "If NO operator decision arrives, STOP immediately without submitting the form.",
+          ].join("\n"),
+        },
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt,
+      outputContract: "Return approval status, withheld side effect, safest next action, and residual risk.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(permissionRequested, true);
+  assert.equal(result.isError, undefined);
+  assert.match(result.content, /"event_type": "permission\.query"/);
+  assert.match(result.content, /"status": "pending"/);
+});
+
+test("permission_query rejects browser form approvals for read-only complex page review", async () => {
+  let permissionRequested = false;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolPermissionService: {
+      async request() {
+        permissionRequested = true;
+        throw new Error("read-only browser review must not create an approval");
+      },
+      async result() {
+        throw new Error("permission_result should not be called");
+      },
+      async apply() {
+        throw new Error("permission_applied should not be called");
+      },
+    },
+  });
+
+  const taskPrompt = [
+    "Review this complex browser page as an operator would see it.",
+    "Page: http://127.0.0.1:53106/complex-browser",
+    "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+    "Open the details popup, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+    "Use only what the browser-visible page state actually shows. If a section is unavailable, say what was and was not verified.",
+  ].join("\n");
+
+  const result = await executor.execute({
+    call: {
+      id: "call-complex-readonly-permission",
+      name: "permission_query",
+      input: {
+        action: "browser.form.submit",
+        title: "Approve local dry-run browser form submission",
+        risk: "Applies an approval-gated browser form submission in an isolated local dry-run page.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The user asked to carry a browser form submission through the approval gate before applying the action.",
+        worker_kind: "browser",
+        payload: { url: "http://127.0.0.1:53106/complex-browser", task: taskPrompt },
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt,
+      outputContract: "Return browser-visible operational facts and residual risk.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, true);
+  assert.match(result.content, /read-only\/source-bounded/i);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+});
+
+test("permission_query rejects read-only browser approvals from recent mission context", async () => {
+  let permissionRequested = false;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolPermissionService: {
+      async request() {
+        permissionRequested = true;
+        throw new Error("read-only recent mission context must not create an approval");
+      },
+      async result() {
+        throw new Error("permission_result should not be called");
+      },
+      async apply() {
+        throw new Error("permission_applied should not be called");
+      },
+    },
+  });
+
+  const missionPrompt = [
+    "Review this complex browser page as an operator would see it.",
+    "Page: http://127.0.0.1:53106/complex-browser",
+    "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+    "Open the details popup, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+    "Use only what the browser-visible page state actually shows. If a section is unavailable, say what was and was not verified.",
+  ].join("\n");
+  const activation = buildActivation();
+  activation.handoff.payload.intent = {
+    relayBrief: "Lead picked up the task.",
+    recentMessages: [{
+      messageId: "msg-user-mission",
+      role: "user",
+      name: "User",
+      content: missionPrompt,
+      createdAt: 1,
+    }],
+  };
+
+  const result = await executor.execute({
+    call: {
+      id: "call-complex-recent-readonly-permission",
+      name: "permission_query",
+      input: {
+        action: "browser.form.submit",
+        title: "Approve local dry-run browser form submission",
+        risk: "Applies an approval-gated browser form submission in an isolated local dry-run page.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The user asked to carry a browser form submission through the approval gate before applying the action.",
+        worker_kind: "browser",
+        payload: { url: "http://127.0.0.1:53106/complex-browser", task: missionPrompt },
+      },
+    },
+    activation,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Lead picked up the task.",
+      outputContract: "Continue the mission.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, true);
+  assert.match(result.content, /read-only\/source-bounded/i);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+});
+
+test("permission_query rejects approvals explicitly negated by static read-only source checks", async () => {
+  let permissionRequested = false;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolPermissionService: {
+      async request() {
+        permissionRequested = true;
+        throw new Error("explicitly non-browser source check must not create an approval");
+      },
+      async result() {
+        throw new Error("permission_result should not be called");
+      },
+      async apply() {
+        throw new Error("permission_applied should not be called");
+      },
+    },
+  });
+
+  const missionPrompt = [
+    "Evaluate this static text source for a release-risk note.",
+    "Static source: http://127.0.0.1:59467/cancel-resume-fixture",
+    "Make a source-backed attempt instead of guessing from memory.",
+    "This is a read-only source check; no browser form, click, navigation action, or approval-gated action is needed.",
+    "If an operator cancels the active source check, close out from the cancellation evidence and explain how to continue later.",
+  ].join("\n");
+  const activation = buildActivation();
+  activation.handoff.payload.intent = {
+    relayBrief: "Lead picked up the task.",
+    recentMessages: [{
+      messageId: "msg-user-static-source",
+      role: "user",
+      name: "User",
+      content: missionPrompt,
+      createdAt: 1,
+    }],
+  };
+
+  const result = await executor.execute({
+    call: {
+      id: "call-static-source-wrong-approval",
+      name: "permission_query",
+      input: {
+        action: "browser.form.submit",
+        title: "Approve local dry-run browser form submission",
+        risk: "Applies an approval-gated browser form submission in an isolated local dry-run page.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The user asked to carry a browser form submission through the approval gate before applying the action.",
+        worker_kind: "browser",
+      },
+    },
+    activation,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Lead picked up the task.",
+      outputContract: "Continue the mission.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, true);
+  assert.match(result.content, /read-only\/source-bounded/i);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+});
+
+test("permission_query rejects read-only browser approvals from payload task context", async () => {
+  let permissionRequested = false;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolPermissionService: {
+      async request() {
+        permissionRequested = true;
+        throw new Error("read-only payload task context must not create an approval");
+      },
+      async result() {
+        throw new Error("permission_result should not be called");
+      },
+      async apply() {
+        throw new Error("permission_applied should not be called");
+      },
+    },
+  });
+
+  const missionPrompt = [
+    "Review this complex browser page as an operator would see it.",
+    "Page: http://127.0.0.1:53106/complex-browser",
+    "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+    "Open the details popup, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+    "Use only what the browser-visible page state actually shows. If a section is unavailable, say what was and was not verified.",
+  ].join("\n");
+  const activation = buildActivation();
+  activation.handoff.payload.intent = { relayBrief: "", recentMessages: [] };
+
+  const result = await executor.execute({
+    call: {
+      id: "call-complex-payload-readonly-permission",
+      name: "permission_query",
+      input: {
+        action: "browser.form.submit",
+        title: "Approve local dry-run browser form submission",
+        risk: "Applies an approval-gated browser form submission in an isolated local dry-run page.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The user asked to carry a browser form submission through the approval gate before applying the action.",
+        worker_kind: "browser",
+        payload: { url: "http://127.0.0.1:53106/complex-browser", task: missionPrompt },
+      },
+    },
+    activation,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Lead picked up the task.",
+      outputContract: "Continue the mission.",
       suggestedMentions: [],
     },
   });

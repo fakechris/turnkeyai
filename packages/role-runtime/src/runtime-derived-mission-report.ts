@@ -5,6 +5,7 @@ export type ToolLoopCloseoutReason =
   | "wall_clock_budget"
   | "round_limit"
   | "completed_sub_agent_final"
+  | "partial_sub_agent_final"
   | "sub_agent_timeout"
   | "operator_cancelled"
   | "repeated_tool_failure"
@@ -53,12 +54,18 @@ function missionTerminalStatusForCloseout(
 ): MissionTerminalReport["status"] {
   switch (closeout.reason) {
     case "completed_sub_agent_final":
+    case "partial_sub_agent_final":
       return "completed";
+    case "excessive_session_continuation":
+      return (closeout.finalContentCount ?? 0) > 0
+        ? "completed"
+        : closeout.evidenceAvailable
+          ? "partial"
+          : "blocked";
     case "wall_clock_budget":
     case "round_limit":
     case "sub_agent_timeout":
     case "repeated_session_inspection":
-    case "excessive_session_continuation":
     case "tool_evidence_fallback":
     case "pseudo_tool_call":
       return closeout.evidenceAvailable ? "partial" : "blocked";

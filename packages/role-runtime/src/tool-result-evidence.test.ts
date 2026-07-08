@@ -63,7 +63,7 @@ test("findCompletedSessionEvidence reads completed session and history evidence"
   assert.ok(evidence);
   assert.equal(evidence.toolName, "sessions_spawn");
   assert.deepEqual(evidence.finalContents, [
-    "summary\n\ninline browser recovery summary",
+    "completed final evidence\n\ninline browser recovery summary\n\nsummary",
     "history evidence",
   ]);
 });

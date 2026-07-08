@@ -455,6 +455,10 @@ export function buildExtraneousProviderTableSchemaRepairPrompt(input: {
   taskPrompt: string;
   resultText: string;
 }): string {
+  const taskFacts = buildTaskFacts({
+    taskPrompt: input.taskPrompt,
+    messages: [],
+  });
   return [
     "Runtime correction: final answer introduced provider/search/model-support columns that were not requested by the original task.",
     "Do not call tools. Rewrite the final answer using only the evidence already present.",
@@ -462,6 +466,12 @@ export function buildExtraneousProviderTableSchemaRepairPrompt(input: {
     "Use the original task dimensions instead: pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead when those are requested.",
     "Do not mark the whole mission blocked merely because provider support, target-model support, search/web_search support, or token input/output pricing are absent when the original task did not ask for them.",
     "Keep residual risk visible only for source-bounded gaps actually relevant to the original task.",
+    ...(taskFacts.exactFinalAnswerShapeExpected
+      ? [
+          "The original task provided an exact final answer shape. Preserve that shape exactly.",
+          "Do not add a blocked/partial preamble, missing-slots section, extra bullets, extra paragraphs, Markdown tables, links, or bold/italic markup unless the exact shape explicitly requires them.",
+        ]
+      : []),
     `Original task:\n${sliceTaskFactUtf8(input.taskPrompt, 1400)}`,
     `Previous final answer:\n${sliceTaskFactUtf8(input.resultText, 1400)}`,
   ].join("\n");

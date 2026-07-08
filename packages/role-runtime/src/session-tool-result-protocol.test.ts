@@ -42,6 +42,33 @@ test("session tool result protocol serializes completed sub-agent evidence", () 
   assert.deepEqual(parsed, result);
 });
 
+test("session tool result protocol accepts evidence-only v1 results", () => {
+  const parsed = parseSessionToolResult(
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      task_id: "task-alpha",
+      session_key: "worker:explore:alpha",
+      agent_id: "explore",
+      label: "Vendor Alpha",
+      status: "completed",
+      tool_chain: ["explore"],
+      evidence_excerpt:
+        "Vendor Alpha Evidence. TURNKEYAI_VENDOR_ALPHA_OK. Pricing: $19 per seat.",
+      final_content:
+        "Vendor Alpha Evidence. TURNKEYAI_VENDOR_ALPHA_OK. Pricing: $19 per seat.",
+      payload: {
+        mode: "llm_sub_agent",
+        workerType: "explore",
+      },
+    }),
+  );
+
+  assert.equal(parsed?.status, "completed");
+  assert.match(parsed?.result ?? "", /TURNKEYAI_VENDOR_ALPHA_OK/);
+  assert.match(parsed?.evidence_excerpt ?? "", /\$19 per seat/);
+  assert.match(parsed?.final_content ?? "", /\$19 per seat/);
+});
+
 test("session tool result protocol preserves timeout evidence semantics", () => {
   const result = buildSessionToolTimeoutResult({
     taskId: "task-1",
@@ -296,6 +323,77 @@ test("session tool result protocol lifts nested browser tool observations into e
   const parsed = parseSessionToolResult(serializeSessionToolResult(result));
   assert.match(parsed?.evidence_summary ?? "", /Final URL: http:\/\/127\.0\.0\.1\/product-signals/);
   assert.match(parsed?.evidence_summary ?? "", /Workbench product signals/);
+});
+
+test("session tool result protocol preserves later source facts when nested browser evidence repeats earlier pages", () => {
+  const nestedBrowserPage = (url: string, title: string, textExcerpt: string) => ({
+    toolName: "browser_snapshot",
+    content: JSON.stringify({
+      status: "completed",
+      summary: `Browser observed ${title}.`,
+      payload: {
+        page: {
+          finalUrl: url,
+          title,
+          textExcerpt,
+        },
+      },
+    }),
+  });
+  const route = nestedBrowserPage(
+    "http://127.0.0.1:61113/asiawalk-route",
+    "AsiaWalk Route Evidence",
+    "AsiaWalk route desk TURNKEYAI_ASIAWALK_ROUTE_OK Route shape: Seoul orientation walk, Taipei food-and-transit loop, Tokyo neighborhood finale. Route risk: Tokyo finale depends on evening crowd control."
+  );
+  const result = buildSessionToolResult({
+    taskId: "task-asiawalk",
+    sessionKey: "worker:browser:task-asiawalk",
+    agentId: "browser",
+    missingResultMessage: "missing",
+    result: {
+      workerType: "browser",
+      status: "completed",
+      summary: "Browser sub-agent finished.",
+      payload: {
+        mode: "llm_sub_agent",
+        workerType: "browser",
+        content:
+          "Long final report begins with route details and would normally starve later source facts if the summary only kept the head.",
+        metadata: {
+          toolUse: {
+            rounds: [
+              {
+                results: [
+                  route,
+                  route,
+                  route,
+                  nestedBrowserPage(
+                    "http://127.0.0.1:61113/asiawalk-budget",
+                    "AsiaWalk Budget Evidence",
+                    "AsiaWalk budget desk TURNKEYAI_ASIAWALK_BUDGET_OK Estimated pilot budget: $1,280 total. Contingency buffer: $180 reserved for rain reroutes or replacement guide coverage."
+                  ),
+                  nestedBrowserPage(
+                    "http://127.0.0.1:61113/asiawalk-live",
+                    "AsiaWalk Live Readiness",
+                    "AsiaWalk live readiness TURNKEYAI_ASIAWALK_LIVE_OK Readiness: yellow. Live risk: rain risk in Taipei and metro maintenance in Tokyo."
+                  ),
+                ],
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+
+  const summary = result.evidence_summary ?? "";
+  assert.match(summary, /Seoul orientation walk/);
+  assert.match(summary, /Taipei food-and-transit loop/);
+  assert.match(summary, /Tokyo neighborhood finale/);
+  assert.match(summary, /\$1,280 total/);
+  assert.match(summary, /\$180 reserved/);
+  assert.match(summary, /rain risk in Taipei/);
+  assert.ok(Buffer.byteLength(summary, "utf8") <= 1600);
 });
 
 test("session tool result protocol normalizes legacy session results", () => {

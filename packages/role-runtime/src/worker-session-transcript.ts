@@ -23,7 +23,12 @@ export function summarizeWorkerSessionEvidence(state: WorkerSessionState | null)
   }
   const transcript = readWorkerSessionTranscript(state.workerRunKey, state);
   const latestEvidence = [...transcript].reverse().find((entry) => isEvidenceEntry(entry));
-  return latestEvidence?.content.trim() || state.continuationDigest?.summary || state.lastResult?.summary || null;
+  return (
+    readUsableEvidenceText(latestEvidence?.content) ??
+    readUsableEvidenceText(state.continuationDigest?.summary) ??
+    readUsableEvidenceText(state.lastResult?.summary) ??
+    null
+  );
 }
 
 export function serializeWorkerHistoryEntry(
@@ -67,5 +72,24 @@ function isEvidenceEntry(entry: WorkerSessionHistoryEntry): boolean {
   if (entry.status === "failed" || entry.status === "cancelled" || entry.status === "interrupted") {
     return false;
   }
-  return entry.content.trim().length > 0;
+  return readUsableEvidenceText(entry.content) != null;
+}
+
+function readUsableEvidenceText(value: string | null | undefined): string | null {
+  const text = value?.trim();
+  if (!text || declaresNoUsableEvidence(text)) {
+    return null;
+  }
+  return text;
+}
+
+function declaresNoUsableEvidence(text: string): boolean {
+  if (text.trim().replace(/\s+/g, " ").toLowerCase() === "sub-agent interrupted before completion.") {
+    return true;
+  }
+  return (
+    /\bno\s+(?:usable|verified|verifiable)\s+evidence\b/i.test(text) ||
+    /\bno\s+evidence\s+(?:was\s+)?(?:gathered|collected|captured)\b/i.test(text) ||
+    /\bwhat\s+was\s+verified\b[\s\S]{0,120}\b(?:nothing|none)\b/i.test(text)
+  );
 }

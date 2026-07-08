@@ -18,6 +18,7 @@ const baseTaskIntent: TaskIntentFacts = {
   permissionToolsAllowed: false,
   approvalAlreadyApplied: false,
   approvalGatedBrowserActionRequested: false,
+  approvedBrowserActionExecutionForbidden: false,
   approvalWaitTimeoutCloseoutRequested: false,
   stopAtPendingApprovalAllowed: false,
   appliedApprovalBrowserContinuation: false,

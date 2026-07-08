@@ -26,6 +26,22 @@ test("buildRuntimeDerivedMissionReport maps completed session closeout to comple
   );
 });
 
+test("buildRuntimeDerivedMissionReport maps partial session final content to completed", () => {
+  assert.deepEqual(
+    buildRuntimeDerivedMissionReport({
+      reason: "partial_sub_agent_final",
+      toolCallCount: 1,
+      roundCount: 1,
+      evidenceAvailable: true,
+    }),
+    {
+      status: "completed",
+      reason: "partial_sub_agent_final",
+      source: "runtime_derived",
+    },
+  );
+});
+
 test("buildRuntimeDerivedMissionReport maps evidence-bearing exhaustion to partial", () => {
   const closeout: ToolLoopCloseoutMetadata = {
     reason: "round_limit",
@@ -42,6 +58,25 @@ test("buildRuntimeDerivedMissionReport maps evidence-bearing exhaustion to parti
     source: "runtime_derived",
   });
   assert.equal("authorizedPartial" in (report ?? {}), false);
+});
+
+test("buildRuntimeDerivedMissionReport maps excessive continuation with completed final content to completed", () => {
+  assert.deepEqual(
+    buildRuntimeDerivedMissionReport({
+      reason: "excessive_session_continuation",
+      toolCallCount: 4,
+      roundCount: 3,
+      pendingToolCallCount: 1,
+      toolName: "sessions_send",
+      evidenceAvailable: true,
+      finalContentCount: 1,
+    }),
+    {
+      status: "completed",
+      reason: "excessive_session_continuation",
+      source: "runtime_derived",
+    },
+  );
 });
 
 test("buildRuntimeDerivedMissionReport maps non-evidence and hard closeouts to blocked", () => {

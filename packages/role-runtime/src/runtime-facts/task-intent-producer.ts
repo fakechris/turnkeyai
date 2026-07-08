@@ -43,6 +43,8 @@ export function produceTaskIntentEnvelope(
       approvalAlreadyApplied: taskFactApprovalAlreadyApplied(input.taskPrompt),
       approvalGatedBrowserActionRequested:
         taskFactRequestsApprovalGatedBrowserAction(input.taskPrompt),
+      approvedBrowserActionExecutionForbidden:
+        taskFactForbidsApprovedBrowserActionExecution(input.taskPrompt),
       approvalWaitTimeoutCloseoutRequested:
         taskFactRequestsApprovalWaitTimeoutCloseout(input.taskPrompt),
       stopAtPendingApprovalAllowed:
@@ -225,6 +227,9 @@ function taskFactAllowsPermissionTools(taskPrompt: string): boolean {
   if (taskFactDisclaimsApprovalGatedBrowserAction(taskPrompt)) {
     return false;
   }
+  if (taskFactLooksLikeReadOnlyBrowserPageReview(taskPrompt)) {
+    return false;
+  }
   return (
     /\b(?:permission_(?:query|result|applied)|permission\.(?:query|result|applied)|approval_id|approval id|pending approval|operator approval|operator decision|approval (?:gate|request|decision|granted|approved|denied|applied)|approved action|denied action)\b/i.test(
       taskPrompt,
@@ -250,11 +255,48 @@ function taskFactRequestsApprovalGatedBrowserAction(
   if (taskFactDisclaimsApprovalGatedBrowserAction(taskPrompt)) {
     return false;
   }
+  if (taskFactLooksLikeReadOnlyBrowserPageReview(taskPrompt)) {
+    return false;
+  }
   return (
     /\bapproval\b/i.test(taskPrompt) &&
     /\bbrowser\b/i.test(taskPrompt) &&
     taskFactLooksApprovalGatedBrowserSideEffect(taskPrompt) &&
     taskFactBrowserSpawnPerformsMutatingAction(taskPrompt)
+  );
+}
+
+export function taskFactLooksLikeReadOnlyBrowserPageReview(
+  taskPrompt: string,
+): boolean {
+  const normalized = taskPrompt.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  if (
+    /\b(?:permission_(?:query|result|applied)|permission\.(?:query|result|applied)|browser\.form\.submit|request approval|approval request|operator approval|after (?:the )?(?:runtime )?approval|approved scoped action|approval[- ]gated browser action|dry[- ]run)\b/i.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+  const browserPageReview =
+    /\b(?:browser-visible|browser visible|rendered|visible page|page state|operator would see|review this .*page|inspect .*page|summarize (?:the )?visible|source frame|embedded frame|shadow(?:-style)? (?:review )?component|details popup|popup workflow|open details popup|click (?:the )?details popup)\b/i.test(
+      normalized,
+    );
+  if (!browserPageReview) {
+    return false;
+  }
+  return (
+    /\b(?:use only what (?:the )?browser-visible page state actually shows|what was and was not verified|visible (?:page )?content|direct quotes from (?:the )?page|verified (?:vs|versus) (?:not visible|not available)|if a section is unavailable)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:approval requirement|approval status|approval indicator|approval required|risk desk approval required)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:embedded source frame|source frame|shadow(?:-style)? review component|details popup|popup workflow)\b/i.test(
+      normalized,
+    )
   );
 }
 
@@ -277,6 +319,23 @@ function taskFactDisclaimsApprovalGatedBrowserAction(
     ) ||
     /\b(?:do\s+not|don't|never)\b[^.\n]{0,180}\b(?:click|submit|submission|form|deposit|purchase|buy|order|book|reserve|save|update|delete|remove|archive|mutat(?:e|ion)|side[- ]effect|request approval|approval)\b/i.test(
       taskPrompt,
+    )
+  );
+}
+
+function taskFactForbidsApprovedBrowserActionExecution(
+  taskPrompt: string,
+): boolean {
+  const normalized = taskPrompt.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /\bdo\s+not\b[^.?!\n]{0,180}\b(?:ask|tell|have|instruct)\b[^.?!\n]{0,80}\bbrowser(?:\s+sub-agent|\s+worker)?\b[^.?!\n]{0,180}\b(?:click|press|submit|perform|execute|browser\.form\.submit)\b/i.test(
+      normalized,
+    ) ||
+    /\bdo\s+not\b[^.?!\n]{0,180}\b(?:click|press|submit|perform|execute)\b[^.?!\n]{0,120}\b(?:submit control|form|browser\.form\.submit|approval[- ]gated action)\b/i.test(
+      normalized,
     )
   );
 }

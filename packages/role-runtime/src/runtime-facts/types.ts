@@ -59,6 +59,7 @@ export interface TaskIntentFacts {
   permissionToolsAllowed: boolean;
   approvalAlreadyApplied: boolean;
   approvalGatedBrowserActionRequested: boolean;
+  approvedBrowserActionExecutionForbidden: boolean;
   approvalWaitTimeoutCloseoutRequested: boolean;
   stopAtPendingApprovalAllowed: boolean;
   appliedApprovalBrowserContinuation: boolean;

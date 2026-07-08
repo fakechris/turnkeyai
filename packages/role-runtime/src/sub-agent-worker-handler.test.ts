@@ -98,7 +98,58 @@ test("LLMSubAgentWorkerHandler keeps browser work on a browser-specific private 
 
   assert.equal(result?.status, "completed");
   assert.equal(gatewayInputs[0]?.tools?.[0]?.name, "browser_run");
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /up to about 8 focused tool calls/i);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /same browser operation at most three times/i);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /stop after one successful evidence pass covers those requested surfaces/i);
+});
+
+test("LLMSubAgentWorkerHandler bounds default browser private-tool loops", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (input.toolChoice === "none") {
+      return textResult("Forced browser evidence summary after bounded private-tool loop.");
+    }
+    return toolCallResult(`tool-${gatewayInputs.length}`, gatewayInputs.length === 1 ? "browser_open" : "browser_snapshot", {
+      ...(gatewayInputs.length === 1 ? { url: "http://127.0.0.1:61930/complex-browser" } : {}),
+    });
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        return browserResult({
+          finalUrl: "http://127.0.0.1:61930/complex-browser",
+          textExcerpt:
+            "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup drill opened: packet P-42 requires manager acknowledgement.",
+        });
+      },
+      async sendSession() {
+        return browserResult({
+          finalUrl: "http://127.0.0.1:61930/complex-browser",
+          textExcerpt:
+            "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup drill opened: packet P-42 requires manager acknowledgement.",
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "partial");
+  assert.equal((result?.payload as { resumableReason?: string } | undefined)?.resumableReason, "round_limit");
+  assert.equal(
+    (result?.payload as { metadata?: { toolUse?: { toolCallCount?: number } } } | undefined)?.metadata?.toolUse
+      ?.toolCallCount,
+    8
+  );
+  assert.ok(
+    gatewayInputs.length <= 10,
+    `browser private-tool loop should force final synthesis after the default round budget; calls=${gatewayInputs.length}`
+  );
 });
 
 test("LLMSubAgentWorkerHandler blocks recursive session tools at executor level", async () => {

@@ -47,6 +47,7 @@ import {
   buildSessionToolCancelledResult,
   buildSessionToolResult,
   buildSessionToolTimeoutResult,
+  extractWorkerEvidenceSummary,
   serializeSessionToolResult,
   sanitizeEvidenceSummary,
 } from "./session-tool-result-protocol";
@@ -831,27 +832,129 @@ async function executePermissionQuery(
     ...(affects.length ? { affects } : {}),
     ...(isRecord(input.call.input.payload) ? { payload: input.call.input.payload } : {}),
   });
+  const queryProgress: RoleToolProgressEvent = {
+    phase: "progress",
+    toolName: input.call.name,
+    summary:
+      result.status === "already_granted"
+        ? `Permission already granted for ${action}.`
+        : `Permission requested for ${action}.`,
+    detail: {
+      eventType: "permission.query",
+      status: result.status,
+      ...(result.approvalId ? { approval_id: result.approvalId } : {}),
+      scope,
+      level,
+    },
+  };
+  if (result.status === "pending" && result.approvalId && toolPermissionService.waitForDecision) {
+    let decision: ToolPermissionDecisionResult;
+    try {
+      decision = await toolPermissionService.waitForDecision({
+        threadId: input.activation.thread.threadId,
+        approvalId: result.approvalId,
+        timeoutMs: readToolPermissionWaitMs(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        isError: true,
+        content: JSON.stringify(
+          withPermissionEventType("permission.error", {
+            status: "permission_error",
+            approvalId: result.approvalId,
+            action,
+            requirement: result.requirement,
+            message,
+          }),
+          null,
+          2
+        ),
+        progress: [
+          queryProgress,
+          permissionErrorProgress(input.call.name, result.approvalId, message),
+        ],
+        raw: result,
+      };
+    }
+    const decisionProgress: RoleToolProgressEvent = {
+      phase: "progress",
+      toolName: input.call.name,
+      summary: decision.message,
+      detail: {
+        eventType: "permission.result",
+        status: decision.status,
+        approval_id: result.approvalId,
+      },
+    };
+    if (decision.status === "approved") {
+      let applied: ToolPermissionAppliedResult;
+      try {
+        applied = await toolPermissionService.apply({
+          threadId: input.activation.thread.threadId,
+          approvalId: result.approvalId,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          isError: true,
+          content: JSON.stringify(
+            withPermissionEventType("permission.error", {
+              status: "permission_error",
+              approvalId: result.approvalId,
+              action,
+              requirement: result.requirement,
+              message,
+            }),
+            null,
+            2
+          ),
+          progress: [
+            queryProgress,
+            decisionProgress,
+            permissionErrorProgress(input.call.name, result.approvalId, message),
+          ],
+          raw: result,
+        };
+      }
+      const appliedProgress: RoleToolProgressEvent = {
+        phase: applied.status === "applied" ? "completed" : "failed",
+        toolName: input.call.name,
+        summary: applied.message,
+        detail: {
+          eventType: "permission.applied",
+          status: applied.status,
+          approval_id: result.approvalId,
+          ...(applied.cacheKey ? { cache_key: applied.cacheKey } : {}),
+        },
+      };
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        ...(applied.status === "applied" ? {} : { isError: true }),
+        content: JSON.stringify(withPermissionEventType("permission.applied", applied), null, 2),
+        progress: [queryProgress, decisionProgress, appliedProgress],
+        raw: applied,
+      };
+    }
+    return {
+      toolCallId: input.call.id,
+      toolName: input.call.name,
+      ...(decision.status === "denied" ? { isError: true } : {}),
+      content: JSON.stringify(withPermissionEventType("permission.result", decision), null, 2),
+      progress: [queryProgress, decisionProgress],
+      raw: decision,
+    };
+  }
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
     content: JSON.stringify(withPermissionEventType("permission.query", result), null, 2),
-    progress: [
-      {
-        phase: "progress",
-        toolName: input.call.name,
-        summary:
-          result.status === "already_granted"
-            ? `Permission already granted for ${action}.`
-            : `Permission requested for ${action}.`,
-        detail: {
-          eventType: "permission.query",
-          status: result.status,
-          ...(result.approvalId ? { approval_id: result.approvalId } : {}),
-          scope,
-          level,
-        },
-      },
-    ],
+    progress: [queryProgress],
     raw: result,
   };
 }
@@ -1320,6 +1423,7 @@ function classifyParentRequiredBrowserSideEffect(
     /\bactually\s+carry\b[\s\S]{0,180}\b(?:approval gate|operator approval|operator review|browser action|form submission)\b/.test(parent) ||
     /\bcarry\b[\s\S]{0,120}\b(?:dry[- ]run|form submission|browser action)\b[\s\S]{0,120}\b(?:approval gate|operator approval|operator review)\b/.test(parent) ||
     /\brequest approval before applying\b[\s\S]{0,160}\b(?:browser action|form submission|submit|side[- ]effect)\b/.test(parent) ||
+    /\brequest approval for\s+browser\.form\.submit\b[\s\S]{0,220}\b(?:apply|applied|permission_applied)\b[\s\S]{0,220}\b(?:browser sub-agent|browser worker|browser task)\b[\s\S]{0,160}\bsubmit\b/.test(parent) ||
     /\bafter the runtime approval gate is cleared\b[\s\S]{0,180}\b(?:browser task|browser worker|submit|form submission|browser\.form\.submit)\b/.test(parent) ||
     /\bruntime approval gate\b[\s\S]{0,160}\b(?:exercised|cleared|applied)\b/.test(parent);
   if (!parentRequiresApprovalAction) {
@@ -1376,24 +1480,91 @@ function rejectReadOnlyPermissionQuery(
     return null;
   }
   const primaryContext = buildPermissionQueryPrimaryTaskContext(input).toLowerCase();
+  const primaryTaskAllowsApprovalGatedSideEffect =
+    hasApprovalGatedBrowserSideEffectRequest(primaryContext);
+  const declaredTaskContext = buildPermissionQueryDeclaredTaskContext(input).toLowerCase();
   if (
-    primaryContext &&
-    hasReadOnlySourceWorkSignal(primaryContext) &&
-    !hasExplicitBrowserSideEffectIntent(primaryContext)
+    shouldRejectReadOnlyBrowserPermissionContext(declaredTaskContext) &&
+    !primaryTaskAllowsApprovalGatedSideEffect
   ) {
     return errorResult(
       input.call,
       `permission_query rejected: ${action} is a browser side-effect request, but the current task context is read-only/source-bounded. Continue with read-only evidence collection or final synthesis instead of creating an approval.`
     );
   }
+  if (shouldRejectReadOnlyBrowserPermissionContext(primaryContext)) {
+    return errorResult(
+      input.call,
+      `permission_query rejected: ${action} is a browser side-effect request, but the current task context is read-only/source-bounded. Continue with read-only evidence collection or final synthesis instead of creating an approval.`
+    );
+  }
   const context = buildPermissionQueryTaskContext(input).toLowerCase();
-  if (!context || !hasReadOnlySourceWorkSignal(context) || hasExplicitBrowserSideEffectIntent(context)) {
+  if (
+    !shouldRejectReadOnlyBrowserPermissionContext(context) ||
+    primaryTaskAllowsApprovalGatedSideEffect
+  ) {
     return null;
   }
   return errorResult(
     input.call,
     `permission_query rejected: ${action} is a browser side-effect request, but the current task context is read-only/source-bounded. Continue with read-only evidence collection or final synthesis instead of creating an approval.`
   );
+}
+
+function shouldRejectReadOnlyBrowserPermissionContext(context: string): boolean {
+  if (!context) {
+    return false;
+  }
+  if (hasExplicitNoBrowserInteractionSignal(context) && hasAnyReadOnlySourceSignal(context)) {
+    return true;
+  }
+  return hasReadOnlySourceWorkSignal(context) && !hasExplicitBrowserSideEffectIntent(context);
+}
+
+function hasApprovalGatedBrowserSideEffectRequest(input: string): boolean {
+  if (!input) {
+    return false;
+  }
+  const hasApprovalGate =
+    /\b(?:operator review|operator approval|operator decision|approval[- ]gated|approval gate|permission[_ ]?query|approval required|explicit operator approval)\b/i.test(
+      input
+    );
+  if (!hasApprovalGate) {
+    return false;
+  }
+  const hasBrowserFormSubmit =
+    /\bbrowser\.form\.submit\b/i.test(input) ||
+    /\b(?:dry[- ]run\s+)?(?:browser\s+)?form submission(?:\s+attempt)?\b/i.test(
+      input
+    ) ||
+    /\bsubmit(?:ting)?\s+the\s+form\b/i.test(input);
+  if (!hasBrowserFormSubmit) {
+    return false;
+  }
+  return /\b(?:start|begin|prepare|attempt|carry|perform|apply|submit|submission|under review|before applying)\b/i.test(
+    input
+  );
+}
+
+function buildPermissionQueryDeclaredTaskContext(input: RoleToolExecutionInput): string {
+  const payload = input.call.input.payload;
+  const parts: string[] = [];
+  const task = requiredString(input.call.input.task);
+  if (task) parts.push(task);
+  const url = requiredString(input.call.input.url);
+  if (url) parts.push(url);
+  if (isRecord(payload)) {
+    const payloadTask = requiredString(payload.task);
+    if (payloadTask) parts.push(payloadTask);
+    const payloadInstruction = requiredString(payload.instruction);
+    if (payloadInstruction) parts.push(payloadInstruction);
+    const payloadUrl = requiredString(payload.url) ?? requiredString(payload.target_url);
+    if (payloadUrl) parts.push(payloadUrl);
+  } else {
+    const payloadText = requiredString(payload);
+    if (payloadText) parts.push(payloadText);
+  }
+  return parts.join("\n");
 }
 
 function buildPermissionQueryPrimaryTaskContext(input: RoleToolExecutionInput): string {
@@ -1922,10 +2093,29 @@ function resolveEffectiveSessionSpawnWorkerKind(input: {
 
 function shouldRoutePublicReadOnlySourceTaskToExplore(task: string): boolean {
   const normalized = task.toLowerCase();
+  if (hasExplicitNoBrowserInteractionSignal(normalized) && hasAnyReadOnlySourceSignal(normalized)) return true;
   if (hasLocalReadOnlySourceSignal(normalized) && !hasHardBrowserRequiredSignal(normalized)) return true;
   if (!hasPublicReadOnlySourceSignal(normalized)) return false;
   if (hasBrowserRequiredSignal(normalized)) return false;
   return true;
+}
+
+function hasAnyReadOnlySourceSignal(input: string): boolean {
+  return (
+    /https?:\/\//i.test(input) &&
+    /\b(?:source|source check|static text|read-only|fetch|extract|retrieve|research|review|compare|comparison|evidence)\b/i.test(
+      input
+    )
+  );
+}
+
+function hasExplicitNoBrowserInteractionSignal(input: string): boolean {
+  return (
+    /\bread-only\b/i.test(input) &&
+    /\b(?:no|without)\b[^.]{0,160}\b(?:browser|form|forms|click|clicks|navigation|approval-gated|approval gated)\b[^.]{0,120}\b(?:needed|required|necessary|action|actions)\b/i.test(
+      input
+    )
+  );
 }
 
 function hasLocalReadOnlySourceSignal(input: string): boolean {
@@ -1947,13 +2137,13 @@ function hasPublicReadOnlySourceSignal(input: string): boolean {
 }
 
 function hasBrowserRequiredSignal(input: string): boolean {
-  return /\b(?:authenticated|login|logged in|account|session|interactive|click|fill|submit|submission|form|approval|dry-run|dry run|operator review|side effect|side-effect|mutation|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|client-side|rendered dashboard|dashboard|as a user would see|browser session|active browser)\b/i.test(
+  return /\b(?:authenticated|login|logged in|account|session|interactive|click|fill|submit|submission|form|approval|dry-run|dry run|operator review|side effect|side-effect|mutation|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|javascript rendering|client-side|rendered dashboard|rendered dom|dom hydration|dashboard|as a user would see|browser session|active browser|browser tools|direct fetch|http fetch)\b/i.test(
     input
   );
 }
 
 function hasHardBrowserRequiredSignal(input: string): boolean {
-  return /\b(?:authenticated|login|logged in|account|password|2fa|mfa|otp|credential|api key|secret|token|interactive|click|fill|submit|submission|form|approval|dry-run|dry run|operator review|side effect|side-effect|mutation|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|client-side|rendered dashboard|dashboard|as a user would see)\b/i.test(
+  return /\b(?:authenticated|login|logged in|account|password|2fa|mfa|otp|credential|api key|secret|token|interactive|click|fill|submit|submission|form|approval|dry-run|dry run|operator review|side effect|side-effect|mutation|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|javascript rendering|client-side|rendered dashboard|rendered dom|dom hydration|dashboard|as a user would see|browser tools|direct fetch|http fetch)\b/i.test(
     input
   );
 }
@@ -3072,7 +3262,21 @@ async function sendWorkerWithOptionalTimeout(
 function preserveLateTimeoutPartial(
   lateResult: WorkerExecutionResult | null,
 ): WorkerExecutionResult | null {
-  return lateResult?.status === "partial" ? lateResult : null;
+  if (lateResult?.status !== "partial") {
+    return null;
+  }
+  return lateTimeoutPartialHasUsableEvidence(lateResult) ? lateResult : null;
+}
+
+function lateTimeoutPartialHasUsableEvidence(result: WorkerExecutionResult): boolean {
+  if (extractWorkerEvidenceSummary(result)) {
+    return true;
+  }
+  return !isGenericInterruptedPartialSummary(result.summary);
+}
+
+function isGenericInterruptedPartialSummary(summary: string): boolean {
+  return summary.trim().replace(/\s+/g, " ").toLowerCase() === "sub-agent interrupted before completion.";
 }
 
 async function sendWorkerWithOptionalCancellation(

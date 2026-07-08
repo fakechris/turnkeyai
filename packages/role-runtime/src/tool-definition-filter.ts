@@ -29,7 +29,7 @@ const TASK_TRACKING_TOOL_NAMES = new Set([
 const FOCUSED_MEMORY_RECALL_REQUEST_PATTERN =
   /\b(?:durable memory|memory_search|memory_get|check durable memory|inspect any candidate memory)\b/i;
 const FOCUSED_MEMORY_RECALL_GLOBAL_CONFLICT_PATTERN =
-  /\b(?:public documentation|status pages?|announcements?|web search|web_fetch|official site|URL|https?:\/\/)\b|(?:公网|公开文档|公告|状态页|官网|网址|链接)/iu;
+  /\b(?:public documentation|status pages?|(?:public|official)\s+announcements?|announcement pages?|web search|web_fetch|official site|URL|https?:\/\/)\b|(?:公网|公开文档|公告(?:页|页面)?|状态页|官网|网址|链接)/iu;
 const FOCUSED_MEMORY_RECALL_NEARBY_CONFLICT_PATTERN = new RegExp(
   `${FOCUSED_MEMORY_RECALL_REQUEST_PATTERN.source}[\\s\\S]{0,180}\\b(?:delegate|delegated|spawn|sub[- ]?agent|independent researcher|separate researcher)\\b|\\b(?:delegate|delegated|spawn|sub[- ]?agent|independent researcher|separate researcher)\\b[\\s\\S]{0,180}${FOCUSED_MEMORY_RECALL_REQUEST_PATTERN.source}`,
   "iu",
@@ -42,11 +42,17 @@ export function filterToolDefinitionsForTask(
   taskPrompt: string,
 ): GenerateTextInput["tools"] {
   if (!tools?.length) return tools;
+  if (taskRequestsToolFreeRewriteOnlyRecovery(taskPrompt)) {
+    return [];
+  }
   let filtered = tools;
   const taskFacts = produceTaskIntentEnvelope({
     taskPrompt,
     messages: [],
   }).facts;
+  if (taskFacts.awaitingContextSetupOnly) {
+    return [];
+  }
   if (!taskFacts.permissionToolsAllowed) {
     filtered = filtered.filter((tool) => !PERMISSION_TOOL_NAMES.has(tool.name));
   }
@@ -61,6 +67,16 @@ export function filterToolDefinitionsForTask(
     );
   }
   return filtered;
+}
+
+export function taskRequestsToolFreeRewriteOnlyRecovery(taskPrompt: string): boolean {
+  return (
+    /\bSystem recovery:\s+the previous final answer did not satisfy required goal slots\b/i.test(taskPrompt) &&
+    /\brewriting the final answer from existing (?:permission and browser|browser|source) evidence only\b/i.test(taskPrompt) &&
+    /\bDo not call\b[\s\S]{0,240}\b(?:sessions_spawn|sessions_send|web_fetch|browser tools|worker tools|permission tools)\b/i.test(
+      taskPrompt,
+    )
+  );
 }
 
 export function buildToolDefinitionFilterTaskContext(
@@ -104,6 +120,16 @@ export function taskRequestsFocusedDurableMemoryRecall(
     return false;
   }
   return true;
+}
+
+export function toolRoundLimitForTask(
+  taskPrompt: string,
+  configuredMaxRounds: number,
+): number {
+  if (taskRequestsFocusedDurableMemoryRecall(taskPrompt)) {
+    return Math.min(configuredMaxRounds, 5);
+  }
+  return configuredMaxRounds;
 }
 
 export function taskAllowsTaskTrackingTools(

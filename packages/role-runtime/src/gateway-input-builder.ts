@@ -167,6 +167,7 @@ export function finalSynthesisFormatContract(
     "Evidence synthesis contract:",
     "Unless the original task's exact output shape forbids extra labels, include concise verified evidence, unverified scope or residual risk, and the recommendation or next action.",
     "When delegated Source N evidence blocks are provided, cover every source in the final answer. Preserve source-specific facts such as counts, rates, owners, URLs, screenshots, artifacts, approvals, and limitations.",
+    "When a direct source result conflicts with another source's cross-reference, prefer the direct source result; for browser-required streams, prefer browser-rendered evidence over raw or static HTML notes from another source.",
     "For research or comparison tasks, include a compact verified sources/evidence line unless the user explicitly forbids source labels; name each source and the exact fact(s) it verified.",
     "Source evidence may include tables or headers created by a sub-agent. Do not copy a source table's shape, headers, or unrelated dimensions unless the original user/task request asked for that table shape or those named columns.",
     "Do not promote a source's partial, missing, timed-out, blocked, or unverified observation into a confirmed claim. Mark missing dimensions as not verified.",
@@ -359,6 +360,27 @@ export function extractMentions(content: string): RoleId[] {
   return [...content.matchAll(/@\{(?<roleId>[^}]+)\}/g)]
     .map((match) => match.groups?.roleId)
     .filter((value): value is RoleId => Boolean(value));
+}
+
+export function extractMentionsForFinalResponse(
+  content: string,
+  input?: { toolLoopCloseoutReason?: string | undefined }
+): RoleId[] {
+  if (
+    input?.toolLoopCloseoutReason === "completed_sub_agent_final" ||
+    isCoordinatorHandoffEcho(content)
+  ) {
+    return [];
+  }
+  return extractMentions(content);
+}
+
+function isCoordinatorHandoffEcho(content: string): boolean {
+  return (
+    /\bLead is operating as Lead Coordinator\b/i.test(content) &&
+    /\bDelegate one next role when work remains\.?\s+Otherwise finalize\b/i.test(content) &&
+    /\bPlease take the next assigned slice and report back briefly\b/i.test(content)
+  );
 }
 
 export function enforceRequestedThreeLineLabelShape(input: {

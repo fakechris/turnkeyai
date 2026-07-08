@@ -20,6 +20,7 @@ export interface SessionToolResultV1 {
   timeout_seconds?: number | null;
   evidence_available?: boolean;
   evidence_summary?: string;
+  evidence_excerpt?: string;
   tool_chain: WorkerKind[];
   browser_session?: SessionToolBrowserSession;
   result: string;
@@ -168,13 +169,8 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
     const lines = [
       browserProfileFallback,
       browserFailureBuckets,
+      ...pages.flatMap((pageRecord, index) => buildEvidencePageSummary(pageRecord, index)),
       nestedToolEvidence,
-      ...pages.flatMap((pageRecord, index) => [
-        `Source ${index + 1}:`,
-        readString(pageRecord["finalUrl"]) ? `Final URL: ${readString(pageRecord["finalUrl"])}` : null,
-        readString(pageRecord["title"]) ? `Page title: ${readString(pageRecord["title"])}` : null,
-        readString(pageRecord["textExcerpt"]) ? `Excerpt: ${readString(pageRecord["textExcerpt"])}` : null,
-      ]),
     ].filter((line): line is string => Boolean(line));
     const summary = sanitizeEvidenceSummary(lines.join("\n"));
     if (summary) {
@@ -223,16 +219,31 @@ function extractEvidencePages(payload: Record<string, unknown>): Array<Record<st
   return pages;
 }
 
+function buildEvidencePageSummary(pageRecord: Record<string, unknown>, index: number): string[] {
+  const finalUrl = readString(pageRecord["finalUrl"]);
+  const title = readString(pageRecord["title"]);
+  const textExcerpt = readString(pageRecord["textExcerpt"]);
+  return [
+    `Source ${index + 1}:`,
+    finalUrl ? `Final URL: ${finalUrl}` : null,
+    title ? `Page title: ${title}` : null,
+    textExcerpt ? `Excerpt: ${sliceUtf8Clean(textExcerpt, 420)}` : null,
+  ].filter((line): line is string => Boolean(line));
+}
+
 export function sanitizeEvidenceSummary(value: string | null | undefined): string | null {
   if (!value || !value.trim()) {
     return null;
   }
-  const trimmed = value.trim();
-  const buffer = Buffer.from(trimmed, "utf8");
-  if (buffer.length <= 1600) {
-    return trimmed;
+  return sliceUtf8Clean(value.trim(), 1600);
+}
+
+function sliceUtf8Clean(value: string, maxBytes: number): string {
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) {
+    return value;
   }
-  let end = 1600;
+  let end = maxBytes;
   while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) {
     end -= 1;
   }
@@ -244,7 +255,11 @@ function normalizeSessionToolResult(value: Record<string, unknown>): SessionTool
   const sessionKey = readString(value.session_key);
   const agentId = readString(value.agent_id) as WorkerKind | null;
   const status = readStatus(value.status);
-  const result = readString(value.result);
+  const result =
+    readString(value.result) ??
+    readString(value.final_content) ??
+    readString(value.evidence_excerpt) ??
+    readString(value.evidence_summary);
   if (!taskId || !sessionKey || !agentId || !status || !result) {
     return null;
   }
@@ -254,6 +269,7 @@ function normalizeSessionToolResult(value: Record<string, unknown>): SessionTool
   const timeoutSeconds = typeof value.timeout_seconds === "number" ? value.timeout_seconds : null;
   const finalContent = typeof value.final_content === "string" && value.final_content.trim() ? value.final_content : null;
   const evidenceSummary = sanitizeEvidenceSummary(readString(value.evidence_summary));
+  const evidenceExcerpt = sanitizeEvidenceSummary(readString(value.evidence_excerpt));
   const label = readString(value.label);
   const parentSessionKey = readString(value.parent_session_key);
   const toolCallId = readString(value.tool_call_id);
@@ -272,6 +288,7 @@ function normalizeSessionToolResult(value: Record<string, unknown>): SessionTool
     ...(status === "timeout" ? { timeout_seconds: timeoutSeconds } : {}),
     ...(typeof value.evidence_available === "boolean" ? { evidence_available: value.evidence_available } : {}),
     ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
+    ...(evidenceExcerpt ? { evidence_excerpt: evidenceExcerpt } : {}),
     tool_chain: toolChain,
     ...(browserSession ? { browser_session: browserSession } : {}),
     result,
@@ -413,6 +430,7 @@ function extractNestedToolUseEvidenceSummary(payload: Record<string, unknown>): 
     return null;
   }
   const parts: string[] = [];
+  const pageParts = new Map<string, string>();
   for (const round of toolUse["rounds"]) {
     if (!isRecord(round) || !Array.isArray(round["results"])) {
       continue;
@@ -428,18 +446,25 @@ function extractNestedToolUseEvidenceSummary(payload: Record<string, unknown>): 
       }
       const evidence = extractNestedToolResultEvidence(content);
       if (evidence) {
-        parts.push(`${toolName}: ${evidence}`);
+        const line = `${toolName}: ${evidence.text}`;
+        if (evidence.key) {
+          if (!pageParts.has(evidence.key)) {
+            pageParts.set(evidence.key, line);
+          }
+        } else {
+          parts.push(line);
+        }
       }
     }
   }
-  return dedupeStrings(parts).join("\n") || null;
+  return dedupeStrings([...pageParts.values(), ...parts]).join("\n") || null;
 }
 
 function isEvidenceBearingNestedTool(toolName: string): boolean {
   return /^(?:browser_(?:open|snapshot|scroll|console|screenshot)|explore_|finance_)/.test(toolName);
 }
 
-function extractNestedToolResultEvidence(content: string): string | null {
+function extractNestedToolResultEvidence(content: string): { key?: string; text: string } | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content) as unknown;
@@ -457,14 +482,25 @@ function extractNestedToolResultEvidence(content: string): string | null {
   const pageFinalUrl = page ? readString(page["finalUrl"]) : null;
   const pageTitle = page ? readString(page["title"]) : null;
   const pageExcerpt = page ? readString(page["textExcerpt"]) : null;
-  const lines = [
-    summary,
-    contentText,
-    pageFinalUrl ? `Final URL: ${pageFinalUrl}` : null,
-    pageTitle ? `Page title: ${pageTitle}` : null,
-    pageExcerpt ? `Excerpt: ${pageExcerpt}` : null,
-  ].filter((line): line is string => Boolean(line));
-  return sanitizeEvidenceSummary(dedupeStrings(lines).join("\n"));
+  const hasPageEvidence = pageFinalUrl || pageTitle || pageExcerpt;
+  const lines = hasPageEvidence
+    ? [
+        pageFinalUrl ? `Final URL: ${pageFinalUrl}` : null,
+        pageTitle ? `Page title: ${pageTitle}` : null,
+        pageExcerpt ? `Excerpt: ${sliceUtf8Clean(pageExcerpt, 420)}` : null,
+      ]
+    : [summary, contentText];
+  const text = sanitizeEvidenceSummary(
+    dedupeStrings(lines.filter((line): line is string => Boolean(line))).join("\n")
+  );
+  if (!text) {
+    return null;
+  }
+  const key = hasPageEvidence ? (pageFinalUrl ?? pageTitle ?? pageExcerpt) : null;
+  return {
+    ...(key ? { key } : {}),
+    text,
+  };
 }
 
 function dedupeStrings(values: string[]): string[] {

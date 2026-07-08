@@ -147,6 +147,7 @@ test("TaskIntentProducer owns approval and continuation task-language facts", ()
   assert.equal(approval.facts.permissionToolsAllowed, true);
   assert.equal(approval.facts.approvalAlreadyApplied, true);
   assert.equal(approval.facts.approvalGatedBrowserActionRequested, true);
+  assert.equal(approval.facts.approvedBrowserActionExecutionForbidden, false);
   assert.equal(approval.facts.approvalWaitTimeoutCloseoutRequested, true);
   assert.equal(approval.facts.appliedApprovalBrowserContinuation, true);
   assert.equal(continuation.facts.sourceCheckContinuationRequested, true);
@@ -165,5 +166,41 @@ test("TaskIntentProducer distinguishes permission and exact-shape negatives", ()
 
   assert.equal(envelope.facts.permissionToolsAllowed, false);
   assert.equal(envelope.facts.approvalGatedBrowserActionRequested, false);
+  assert.equal(envelope.facts.approvedBrowserActionExecutionForbidden, false);
   assert.equal(envelope.facts.exactFinalAnswerShapeExpected, false);
+});
+
+test("TaskIntentProducer treats visible approval fields in browser page reviews as read-only evidence", () => {
+  const envelope = produceTaskIntentEnvelope({
+    taskPrompt: [
+      "Review this complex browser page as an operator would see it.",
+      "Page: http://127.0.0.1:61640/complex-browser",
+      "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+      "Locate and click the details popup trigger, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+      "Use only what the browser-visible page state actually shows. If a section is unavailable, say what was and was not verified.",
+    ].join("\n"),
+    activation: undefined,
+    messages: [],
+  });
+
+  assert.equal(envelope.facts.browserVisibleEvidenceRequired, true);
+  assert.equal(envelope.facts.permissionToolsAllowed, false);
+  assert.equal(envelope.facts.approvalGatedBrowserActionRequested, false);
+});
+
+test("TaskIntentProducer distinguishes approval-gate fixture checks from approved action execution", () => {
+  const envelope = produceTaskIntentEnvelope({
+    taskPrompt: [
+      "Run the mission route approval-gated browser E2E.",
+      "The browser task must include the exact action phrase browser.form.submit and the word submit so the runtime approval gate is exercised before browser work starts.",
+      "After the runtime approval gate is cleared, the browser task must open the local fixture and verify the approval marker.",
+      "Do not ask the browser sub-agent to click a real submit control; this is an approval-gate fixture, not a real external mutation.",
+    ].join("\n"),
+    activation: undefined,
+    messages: [],
+  });
+
+  assert.equal(envelope.facts.permissionToolsAllowed, true);
+  assert.equal(envelope.facts.approvalGatedBrowserActionRequested, true);
+  assert.equal(envelope.facts.approvedBrowserActionExecutionForbidden, true);
 });

@@ -158,7 +158,7 @@ export function findCompletedSessionEvidence(
     : null;
 }
 
-export function collectCompletedSessionEvidenceFacts(
+export function readCompletedSessionEvidenceFacts(
   results: RoleToolExecutionResult[],
 ): CompletedSessionEvidenceFact[] {
   const facts: CompletedSessionEvidenceFact[] = [];

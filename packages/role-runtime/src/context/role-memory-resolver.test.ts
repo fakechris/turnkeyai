@@ -145,6 +145,121 @@ test("role memory resolver reads an exact memory id without depending on search 
   }
 });
 
+test("role memory resolver keeps search-returned ids readable across memory refresh", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-search-cache-"));
+
+  try {
+    const threadSummaryStore = new FileThreadSummaryStore({ rootDir: path.join(tempDir, "summary") });
+    const threadMemoryStore = new FileThreadMemoryStore({ rootDir: path.join(tempDir, "memory") });
+    const roleScratchpadStore = new FileRoleScratchpadStore({ rootDir: path.join(tempDir, "scratchpad") });
+    const workerEvidenceDigestStore = new FileWorkerEvidenceDigestStore({ rootDir: path.join(tempDir, "worker") });
+
+    await threadMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 10,
+      preferences: [],
+      constraints: [],
+      longTermNotes: [
+        "Older note that also mentions Aurora-19.",
+        "Aurora-19 residual risk: vendor dry-run note unverified, so external commitments stay conditional.",
+      ],
+    });
+
+    const resolver = new DefaultRoleMemoryResolver({
+      threadSummaryStore,
+      threadMemoryStore,
+      roleScratchpadStore,
+      workerEvidenceDigestStore,
+    });
+
+    const hits = await resolver.retrieveMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      queryText: "Aurora-19 residual risk vendor dry-run",
+    });
+    const searchedHit = hits.find((hit) => hit.memoryId === "thread-1:note:2");
+    assert.ok(searchedHit, "expected memory_search to return note:2");
+
+    await threadMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 20,
+      preferences: [],
+      constraints: [],
+      longTermNotes: ["Compacted replacement note."],
+    });
+
+    const hit = await resolver.getMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      memoryId: "thread-1:note:2",
+    });
+
+    assert.equal(hit?.memoryId, "thread-1:note:2");
+    assert.match(hit?.content ?? "", /vendor dry-run note unverified/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("role memory resolver ranks durable notes above current prompt echoes for recall queries", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-durable-recall-"));
+
+  try {
+    const threadSummaryStore = new FileThreadSummaryStore({ rootDir: path.join(tempDir, "summary") });
+    const threadMemoryStore = new FileThreadMemoryStore({ rootDir: path.join(tempDir, "memory") });
+    const threadSessionMemoryStore = new FileThreadSessionMemoryStore({ rootDir: path.join(tempDir, "session-memory") });
+    const roleScratchpadStore = new FileRoleScratchpadStore({ rootDir: path.join(tempDir, "scratchpad") });
+    const workerEvidenceDigestStore = new FileWorkerEvidenceDigestStore({ rootDir: path.join(tempDir, "worker") });
+    const currentRecallPrompt = [
+      "Continue this mission by proving durable memory recall through native memory tools.",
+      "Call memory_search with a query for the Helios-47 launch window, owner, and recall marker.",
+      "Use this exact final answer shape after memory_get returns:",
+      "- launch plan: Helios-47 launch window is Tuesday 09:30; owner is Release Captain.",
+    ].join("\n");
+
+    await threadMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 10,
+      preferences: [currentRecallPrompt],
+      constraints: [
+        "When asked about Helios-47, use the durable memory launch window exactly as written.",
+      ],
+      longTermNotes: [
+        "Helios-47 launch window is Tuesday 09:30. Owner is Release Captain. Residual risk: calendar lock is remembered locally.",
+      ],
+    });
+    await threadSessionMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 20,
+      activeTasks: [currentRecallPrompt],
+      openQuestions: [],
+      recentDecisions: [currentRecallPrompt],
+      constraints: [currentRecallPrompt],
+      continuityNotes: [`[user] ${currentRecallPrompt}`],
+      latestJournalEntries: [],
+    });
+
+    const resolver = new DefaultRoleMemoryResolver({
+      threadSummaryStore,
+      threadMemoryStore,
+      threadSessionMemoryStore,
+      roleScratchpadStore,
+      workerEvidenceDigestStore,
+    });
+
+    const hits = await resolver.retrieveMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      queryText: "Helios-47 launch window owner recall marker",
+    });
+
+    assert.equal(hits[0]?.memoryId, "thread-1:note:1");
+    assert.match(hits[0]?.content ?? "", /Long-term note: Helios-47 launch window/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("role memory resolver suppresses weak observational evidence unless the query explicitly asks for evidence", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-evidence-"));
 

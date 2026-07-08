@@ -16,6 +16,7 @@ import {
   readPolicyApprovalWaitTimeoutRuntimeEvidence,
   readPolicyBrowserRecoverySummariesFromToolTrace,
   readPolicyCompletedSessionEvidenceText,
+  readPolicyCoordinatorRoleHandoffEcho as readCoordinatorRoleHandoffEchoFact,
   readPolicySourceBoundedEvidenceText,
 } from "../runtime-facts/text-fallback-readers";
 import type { SubAgentToolTimeoutSignal } from "../runtime-facts/text-fallback-readers";
@@ -60,6 +61,8 @@ export const readBrowserRecoverySummariesFromTrace =
   readPolicyBrowserRecoverySummariesFromToolTrace;
 export const readCompletedSessionEvidenceText =
   readPolicyCompletedSessionEvidenceText;
+export const readPolicyCoordinatorRoleHandoffEcho =
+  readCoordinatorRoleHandoffEchoFact;
 export const readSourceBoundedEvidenceText = readPolicySourceBoundedEvidenceText;
 
 export function readReadOnlyPermissionQuerySuppression(
