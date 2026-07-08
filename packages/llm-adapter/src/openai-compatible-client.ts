@@ -9,6 +9,7 @@ import type {
   ProtocolClient,
   ResolvedModelConfig,
 } from "./types";
+import { sanitizeContentBlocks } from "./provider-output-sanitizer";
 import { buildProviderRequestEnvelopeOverflowError, isProviderSizeLikeFailure } from "./request-envelope-guard";
 
 export class OpenAICompatibleClient implements ProtocolClient {
@@ -66,7 +67,7 @@ export class OpenAICompatibleClient implements ProtocolClient {
     }
 
     const firstChoice = raw?.choices?.[0];
-    const contentBlocks = extractOpenAIContentBlocks(firstChoice?.message);
+    const contentBlocks = sanitizeContentBlocks(extractOpenAIContentBlocks(firstChoice?.message));
     const text = contentBlocks
       .filter((block): block is Extract<LLMContentBlock, { type: "text" }> => block.type === "text")
       .map((block) => block.text)

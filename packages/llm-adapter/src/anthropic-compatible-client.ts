@@ -9,6 +9,7 @@ import type {
   ProtocolClient,
   ResolvedModelConfig,
 } from "./types";
+import { sanitizeContentBlocks } from "./provider-output-sanitizer";
 import { buildProviderRequestEnvelopeOverflowError, isProviderSizeLikeFailure } from "./request-envelope-guard";
 
 const DEFAULT_ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS = 4096;
@@ -75,7 +76,7 @@ export class AnthropicCompatibleClient implements ProtocolClient {
       throw new Error(message);
     }
 
-    const contentBlocks = extractAnthropicContentBlocks(raw?.content);
+    const contentBlocks = sanitizeContentBlocks(extractAnthropicContentBlocks(raw?.content));
     const toolCalls = extractToolCalls(contentBlocks);
     return {
       text: contentBlocks

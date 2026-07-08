@@ -1,4 +1,9 @@
-import type { GenerateTextInput, GenerateTextResult, ProtocolClient } from "./types";
+import type {
+  GenerateTextInput,
+  GenerateTextResult,
+  ModelConfigEntry,
+  ProtocolClient,
+} from "./types";
 import { assertRequestEnvelopeWithinLimits } from "./request-envelope-guard";
 import type { RequestEnvelopeLimits } from "./request-envelope-guard";
 import { ModelRegistry } from "./registry";
@@ -34,11 +39,18 @@ export class LLMGateway {
   }
 
   async generate(input: GenerateTextInput): Promise<GenerateTextResult> {
-    const selection = await this.registry.resolveSelection({
+    const selectionInput = {
       ...(input.modelId ? { modelId: input.modelId } : {}),
       ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
-    });
-    const candidateModelIds = [selection.primaryModelId, ...selection.fallbackModelIds];
+    };
+    const [selection, selectionDescription] = await Promise.all([
+      this.registry.resolveSelection(selectionInput),
+      this.registry.describeSelection(selectionInput),
+    ]);
+    const candidateModelIds = dedupeEquivalentModelBackings(
+      [selection.primaryModelId, ...selection.fallbackModelIds],
+      [selectionDescription.primary, ...selectionDescription.fallbacks]
+    );
     const attemptedModelIds: string[] = [];
     let lastError: unknown;
 
@@ -86,6 +98,50 @@ export class LLMGateway {
 
     throw lastError ?? new Error("model generation failed without an error");
   }
+}
+
+function dedupeEquivalentModelBackings(
+  modelIds: string[],
+  modelEntries: ModelConfigEntry[]
+): string[] {
+  const seen = new Set<string>();
+  return modelIds.filter((modelId, index) => {
+    const entry = modelEntries[index];
+    if (!entry) {
+      return true;
+    }
+    const key = modelBackingKey(entry);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function modelBackingKey(entry: ModelConfigEntry): string {
+  return [
+    entry.protocol,
+    entry.providerId,
+    entry.model,
+    entry.baseURL ?? `baseURLEnv:${entry.baseURLEnv ?? ""}`,
+    entry.apiKeyEnv,
+    stableStringify(entry.headers ?? {}),
+    stableStringify(entry.query ?? {}),
+    entry.temperature ?? "",
+    entry.maxOutputTokens ?? "",
+  ].join("\0");
+}
+
+function stableStringify(value: Record<string, string>): string {
+  return JSON.stringify(
+    Object.keys(value)
+      .sort()
+      .reduce<Record<string, string>>((acc, key) => {
+        acc[key] = value[key] ?? "";
+        return acc;
+      }, {})
+  );
 }
 
 function resolveRequestTimeoutMs(value: number | undefined): number {

@@ -55,6 +55,32 @@ class SuccessProtocolClient implements ProtocolClient {
   }
 }
 
+class EquivalentBackingFailoverClient implements ProtocolClient {
+  readonly attemptedModelIds: string[] = [];
+
+  supports(protocol: ModelProtocol): boolean {
+    return protocol === "openai-compatible";
+  }
+
+  async generate(model: ResolvedModelConfig, input: GenerateTextInput): Promise<GenerateTextResult> {
+    this.attemptedModelIds.push(model.id);
+    if (model.id !== "regional-model") {
+      throw new Error(`${model.id} unavailable`);
+    }
+
+    return {
+      text: "regional model response",
+      modelId: input.modelId ?? model.id,
+      providerId: model.providerId,
+      protocol: model.protocol,
+      adapterName: "equivalent-backing-stub",
+      raw: {
+        selectedModel: model.id,
+      },
+    };
+  }
+}
+
 class HangingProtocolClient implements ProtocolClient {
   signal: AbortSignal | null = null;
 
@@ -200,6 +226,82 @@ test("llm gateway reports only actually attempted models when the primary succee
       delete process.env.TEST_FALLBACK_KEY;
     } else {
       process.env.TEST_FALLBACK_KEY = previousFallbackKey;
+    }
+  }
+});
+
+test("llm gateway skips equivalent backing aliases while preserving distinct fallbacks", async () => {
+  const previousPrimaryKey = process.env.TEST_PRIMARY_KEY;
+  const previousRegionalKey = process.env.TEST_REGIONAL_KEY;
+  process.env.TEST_PRIMARY_KEY = "primary-key";
+  process.env.TEST_REGIONAL_KEY = "regional-key";
+  const client = new EquivalentBackingFailoverClient();
+
+  try {
+    const gateway = new LLMGateway({
+      registry: new ModelRegistry(
+        new InMemoryCatalogSource({
+          models: {
+            "primary-alias": {
+              label: "Primary alias",
+              providerId: "minimax",
+              protocol: "openai-compatible",
+              model: "MiniMax-M2.7-highspeed",
+              baseURL: "https://api.minimax.example/v1",
+              apiKeyEnv: "TEST_PRIMARY_KEY",
+            },
+            "duplicate-alias": {
+              label: "Duplicate alias",
+              providerId: "minimax",
+              protocol: "openai-compatible",
+              model: "MiniMax-M2.7-highspeed",
+              baseURL: "https://api.minimax.example/v1",
+              apiKeyEnv: "TEST_PRIMARY_KEY",
+            },
+            "regional-model": {
+              label: "Regional fallback",
+              providerId: "minimax-cn",
+              protocol: "openai-compatible",
+              model: "MiniMax-M2.7-highspeed",
+              baseURL: "https://api.minimaxi.example/v1",
+              apiKeyEnv: "TEST_REGIONAL_KEY",
+            },
+          },
+          modelChains: {
+            lead_reasoning: {
+              primary: "primary-alias",
+              fallbacks: ["duplicate-alias", "regional-model"],
+            },
+          },
+        })
+      ),
+      clients: [client],
+    });
+
+    const result = await gateway.generate({
+      modelChainId: "lead_reasoning",
+      messages: [
+        {
+          role: "user",
+          content: "Use equivalent alias de-duplication.",
+        },
+      ],
+    });
+
+    assert.equal(result.text, "regional model response");
+    assert.equal(result.modelId, "regional-model");
+    assert.deepEqual(client.attemptedModelIds, ["primary-alias", "regional-model"]);
+    assert.deepEqual(result.attemptedModelIds, ["primary-alias", "regional-model"]);
+  } finally {
+    if (previousPrimaryKey == null) {
+      delete process.env.TEST_PRIMARY_KEY;
+    } else {
+      process.env.TEST_PRIMARY_KEY = previousPrimaryKey;
+    }
+    if (previousRegionalKey == null) {
+      delete process.env.TEST_REGIONAL_KEY;
+    } else {
+      process.env.TEST_REGIONAL_KEY = previousRegionalKey;
     }
   }
 });

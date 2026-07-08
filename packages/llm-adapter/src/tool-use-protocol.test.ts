@@ -171,6 +171,68 @@ test("openai-compatible client sends tools and parses tool_calls", async () => {
   }
 });
 
+test("compatible clients strip leading provider reasoning blocks from visible text", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { system?: unknown };
+    if ("system" in body) {
+      return response({
+        content: [
+          { type: "text", text: "<think>private chain of thought</think>\n\nVisible answer." },
+          {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "sessions_spawn",
+            input: { agent_id: "explore", task: "Check source" },
+          },
+        ],
+        stop_reason: "tool_use",
+      });
+    }
+    return response({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "<think>private chain of thought</think>\n\nVisible answer.",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "sessions_spawn",
+                  arguments: JSON.stringify({ agent_id: "explore", task: "Check source" }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  }) as typeof fetch;
+
+  try {
+    const anthropicResult = await new AnthropicCompatibleClient().generate(model("anthropic-compatible"), {
+      messages: [
+        { role: "system", content: "You are helpful." },
+        { role: "user", content: "Answer." },
+      ],
+    });
+    const openaiResult = await new OpenAICompatibleClient().generate(model("openai-compatible"), {
+      messages: [{ role: "user", content: "Answer." }],
+    });
+
+    assert.equal(anthropicResult.text, "Visible answer.");
+    assert.equal(openaiResult.text, "Visible answer.");
+    assert.deepEqual(anthropicResult.contentBlocks?.[0], { type: "text", text: "Visible answer." });
+    assert.deepEqual(openaiResult.contentBlocks?.[0], { type: "text", text: "Visible answer." });
+    assert.equal(anthropicResult.toolCalls?.[0]?.name, "sessions_spawn");
+    assert.equal(openaiResult.toolCalls?.[0]?.name, "sessions_spawn");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("compatible clients pass AbortSignal through to provider fetch", async () => {
   const signals: Array<AbortSignal | null> = [];
   const previousFetch = globalThis.fetch;
