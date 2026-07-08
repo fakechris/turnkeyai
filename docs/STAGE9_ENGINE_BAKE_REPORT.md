@@ -66,8 +66,31 @@ Deterministic gates completed in this environment:
 - `npm run parity:engine`: pass, 279 / 279, all 14 chunks completed.
 - `git diff --check`: pass.
 
-Real LLM bake gates are not completed in this environment because no model
-catalog is available. Attempted command:
+Initial real LLM bake was blocked because this environment did not have
+`models.local.json`, `models.json`, or `TURNKEYAI_MODEL_CATALOG`. After adding
+a local ignored MiniMax catalog that points at `MINIMAX_API_KEY`, the gateway
+smoke passed with `providerId=minimax`, `modelId=minimax-m3`,
+`protocol=anthropic-compatible`.
+
+Focused real LLM natural scenario completed:
+
+```bash
+npm run mission:e2e -- --natural --natural-scenario natural-timeout-followup-continuation --model-catalog models.local.json --scenario-timeout-ms 360000 --json /tmp/natural-timeout-followup-minimax-stage9.json
+```
+
+Result:
+
+- status: pass.
+- scenario: `natural-timeout-followup-continuation`.
+- mission id: `msn.mrbiblwo.1`.
+- duration: 218954 ms.
+- model calls: 6, all `minimax-m3` / `minimax`.
+- tools: 3 / 3.
+- sessions: 1 / 1.
+- stuck or loop: false.
+- final answer evidence/usefulness: true / true.
+
+Original blocked attempt before the catalog existed:
 
 ```bash
 npm run mission:e2e -- --natural --natural-scenario natural-timeout-followup-continuation --json /tmp/natural-timeout-followup-after-fix.json
@@ -79,7 +102,7 @@ Result:
 Error: mission E2E requires --model-catalog, TURNKEYAI_MODEL_CATALOG, models.local.json, or models.json
 ```
 
-Required external bake gates before declaring the branch fully baked:
+Required remaining bake gates before declaring the branch fully baked:
 
 ```bash
 npm run mission:e2e:natural:core
