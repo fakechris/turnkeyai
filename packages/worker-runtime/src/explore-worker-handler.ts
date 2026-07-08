@@ -781,7 +781,9 @@ function extractExplicitUrls(sourceText: string): string[] {
     if (/…|%E2%80%A6|\.\.\./i.test(rawCandidate)) {
       continue;
     }
-    const candidate = rawCandidate.replace(/["'`\],;:.!?。，“”‘’！？：]+$/g, "");
+    const candidate = repairDuplicatedLoopbackHost(
+      rawCandidate.replace(/["'`\],;:.!?。，“”‘’！？：]+$/g, "")
+    );
     if (!candidate || seen.has(candidate)) {
       continue;
     }
@@ -797,6 +799,12 @@ function extractExplicitUrls(sourceText: string): string[] {
     urls.push(candidate);
   }
   return urls;
+}
+
+function repairDuplicatedLoopbackHost(input: string): string {
+  return input.replace(/^(https?:\/\/)127\.127\.0\.0\.1(?=[:/?#]|$)/i, (_match, scheme: string) => {
+    return `${scheme}127.0.0.1`;
+  });
 }
 
 interface PriorExploreEvidence {

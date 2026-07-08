@@ -25,6 +25,9 @@ export class DefaultHandoffPlanner implements HandoffPlanner {
   }
 
   parseMentions(content: string): HandoffTarget[] {
+    if (isCoordinatorHandoffEcho(content)) {
+      return [];
+    }
     const out: HandoffTarget[] = [];
 
     for (const match of content.matchAll(MENTION_RE)) {
@@ -121,6 +124,14 @@ export class DefaultHandoffPlanner implements HandoffPlanner {
       return envelope;
     });
   }
+}
+
+function isCoordinatorHandoffEcho(content: string): boolean {
+  return (
+    /\bLead is operating as Lead Coordinator\b/i.test(content) &&
+    /\bDelegate one next role when work remains\.?\s+Otherwise finalize\b/i.test(content) &&
+    /\bPlease take the next assigned slice and report back briefly\b/i.test(content)
+  );
 }
 
 function uniqueRoleIds(roleIds: RoleId[]): RoleId[] {

@@ -12,6 +12,7 @@ import {
   buildNaturalMissionE2eJsonReport,
   buildNaturalMissionPartialFailureJsonReport,
   buildMissionE2eJsonReport,
+  evaluateFinalQuality,
   evaluateNaturalMissionQuality,
   evaluateNaturalSourceCoverage,
   extractCancelledSessionKey,
@@ -33,6 +34,24 @@ import {
 } from "./mission-tool-use-e2e";
 
 describe("mission tool-use e2e report", () => {
+  it("does not treat operational assume-ownership wording as a hedged claim", () => {
+    const quality = evaluateFinalQuality(
+      "- recommendation: TURNKEYAI_TEST_OK - the Incident Commander should assume ownership immediately.",
+      minimalScenarioQualitySpec()
+    );
+
+    assert.deepEqual(quality.failures, []);
+  });
+
+  it("still flags assume when it means unsupported inference", () => {
+    const quality = evaluateFinalQuality(
+      "- recommendation: TURNKEYAI_TEST_OK - assume Vendor Alpha has enterprise pricing.",
+      minimalScenarioQualitySpec()
+    );
+
+    assert.ok(quality.failures.includes("final answer contains unsupported/hedged claim language"));
+  });
+
   it("does not treat browser session recovery wording as a tool-unavailable fallback", () => {
     assert.deepEqual(
       findWeakAnswerSignals(
@@ -1114,6 +1133,22 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(productionFreshnessProviderCoverage.answerPatterns.missing, []);
     assert.deepEqual(productionFreshnessProviderCoverage.evidencePatterns.missing, []);
     assert.deepEqual(productionFreshnessProviderCoverage.unsupportedClaims, []);
+
+    const onlyProviderWithWebSearchCoverage = evaluateNaturalSourceCoverage({
+      spec: providerPricing,
+      finalText: [
+        "DeepSeek V4 Flash API Provider Note.",
+        "| **OpenRouter** | Input $0.28 / Output $0.42 / Combined $0.70 per 1M tokens | Only provider with web_search; route-level tool configurability | Search availability depends on route-level tool enablement; highest combined cost | Best for real-time search + RAG workflows |",
+        "Together: Input $0.20 / Output $0.40; no native search capability.",
+        "Fireworks: Input $0.25 / Output $0.45; no native search.",
+        "Search-supporting option: OpenRouter (via web_search).",
+        "Residual risk: production provider pages may change.",
+      ].join(" "),
+      evidenceText:
+        "DeepSeek V4 Flash provider source: OpenRouter has a web_search option; Together and Fireworks require search to be supplied externally. Pricing $0.28/$0.42, $0.20/$0.40, $0.25/$0.45.",
+      evidenceEvents: 1,
+    });
+    assert.deepEqual(onlyProviderWithWebSearchCoverage.answerPatterns.missing, []);
 
     const unverifiedSearchProviderCoverage = evaluateNaturalSourceCoverage({
       spec: providerPricing,
@@ -2550,6 +2585,7 @@ describe("mission tool-use e2e report", () => {
         "Hacker News visible listing evidence with navigation links, comments, and points.",
         "Rendering status: Loaded cleanly; no interstitial blocks, captchas, paywall, cookie banner, or redirect observed.",
         "No redirect, block, or captcha observed during this run.",
+        "| Blocked access? | **No.** Page loaded successfully. |",
         "| Site blocked access | No - fully loaded |",
         "| Redirected to another domain | No - URL remained on the target site |",
       ].join("\n"),
@@ -2559,6 +2595,8 @@ describe("mission tool-use e2e report", () => {
       "Hacker News is a live external page with visible story listings and navigation cues.",
       "Visible items include navigation links such as new, past, comments, ask, show, jobs, submit, and login.",
       "Visible page evidence also includes comment and point cues on story rows, so the page purpose is user-ranked discussion rather than a static article.",
+      "**Blocked access:** No",
+      "Residual risk: page loaded cleanly with no redirects, no block/captcha, and no popups during the inspection window.",
       "No blocking, captchas, or forced auth; page fully rendered.",
       "Transport degradation checked: transport_failure not observed; lease conflict not observed; result truncation not observed; snapshot truncation not observed; browser transport degradation not observed.",
       "Verification status: Site blocked access | No - fully loaded; Redirected to another domain | No.",
@@ -2579,6 +2617,29 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.weakAnswerSignals.includes("browser transport degraded"), false);
     assert.deepEqual(quality.failures, []);
     assert.equal(quality.status, "passed");
+  });
+
+  it("accepts browser blocker tables that say blocks/access-denied were not observed", () => {
+    const signals = findWeakEvidenceSignals(
+      [
+        "| Check | Result |",
+        "|---|---|",
+        "| Blocks / access denied | **None** - page fully rendered on first load |",
+        "| Redirects | **None** - landed exactly on the requested URL |",
+      ].join("\n"),
+      { browserEvidenceExpected: true }
+    );
+
+    assert.equal(signals.includes("browser evidence blocked"), false);
+  });
+
+  it("accepts compact browser-loaded wording that negates redirect and block", () => {
+    const signals = findWeakEvidenceSignals(
+      "**Page loaded normally:** ✅ No redirect, no block - full standard load directly to target URL.",
+      { browserEvidenceExpected: true },
+    );
+
+    assert.equal(signals.includes("browser evidence blocked"), false);
   });
 
   it("counts concrete external-page items as visible answer evidence", () => {
@@ -2625,6 +2686,57 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.status, "passed");
   });
 
+  it("does not treat Cloudflare story domains as browser blockers", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Hacker News front page loaded at https://news.ycombinator.com/.",
+        "Story #1: Workers Cache (cloudflare.com), 70 points, 18 comments.",
+        "Redirects: none observed.",
+        "Auth walls: not triggered.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Hacker News loaded with visible story listings, including Workers Cache on cloudflare.com.",
+      "Navigation links new, past, comments, ask, show, jobs, submit, and login were visible.",
+      "Residual risk: live external content can change; redirects and auth walls were not triggered during the browser check.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
   it("accepts structured browser blocker fields when they carry falsey values", () => {
     const result = fakeNaturalResult();
     const spec = {
@@ -2654,6 +2766,7 @@ describe("mission tool-use e2e report", () => {
         "Blocked elements: none.",
         "Captcha: false.",
         "Redirect: 0.",
+        "| Block or captcha | ✅ None observed |",
         '{"blocked": false, "captcha": false, "redirect": false, "block_detected": false, "captchaDetected": false}',
       ].join("\n"),
     };
@@ -2997,6 +3110,66 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.status, "passed");
   });
 
+  it("does not join escaped browser result JSON lines when blocker checks are negative", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    const browserReport = [
+      "Hacker News loaded with visible story listings, points, comments, and navigation links.",
+      "The page loaded cleanly at the expected URL with no redirects, no block pages, and no visible security warnings.",
+      "| Check | Result |",
+      "|---|---|",
+      "| Block or captcha | ✅ None observed |",
+      "| Redirect chain | ✅ None observed |",
+    ].join("\n");
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        status: "completed",
+        agent_id: "browser",
+        final_content: browserReport,
+        evidence_excerpt: browserReport,
+      }),
+    };
+    result.final.text = [
+      "Hacker News loaded with visible story listings, comment cues, points, and navigation links.",
+      "The browser result reported no redirects, no block pages, and no captchas.",
+      "Residual risk: live external content can change and login-only actions remain unverified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
   it("accepts recovered transport failure when final answer keeps the browser limitation visible", () => {
     const result = fakeNaturalResult();
     const spec = buildNaturalScenarioSpec("natural-browser-external-page-review", {
@@ -3259,6 +3432,44 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
   });
 
+  it("accepts residuals tables with unavailable browser detail as visible residual-risk disclosure", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-followup-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.final.text = [
+      "Queue depth remains 11 and SLA breaches remain 3, so Incident Commander is still the owner.",
+      'The next action "page the on-call" remains correct.',
+      "### Residuals (unchanged from prior review)",
+      "| Dimension | Status |",
+      "|---|---|",
+      "| Metric timestamps / last-refresh indicator | Not visible on the page |",
+      "| Drill-down into individual SLA breach or queue items | Not possible; interactives are empty |",
+      "| Ticket IDs, affected services, or breach age | Not surfaced by the fixture |",
+      "| Fresh data arrival | Cannot be confirmed; values may be static |",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
   it("does not join a not-verified section heading with later browser screenshot facts", () => {
     const result = fakeNaturalResult();
     const spec = buildNaturalScenarioSpec("natural-comparison-research", {
@@ -3311,17 +3522,20 @@ describe("mission tool-use e2e report", () => {
 
   it("does not treat product residual-risk wording as failed browser execution evidence", () => {
     const result = fakeNaturalResult();
-    const spec = buildNaturalScenarioSpec("natural-long-delegation", {
-      alphaUrl: "http://127.0.0.1/vendor-alpha",
-      betaUrl: "http://127.0.0.1/vendor-beta",
-      dashboardUrl: "http://127.0.0.1/ops-dashboard",
-      approvalUrl: "http://127.0.0.1/approval-form",
-      slowUrl: "http://127.0.0.1/slow-fixture",
-      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
-      orchestrationUrl: "http://127.0.0.1/product-orchestration",
-      bridgeUrl: "http://127.0.0.1/product-bridge",
-      productSignalsUrl: "http://127.0.0.1/product-signals",
-    });
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-long-delegation", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      minBytes: 120,
+    };
     result.scenario = "natural-long-delegation";
     result.metrics.tool = { requested: 3, results: 3, failed: 0, cancelled: 0, timeouts: 0 };
     result.metrics.sessions = { spawned: 3, continued: 0 };
@@ -3414,17 +3628,20 @@ describe("mission tool-use e2e report", () => {
 
   it("requires explicit browser bucket closeout when long delegation prompt asks for it", () => {
     const result = fakeNaturalResult();
-    const spec = buildNaturalScenarioSpec("natural-long-delegation", {
-      alphaUrl: "http://127.0.0.1/vendor-alpha",
-      betaUrl: "http://127.0.0.1/vendor-beta",
-      dashboardUrl: "http://127.0.0.1/ops-dashboard",
-      approvalUrl: "http://127.0.0.1/approval-form",
-      slowUrl: "http://127.0.0.1/slow-fixture",
-      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
-      orchestrationUrl: "http://127.0.0.1/product-orchestration",
-      bridgeUrl: "http://127.0.0.1/product-bridge",
-      productSignalsUrl: "http://127.0.0.1/product-signals",
-    });
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-long-delegation", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      minBytes: 120,
+    };
     result.scenario = "natural-long-delegation";
     result.metrics.tool = { requested: 3, results: 3, failed: 0, cancelled: 0, timeouts: 0 };
     result.metrics.sessions = { spawned: 3, continued: 0 };
@@ -3453,6 +3670,26 @@ describe("mission tool-use e2e report", () => {
           toolPhase: "result",
           resultContent:
             "The browser bridge controls cover DOM, screenshots, artifacts, command-line setup, provider configuration, and the desktop boundary.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "signals browser call",
+        tMs: 2500,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "inspect product signals dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "signals browser call",
+        tMs: 2500,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "inspect product signals dashboard" }),
         },
       },
       {
@@ -3513,6 +3750,112 @@ describe("mission tool-use e2e report", () => {
 
     assert.deepEqual(explicitCloseoutQuality.failures, []);
     assert.equal(explicitCloseoutQuality.status, "passed");
+  });
+
+  it("requires long delegation finals to carry recovered product signal values", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-long-delegation", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      minBytes: 120,
+    };
+    result.scenario = "natural-long-delegation";
+    result.metrics.tool = { requested: 3, results: 3, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 3, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.metrics.browser = { profileFallbacks: 0, failureBuckets: [] };
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "orchestration result",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "The orchestration source verifies multi-agent decomposition and durable sub-session history.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "bridge result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "Browser bridge controls rendered DOM, screenshots, artifacts, command-line setup, provider configuration, and desktop boundary.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "signals browser call",
+        tMs: 2500,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "inspect product signals dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "signals browser result",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Rendered product-signals dashboard evidence: Stuck missions: 6. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry and gate release on real LLM scenario quality.",
+        },
+      },
+    ];
+    result.final.text = [
+      "Recommendation: make Mission Control the default entry point for the next agent workbench release.",
+      "Why it matters: multi-agent decomposition and durable sub-session history are the differentiator.",
+      "Residual risk: Stuck missions, Weak answer rate, and the recommended next action could not be verified from evidence and require browser re-inspection.",
+    ].join(" ");
+
+    const missingValuesQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.equal(missingValuesQuality.status, "failed");
+    assert.ok(
+      missingValuesQuality.failures.some((failure) => failure.includes("missing product signals stuck mission answer")),
+      JSON.stringify(missingValuesQuality.failures, null, 2)
+    );
+    assert.ok(
+      missingValuesQuality.failures.some((failure) => failure.includes("missing product signals weak answer rate answer")),
+      JSON.stringify(missingValuesQuality.failures, null, 2)
+    );
+
+    result.final.text = [
+      "Recommendation: make Mission Control the default entry point for the next agent workbench release.",
+      "Why it matters: multi-agent decomposition and durable sub-session history are the differentiator.",
+      "Browser-visible live signal dashboard evidence: Stuck missions: 6 and Weak answer rate: 24%; recommended next action is to make Mission Control the default entry and gate release on real LLM scenario quality.",
+      "Residual risk: local fixture evidence only; production telemetry remains unverified.",
+    ].join(" ");
+
+    const recoveredValuesQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.equal(recoveredValuesQuality.status, "passed", JSON.stringify(recoveredValuesQuality.failures, null, 2));
   });
 
   it("does not treat source-bounded browser residual scope as failed browser evidence", () => {
@@ -3675,6 +4018,76 @@ describe("mission tool-use e2e report", () => {
 
     assert.equal(quality.sourceCoverage.residualRiskVisible, true);
     assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
+  it("accepts approval wait-timeout closeout evidence with permission_query tool spelling", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-wait-timeout-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.mission.status = "done";
+    result.metrics.status = "done";
+    result.metrics.tool = { requested: 2, results: 2, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.approvals = { requested: 1, decided: 0, applied: 0 };
+    result.metrics.sessions = { spawned: 0, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "permission_query returned pending",
+        tMs: 1000,
+        runtime: {
+          toolName: "permission_query",
+          toolPhase: "result",
+          eventType: "permission.query",
+          resultContent: "permission_query requested approval for browser.form.submit and returned pending.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "permission_result returned pending after bounded wait",
+        tMs: 2000,
+        runtime: {
+          toolName: "permission_result",
+          toolPhase: "result",
+          eventType: "permission.result",
+          resultContent:
+            "permission_result confirmed the approval is still pending after the bounded wait for browser.form.submit.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "Approval wait-timeout closeout confirmed.",
+          "Approval status: the operator decision is still pending after the bounded wait; permission_result returned pending/approval_wait_timeout.",
+          "Runtime evidence: permission_query requested approval for browser.form.submit and permission_result confirmed the approval remains pending.",
+          "Action boundary: no form submission, no side effects, and no browser mutation were performed.",
+          "Residual risk: the requested submit/apply step remains unverified because pending approval remains.",
+          "Next action: ask the operator to approve or deny, then continue the same mission and apply only the approved scoped action.",
+        ].join("\n"),
+        tMs: 3000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.failures, []);
   });
 
   it("requires mission artifact lifecycle evidence for natural browser dynamic page", () => {
@@ -4314,6 +4727,74 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(quality.failures, []);
     assert.equal(quality.status, "passed");
     assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+  });
+
+  it("accepts recovered dashboard evidence with control-plane recovery memory and bounded unverified sub-scope", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-dashboard-task", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-browser-dashboard-task";
+    result.metrics.tool.requested = 3;
+    result.metrics.tool.results = 3;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Browser-rendered dashboard evidence: Queue depth: 11.",
+        "SLA breaches: 3.",
+        "Escalation threshold: queue depth above 5 or SLA breaches above 0.",
+        "Recommended owner: Incident Commander.",
+      ].join("\n"),
+    };
+    result.timeline.push({
+      kind: "tool",
+      text: "Tool memory_search returned (7.9 kB).",
+      tMs: 2500,
+      runtime: {
+        toolName: "memory_search",
+        toolPhase: "result",
+        resultContent: JSON.stringify({
+          query: "ops-dashboard browser session session_key rendered evidence",
+          total_hits: 1,
+          memories: [
+            {
+              content:
+                "Constraint: Automatic recovery attempt 2 of 2. Missing or unverified final-answer slots: rendered browser evidence (unverified). Previous timeout wording is recovery context, not source evidence.",
+            },
+          ],
+        }),
+      },
+    });
+    result.final.text = [
+      "Queue depth is 11 and SLA breaches are 3, so the escalation policy is triggered.",
+      "The next action owner should be the Incident Commander, who should page the on-call and work down the queue.",
+      "Evidence / Sources: ops-dashboard-inspection verified the browser-rendered dashboard values and page stability.",
+      "Residual risk: timestamps for the SLA breaches, specific queued items, on-call contact details, historical trend data, and system-level metrics remain not verified.",
+      "Interactive controls (acknowledge, escalate) are not verified; zero interactive elements observed on the rendered page.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.weakAnswerSignals, []);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
   });
 
   it("requires natural browser follow-up to continue the existing browser session", () => {
@@ -5206,7 +5687,7 @@ describe("mission tool-use e2e report", () => {
     assert.match(staleQuality.failures.join("\n"), /forbidden stale launch window/);
   });
 
-  it("passes natural memory invalidation only with corrected memory facts and no stale launch detail", () => {
+  it("passes natural memory invalidation with corrected memory facts across multiple inspected memory entries", () => {
     const spec = buildNaturalScenarioSpec("natural-memory-invalidation", {
       alphaUrl: "http://127.0.0.1/vendor-alpha",
       betaUrl: "http://127.0.0.1/vendor-beta",
@@ -5242,7 +5723,7 @@ describe("mission tool-use e2e report", () => {
         tMs: 2000,
       },
     ];
-    result.metrics.tool.results = 2;
+    result.metrics.tool.results = 6;
     result.metrics.sessions.spawned = 0;
     result.metrics.qualityGate.evidenceEvents = 2;
     result.runtimeEvidence = {
@@ -5400,6 +5881,107 @@ describe("mission tool-use e2e report", () => {
     assert.match(missingPrunedFactQuality.failures.join("\n"), /missing evidence product signals weak answer rate/);
   });
 
+  it("accepts pruned tool-result evidence when source-specific facts survive in the final closeout", () => {
+    const spec = buildNaturalScenarioSpec("natural-tool-result-pruning", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    const result = fakeNaturalResult();
+    result.scenario = "natural-tool-result-pruning";
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "sessions_spawn product-orchestration result",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          workerType: "explore",
+          resultContent: "Pruned product-orchestration result: Mission Control is the default release story.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn bridge result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          workerType: "explore",
+          resultContent:
+            "Bridge capability evidence: browser bridge controls inspect DOM, screenshots, artifacts; boundary is command-line setup and provider configuration.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn product signals call",
+        tMs: 2500,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "review product signals dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn product signals result",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          workerType: "browser",
+          resultContent:
+            "Rendered signal dashboard evidence recovered after transport_failure. Stuck missions: 6. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "**Mission status: done**",
+          "# Agent Workbench - Next Release Product Brief",
+          "## Completed Browser Evidence",
+          "- product-orchestration verified Mission Control as the default release story, with multi-agent decomposition and durable sub-session history as the core product value.",
+          "- product-bridge verified browser page open, rendered DOM inspection, screenshots/artifact collection, and the browser-only boundary; first-run setup and provider configuration remain adoption risk.",
+          "- product-signals was inspected as rendered browser evidence, not raw HTML: Stuck missions: 6; Weak answer rate: 24%; signal-dashboard recommended next action: make Mission Control the default entry and gate release on real LLM scenario quality.",
+          "## Product Decision",
+          "- Build next: make Mission Control the default entry point and gate release on real LLM scenario quality.",
+          "- Why it matters: specialist agents preserve evidence and return a decision-ready brief.",
+          "## Risk and limitation",
+          "- Child evidence mentioned a browser transport degradation bucket; keep the affected browser evidence source-bounded and continue only if a fresh browser run is required.",
+          "- Recovered evidence includes all three source streams and the rendered dashboard counters.",
+          "- What remains unverified is source-bounded: these are local fixture pages, not live production telemetry, customer adoption evidence, or proof that future source updates will keep the same numbers.",
+          "- Retry or continue only if production telemetry, customer validation, or a fresh external deployment check is required.",
+        ].join("\n"),
+        tMs: 4000,
+      },
+    ];
+    result.metrics.tool = { requested: 3, results: 3, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 3, continued: 0 };
+    result.metrics.browser = {
+      profileFallbacks: 0,
+      failureBuckets: [{ bucket: "transport_failure", count: 1, latestAtMs: 3000 }],
+    };
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.failures, []);
+  });
+
   it("requires cancellation evidence for natural cancellation", () => {
     const spec = buildNaturalScenarioSpec("natural-cancel-active-tool", {
       alphaUrl: "http://127.0.0.1/vendor-alpha",
@@ -5486,7 +6068,21 @@ describe("mission tool-use e2e report", () => {
     });
     assert.deepEqual(missionCancelledCloseoutQuality.failures, []);
 
+    result.metrics.qualityGate.checks = [
+      { name: "goal_slot_coverage", status: "pending", detail: "Waiting for the final answer." },
+      { name: "source_coverage", status: "pending", detail: "Waiting for the final answer." },
+    ];
+    const pendingGateMissionCancelledQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(pendingGateMissionCancelledQuality.failures, []);
+
     result.metrics.tool.cancelled = 0;
+    result.metrics.qualityGate.checks = [];
     result.timeline = result.timeline.filter((event) => event.runtime?.["eventType"] !== "mission.cancelled");
     result.final = result.timeline.at(-1)!;
     const missingCancellation = evaluateNaturalMissionQuality({
@@ -6181,6 +6777,25 @@ describe("mission tool-use e2e report", () => {
     );
   });
 });
+
+function minimalScenarioQualitySpec(): Parameters<typeof evaluateFinalQuality>[1] {
+  return {
+    scenario: "realistic-brief",
+    title: "Test quality spec",
+    desc: "Test quality spec",
+    finalMarker: "TURNKEYAI_TEST_OK",
+    evidenceMarkers: [],
+    answerTerms: [],
+    expectedSpawnCalls: 0,
+    expectedSendCalls: 0,
+    expectedToolResults: 0,
+    expectedSpawnedSessions: 0,
+    expectedContinuedSessions: 0,
+    minEvidenceEvents: 0,
+    expectedBullets: 1,
+    minBytes: 0,
+  };
+}
 
 function fakeResult(): MissionScenarioResult {
   return {

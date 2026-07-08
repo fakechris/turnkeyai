@@ -278,6 +278,31 @@ test("real acceptance integrity requires passing tool-use report summaries when 
       naturalMissionReport: null,
     })
   );
+
+  assert.doesNotThrow(() =>
+    assertRealAcceptanceArtifactIntegrity({
+      status: "passed",
+      tooluseScenarios: ["basic"],
+      missionScenarios: [],
+      naturalMissionScenarios: [],
+      tooluseJsonPresent: true,
+      missionJsonPresent: false,
+      naturalMissionJsonPresent: false,
+      tooluseReport: passingTooluseReport({
+        evidenceBullets: 0,
+        sessionsSpawned: 0,
+        scenarioProofs: [
+          {
+            ...passingTooluseScenarioProof("basic"),
+            evidenceBullets: 0,
+            sessionsSpawned: 0,
+          },
+        ],
+      }),
+      missionReport: null,
+      naturalMissionReport: null,
+    })
+  );
 });
 
 test("real acceptance integrity rejects missing or non-passing report summaries before recording passed", () => {

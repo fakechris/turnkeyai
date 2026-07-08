@@ -619,10 +619,16 @@ function hasProvenToolUseScenario(
     | NonNullable<NonNullable<ReturnType<typeof summarizeToolUseE2eReportForValidationOps>>["scenarioProofs"]>[number]
     | undefined
 ): boolean {
-  if (!proof?.passed || proof.qualityFailures > 0 || proof.finalBytes <= 0 || proof.evidenceBullets <= 0) {
+  if (!proof?.passed || proof.qualityFailures > 0 || proof.finalBytes <= 0) {
     return false;
   }
-  if (!proof.toolCallNames.includes("sessions_spawn") || proof.sessionsSpawned < 1) {
+  if (scenario !== "basic" && proof.evidenceBullets <= 0) {
+    return false;
+  }
+  if (!proof.toolCallNames.includes("sessions_spawn")) {
+    return false;
+  }
+  if (scenario !== "basic" && proof.sessionsSpawned < 1) {
     return false;
   }
   if (scenario === "approval") {

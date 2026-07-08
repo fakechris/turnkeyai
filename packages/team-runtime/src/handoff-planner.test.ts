@@ -50,6 +50,21 @@ test("handoff planner resolves known role mentions", async () => {
   assert.deepEqual(decision.targetRoleIds, ["operator"]);
 });
 
+test("handoff planner ignores coordinator instruction echoes", () => {
+  const planner = new DefaultHandoffPlanner();
+
+  assert.deepEqual(
+    planner.parseMentions(
+      [
+        "Lead is operating as Lead Coordinator.",
+        "Delegate one next role when work remains. Otherwise finalize.",
+        "@{role-explore} Please take the next assigned slice and report back briefly.",
+      ].join("\n"),
+    ),
+    [],
+  );
+});
+
 test("handoff planner ignores bare role-id mentions", async () => {
   const planner = new DefaultHandoffPlanner();
   const thread: TeamThread = {

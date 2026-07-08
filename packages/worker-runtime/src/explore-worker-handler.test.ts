@@ -471,6 +471,32 @@ test("explore worker can explicitly allow loopback hosts for isolated E2E fixtur
   assert.match(result?.summary ?? "", /TURNKEYAI_LOCAL_FIXTURE_OK/);
 });
 
+test("explore worker repairs duplicated loopback host typos for isolated E2E fixtures", async () => {
+  let fetchedUrl = "";
+  const handler = new ExploreWorkerHandler({
+    allowLoopbackHosts: true,
+    fetchFn: async (input) => {
+      fetchedUrl = String(input);
+      return new Response(
+        "<html><head><title>Local Fixture</title></head><body>TURNKEYAI_LOCAL_FIXTURE_OK</body></html>",
+        { status: 200, headers: { "content-type": "text/html" } }
+      );
+    },
+  });
+
+  const result = await handler.run({
+    ...buildExploreInvocationInput(),
+    packet: {
+      ...buildExploreInvocationInput().packet,
+      taskPrompt: "Inspect http://127.127.0.0.1:49152/fixture",
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.equal(fetchedUrl, "http://127.0.0.1:49152/fixture");
+  assert.match(result?.summary ?? "", /TURNKEYAI_LOCAL_FIXTURE_OK/);
+});
+
 test("explore worker fetches every explicit URL in a multi-source task", async () => {
   const fetchedUrls: string[] = [];
   const handler = new ExploreWorkerHandler({
