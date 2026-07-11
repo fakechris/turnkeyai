@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AnthropicCompatibleClient } from "./anthropic-compatible-client";
-import type { ProviderActivityKind, ResolvedModelConfig } from "./types";
+import { LLMGateway } from "./gateway";
+import { ModelRegistry } from "./registry";
+import { ProviderRequestError } from "./types";
+import type {
+  ModelCatalog,
+  ModelCatalogSource,
+  ProviderActivityKind,
+  ResolvedModelConfig,
+} from "./types";
 
 test("anthropic-compatible client requests SSE and reports transport activity", async () => {
   const previousFetch = globalThis.fetch;
@@ -64,6 +72,117 @@ test("anthropic-compatible client falls back to JSON when streaming is not retur
     globalThis.fetch = previousFetch;
   }
 });
+
+test("anthropic-compatible client rejects provider-declared interrupted completions", async () => {
+  const previousFetch = globalThis.fetch;
+  const responses = [
+    () =>
+      streamResponse([
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Partial stream"}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"abort"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ]),
+    () =>
+      new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "Partial JSON" }],
+          stop_reason: "aborted",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+  ];
+
+  try {
+    for (const response of responses) {
+      globalThis.fetch = (async () => response()) as typeof fetch;
+      await assert.rejects(
+        () =>
+          new AnthropicCompatibleClient().generate(model(), {
+            messages: [{ role: "user", content: "Return a complete answer." }],
+          }),
+        (error) => {
+          assert.ok(error instanceof ProviderRequestError);
+          assert.equal(error.code, "incomplete_response");
+          assert.equal(error.retryable, true);
+          assert.match(error.message, /abort/);
+          assert.doesNotMatch(error.message, /Partial stream|Partial JSON/);
+          return true;
+        },
+      );
+    }
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("llm gateway retries a provider-declared interrupted completion without accepting partial text", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.TEST_KEY;
+  let attempts = 0;
+  globalThis.fetch = (async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return streamResponse([
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Discard me"}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"abort"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ]);
+    }
+    return streamResponse([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Complete answer"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]);
+  }) as typeof fetch;
+  process.env.TEST_KEY = "key";
+
+  try {
+    const gateway = new LLMGateway({
+      registry: new ModelRegistry(new TestCatalogSource({
+        models: {
+          "model-1": {
+            label: "Model",
+            providerId: "test",
+            protocol: "anthropic-compatible",
+            model: "model-1",
+            baseURL: "https://example.test/anthropic/v1/",
+            apiKeyEnv: "TEST_KEY",
+          },
+        },
+      })),
+      clients: [new AnthropicCompatibleClient()],
+      retrySleep: async () => undefined,
+      retryRandom: () => 0,
+    });
+
+    const result = await gateway.generate({
+      modelId: "model-1",
+      messages: [{ role: "user", content: "Return a complete answer." }],
+    });
+
+    assert.equal(attempts, 2);
+    assert.equal(result.text, "Complete answer");
+    assert.doesNotMatch(result.text, /Discard me/);
+    assert.deepEqual(result.retryDiagnostics?.models[0]?.errors, [
+      "incomplete_response",
+    ]);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.TEST_KEY;
+    else process.env.TEST_KEY = previousKey;
+  }
+});
+
+class TestCatalogSource implements ModelCatalogSource {
+  constructor(private readonly catalog: ModelCatalog) {}
+
+  async load(): Promise<ModelCatalog> {
+    return this.catalog;
+  }
+}
 
 function model(): ResolvedModelConfig {
   return {

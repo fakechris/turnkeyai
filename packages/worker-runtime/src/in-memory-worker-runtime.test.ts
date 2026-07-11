@@ -68,6 +68,45 @@ test("in-memory worker runtime marks null worker results as done", async () => {
   assert.equal(state?.status, "done");
 });
 
+test("in-memory worker runtime persists timeout results as resumable", async () => {
+  const timeoutResult = {
+    workerType: "explore",
+    status: "timeout",
+    summary: "Sub-agent timed out at the absolute run deadline.",
+    payload: { resumableReason: "run_deadline_exceeded" },
+  } as unknown as WorkerExecutionResult;
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return {
+          kind: "explore",
+          async canHandle() {
+            return true;
+          },
+          async run() {
+            return timeoutResult;
+          },
+        };
+      },
+    },
+    now: () => 123,
+  });
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+
+  const result = await runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+  const state = await runtime.getState(spawned.workerRunKey);
+
+  assert.equal(result, timeoutResult);
+  assert.equal(state?.status, "resumable");
+  assert.equal(state?.lastResult?.status, "timeout");
+});
+
 test("in-memory worker runtime persists background ownership and absolute deadline", async () => {
   const runtime = new InMemoryWorkerRuntime({
     workerRegistry: {
@@ -104,7 +143,7 @@ test("in-memory worker runtime persists background ownership and absolute deadli
   assert.equal(record?.context?.deadlineAt, 61_000);
 });
 
-test("in-memory worker runtime bounds a background handler that ignores deadline abort", async () => {
+test("in-memory worker runtime bounds an ignored background deadline as resumable timeout", async () => {
   const runtime = new InMemoryWorkerRuntime({
     workerRegistry: {
       async selectHandler() {
@@ -145,11 +184,12 @@ test("in-memory worker runtime bounds a background handler that ignores deadline
   ]);
 
   assert.equal(bounded, true);
-  assert.equal((await runtime.getState(spawned.workerRunKey))?.status, "cancelled");
-  assert.equal(
-    (await runtime.getState(spawned.workerRunKey))?.lastError?.code,
-    "WORKER_TIMEOUT",
-  );
+  const state = await runtime.getState(spawned.workerRunKey);
+  assert.equal(state?.status, "resumable");
+  assert.equal(state?.lastError?.code, "WORKER_TIMEOUT");
+  assert.equal(state?.lastError?.retryable, true);
+  assert.equal(state?.lastResult?.status, "timeout");
+  assert.equal(state?.continuationDigest?.reason, "timeout_summary");
 });
 
 test("in-memory worker runtime cascades parent cancellation to a background handler", async () => {

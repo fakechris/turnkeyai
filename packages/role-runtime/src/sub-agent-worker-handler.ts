@@ -22,6 +22,7 @@ import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
+import { isRunDeadlineExceeded } from "./run-deadline";
 import {
   buildArtifactToolDefinitions,
   SESSION_TOOL_NAMES,
@@ -195,6 +196,22 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
         }),
       };
     } catch (error) {
+      const deadline = readSubAgentDeadline(error, input.signal?.reason);
+      if (deadline) {
+        return {
+          workerType: this.kind,
+          status: "timeout",
+          summary: `Sub-agent timed out: ${deadline.message}`,
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: this.kind,
+            resumableReason: "run_deadline_exceeded",
+            ...(deadline.deadlineAt === null
+              ? {}
+              : { deadlineAt: deadline.deadlineAt }),
+          },
+        };
+      }
       if (input.signal?.aborted) {
         return executor.interruptedResult();
       }
@@ -223,6 +240,37 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       };
     }
   }
+}
+
+function readSubAgentDeadline(
+  error: unknown,
+  signalReason: unknown,
+): { message: string; deadlineAt: number | null } | null {
+  for (const candidate of [error, signalReason]) {
+    if (!isRunDeadlineExceeded(candidate) && !isWorkerDeadlineError(candidate)) {
+      continue;
+    }
+    const deadlineAt =
+      candidate instanceof Error &&
+      "deadlineAt" in candidate &&
+      typeof candidate.deadlineAt === "number" &&
+      Number.isFinite(candidate.deadlineAt)
+        ? candidate.deadlineAt
+        : null;
+    return {
+      message: candidate instanceof Error ? candidate.message : String(candidate),
+      deadlineAt,
+    };
+  }
+  return null;
+}
+
+function isWorkerDeadlineError(value: unknown): boolean {
+  return (
+    value instanceof Error &&
+    "code" in value &&
+    value.code === "worker_deadline_exceeded"
+  );
 }
 
 function isTimeoutSummaryInvocation(input: WorkerInvocationInput): boolean {

@@ -47,6 +47,7 @@ export function buildSessionToolResult(input: {
 }): SessionToolResultV1 {
   const evidenceSummary = extractWorkerEvidenceSummary(input.result);
   const browserSession = buildSessionToolBrowserSession(input.result);
+  const timedOut = input.result?.status === "timeout";
   return {
     protocol: SESSION_TOOL_RESULT_PROTOCOL,
     task_id: input.taskId,
@@ -57,11 +58,17 @@ export function buildSessionToolResult(input: {
     ...(input.toolCallId ? { tool_call_id: input.toolCallId } : {}),
     status: input.result?.status ?? "failed",
     ...(input.cached ? { cached: true } : {}),
+    ...(timedOut
+      ? {
+          resumable: true,
+          evidence_available: evidenceSummary != null,
+        }
+      : {}),
     ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
     tool_chain: input.result ? [input.result.workerType] : [],
     ...(browserSession ? { browser_session: browserSession } : {}),
     result: input.result?.summary ?? input.missingResultMessage,
-    final_content: extractWorkerFinalContent(input.result),
+    final_content: timedOut ? null : extractWorkerFinalContent(input.result),
     payload: input.result?.payload ?? null,
   };
 }

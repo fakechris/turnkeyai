@@ -220,6 +220,7 @@ export type ProviderRequestErrorCode =
   | "network_error"
   | "timeout"
   | "deadline_exceeded"
+  | "incomplete_response"
   | "provider_error";
 
 export class ProviderRequestError extends Error {

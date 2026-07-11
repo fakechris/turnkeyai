@@ -190,6 +190,15 @@ test("RunTrace classifies terminal provider and envelope errors without message 
   );
   assert.equal(
     classifyRunFailure(
+      new ProviderRequestError("provider aborted a partial response", {
+        code: "incomplete_response",
+        retryable: true,
+      }),
+    ),
+    "provider_incomplete_response",
+  );
+  assert.equal(
+    classifyRunFailure(
       new RequestEnvelopeOverflowError({
         diagnostics: {
           messageCount: 1,
@@ -296,6 +305,7 @@ test("RunTrace incident taxonomy is closed and duplicate-free", () => {
     "operator_cancelled",
     "provider_authentication",
     "provider_5xx",
+    "provider_incomplete_response",
     "provider_network",
     "provider_not_found",
     "provider_rate_limit",

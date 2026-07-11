@@ -1105,6 +1105,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ? { resumeState: replayResumeState }
           : {}),
         clockValues,
+        toolResults: observer.replayToolResultsSnapshot(),
         modelCalls: modelCallTrace,
         policyEntries: policyTrace.snapshot(),
       },

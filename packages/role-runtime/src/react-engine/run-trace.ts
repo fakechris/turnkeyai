@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import {
   ProviderRequestError,
   RequestEnvelopeOverflowError,
@@ -27,6 +28,7 @@ export const RUN_INCIDENT_CATEGORIES = [
   "provider_5xx",
   "provider_network",
   "provider_timeout",
+  "provider_incomplete_response",
   "envelope_overflow_terminal",
   "tool_arg_invalid",
   "round_limit",
@@ -195,6 +197,7 @@ export interface EngineRunReplaySeed {
   artifactExternalizationEnabled: boolean;
   resumeState?: RunJournalState;
   clockValues: number[];
+  toolResults: ToolResult[];
   modelResponses: Array<{
     phase: ModelCallBoundaryTrace["phase"];
     round?: number;
@@ -213,6 +216,7 @@ export function buildEngineRunReplaySeed(input: {
   artifactExternalizationEnabled: boolean;
   resumeState?: RunJournalState;
   clockValues: number[];
+  toolResults: ToolResult[];
   modelCalls: ModelCallBoundaryTrace[];
   policyEntries: EnginePolicyTraceEntry[];
   finalText: string;
@@ -227,6 +231,7 @@ export function buildEngineRunReplaySeed(input: {
       ? { resumeState: structuredClone(input.resumeState) }
       : {}),
     clockValues: [...input.clockValues],
+    toolResults: structuredClone(input.toolResults),
     modelResponses: input.modelCalls.flatMap((call) =>
       call.replayResponse
         ? [
@@ -256,6 +261,7 @@ const PROVIDER_ERROR_INCIDENT: Record<
   network_error: "provider_network",
   timeout: "provider_timeout",
   deadline_exceeded: "provider_timeout",
+  incomplete_response: "provider_incomplete_response",
   provider_error: "model_error_unknown",
 };
 

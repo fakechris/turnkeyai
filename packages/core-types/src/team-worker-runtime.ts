@@ -34,7 +34,7 @@ export interface WorkerRegistry {
 
 export interface WorkerExecutionResult {
   workerType: WorkerKind;
-  status: "completed" | "partial" | "failed";
+  status: "completed" | "partial" | "failed" | "timeout";
   summary: string;
   payload: unknown;
   sessionHistoryEntries?: WorkerSessionHistoryEntry[];

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyRuntimeError } from "./failure-taxonomy";
+import {
+  classifyFailureFromStatus,
+  classifyRuntimeError,
+} from "./failure-taxonomy";
 
 test("failure taxonomy prefers explicit runtime error codes over message regexes", () => {
   const failure = classifyRuntimeError({
@@ -39,4 +42,16 @@ test("failure taxonomy recognizes lease eviction as stale session", () => {
 
   assert.equal(failure.category, "stale_session");
   assert.equal(failure.recommendedAction, "resume");
+});
+
+test("failure taxonomy preserves typed timeout status independent of summary wording", () => {
+  const failure = classifyFailureFromStatus({
+    layer: "worker",
+    status: "timeout",
+    summary: "Execution stopped at its absolute boundary.",
+  });
+
+  assert.equal(failure?.category, "timeout");
+  assert.equal(failure?.retryable, true);
+  assert.equal(failure?.recommendedAction, "resume");
 });

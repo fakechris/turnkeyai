@@ -2042,7 +2042,7 @@ async function executeSessionsSpawn(
     // structured failure payload — otherwise the repeated-failure breaker
     // (findRepeatedFailedToolCall) never counts it and the message-level
     // toolStatus reads as a successful turn.
-    ...(!result || result.status === "failed" ? { isError: true } : {}),
+    ...(!result || isFailedOrTimedOutWorkerResult(result) ? { isError: true } : {}),
     content: serializeSessionToolResult(sessionToolResult),
     progress: [
       ...approvalProgress,
@@ -2053,7 +2053,7 @@ async function executeSessionsSpawn(
         detail: { session_key: spawned.workerRunKey, agent_id: spawned.workerType },
       },
       {
-        phase: !result || result.status === "failed" ? "failed" : "completed",
+        phase: !result || isFailedOrTimedOutWorkerResult(result) ? "failed" : "completed",
         toolName: input.call.name,
         summary: result?.summary ?? missingResultMessage,
         detail: { session_key: spawned.workerRunKey, status: result?.status ?? "failed" },
@@ -2456,12 +2456,12 @@ async function executeSessionsSend(
     toolName: input.call.name,
     // Same rule as sessions_spawn: a structured failure is still an error
     // result for the breaker and message toolStatus.
-    ...(!result || result.status === "failed" ? { isError: true } : {}),
+    ...(!result || isFailedOrTimedOutWorkerResult(result) ? { isError: true } : {}),
     content: serializeSessionToolResult(sessionToolResult),
     progress: [
       ...approvalProgress,
       {
-        phase: !result || result.status === "failed" ? "failed" : "completed",
+        phase: !result || isFailedOrTimedOutWorkerResult(result) ? "failed" : "completed",
         toolName: input.call.name,
         summary: result?.summary ?? missingResultMessage,
         detail: { session_key: sessionKey, status: result?.status ?? "failed" },
@@ -2603,7 +2603,7 @@ function cachedCompletedSessionResult(
   return {
     toolCallId: call.id,
     toolName: call.name,
-    ...(input.result.status === "failed" ? { isError: true } : {}),
+    ...(isFailedOrTimedOutWorkerResult(input.result) ? { isError: true } : {}),
     content: serializeSessionToolResult(sessionToolResult),
     progress: [
       {
@@ -2641,8 +2641,16 @@ function mapCachedWorkerResultPhase(
   status: WorkerExecutionResult["status"]
 ): "completed" | "progress" | "failed" {
   return (
-    status === "failed" ? "failed" : status === "partial" ? "progress" : "completed"
+    status === "failed" || status === "timeout"
+      ? "failed"
+      : status === "partial"
+        ? "progress"
+        : "completed"
   );
+}
+
+function isFailedOrTimedOutWorkerResult(result: WorkerExecutionResult): boolean {
+  return result.status === "failed" || result.status === "timeout";
 }
 
 async function executeSessionsList(

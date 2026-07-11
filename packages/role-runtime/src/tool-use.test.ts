@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type {
   RoleActivationInput,
+  WorkerExecutionResult,
   WorkerInvocationInput,
   WorkerMessageInput,
   WorkerRuntime,
@@ -775,6 +776,64 @@ test("sessions_spawn maps null worker output with timeout summary state to resum
   assert.equal(body.evidence_available, true);
   assert.match(body.evidence_summary, /loopback source/);
   assert.doesNotMatch(body.result, /no executable result/i);
+  assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+});
+
+test("sessions_spawn preserves a worker absolute-deadline result as resumable timeout", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:absolute-deadline" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "timeout",
+        summary: "Sub-agent timed out: run deadline exceeded at 12345",
+        payload: {
+          mode: "llm_sub_agent",
+          workerType: "explore",
+          resumableReason: "run_deadline_exceeded",
+          deadlineAt: 12_345,
+        },
+      } as unknown as WorkerExecutionResult;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-absolute-deadline",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Inspect the source within the parent absolute deadline.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Inspect the source within the parent absolute deadline.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as {
+    status: string;
+    resumable?: boolean;
+    result: string;
+  };
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.resumable, true);
+  assert.match(body.result, /run deadline exceeded at 12345/i);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
   assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
 });
 

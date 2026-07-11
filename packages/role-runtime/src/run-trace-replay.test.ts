@@ -54,6 +54,7 @@ test("recorded engine runs replay twice with identical tools, policy, and final 
     },
   ];
   let modelIndex = 0;
+  const fullToolContent = `Source evidence: value=42\n${"x".repeat(70 * 1024)}\nbehavior-critical-tail-marker`;
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (_input: GenerateTextInput) => {
     const result = modelResults[modelIndex++];
@@ -66,7 +67,7 @@ test("recorded engine runs replay twice with identical tools, policy, and final 
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
-        content: `Source evidence: value=42\n${"x".repeat(70 * 1024)}`,
+        content: fullToolContent,
         progress: [
           {
             phase: "progress",
@@ -94,6 +95,14 @@ test("recorded engine runs replay twice with identical tools, policy, and final 
 
   const recorded = await generator.generate({ activation, packet });
   const replaySeed = recorded.metadata?.engineRunReplay as Record<string, unknown>;
+  const replayToolResults = replaySeed["toolResults"] as
+    | Array<{ content?: string }>
+    | undefined;
+  assert.equal(
+    replayToolResults?.[0]?.content,
+    fullToolContent,
+    "replay seed must retain the exact behavior input even when public toolUse is truncated",
+  );
   const record: ReplayRecord = {
     replayId: "replay-1",
     layer: "role",

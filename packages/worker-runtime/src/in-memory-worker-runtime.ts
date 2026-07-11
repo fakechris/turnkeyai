@@ -7,6 +7,7 @@ import type {
   WorkerHandler,
   WorkerInterruptInput,
   WorkerInvocationInput,
+  WorkerKind,
   WorkerMessageInput,
   WorkerResumeInput,
   WorkerRegistry,
@@ -370,10 +371,22 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         updatedAt: completedAt,
         currentTaskId: input.activation.handoff.taskId,
         ...(result ? { lastResult: result } : {}),
-        ...(result?.status === "partial"
+        ...(result?.status === "timeout"
+          ? {
+              lastError: {
+                code: "WORKER_TIMEOUT" as const,
+                message: result.summary,
+                retryable: true,
+              },
+            }
+          : {}),
+        ...(result?.status === "partial" || result?.status === "timeout"
           ? {
               continuationDigest: {
-                reason: "follow_up" as const,
+                reason:
+                  result.status === "timeout"
+                    ? ("timeout_summary" as const)
+                    : ("follow_up" as const),
                 summary: result.summary,
                 createdAt: completedAt,
               },
@@ -414,6 +427,49 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       if (abortController.signal.aborted) {
         const cancelledAt = this.now();
         const deadlineExpired = isWorkerDeadlineReason(abortController.signal.reason);
+        if (deadlineExpired) {
+          const timeoutResult = buildWorkerDeadlineTimeoutResult(
+            session.state.workerType,
+            errorMessage,
+            abortController.signal.reason,
+          );
+          session.state = appendWorkerHistory(
+            {
+              ...session.state,
+              status: "resumable",
+              updatedAt: cancelledAt,
+              currentTaskId: input.activation.handoff.taskId,
+              lastResult: timeoutResult,
+              lastError: {
+                code: "WORKER_TIMEOUT",
+                message: errorMessage,
+                retryable: true,
+              },
+              continuationDigest: {
+                reason: "timeout_summary",
+                summary: timeoutResult.summary,
+                createdAt: cancelledAt,
+              },
+            },
+            buildWorkerResultHistoryEntry(
+              session.state,
+              input.activation.handoff.taskId,
+              timeoutResult,
+              cancelledAt,
+              input.toolCallId,
+            ),
+          );
+          delete session.pendingInvocation;
+          await this.persistSession(input.workerRunKey);
+          await this.recordProgress(input.workerRunKey, session, {
+            phase: "waiting",
+            summary: timeoutResult.summary,
+            continuityState: "waiting",
+            statusReason: errorMessage,
+            closeKind: "timeout",
+          });
+          return timeoutResult;
+        }
         session.state = appendWorkerHistory(
           {
             ...session.state,
@@ -902,7 +958,7 @@ function resolveStatus(result: WorkerExecutionResult | null): WorkerSessionState
     return "done";
   }
 
-  if (result.status === "partial") {
+  if (result.status === "partial" || result.status === "timeout") {
     return "resumable";
   }
 
@@ -920,7 +976,8 @@ function resolveStatusAfterResult(
   if (
     currentState.status === "resumable" &&
     currentState.lastError?.code === "WORKER_TIMEOUT" &&
-    result?.status !== "partial"
+    result?.status !== "partial" &&
+    result?.status !== "timeout"
   ) {
     return "resumable";
   }
@@ -978,13 +1035,38 @@ function mapWorkerResultPhase(
   if (!result) {
     return "completed";
   }
-  if (result.status === "partial") {
+  if (result.status === "partial" || result.status === "timeout") {
     return "waiting";
   }
   if (result.status === "failed") {
     return "failed";
   }
   return "completed";
+}
+
+function buildWorkerDeadlineTimeoutResult(
+  workerType: WorkerKind,
+  message: string,
+  reason: unknown,
+): WorkerExecutionResult {
+  const deadlineAt =
+    reason instanceof Error &&
+    "deadlineAt" in reason &&
+    typeof reason.deadlineAt === "number" &&
+    Number.isFinite(reason.deadlineAt)
+      ? reason.deadlineAt
+      : null;
+  return {
+    workerType,
+    status: "timeout",
+    summary: `Worker timed out: ${message}`,
+    payload: {
+      mode: "worker_runtime",
+      workerType,
+      resumableReason: "worker_deadline_exceeded",
+      ...(deadlineAt === null ? {} : { deadlineAt }),
+    },
+  };
 }
 
 function mapWorkerStatusToContinuity(

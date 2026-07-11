@@ -30,7 +30,7 @@ import type {
 } from "./team-recovery-types";
 
 export type ReplayLayer = "scheduled" | "role" | "worker" | "browser";
-export type ReplayStatus = "completed" | "partial" | "failed";
+export type ReplayStatus = "completed" | "partial" | "failed" | "timeout";
 export type FailureCategory =
   | "timeout"
   | "permission_denied"

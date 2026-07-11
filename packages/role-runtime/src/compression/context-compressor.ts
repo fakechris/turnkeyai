@@ -32,7 +32,7 @@ export interface WorkerTraceCompressionInput {
   workerRunKey: string;
   threadId: string;
   workerType: string;
-  status?: "completed" | "partial" | "failed";
+  status?: "completed" | "partial" | "failed" | "timeout";
   sourceType?: EvidenceSourceType;
   trustLevel?: EvidenceTrustLevel;
   admissionMode?: PromptAdmissionMode;
@@ -156,7 +156,7 @@ export class DefaultContextCompressor implements ContextCompressor {
 }
 
 function buildWorkerDigestFindings(
-  status: "completed" | "partial" | "failed",
+  status: "completed" | "partial" | "failed" | "timeout",
   toolChain: string[],
   prunedFindings: { findings: string[]; prunedStepCount: number }
 ): string[] {
@@ -169,6 +169,8 @@ function buildWorkerDigestFindings(
 
   if (status === "failed") {
     findings.unshift("Worker failed before completing the requested task.");
+  } else if (status === "timeout") {
+    findings.unshift("Worker reached its deadline and remains resumable.");
   }
 
   return keepRecentUniqueStrings(findings, 5);

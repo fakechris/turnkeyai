@@ -15,6 +15,7 @@ import type {
 import type { GenerateTextInput, GenerateTextResult } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
+import { RunDeadlineExceededError } from "./run-deadline";
 import { LLMSubAgentWorkerHandler } from "./sub-agent-worker-handler";
 import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 
@@ -859,6 +860,29 @@ test("LLMSubAgentWorkerHandler does not use browser planner fallback for mutatio
   assert.equal(result?.status, "failed");
   assert.equal(bridgeCalled, false);
   assert.match(result?.summary ?? "", /Sub-agent failed: llm_request_timeout/);
+});
+
+test("LLMSubAgentWorkerHandler preserves absolute run deadline as a resumable timeout", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => {
+    throw new RunDeadlineExceededError(12_345);
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({ kind: "explore" }),
+    gateway,
+  });
+
+  const result = await handler.run(buildInvocationInput("explore"));
+
+  assert.equal(result?.status, "timeout");
+  assert.match(result?.summary ?? "", /run deadline exceeded at 12345/i);
+  assert.deepEqual(result?.payload, {
+    mode: "llm_sub_agent",
+    workerType: "explore",
+    resumableReason: "run_deadline_exceeded",
+    deadlineAt: 12_345,
+  });
 });
 
 test("LLMSubAgentWorkerHandler preserves partial status from browser planner fallback", async () => {

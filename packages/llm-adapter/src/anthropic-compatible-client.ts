@@ -9,6 +9,7 @@ import type {
   ProtocolClient,
   ResolvedModelConfig,
 } from "./types";
+import { ProviderRequestError } from "./types";
 import { consumeAnthropicMessageStream } from "./anthropic-sse-parser";
 import { normalizeAnthropicTokenUsage } from "./model-cache-usage";
 import { sanitizeContentBlocks } from "./provider-output-sanitizer";
@@ -98,6 +99,7 @@ export class AnthropicCompatibleClient implements ProtocolClient {
             ? { onActivity: input.onProviderActivity }
             : {}),
         });
+        assertCompleteAnthropicResponse(stream.stopReason);
         const contentBlocks = sanitizeContentBlocks(stream.contentBlocks);
         const toolCalls = extractToolCalls(contentBlocks);
         return {
@@ -125,6 +127,7 @@ export class AnthropicCompatibleClient implements ProtocolClient {
     }
 
     const raw = await readJsonResponse(response);
+    assertCompleteAnthropicResponse(raw?.stop_reason);
 
     const contentBlocks = sanitizeContentBlocks(extractAnthropicContentBlocks(raw?.content));
     const toolCalls = extractToolCalls(contentBlocks);
@@ -145,6 +148,25 @@ export class AnthropicCompatibleClient implements ProtocolClient {
       raw,
     };
   }
+}
+
+const INTERRUPTED_ANTHROPIC_STOP_REASONS = new Set([
+  "abort",
+  "aborted",
+  "cancelled",
+  "canceled",
+  "timeout",
+  "timed_out",
+]);
+
+function assertCompleteAnthropicResponse(stopReason: unknown): void {
+  if (typeof stopReason !== "string") return;
+  const normalized = stopReason.trim().toLowerCase();
+  if (!INTERRUPTED_ANTHROPIC_STOP_REASONS.has(normalized)) return;
+  throw new ProviderRequestError(
+    `anthropic-compatible provider stopped before completion: ${normalized}`,
+    { code: "incomplete_response", retryable: true },
+  );
 }
 
 function isEventStreamResponse(response: Response): boolean {

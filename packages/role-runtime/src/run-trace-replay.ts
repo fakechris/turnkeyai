@@ -91,8 +91,13 @@ export async function replayEngineRunRecord(
   };
 
   const recordedResults = new Map<string, RoleToolExecutionResult>();
-  for (const round of seed.toolUse?.rounds ?? []) {
-    for (const result of round.results ?? []) {
+  if (Array.isArray(seed.toolResults)) {
+    for (const result of seed.toolResults) {
+      recordedResults.set(result.toolCallId, structuredClone(result));
+    }
+  } else {
+    for (const round of seed.toolUse?.rounds ?? []) {
+      for (const result of round.results ?? []) {
       if (typeof result.content !== "string") {
         throw new Error(
           `run trace replay is missing tool result content for ${result.toolCallId}`,
@@ -119,6 +124,7 @@ export async function replayEngineRunRecord(
             ? { progress: replayProgress }
             : {}),
       });
+      }
     }
   }
   const executor: RoleToolExecutor = {

@@ -1406,7 +1406,13 @@ function stripRuntimeChainDecorations(status: RuntimeChainStatus): RuntimeChainS
 }
 
 function mapTimelineEntryToChainPhase(
-  status: RecoveryRunEvent["status"] | "completed" | "partial" | "failed" | undefined
+  status:
+    | RecoveryRunEvent["status"]
+    | "completed"
+    | "partial"
+    | "failed"
+    | "timeout"
+    | undefined
 ): RuntimeChainEvent["phase"] {
   if (status === "completed" || status === "recovered") {
     return "completed";
@@ -1417,7 +1423,12 @@ function mapTimelineEntryToChainPhase(
   if (status === "aborted") {
     return "cancelled";
   }
-  if (status === "waiting_approval" || status === "waiting_external" || status === "partial") {
+  if (
+    status === "waiting_approval" ||
+    status === "waiting_external" ||
+    status === "partial" ||
+    status === "timeout"
+  ) {
     return "waiting";
   }
   if (status === "planned") {
