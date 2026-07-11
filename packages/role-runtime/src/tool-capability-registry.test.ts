@@ -12,6 +12,7 @@ test("native tool capability registry drives schemas and prompt harness from the
   const definitions = registry.definitions();
   const fetch = definitions.find((definition) => definition.name === "web_fetch");
   const spawn = definitions.find((definition) => definition.name === "sessions_spawn");
+  const send = definitions.find((definition) => definition.name === "sessions_send");
   const list = definitions.find((definition) => definition.name === "sessions_list");
   assert.match(fetch?.description ?? "", /Fetch a public HTTP\(S\) page directly/);
   assert.match(fetch?.description ?? "", /Use this before spawning explore/);
@@ -29,10 +30,16 @@ test("native tool capability registry drives schemas and prompt harness from the
   const listSchema = list?.inputSchema as {
     properties?: { agent_id?: { enum?: string[] }; kinds?: { items?: { enum?: string[] } } };
   };
+  const sendSchema = send?.inputSchema as {
+    properties?: { mode?: { enum?: string[] } };
+    required?: string[];
+  };
 
   assert.deepEqual(registry.availableWorkerKinds(), ["browser", "explore"]);
   assert.deepEqual(spawnSchema.properties?.agent_id?.enum, ["browser", "explore"]);
   assert.equal(spawnSchema.properties?.run_in_background?.type, "boolean");
+  assert.deepEqual(sendSchema.properties?.mode?.enum, ["continue", "read_result"]);
+  assert.ok(sendSchema.required?.includes("mode"));
   assert.deepEqual(listSchema.properties?.agent_id?.enum, ["browser", "explore"]);
   assert.deepEqual(listSchema.properties?.kinds?.items?.enum, ["browser", "explore"]);
   assert.deepEqual(
@@ -62,6 +69,14 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(harness, /three or more independent evidence streams/);
   assert.match(harness, /Leave timeout_seconds unset for ordinary delegated work/);
   assert.match(harness, /Do not increase timeout_seconds on a timeout follow-up unless the user explicitly asks/);
+  assert.match(
+    harness,
+    /If the completed result already contains all required evidence and the remaining work is only summarization, reformatting, or synthesis, use sessions_send mode=read_result/i
+  );
+  assert.match(
+    harness,
+    /Use sessions_send mode=continue only when the worker must perform new work/i
+  );
   assert.doesNotMatch(harness, /Suggested caps/);
   assert.doesNotMatch(harness, /longer timeout/);
   assert.match(harness, /Do not downgrade the task to read-only inspection/);

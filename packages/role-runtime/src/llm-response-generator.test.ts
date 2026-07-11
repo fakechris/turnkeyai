@@ -12261,6 +12261,7 @@ test("llm role response generator refreshes stale session list when timeout foll
     if (executedCalls.length === 0 && input.toolChoice !== "none") {
       return toolCallResult("toolu-stale-browser-send-first", "sessions_send", {
         session_key: browserSessionKey,
+        mode: "continue",
         message: "Continue the stale browser sibling.",
       });
     }
@@ -12270,6 +12271,7 @@ test("llm role response generator refreshes stale session list when timeout foll
         "sessions_send",
         {
           session_key: browserSessionKey,
+          mode: "continue",
           message: "Continue after refreshing the session list.",
         },
       );
@@ -13657,6 +13659,7 @@ test("llm role response generator does not treat resumable partial session outpu
     if (gatewayCalls === 1 && input.toolChoice !== "none") {
       return toolCallResult("toolu-send-1", "sessions_send", {
         session_key: sessionKey,
+        mode: "continue",
         message: "Continue dashboard check.",
       });
     }

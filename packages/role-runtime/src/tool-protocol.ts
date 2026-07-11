@@ -235,6 +235,7 @@ export function normalizeSessionToolAliasCalls(
         ...call.input,
         ...(sessionKey ? { session_key: sessionKey } : {}),
         ...(message ? { message } : {}),
+        mode: "continue",
       },
     };
   });

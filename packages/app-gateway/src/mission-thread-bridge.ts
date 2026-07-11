@@ -19,6 +19,7 @@
 // prioritizes active/recent missions so a large backlog of old mission files
 // cannot starve the mission the user is watching.
 
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
@@ -74,7 +75,7 @@ export interface MissionThreadBridgeOptions {
   postLateWorkerCompletionFollowUp?: (input: {
     mission: Mission;
     threadId: string;
-    workerSession: WorkerSessionRecord;
+    workerSessions: readonly WorkerSessionRecord[];
     deliveryId: string;
     content: string;
   }) => Promise<void>;
@@ -523,24 +524,34 @@ export function createMissionThreadBridge(
     if (!workerSessions || workerSessions === "unknown") return;
     if (roleRuns !== "unknown" && roleRuns.some(isActiveRoleRun)) return;
 
-    for (const workerSession of workerSessions) {
-      if (!isLateCompletedWorkerSession(workerSession, events)) continue;
-      if (hasLateWorkerCompletionRecovery(events, workerSession)) continue;
-      const deliveryId = workerCompletionDeliveryId(workerSession);
-      if (
-        options.postLateWorkerCompletionFollowUp &&
-        !(await postLateWorkerCompletionFollowUp(
-          mission,
-          threadId,
-          workerSession,
-          deliveryId,
-        ))
-      ) {
-        continue;
-      }
-      await appendLateWorkerCompletionEvent(mission.id, threadId, workerSession);
-      await reopenMissionForLateWorkerCompletion(mission);
+    const completedBatch = workerSessions
+      .filter((workerSession) => isLateCompletedWorkerSession(workerSession, events))
+      .filter((workerSession) => !hasLateWorkerCompletionRecovery(events, workerSession))
+      .sort((left, right) =>
+        left.workerRunKey < right.workerRunKey
+          ? -1
+          : left.workerRunKey > right.workerRunKey
+            ? 1
+            : 0,
+      );
+    if (completedBatch.length === 0) return;
+
+    const deliveryId = workerCompletionBatchDeliveryId(mission.id, threadId, completedBatch);
+    if (
+      options.postLateWorkerCompletionFollowUp &&
+      !(await postLateWorkerCompletionFollowUp(
+        mission,
+        threadId,
+        completedBatch,
+        deliveryId,
+      ))
+    ) {
+      return;
     }
+    if (!(await appendLateWorkerCompletionEvent(mission.id, threadId, completedBatch, deliveryId))) {
+      return;
+    }
+    await reopenMissionForLateWorkerCompletion(mission);
   }
 
   function isActiveRoleRun(run: RoleRunState): boolean {
@@ -575,11 +586,20 @@ export function createMissionThreadBridge(
     }
     for (const event of events) {
       const runtime = event.runtime;
-      if (event.kind !== "tool" || runtime?.toolPhase !== "call") continue;
-      if (runtime.toolName !== "sessions_send" && runtime.toolName !== "sessions_history") continue;
-      if (sessionToolCallTargetsWorker(runtime.callInput, workerSession.workerRunKey)) {
-        const toolCallId = runtime.toolCallId;
-        if (toolCallId) linkedToolCallIds.add(toolCallId);
+      if (event.kind !== "tool") continue;
+      if (
+        runtime?.toolPhase === "call" &&
+        (runtime.toolName === "sessions_send" || runtime.toolName === "sessions_history") &&
+        sessionPayloadTargetsWorker(runtime.callInput, workerSession.workerRunKey)
+      ) {
+        if (runtime.toolCallId) linkedToolCallIds.add(runtime.toolCallId);
+      }
+      if (
+        runtime?.toolPhase === "result" &&
+        isSessionToolName(runtime.toolName) &&
+        sessionPayloadTargetsWorker(runtime.resultContent, workerSession.workerRunKey)
+      ) {
+        if (runtime.toolCallId) linkedToolCallIds.add(runtime.toolCallId);
       }
     }
     if (linkedToolCallIds.size === 0) return false;
@@ -627,10 +647,10 @@ export function createMissionThreadBridge(
       : false;
   }
 
-  function sessionToolCallTargetsWorker(callInput: string | undefined, workerRunKey: string): boolean {
-    if (!callInput) return false;
-    const parsed = safeJsonParse(callInput);
-    if (!isRecord(parsed)) return callInput.includes(workerRunKey);
+  function sessionPayloadTargetsWorker(payload: string | undefined, workerRunKey: string): boolean {
+    if (!payload) return false;
+    const parsed = safeJsonParse(payload);
+    if (!isRecord(parsed)) return payload.includes(workerRunKey);
     return parsed["session_key"] === workerRunKey || parsed["worker_run_key"] === workerRunKey;
   }
 
@@ -655,48 +675,92 @@ export function createMissionThreadBridge(
   }
 
   function hasLateWorkerCompletionRecovery(events: ActivityEvent[], workerSession: WorkerSessionRecord): boolean {
-    const recoveryEvents = events.filter(
-      (event) =>
-        event.kind === "recovery" &&
-        event.runtime?.eventType === "mission.worker_late_completion" &&
-        event.runtime?.workerRunKey === workerSession.workerRunKey
-    );
+    const recoveryEvents = events.filter((event) => recoveryEventCoversWorker(event, workerSession));
     if (recoveryEvents.length === 0) return false;
     const latestRecoveryMs = Math.max(...recoveryEvents.map((event) => event.tMs));
+    const latestRecovery = recoveryEvents.find((event) => event.tMs === latestRecoveryMs);
+    if (latestRecovery?.runtime?.workerVersions) {
+      return true;
+    }
     return !hasFailedOrTimedOutSessionToolResult(events, workerSession, latestRecoveryMs);
+  }
+
+  function recoveryEventCoversWorker(
+    event: ActivityEvent,
+    workerSession: WorkerSessionRecord,
+  ): boolean {
+    if (event.kind !== "recovery" || event.runtime?.eventType !== "mission.worker_late_completion") {
+      return false;
+    }
+    const versions = event.runtime.workerVersions
+      ? safeJsonParse(event.runtime.workerVersions)
+      : null;
+    if (isRecord(versions)) {
+      return versions[workerSession.workerRunKey] === String(workerSession.state.updatedAt);
+    }
+    if (event.runtime.workerRunKey === workerSession.workerRunKey) {
+      return true;
+    }
+    const workerRunKeys = event.runtime.workerRunKeys
+      ? safeJsonParse(event.runtime.workerRunKeys)
+      : null;
+    return Array.isArray(workerRunKeys) && workerRunKeys.includes(workerSession.workerRunKey);
   }
 
   async function appendLateWorkerCompletionEvent(
     missionId: string,
     threadId: string,
-    workerSession: WorkerSessionRecord
-  ): Promise<void> {
-    const summary = summarizeLateWorkerCompletion(workerSession);
+    workerSessions: readonly WorkerSessionRecord[],
+    deliveryId: string,
+  ): Promise<boolean> {
+    const summaries = workerSessions.map(
+      (workerSession) => `${workerSession.workerRunKey}: ${summarizeLateWorkerCompletion(workerSession)}`,
+    );
+    const workerRunKeys = workerSessions.map((workerSession) => workerSession.workerRunKey);
+    const workerVersions = Object.fromEntries(
+      workerSessions.map((workerSession) => [
+        workerSession.workerRunKey,
+        String(workerSession.state.updatedAt),
+      ]),
+    );
+    const singleWorker = workerSessions.length === 1 ? workerSessions[0] : undefined;
     try {
       await options.activityStore.append({
-        id: `mission-worker-late-completion:${missionId}:${encodeURIComponent(workerSession.workerRunKey)}:${workerSession.state.updatedAt}`,
+        id: `mission-worker-late-completion:${missionId}:${deliveryId}`,
         missionId,
         tMs: options.clock.now(),
         kind: "recovery",
         actor: "system",
-        text: `mission.worker_late_completion: ${summary}`,
-        tags: ["worker_late_completion", workerSession.state.workerType],
+        text: `mission.worker_late_completion: ${summaries.join(" | ")}`,
+        tags: [
+          "worker_late_completion",
+          ...new Set(workerSessions.map((workerSession) => workerSession.state.workerType)),
+        ],
         runtime: {
           eventType: "mission.worker_late_completion",
           threadId,
-          workerRunKey: workerSession.workerRunKey,
-          workerType: workerSession.state.workerType,
-          workerUpdatedAt: String(workerSession.state.updatedAt),
-          ...(workerSession.context?.toolCallId ? { toolCallId: workerSession.context.toolCallId } : {}),
-          ...(workerSession.context?.label ? { label: workerSession.context.label } : {}),
+          deliveryId,
+          workerRunKeys: JSON.stringify(workerRunKeys),
+          workerVersions: JSON.stringify(workerVersions),
+          ...(singleWorker
+            ? {
+                workerRunKey: singleWorker.workerRunKey,
+                workerType: singleWorker.state.workerType,
+                workerUpdatedAt: String(singleWorker.state.updatedAt),
+                ...(singleWorker.context?.toolCallId ? { toolCallId: singleWorker.context.toolCallId } : {}),
+                ...(singleWorker.context?.label ? { label: singleWorker.context.label } : {}),
+              }
+            : {}),
         },
       });
+      return true;
     } catch (error) {
       logger.warn("late worker completion event append failed", {
         missionId,
-        workerRunKey: workerSession.workerRunKey,
+        workerRunKeys,
         error: errorMessage(error),
       });
+      return false;
     }
   }
 
@@ -722,39 +786,55 @@ export function createMissionThreadBridge(
   async function postLateWorkerCompletionFollowUp(
     mission: Mission,
     threadId: string,
-    workerSession: WorkerSessionRecord,
+    workerSessions: readonly WorkerSessionRecord[],
     deliveryId: string,
   ): Promise<boolean> {
     try {
       await options.postLateWorkerCompletionFollowUp!({
         mission,
         threadId,
-        workerSession,
+        workerSessions,
         deliveryId,
-        content: buildLateWorkerCompletionFollowUp(workerSession),
+        content: buildLateWorkerCompletionFollowUp(workerSessions),
       });
       return true;
     } catch (error) {
       logger.warn("late worker completion follow-up post failed", {
         missionId: mission.id,
-        workerRunKey: workerSession.workerRunKey,
+        workerRunKeys: workerSessions.map((workerSession) => workerSession.workerRunKey),
         error: errorMessage(error),
       });
       return false;
     }
   }
 
-  function workerCompletionDeliveryId(workerSession: WorkerSessionRecord): string {
-    return `worker-completion:${workerSession.workerRunKey}:${workerSession.state.updatedAt}`;
+  function workerCompletionBatchDeliveryId(
+    missionId: string,
+    threadId: string,
+    workerSessions: readonly WorkerSessionRecord[],
+  ): string {
+    const versionSet = [
+      missionId,
+      threadId,
+      ...workerSessions.map(
+        (workerSession) => `${workerSession.workerRunKey}:${workerSession.state.updatedAt}`,
+      ),
+    ].join("\n");
+    const digest = createHash("sha256").update(versionSet).digest("hex").slice(0, 24);
+    return `worker-completion-batch:${digest}`;
   }
 
-  function buildLateWorkerCompletionFollowUp(workerSession: WorkerSessionRecord): string {
-    const label = workerSession.context?.label ? ` (${workerSession.context.label})` : "";
+  function buildLateWorkerCompletionFollowUp(workerSessions: readonly WorkerSessionRecord[]): string {
+    const summaries = workerSessions.map((workerSession) => {
+      const label = workerSession.context?.label ? ` (${workerSession.context.label})` : "";
+      return `- ${workerSession.workerRunKey}${label}: ${summarizeLateWorkerCompletion(workerSession)}`;
+    });
     return [
-      `System recovery: sub-agent session ${workerSession.workerRunKey}${label} finished after an earlier session tool timeout/failure.`,
-      "Continue the original mission using this late evidence. Incorporate the result into the answer, verify any still-missing goal slots, and do not mark the mission complete until the required slots are answered or explicitly blocked.",
-      `Late worker summary: ${summarizeLateWorkerCompletion(workerSession)}`,
-      "Use sessions_history for this session if the summary is not enough.",
+      `System recovery: ${workerSessions.length} sub-agent session(s) completed after the parent turn moved on.`,
+      "Continue the original mission using this completed evidence. Incorporate the results into the answer, verify any still-missing goal slots, and do not mark the mission complete until the required slots are answered or explicitly blocked.",
+      "Completed worker summaries:",
+      ...summaries,
+      "Use sessions_history for a listed session if its summary is not enough.",
     ].join("\n");
   }
 

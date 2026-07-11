@@ -418,14 +418,14 @@ const missionThreadBridge = createMissionThreadBridge({
   newEventId: () => idGenerator.messageId(),
   clock,
   async postLateWorkerCompletionFollowUp(input) {
-    await coordinationEngine.handleUserPost({
+    await coordinationEngine.handleWorkerCompletion({
       threadId: input.threadId,
       content: input.content,
       idempotencyKey: input.deliveryId,
     }).catch((error) => {
       console.error("late worker completion follow-up failed", {
         missionId: input.mission.id,
-        workerRunKey: input.workerSession.workerRunKey,
+        workerRunKeys: input.workerSessions.map((workerSession) => workerSession.workerRunKey),
         error,
       });
       throw error;

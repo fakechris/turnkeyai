@@ -5688,6 +5688,365 @@ test("sessions_send carries approved browser context into resumed sessions", asy
   assert.equal(approvedRuntimeAction, "browser.form.submit");
 });
 
+test("sessions_send read_result returns completed evidence without resuming or requesting permission", async () => {
+  let permissionRequested = false;
+  let resumeCalled = false;
+  let sessionStatus: "done" | "running" = "done";
+  const lastResult = {
+    workerType: "browser" as const,
+    status: "completed" as const,
+    summary: "Existing source evidence is complete.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "browser",
+      content: "Source-backed pricing, strength, and risk evidence.",
+    },
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-browser",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:existing",
+            workerType: "browser",
+            status: sessionStatus,
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:existing",
+        workerType: "browser",
+        status: sessionStatus,
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async resume() {
+      resumeCalled = true;
+      throw new Error("completed evidence synthesis must reuse the cached result");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService: {
+      async request() {
+        permissionRequested = true;
+        throw new Error("read-only evidence identifiers must not request approval");
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-completed-evidence-synthesis",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:existing",
+        mode: "read_result",
+        message: "Read the completed result only.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the read-only source review.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(permissionRequested, false);
+  assert.equal(resumeCalled, false);
+  const body = JSON.parse(result.content) as { cached: boolean; final_content?: string };
+  assert.equal(body.cached, true);
+  assert.equal(body.final_content, "Source-backed pricing, strength, and risk evidence.");
+
+  sessionStatus = "running";
+  const activeResult = await executor.execute({
+    call: {
+      id: "call-running-result-read",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:existing",
+        mode: "read_result",
+        message: "Read the completed result only.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the read-only source review.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+  assert.equal(activeResult.isError, true);
+  assert.match(activeResult.content, /requires a completed session result/);
+  assert.equal(permissionRequested, false);
+  assert.equal(resumeCalled, false);
+});
+
+test("sessions_send still requires credential approval for an actual session token", async () => {
+  const requestedActions: string[] = [];
+  let resumeCalls = 0;
+  const lastResult = {
+    workerType: "browser" as const,
+    status: "completed" as const,
+    summary: "Existing browser evidence.",
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-browser",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:existing",
+            workerType: "browser",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:existing",
+        workerType: "browser",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async resume() {
+      resumeCalls += 1;
+      throw new Error("credentialed browser work must not resume before approval");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService: {
+      async request(input) {
+        requestedActions.push(input.action);
+        return {
+          status: "pending",
+          approvalId: `ap.thread-1.fresh-action-${requestedActions.length}`,
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "missing",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Approval is pending.",
+        };
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const cases = [
+    {
+      message:
+        "Summarize the old evidence. Do not browse the old page. Then use the session token to authenticate to the account and open the private dashboard.",
+      action: "browser.credential.access",
+    },
+    {
+      message: "Summarize the existing evidence and use session token ABC123 to access the account.",
+      action: "browser.credential.access",
+    },
+    {
+      message: "Summarize the existing evidence. Do not browse! Submit the form.",
+      action: "browser.form.submit",
+    },
+    {
+      message: "Return the complete report and publish the draft.",
+      action: "browser.publish",
+    },
+    {
+      message: "Summarize the evidence and save the form.",
+      action: "browser.mutate",
+    },
+  ];
+  for (const [index, item] of cases.entries()) {
+    const result = await executor.execute({
+      call: {
+        id: `call-fresh-action-${index}`,
+        name: "sessions_send",
+        input: {
+          session_key: "worker:browser:existing",
+          mode: "continue",
+          message: item.message,
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Continue authenticated browser work.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content, /requires_approval/);
+  }
+
+  assert.deepEqual(requestedActions, cases.map((item) => item.action));
+  assert.equal(resumeCalls, 0);
+});
+
+test("sessions_send still requires credential approval for a token used by a browser session", async () => {
+  const requestedActions: string[] = [];
+  let resumeCalls = 0;
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-browser",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:existing",
+            workerType: "browser",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:existing",
+        workerType: "browser",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume() {
+      resumeCalls += 1;
+      throw new Error("credentialed browser work must not resume before approval");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService: {
+      async request(input) {
+        requestedActions.push(input.action);
+        return {
+          status: "pending",
+          approvalId: `ap.thread-1.reverse-session-token-${requestedActions.length}`,
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "missing",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Approval is pending.",
+        };
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const messages = [
+    "Use token ABC123 to resume the browser session.",
+    "Use token ABC123 as the session key to open the private dashboard.",
+    "Summarize token usage. Use token ABC123 to resume the browser session.",
+  ];
+  for (const [index, message] of messages.entries()) {
+    const result = await executor.execute({
+      call: {
+        id: `call-reverse-session-token-${index}`,
+        name: "sessions_send",
+        input: {
+          session_key: "worker:browser:existing",
+          mode: "continue",
+          message,
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Continue authenticated browser work.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content, /requires_approval/);
+  }
+
+  assert.deepEqual(requestedActions, messages.map(() => "browser.credential.access"));
+  assert.equal(resumeCalls, 0);
+});
+
 test("sessions_send does not reuse completed browser submit results before approval", async () => {
   let resumeCalled = false;
   const lastResult = {
@@ -5830,6 +6189,7 @@ test("sessions_send reuses a completed session for summary-only follow-ups", asy
       name: "sessions_send",
       input: {
         session_key: "worker:explore:done",
+        mode: "read_result",
         message: "Please return your complete final research report as plain text.",
       },
     },
@@ -5911,6 +6271,7 @@ test("sessions_send resolves a task-only session key prefix when one visible ses
       name: "sessions_send",
       input: {
         session_key: "worker:explore:task:TASK-1780322295338-120",
+        mode: "read_result",
         message: "Please return your complete final report from the existing child session.",
       },
     },
@@ -6081,6 +6442,7 @@ test("sessions_send reuses a completed session for Chinese evidence extraction f
       name: "sessions_send",
       input: {
         session_key: "worker:explore:done-cn",
+        mode: "read_result",
         message: "请提取你的最终研究结论中的核心证据和要点，每个点给出具体证据来源。",
       },
     },
@@ -6190,7 +6552,7 @@ test("sessions_send does not reuse a completed session for mixed action follow-u
   assert.equal(body.result, "Follow-up action executed.");
 });
 
-test("sessions_send cached result preserves failed worker status", async () => {
+test("sessions_send read_result rejects an inconsistent failed result on a done session", async () => {
   let sendCalled = false;
   const lastResult = {
     workerType: "explore" as const,
@@ -6249,6 +6611,7 @@ test("sessions_send cached result preserves failed worker status", async () => {
       name: "sessions_send",
       input: {
         session_key: "worker:explore:done-failed",
+        mode: "read_result",
         message: "Please provide the final result summary.",
       },
     },
@@ -6264,12 +6627,10 @@ test("sessions_send cached result preserves failed worker status", async () => {
     },
   });
 
-  const body = JSON.parse(result.content) as { cached: boolean; status: string };
   assert.equal(sendCalled, false);
   assert.equal(result.isError, true);
+  assert.match(result.content, /requires a completed session result/);
   assert.equal(result.progress?.at(-1)?.phase, "failed");
-  assert.equal(body.cached, true);
-  assert.equal(body.status, "failed");
 });
 
 test("permission tools request, observe, and apply operator approval", async () => {

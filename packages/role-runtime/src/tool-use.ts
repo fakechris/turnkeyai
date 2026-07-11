@@ -2305,6 +2305,15 @@ async function executeSessionsSend(
   if (!requestedSessionKey || !message) {
     return errorResult(input.call, "sessions_send requires session_key and message");
   }
+  const requestedMode = input.call.input.mode;
+  const mode = requestedMode === undefined || requestedMode === "continue"
+    ? "continue"
+    : requestedMode === "read_result"
+      ? "read_result"
+      : null;
+  if (!mode) {
+    return errorResult(input.call, "sessions_send mode must be continue or read_result");
+  }
   // codex K3.5: enforce thread ownership before sending — without
   // this, a lead role on thread A could drive sub-agents owned by
   // thread B.
@@ -2320,7 +2329,17 @@ async function executeSessionsSend(
     return errorResult(input.call, `session not found: ${sessionKey}`);
   }
   const label = requiredString(input.call.input.label) ?? record.context?.label ?? null;
-  if (state.status === "done" && state.lastResult && isCachedSummaryRequest(message)) {
+  if (mode === "read_result") {
+    if (
+      state.status !== "done" ||
+      !state.lastResult ||
+      state.lastResult.status !== "completed"
+    ) {
+      return errorResult(
+        input.call,
+        `sessions_send read_result requires a completed session result: ${sessionKey}`
+      );
+    }
     return cachedCompletedSessionResult(input.call, {
       taskId: input.activation.handoff.taskId,
       sessionKey,
@@ -2619,22 +2638,6 @@ function cachedCompletedSessionResult(
     ],
     raw: input.result,
   };
-}
-
-function isCachedSummaryRequest(message: string): boolean {
-  const normalized = message.toLowerCase();
-  const englishSummaryOnlyAsk =
-    /\b(return|provide|give|summari[sz]e|recap|produce|extract)\b/.test(normalized) &&
-    /\b(final|complete|summary|report|result|plain text|findings|evidence|overview|conclusion|key points)\b/.test(normalized);
-  const chineseSummaryOnlyAsk =
-    /(提取|总结|汇总|概括|返回|给出|提供|整理|复述)/.test(message) &&
-    /(最终|完整|总结|摘要|报告|结果|结论|证据|要点|核心)/.test(message);
-  const isSummaryOnlyAsk = englishSummaryOnlyAsk || chineseSummaryOnlyAsk;
-  const includesFreshWork =
-    /\b(new|another|additional|recheck|re-run|rerun|visit|open|fetch|search|click|navigate|update|create|submit|delete|purchase|send)\b/.test(
-      normalized
-    ) || /(重新|再次|新的|继续查|访问|打开|抓取|搜索|点击|导航|更新|创建|提交|删除|购买|发送)/.test(message);
-  return isSummaryOnlyAsk && !includesFreshWork;
 }
 
 function mapCachedWorkerResultPhase(

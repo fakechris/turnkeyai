@@ -3379,6 +3379,7 @@ export function normalizeExplicitContinuationHistoryCalls(
       name: "sessions_send",
       input: {
         session_key: sessionKey,
+        mode: "continue",
         message:
           proposedMessage?.trim() ||
           [

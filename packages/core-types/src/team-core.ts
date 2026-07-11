@@ -545,6 +545,13 @@ export interface SendTeamMessageInput {
   idempotencyKey?: string;
 }
 
+export interface WorkerCompletionIngressInput {
+  threadId: ThreadId;
+  content: string;
+  /** Required because bridge retries may replay an already accepted batch. */
+  idempotencyKey: string;
+}
+
 export interface ValidateMentionInput {
   flow: FlowLedger;
   sourceRoleId?: RoleId;

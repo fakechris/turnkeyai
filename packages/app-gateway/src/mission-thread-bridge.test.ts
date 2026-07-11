@@ -101,6 +101,49 @@ function memWorkerSessionStore(
   };
 }
 
+function backgroundWorkerSession(input: {
+  workerRunKey: string;
+  workerType?: WorkerSessionRecord["state"]["workerType"];
+  status?: WorkerSessionRecord["state"]["status"];
+  updatedAt: number;
+  summary: string;
+}): WorkerSessionRecord {
+  const workerType = input.workerType ?? "explore";
+  const status = input.status ?? "done";
+  return {
+    workerRunKey: input.workerRunKey,
+    executionToken: 1,
+    context: {
+      threadId: "thread-1",
+      flowId: "flow-background",
+      taskId: `task-${workerType}`,
+      roleId: "role-lead",
+      parentSpanId: "span-background",
+      toolCallId: `call-${workerType}`,
+      label: `${workerType} source`,
+      background: true,
+      deadlineAt: 10_000,
+    },
+    state: {
+      workerRunKey: input.workerRunKey,
+      workerType,
+      status,
+      createdAt: 100,
+      updatedAt: input.updatedAt,
+      ...(status === "done"
+        ? {
+            lastResult: {
+              workerType,
+              status: "completed" as const,
+              summary: input.summary,
+              payload: { content: input.summary },
+            },
+          }
+        : {}),
+    },
+  };
+}
+
 const baseMission: Mission = {
   id: "msn.1",
   shortId: "MSN-1",
@@ -1536,8 +1579,161 @@ describe("MissionThreadBridge", () => {
     assert.equal(delivered.length, 1);
     assert.equal(deliveryAttempts, 2);
     assert.equal(followUps.length, 1);
-    assert.match(followUps[0]?.deliveryId ?? "", /worker:explore:background:1/);
+    assert.match(followUps[0]?.deliveryId ?? "", /^worker-completion-batch:[a-f0-9]{24}$/);
     assert.match(followUps[0]?.content ?? "", /Background source evidence completed/);
+  });
+
+  it("fans in same-tick background completions and retries one stable batch after ingress failure", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      status: "working",
+      progress: 0.8,
+    };
+    const activity = memActivityStore([
+      {
+        id: "background-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_spawn",
+        tags: ["thread", "tool-call", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-background",
+        },
+      },
+    ]);
+    const workerSessions: WorkerSessionRecord[] = [
+      backgroundWorkerSession({
+        workerRunKey: "worker:explore:background:alpha",
+        updatedAt: 300,
+        summary: "Alpha source evidence completed.",
+      }),
+      backgroundWorkerSession({
+        workerRunKey: "worker:browser:background:beta",
+        workerType: "browser",
+        updatedAt: 310,
+        summary: "Beta browser evidence completed.",
+      }),
+    ];
+    const deliveryAttempts: Array<{
+      deliveryId: string;
+      workerRunKeys: string[];
+      content: string;
+    }> = [];
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([mission]),
+      workerSessionStore: memWorkerSessionStore(workerSessions),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        deliveryAttempts.push({
+          deliveryId: input.deliveryId,
+          workerRunKeys: input.workerSessions.map((session) => session.workerRunKey),
+          content: input.content,
+        });
+        if (deliveryAttempts.length === 1) {
+          throw new Error("temporary batch ingress failure");
+        }
+      },
+      logger: { warn() {} },
+    });
+
+    await bridge.tickMission(mission.id);
+    assert.equal(
+      activity.events.some((event) => event.runtime?.eventType === "mission.worker_late_completion"),
+      false,
+      "a failed batch ingress must not be marked delivered",
+    );
+
+    await bridge.tickMission(mission.id);
+    await bridge.tickMission(mission.id);
+
+    assert.equal(deliveryAttempts.length, 2);
+    assert.equal(deliveryAttempts[0]?.deliveryId, deliveryAttempts[1]?.deliveryId);
+    assert.deepEqual(deliveryAttempts[1]?.workerRunKeys, [
+      "worker:browser:background:beta",
+      "worker:explore:background:alpha",
+    ]);
+    assert.match(deliveryAttempts[1]?.content ?? "", /Alpha source evidence completed/);
+    assert.match(deliveryAttempts[1]?.content ?? "", /Beta browser evidence completed/);
+    const delivered = activity.events.filter(
+      (event) => event.runtime?.eventType === "mission.worker_late_completion",
+    );
+    assert.equal(delivered.length, 1, "one durable batch marker must cover both workers");
+    assert.deepEqual(JSON.parse(delivered[0]?.runtime?.workerRunKeys ?? "[]"), [
+      "worker:browser:background:beta",
+      "worker:explore:background:alpha",
+    ]);
+  });
+
+  it("delivers a later background completion in a new batch without replaying prior workers", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"], progress: 0.8 };
+    const activity = memActivityStore([
+      {
+        id: "background-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_spawn",
+        tags: ["thread", "tool-call", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-background",
+        },
+      },
+    ]);
+    const workerSessions: WorkerSessionRecord[] = [
+      backgroundWorkerSession({
+        workerRunKey: "worker:explore:background:first",
+        updatedAt: 300,
+        summary: "First source completed.",
+      }),
+      backgroundWorkerSession({
+        workerRunKey: "worker:browser:background:later",
+        workerType: "browser",
+        status: "running",
+        updatedAt: 200,
+        summary: "Later browser source completed.",
+      }),
+    ];
+    const batches: string[][] = [];
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([mission]),
+      workerSessionStore: memWorkerSessionStore(workerSessions),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        batches.push(input.workerSessions.map((session) => session.workerRunKey));
+      },
+    });
+
+    await bridge.tickMission(mission.id);
+    workerSessions[1] = backgroundWorkerSession({
+      workerRunKey: "worker:browser:background:later",
+      workerType: "browser",
+      updatedAt: 400,
+      summary: "Later browser source completed.",
+    });
+    await bridge.tickMission(mission.id);
+
+    assert.deepEqual(batches, [
+      ["worker:explore:background:first"],
+      ["worker:browser:background:later"],
+    ]);
   });
 
   it("does not repost late worker recovery when a successful follow-up discusses the earlier timeout", async () => {
@@ -1762,6 +1958,138 @@ describe("MissionThreadBridge", () => {
     await bridge.tickMission("msn.1");
 
     assert.equal(activity.events.some((event) => event.runtime?.eventType === "mission.worker_late_completion"), false);
+    assert.equal(followUps.length, 0);
+  });
+
+  it("treats a canonical completed result as consuming an abbreviated session continuation", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const fullWorkerRunKey = "worker:browser:task:task-source:call-spawn";
+    const activity = memActivityStore([
+      {
+        id: "spawn-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_spawn",
+        tags: ["thread", "tool-call", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-spawn",
+        },
+      },
+      {
+        id: "spawn-timeout",
+        missionId: mission.id,
+        tMs: 200,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_spawn timed out.",
+        emph: "danger",
+        tags: ["thread", "tool-result", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-spawn",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "timeout",
+            session_key: fullWorkerRunKey,
+          }),
+        },
+      },
+      {
+        id: "continuation-call",
+        missionId: mission.id,
+        tMs: 300,
+        kind: "tool",
+        actor: "Lead",
+        text: "Calling sessions_send",
+        tags: ["thread", "tool-call", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send",
+          callInput: JSON.stringify({
+            session_key: "worker:browser:task:task-source",
+          }),
+        },
+      },
+      {
+        id: "continuation-result",
+        missionId: mission.id,
+        tMs: 400,
+        kind: "tool",
+        actor: "Lead",
+        text: "Tool sessions_send returned completed evidence.",
+        tags: ["thread", "tool-result", "sessions_send"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "completed",
+            session_key: fullWorkerRunKey,
+            final_content: "The continued source check completed.",
+          }),
+        },
+      },
+    ]);
+    const followUps: string[] = [];
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([mission]),
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: fullWorkerRunKey,
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-original",
+            taskId: "task-source",
+            roleId: "role-lead",
+            parentSpanId: "span-original",
+            toolCallId: "call-spawn",
+          },
+          state: {
+            workerRunKey: fullWorkerRunKey,
+            workerType: "browser",
+            status: "done",
+            createdAt: 100,
+            updatedAt: 500,
+            lastResult: {
+              workerType: "browser",
+              status: "completed",
+              summary: "The continued source check completed.",
+              payload: { content: "The continued source check completed." },
+            },
+          },
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp(input) {
+        followUps.push(input.content);
+      },
+    });
+
+    await bridge.tickMission(mission.id);
+
+    assert.equal(
+      activity.events.some(
+        (event) =>
+          event.runtime?.eventType === "mission.worker_late_completion",
+      ),
+      false,
+    );
     assert.equal(followUps.length, 0);
   });
 

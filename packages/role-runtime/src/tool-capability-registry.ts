@@ -340,13 +340,19 @@ export function buildSessionToolDefinitions(
     {
       name: "sessions_send",
       description:
-        "Send a follow-up message to an existing sub-agent session. Prefer this over sessions_spawn when continuing, refining, or adding evidence to prior delegated work.",
+        "Address an existing sub-agent session. Set mode=continue to execute new follow-up work through the worker and its permission gates. Set mode=read_result to read an already completed durable result without executing or resuming the worker; the parent agent must perform any requested formatting or synthesis itself.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
           session_key: { type: "string", description: "Worker session key returned by sessions_spawn/list." },
           message: { type: "string", description: "Follow-up instruction." },
+          mode: {
+            type: "string",
+            enum: ["continue", "read_result"],
+            description:
+              "continue executes new worker work; read_result only reads an already completed result and cannot perform actions.",
+          },
           label: { type: "string" },
           timeout_seconds: {
             type: "number",
@@ -356,7 +362,7 @@ export function buildSessionToolDefinitions(
               "Optional wall-clock timeout for this follow-up. On timeout the session is interrupted and remains available for another sessions_send.",
           },
         },
-        required: ["session_key", "message"],
+        required: ["session_key", "message", "mode"],
       },
     },
     {
@@ -589,9 +595,11 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "In one assistant turn, emit at most five session tool calls total. For two independent subtasks, emit exactly two focused calls, then wait for results before any follow-up wave.",
     "Leave timeout_seconds unset for ordinary delegated work so the runtime applies product budgets. Set it only when the user gives an explicit wait bound or the task has a known external latency.",
     "If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable. Do not increase timeout_seconds on a timeout follow-up unless the user explicitly asks to wait longer. Do not treat a timeout as final evidence.",
-    "When the user asks to continue, refine, revisit, add a source to, or follow up on prior delegated work, route that request back to the relevant existing session with sessions_send instead of answering only from parent context or spawning a duplicate. Synthesize directly only when the user asks for pure formatting and no session-owned evidence needs to be revisited.",
+    "Route follow-up work to the relevant existing session with sessions_send instead of spawning a duplicate.",
+    "If the completed result already contains all required evidence and the remaining work is only summarization, reformatting, or synthesis, use sessions_send mode=read_result. It never resumes the worker or performs an action; after reading it, the parent owns the transformation and final synthesis.",
+    "Use sessions_send mode=continue only when the worker must perform new work, such as collecting more evidence, rechecking a source, or executing an additional task.",
     "There is no sessions_update tool. Use sessions_send for any update, resume, revisit, or continuation of existing session-owned work.",
-    "For sessions_send follow-ups, preserve the original task's decision criteria, required dimensions, entity names, source labels, and user terminology unless the latest user message explicitly changes scope.",
+    "For sessions_send mode=continue follow-ups, preserve the original task's decision criteria, required dimensions, entity names, source labels, and user terminology unless the latest user message explicitly changes scope.",
     "If you need a session key for prior delegated work, use sessions_list or the previous sessions_spawn result before deciding to spawn again.",
     "After a sub-agent returns, first read the sessions_spawn/sessions_send result and final_content. Do not page through session history when that result already contains the evidence you need.",
     "If history is needed, prefer one sessions_history call with tail=true and a small limit. Avoid repeated pagination unless the user explicitly asks for the transcript.",

@@ -217,6 +217,7 @@ export class ContinuationController {
         name: "sessions_send",
         input: {
           session_key: directive.sessionKey,
+          mode: "continue",
           message: directive.messageHint,
         },
       };
