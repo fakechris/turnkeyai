@@ -119,6 +119,27 @@ test("run lifecycle records typed durable boundaries with stable attempt identit
   assert.equal(snapshot.terminalStatus, "deadline");
 });
 
+test("run lifecycle progress ids stay unique across concurrent recorders for one task", async () => {
+  const progress: RuntimeProgressEvent[] = [];
+  const sharedActivation = activation();
+  const first = createRunLifecycleRecorder({
+    activation: sharedActivation,
+    recorder: recorder(progress),
+  });
+  const second = createRunLifecycleRecorder({
+    activation: sharedActivation,
+    recorder: recorder(progress),
+  });
+
+  await Promise.all([
+    first.record({ kind: "run_started", at: 100 }),
+    second.record({ kind: "run_started", at: 101 }),
+  ]);
+
+  assert.equal(progress.length, 2);
+  assert.equal(new Set(progress.map((event) => event.progressId)).size, 2);
+});
+
 test("run lifecycle recording failures never change runtime behavior", async () => {
   const errors: unknown[] = [];
   const lifecycle = createRunLifecycleRecorder({

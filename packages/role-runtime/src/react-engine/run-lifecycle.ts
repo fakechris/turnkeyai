@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   RoleActivationInput,
   RuntimeChainPhase,
@@ -122,6 +124,7 @@ export function createRunLifecycleRecorder(input: {
   let terminalStatus: RunLifecycleTerminalStatus | undefined;
   let sequence = 0;
   let modelCallSequence = 0;
+  const instanceId = randomUUID();
 
   return {
     allocateModelCall(phase, round) {
@@ -137,6 +140,7 @@ export function createRunLifecycleRecorder(input: {
       const progress = toRuntimeProgressEvent({
         activation: input.activation,
         event,
+        instanceId,
         sequence: ++sequence,
       });
       const pending = input.recorder.record(progress).catch((error) => {
@@ -228,13 +232,14 @@ async function waitAtMost(work: Promise<void>, timeoutMs: number): Promise<void>
 function toRuntimeProgressEvent(input: {
   activation: RoleActivationInput;
   event: RunLifecycleEvent;
+  instanceId: string;
   sequence: number;
 }): RuntimeProgressEvent {
   const { activation, event } = input;
   const terminal = event.kind === "run_terminal";
   const phase = progressPhase(event);
   return {
-    progressId: `progress:run-lifecycle:${activation.handoff.taskId}:${input.sequence}`,
+    progressId: `progress:run-lifecycle:${activation.handoff.taskId}:${input.instanceId}:${input.sequence}`,
     threadId: activation.thread.threadId,
     chainId: `flow:${activation.flow.flowId}`,
     spanId: `role:${activation.runState.runKey}`,
