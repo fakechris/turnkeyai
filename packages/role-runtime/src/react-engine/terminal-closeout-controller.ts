@@ -18,6 +18,7 @@ import {
   type NativeToolRoundTrace,
 } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
+import { recordRepairPrompt } from "../task-facts-shared";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
 import {
   prepareToolHistoryForGateway,
@@ -342,6 +343,27 @@ export interface NonCompletedTerminalSynthesisResult<
   reductionSnapshot?: TReductionSnapshot;
 }
 
+export interface NonCompletedTerminalSourceEvidenceRepair<
+  TReduction = unknown,
+  TReductionSnapshot = unknown,
+  TMemoryFlush = unknown,
+> {
+  taskPrompt: string;
+  evidenceText: string;
+  repairMarkers: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  repairPolicy?: RepairPolicyRegistry;
+  synthesizeRepair(input: {
+    messages: LLMMessage[];
+  }): Promise<
+    NonCompletedTerminalSynthesis<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  >;
+}
+
 export interface FinalSynthesisRepairMergeInput<
   TReduction = unknown,
   TReductionSnapshot = unknown,
@@ -406,6 +428,11 @@ export interface TerminalSynthesisInput<
   messages: LLMMessage[];
   lastText: string;
   reasonLines?: string[];
+  sourceEvidenceRepair?: NonCompletedTerminalSourceEvidenceRepair<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  >;
   synthesize(
     input: TerminalSynthesisRequest,
   ): Promise<
@@ -1221,10 +1248,84 @@ export class TerminalCloseoutController {
     >
   > {
     const generated = await this.synthesizeInitialCloseout(input);
+    if (input.sourceEvidenceRepair) {
+      return this.repairNonCompletedSourceEvidence({
+        reason: input.reason,
+        messages: input.messages,
+        initial: generated,
+        repair: input.sourceEvidenceRepair,
+      });
+    }
     return this.applyNonCompletedGeneratedSynthesis({
       reason: input.reason,
       generated,
     });
+  }
+
+  async repairNonCompletedSourceEvidence<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(input: {
+    reason: EngineCloseoutReason;
+    messages: LLMMessage[];
+    initial: NonCompletedTerminalSynthesis<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >;
+    repair: NonCompletedTerminalSourceEvidenceRepair<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >;
+  }): Promise<
+    NonCompletedTerminalSynthesisResult<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >
+  > {
+    const repairPolicy = input.repair.repairPolicy ?? createRepairPolicyRegistry();
+    const decision = repairPolicy.evaluateNaturalFinish({
+      enabledPolicies: ["source_evidence_carry_forward"],
+      finalRecoveryBudget: null,
+      taskPrompt: input.repair.taskPrompt,
+      resultText: input.initial.result.text,
+      messages: input.messages,
+      repairMarkers: input.repair.repairMarkers,
+      toolTrace: input.repair.toolTrace,
+      evidenceText: input.repair.evidenceText,
+    });
+    if (decision?.kind !== "resynthesize") {
+      return this.applyNonCompletedGeneratedSynthesis({
+        reason: input.reason,
+        generated: input.initial,
+      });
+    }
+
+    const repairMessages = [
+      ...input.messages,
+      { role: "assistant" as const, content: input.initial.result.text },
+      recordRepairPrompt(input.repair.repairMarkers, decision.repairPrompt),
+    ];
+    const repaired = await input.repair.synthesizeRepair({
+      messages: repairMessages,
+    });
+    const interrupted = isInterruptedTerminalRepairResult(repaired.result);
+    const result = interrupted ? input.initial.result : repaired.result;
+    const reduction = repaired.reduction ?? input.initial.reduction;
+    const reductionSnapshot =
+      repaired.reductionSnapshot ?? input.initial.reductionSnapshot;
+    const memoryFlushes: TMemoryFlush[] = [];
+    appendMemoryFlush(memoryFlushes, input.initial.memoryFlush);
+    appendMemoryFlush(memoryFlushes, repaired.memoryFlush);
+    return {
+      result: this.finalizeGeneratedResult({ reason: input.reason, result }),
+      memoryFlushes,
+      ...(reduction === undefined ? {} : { reduction }),
+      ...(reductionSnapshot === undefined ? {} : { reductionSnapshot }),
+    };
   }
 
   async synthesizeCompletedCloseout<
@@ -1331,6 +1432,56 @@ export class TerminalCloseoutController {
       completedSession: state.completedSession() ?? null,
       completedSessionToolResults: state.completedSessionToolResults() ?? [],
       repairMarkers: (hookContext.repairMarkers ??= []),
+    };
+  }
+
+  buildNonCompletedSourceEvidenceRepair<
+    TReduction = unknown,
+    TReductionSnapshot = unknown,
+    TMemoryFlush = unknown,
+  >(input: {
+    completedCloseout: TerminalCompletedCloseoutInput<
+      TReduction,
+      TReductionSnapshot,
+      TMemoryFlush
+    >;
+  }): NonCompletedTerminalSourceEvidenceRepair<
+    TReduction,
+    TReductionSnapshot,
+    TMemoryFlush
+  > | undefined {
+    const closeout = input.completedCloseout;
+    const completedSession = closeout.completedSession;
+    if (!completedSession) return undefined;
+
+    const evidenceText = [
+      completedSession.finalContents.join("\n\n"),
+      closeout.evidence.roundEvidenceText(
+        closeout.completedSessionToolResults ?? [],
+      ),
+    ]
+      .filter((text) => text.trim().length > 0)
+      .join("\n\n");
+    if (!evidenceText) return undefined;
+
+    return {
+      taskPrompt: closeout.packet.taskPrompt,
+      evidenceText,
+      repairMarkers: closeout.repairMarkers,
+      toolTrace: closeout.toolTrace,
+      ...(closeout.repairPolicy === undefined
+        ? {}
+        : { repairPolicy: closeout.repairPolicy }),
+      synthesizeRepair: async ({ messages }) => {
+        const gatewayMessages = prepareToolHistoryForGateway(messages);
+        return closeout.synthesizeRepair({
+          gatewayInput: buildToolFreeGatewayInput({
+            baseGatewayInput: closeout.baseGatewayInput,
+            messages: gatewayMessages,
+          }),
+          messages: gatewayMessages,
+        });
+      },
     };
   }
 
@@ -1483,6 +1634,9 @@ export class TerminalCloseoutController {
       closeout: input.decision.closeout,
       target: input.target,
       synthesize: input.synthesize,
+      ...(input.sourceEvidenceRepair === undefined
+        ? {}
+        : { sourceEvidenceRepair: input.sourceEvidenceRepair }),
       ...(input.decision.reasonLines === undefined
         ? {}
         : { reasonLines: input.decision.reasonLines }),
@@ -1526,9 +1680,17 @@ export class TerminalCloseoutController {
             messages: input.messages,
           })
         : undefined);
+    const sourceEvidenceRepair =
+      input.sourceEvidenceRepair ??
+      (canRunNonCompletedSourceEvidenceRepair(input.reason) && completedCloseout
+        ? this.buildNonCompletedSourceEvidenceRepair({ completedCloseout })
+        : undefined);
     return this.handleTerminalCloseout({
       ...input,
       ...(completed === undefined ? {} : { completed }),
+      ...(sourceEvidenceRepair === undefined
+        ? {}
+        : { sourceEvidenceRepair }),
     });
   }
 
@@ -1719,6 +1881,37 @@ export class TerminalCloseoutController {
     }
     return this.buildFinalResponse(input.result);
   }
+}
+
+const INTERRUPTED_TERMINAL_REPAIR_STOP_REASONS = new Set([
+  "abort",
+  "aborted",
+  "cancelled",
+  "canceled",
+  "timeout",
+  "timed_out",
+]);
+
+function isInterruptedTerminalRepairResult(result: GenerateTextResult): boolean {
+  const stopReason = result.stopReason?.trim().toLowerCase();
+  return Boolean(
+    stopReason && INTERRUPTED_TERMINAL_REPAIR_STOP_REASONS.has(stopReason),
+  );
+}
+
+function canRunNonCompletedSourceEvidenceRepair(
+  reason: EngineCloseoutReason,
+): boolean {
+  return (
+    reason !== "completed_sub_agent_final" &&
+    reason !== "operator_cancelled" &&
+    reason !== "model_error" &&
+    reason !== "tool_evidence_fallback"
+  );
+}
+
+function appendMemoryFlush<T>(values: T[], value: T | undefined): void {
+  if (value !== undefined) values.push(value);
 }
 
 export function createTerminalCloseoutController(): TerminalCloseoutController {

@@ -33,6 +33,10 @@ import type { ContextCompressor } from "./compression/context-compressor";
 import type { RoleResponseGenerator } from "./deterministic-response-generator";
 import { buildNativeToolMessages, omitToolUseTrace } from "./native-tool-messages";
 import type { RolePromptPacket, RolePromptPolicy } from "./prompt-policy";
+import {
+  readEngineRunDiagnostics,
+  type RunTrace,
+} from "./react-engine/run-trace";
 
 interface PolicyRoleRuntimeOptions {
   idGenerator: Pick<IdGenerator, "messageId">;
@@ -209,8 +213,20 @@ export class PolicyRoleRuntime implements RoleRuntime {
         ...(options.signal ? { signal: options.signal } : {}),
       });
 
+      const replyMetadata = reply.metadata ?? {};
+      const runTrace = readMetadataRecord(replyMetadata["runTrace"]);
+      const engineRunReplay = readMetadataRecord(
+        replyMetadata["engineRunReplay"],
+      );
+      const publicReplyMetadata = { ...replyMetadata };
+      delete publicReplyMetadata["runTrace"];
+      delete publicReplyMetadata["engineRunReplay"];
+
       const generationMetadata = {
-        ...(reply.metadata ?? {}),
+        ...publicReplyMetadata,
+        ...(runTrace
+          ? { runTraceSummary: buildRunTraceSummary(runTrace) }
+          : {}),
         ...(activeWorker ? { spawnedWorkers: [activeWorker] } : {}),
         ...(workerResult
           ? {
@@ -262,7 +278,10 @@ export class PolicyRoleRuntime implements RoleRuntime {
             workerResult,
             workerError,
             workerReplayPath,
-            workerContinuation
+            workerContinuation,
+            runTrace,
+            engineRunReplay,
+            replyMetadata["toolUse"],
           ),
         "record role replay",
         null
@@ -287,9 +306,18 @@ export class PolicyRoleRuntime implements RoleRuntime {
         ...(workerBindings.length > 0 ? { workerBindings } : {}),
       };
     } catch (error) {
+      const engineDiagnostics = readEngineRunDiagnostics(error);
       if (options.signal?.aborted) {
         const runtimeError = buildRoleRunCancelledError(options.signal);
-        await this.runBestEffort(() => this.recordRoleFailureReplay(input, runtimeError), "record role failure replay");
+        await this.runBestEffort(
+          () =>
+            this.recordRoleFailureReplay(
+              input,
+              runtimeError,
+              engineDiagnostics?.runTrace ?? null,
+            ),
+          "record role failure replay",
+        );
         return {
           status: "failed",
           error: runtimeError,
@@ -299,7 +327,15 @@ export class PolicyRoleRuntime implements RoleRuntime {
         error,
         this.error("WORKER_FAILED", "role runtime generation failed", true)
       );
-      await this.runBestEffort(() => this.recordRoleFailureReplay(input, runtimeError), "record role failure replay");
+      await this.runBestEffort(
+        () =>
+          this.recordRoleFailureReplay(
+            input,
+            runtimeError,
+            engineDiagnostics?.runTrace ?? null,
+          ),
+        "record role failure replay",
+      );
       return {
         status: "failed",
         error: runtimeError,
@@ -798,7 +834,10 @@ export class PolicyRoleRuntime implements RoleRuntime {
     workerResult: WorkerExecutionResult | null,
     workerError: RuntimeError | null,
     workerReplayPath: string | null,
-    workerContinuation: WorkerContinuationOutcome | null
+    workerContinuation: WorkerContinuationOutcome | null,
+    runTrace: Record<string, unknown> | null,
+    engineRunReplay: Record<string, unknown> | null,
+    toolUse: unknown,
   ): Promise<string | null> {
     if (!this.replayRecorder) {
       return null;
@@ -837,6 +876,17 @@ export class PolicyRoleRuntime implements RoleRuntime {
         ...(workerResult ? { workerStatus: workerResult.status, workerType: workerResult.workerType } : {}),
         ...(workerContinuation ? { workerContinuation } : {}),
         ...(workerReplayPath ? { workerReplayPath } : {}),
+        ...(runTrace ? { runTrace } : {}),
+        ...(engineRunReplay
+          ? {
+              engineRunReplay: {
+                ...engineRunReplay,
+                activation: input,
+                packet,
+                ...(toolUse === undefined ? {} : { toolUse }),
+              },
+            }
+          : {}),
         ...(governance
           ? {
               governance: {
@@ -850,7 +900,11 @@ export class PolicyRoleRuntime implements RoleRuntime {
     });
   }
 
-  private async recordRoleFailureReplay(input: RoleActivationInput, error: RuntimeError): Promise<void> {
+  private async recordRoleFailureReplay(
+    input: RoleActivationInput,
+    error: RuntimeError,
+    runTrace: RunTrace | null = null,
+  ): Promise<void> {
     if (!this.replayRecorder) {
       return;
     }
@@ -876,6 +930,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
       }),
       metadata: {
         activationType: input.handoff.activationType,
+        ...(runTrace ? { runTrace } : {}),
         ...(recoveryContext
           ? { recoveryContext }
           : {}),
@@ -1274,4 +1329,22 @@ function buildWorkerPromptSection(
     "Worker governance note:",
     `Result was not admitted into prompt context. Reason: ${governance.admission.reason}.${action}`,
   ].join("\n");
+}
+
+function readMetadataRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function buildRunTraceSummary(
+  trace: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    protocol: trace["protocol"],
+    wallClock: trace["wallClock"],
+    outcome: trace["outcome"],
+    incidents: trace["incidents"],
+    totals: trace["totals"],
+  };
 }

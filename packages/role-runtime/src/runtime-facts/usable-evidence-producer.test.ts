@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import { SESSION_TOOL_RESULT_PROTOCOL } from "../session-tool-result-protocol";
 import { produceUsableEvidenceEnvelope } from "./usable-evidence-producer";
 
 function traceResult(
@@ -78,4 +79,38 @@ test("UsableEvidenceProducer returns true for completed session evidence", () =>
   });
 
   assert.equal(envelope.facts.usableEvidence, true);
+});
+
+test("UsableEvidenceProducer rejects failed session and control-plane results", () => {
+  const envelope = produceUsableEvidenceEnvelope({
+    toolTrace: [
+      {
+        round: 1,
+        calls: [],
+        results: [
+          traceResult({
+            toolName: "sessions_spawn",
+            content: JSON.stringify({
+              protocol: SESSION_TOOL_RESULT_PROTOCOL,
+              task_id: "task-1",
+              session_key: "worker:explore:task-1",
+              agent_id: "explore",
+              status: "failed",
+              tool_chain: ["explore"],
+              result: "Sub-agent request failed.",
+              final_content: null,
+              payload: null,
+            }),
+          }),
+          traceResult({
+            toolName: "sessions_list",
+            content: "One resumable session exists.",
+          }),
+        ],
+      },
+    ],
+  });
+
+  assert.equal(envelope.facts.usableEvidence, false);
+  assert.deepEqual(envelope.provenance, []);
 });

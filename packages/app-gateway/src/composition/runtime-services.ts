@@ -53,7 +53,9 @@ import {
 } from "@turnkeyai/role-runtime/tool-cancellation-registry";
 import type { TaskToolService } from "@turnkeyai/role-runtime/task-tool-service";
 import type { ToolPermissionService } from "@turnkeyai/role-runtime/tool-permission-service";
+import { FileToolResultArtifactStore } from "@turnkeyai/role-runtime/tool-result-artifact-store";
 import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-use";
+import { sweepOrphanWorkerSessions } from "@turnkeyai/role-runtime/worker-session-hygiene";
 import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
 
 import { createRecoveryActionService } from "../recovery-action-service";
@@ -78,6 +80,10 @@ const DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS = 5;
 const DEFAULT_AGENT_TOOL_MAX_CALLS_PER_ROUND = 5;
 const DEFAULT_AGENT_TOOL_MAX_PARENT_SESSIONS = 5;
 const DEFAULT_AGENT_TOOL_MAX_GLOBAL_SESSIONS = 12;
+const DEFAULT_WORKER_SESSION_ORPHAN_TTL_MS = readPositiveIntegerEnv(
+  "TURNKEYAI_WORKER_SESSION_ORPHAN_TTL_MS",
+  24 * 60 * 60 * 1_000,
+);
 const AGENT_TOOL_MAX_ROUNDS = readPositiveIntegerEnv(
   "TURNKEYAI_AGENT_TOOL_MAX_ROUNDS",
   DEFAULT_AGENT_TOOL_MAX_ROUNDS
@@ -261,6 +267,23 @@ export async function composeDaemonRuntimeServices(
   if (workerStartupReconcileResult && workerStartupReconcileResult.totalSessions > 0) {
     console.info("worker runtime startup reconcile completed", workerStartupReconcileResult);
   }
+  const workerSessionHygieneResult = await startupStep("worker-session-hygiene", () =>
+    sweepOrphanWorkerSessions({
+      workerRuntime,
+      runJournalStore: teamMessageStore,
+      now: () => clock.now(),
+      staleAfterMs: DEFAULT_WORKER_SESSION_ORPHAN_TTL_MS,
+      onError: (error, workerRunKey) => {
+        console.error("worker session hygiene cancellation failed", {
+          workerRunKey,
+          error,
+        });
+      },
+    }),
+  );
+  if (workerSessionHygieneResult.cancelled > 0) {
+    console.info("worker session hygiene completed", workerSessionHygieneResult);
+  }
   const workerBindingReconcileResult = await startupStep("worker-binding-reconcile", async () =>
     reconcileWorkerBindingsOnStartup({
       teamThreadStore,
@@ -288,12 +311,16 @@ export async function composeDaemonRuntimeServices(
         ...(requestEnvelopeLimits ? { requestEnvelopeLimits } : {}),
       })
     : null;
+  const toolResultArtifactStore = new FileToolResultArtifactStore({
+    rootDir: path.join(dataDir, "tool-result-artifacts"),
+  });
   if (llmGateway) {
     installLLMSubAgentWorkerHandlers({
       foundations,
       llmGateway,
       runtimeProgressRecorder,
       clock,
+      toolResultArtifactStore,
     });
   }
   const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
@@ -303,6 +330,7 @@ export async function composeDaemonRuntimeServices(
     memoryEnabled: true,
     tasksEnabled: Boolean(inputs.taskToolService),
     webFetchEnabled: true,
+    artifactsEnabled: true,
   });
   const toolCancellationRegistry = new InMemoryToolCancellationRegistry();
 
@@ -324,11 +352,13 @@ export async function composeDaemonRuntimeServices(
             gateway: llmGateway,
             runtimeProgressRecorder,
             nativeToolMessageStore: teamMessageStore,
+            runJournalStore: teamMessageStore,
             preCompactionMemoryFlusher: new DefaultPreCompactionMemoryFlusher({
               gateway: llmGateway,
               threadMemoryStore,
               now: () => clock.now(),
             }),
+            toolResultArtifactStore,
             clock,
             deferToolObservability: true,
             toolLoop: {
@@ -342,6 +372,7 @@ export async function composeDaemonRuntimeServices(
                 },
                 toolCapabilityRegistry,
                 toolCancellationRegistry,
+                toolResultArtifactStore,
                 memoryResolver: roleMemoryResolver,
                 ...(inputs.toolPermissionService ? { toolPermissionService: inputs.toolPermissionService } : {}),
                 ...(inputs.taskToolService ? { taskToolService: inputs.taskToolService } : {}),
@@ -606,6 +637,7 @@ function installLLMSubAgentWorkerHandlers(input: {
   llmGateway: LLMGateway;
   runtimeProgressRecorder: DaemonFoundations["runtimeProgressRecorder"];
   clock: Clock;
+  toolResultArtifactStore: FileToolResultArtifactStore;
 }): void {
   for (const kind of LLM_SUB_AGENT_WORKER_KINDS) {
     if (
@@ -626,6 +658,7 @@ function installLLMSubAgentWorkerHandlers(input: {
         gateway: input.llmGateway,
         ...(kind === "browser" ? { browserBridge: input.foundations.browserBridge } : {}),
         runtimeProgressRecorder: input.runtimeProgressRecorder,
+        toolResultArtifactStore: input.toolResultArtifactStore,
         clock: input.clock,
       })
     );

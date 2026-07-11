@@ -122,6 +122,35 @@ test("wiring guard: onToolCallsClose delegates to one pending-call closeout entr
   ]);
 });
 
+test("wiring guard: onBeforeExecute validates schemas before applying budget", () => {
+  const contract = engineHookContract("onBeforeExecute");
+  assert.ok(contract);
+  assert.deepEqual(contract!.moduleOps, [
+    "ToolArgumentValidator.validate",
+    "ExecutionBudgetController.applyEngineBeforeExecuteHook",
+  ]);
+});
+
+test("wiring guard: onRoundMessages delegates to the compaction controller", () => {
+  const contract = engineHookContract("onRoundMessages");
+  assert.ok(contract);
+  assert.equal(contract.installed, true);
+  assert.deepEqual(contract.moduleOps, [
+    "CompactionController.applyRoundMessagesHook",
+    "TaskPlanController.applyRoundMessagesHook",
+    "RunJournal.checkpoint",
+  ]);
+});
+
+test("wiring guard: onToolResultsForHistory delegates to the artifact externalizer", () => {
+  const contract = engineHookContract("onToolResultsForHistory");
+  assert.ok(contract);
+  assert.equal(contract.installed, true);
+  assert.deepEqual(contract.moduleOps, [
+    "ToolResultHistoryExternalizer.externalize",
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // Part 2: boundary-wrapper characterization (the real adapter mechanism).
 // ---------------------------------------------------------------------------
@@ -135,11 +164,14 @@ test("traceEngineHooks records one entry per installed hook, in fire order", asy
   // A fake hooks object exercising representative outcomes.
   const hooks = traceEngineHooks(
     {
+      onRoundMessages: async (messages) => ({ messages: messages.slice() }),
       onToolCalls: (calls) => calls,
       onSuppressToolCalls: () => null,
       onToolCallsClose: () => "wall_clock_budget",
       onBeforeExecute: (calls) => ({ executable: calls, rejected: [] }),
       runToolBatch: async () => [],
+      onToolResultsForHistory: async (results) =>
+        results.map((result) => ({ ...result, content: "artifact reference" })),
       onAfterExecuteContinue: async () => null,
       onAfterExecute: () => "completed_sub_agent_final",
       onRoundEmpty: () => "terminate",
@@ -152,11 +184,17 @@ test("traceEngineHooks records one entry per installed hook, in fire order", asy
   );
 
   // Fire the hooks in agent-core loop order.
+  await hooks.onRoundMessages!([], 0, fakeCtx);
   hooks.onToolCalls!([], fakeState, fakeCtx);
   hooks.onSuppressToolCalls!([], fakeState, fakeCtx);
   hooks.onToolCallsClose!([], fakeState, fakeCtx);
   hooks.onBeforeExecute!([], fakeCtx);
   await hooks.runToolBatch!([], async () => ({}) as never, fakeCtx);
+  await hooks.onToolResultsForHistory!(
+    [{ toolCallId: "call-1", toolName: "web_fetch", content: "source" }],
+    fakeState,
+    fakeCtx,
+  );
   await hooks.onAfterExecuteContinue!([], fakeState, fakeCtx);
   hooks.onAfterExecute!([], fakeState, fakeCtx);
   hooks.onRoundEmpty!(fakeState, fakeCtx);
@@ -174,11 +212,13 @@ test("traceEngineHooks records one entry per installed hook, in fire order", asy
   assert.deepEqual(
     entries.map((e) => e.phase),
     [
+      "before_model", // onRoundMessages
       "tool_calls", // onToolCalls
       "tool_calls", // onSuppressToolCalls
       "tool_calls", // onToolCallsClose
       "before_execute", // onBeforeExecute
       "before_execute", // runToolBatch
+      "after_execute", // onToolResultsForHistory
       "after_execute_continue", // onAfterExecuteContinue
       "after_execute", // onAfterExecute
       "round_empty", // onRoundEmpty
@@ -195,16 +235,24 @@ test("traceEngineHooks records one entry per installed hook, in fire order", asy
   assert.equal(byPolicy.get("onSuppressToolCalls")?.outcome, "skipped");
   assert.equal(byPolicy.get("onRoundEmpty:terminate")?.outcome, "skipped");
   assert.equal(byPolicy.get("onModelCallError:rethrow")?.outcome, "matched");
+  assert.equal(byPolicy.get("onRoundMessages:compacted")?.outcome, "applied");
+  assert.equal(
+    byPolicy.get("onToolResultsForHistory:externalized")?.outcome,
+    "applied",
+  );
 });
 
 test("traceEngineHooks returns each hook's real result unchanged (behavior-neutral)", async () => {
   const sentinelCalls = [{ id: "1", name: "x", input: {} }] as never;
+  const sentinelResults = [{ toolCallId: "1", toolName: "x", content: "ref" }] as never;
   const suppress = { messages: [], forceToolChoice: "none" } as never;
   const hooks = traceEngineHooks(
     {
+      onRoundMessages: async () => ({ messages: [] }),
       onToolCalls: () => sentinelCalls,
       onSuppressToolCalls: () => suppress,
       onToolCallsClose: () => "round_limit",
+      onToolResultsForHistory: () => sentinelResults,
       onAfterExecute: () => null,
       onRoundEmpty: () => ({ injectedCalls: sentinelCalls }) as never,
       onRepairRound: () => ({ closeout: "tool_evidence_fallback" }) as never,
@@ -212,9 +260,15 @@ test("traceEngineHooks returns each hook's real result unchanged (behavior-neutr
     createEnginePolicyTrace(),
   );
 
+  const roundMessages = await hooks.onRoundMessages!([], 0, fakeCtx);
+  assert.deepEqual(roundMessages, { messages: [] });
   assert.equal(hooks.onToolCalls!([], fakeState, fakeCtx), sentinelCalls);
   assert.equal(hooks.onSuppressToolCalls!([], fakeState, fakeCtx), suppress);
   assert.equal(hooks.onToolCallsClose!([], fakeState, fakeCtx), "round_limit");
+  assert.equal(
+    await hooks.onToolResultsForHistory!([], fakeState, fakeCtx),
+    sentinelResults,
+  );
   assert.equal(hooks.onAfterExecute!([], fakeState, fakeCtx), null);
 });
 

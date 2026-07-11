@@ -9,7 +9,14 @@ import type {
   ProtocolClient,
   ResolvedModelConfig,
 } from "./types";
+import { normalizeOpenAITokenUsage } from "./model-cache-usage";
+import { consumeOpenAIChatCompletionStream } from "./openai-sse-parser";
+import { sanitizeContentBlocks } from "./provider-output-sanitizer";
 import { buildProviderRequestEnvelopeOverflowError, isProviderSizeLikeFailure } from "./request-envelope-guard";
+import {
+  buildProviderRequestError,
+  normalizeProviderNetworkError,
+} from "./retry-policy";
 
 export class OpenAICompatibleClient implements ProtocolClient {
   supports(protocol: ModelProtocol): boolean {
@@ -17,42 +24,55 @@ export class OpenAICompatibleClient implements ProtocolClient {
   }
 
   async generate(model: ResolvedModelConfig, input: GenerateTextInput): Promise<GenerateTextResult> {
+    const streaming = openAIStreamingEnabled();
     // Relative pathname (no leading slash) so providers whose baseURL
     // carries a routing prefix (e.g. `/v1`) don't get their path
     // stripped by URL resolution. For canonical OpenAI
     // (`https://api.openai.com/v1/`) the result is identical:
     // .../v1/chat/completions.
-    const response = await fetch(buildURL(model.baseURL, "chat/completions", model.query), {
-      method: "POST",
-      ...(input.signal ? { signal: input.signal } : {}),
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${model.apiKey}`,
-        ...model.headers,
-      },
-      body: JSON.stringify({
-        model: model.model,
-        messages: input.messages.map(toOpenAIMessage),
-        temperature: input.temperature ?? model.temperature,
-        max_tokens: input.maxOutputTokens ?? model.maxOutputTokens,
-        ...(input.tools?.length
-          ? {
-              tools: input.tools.map((tool) => ({
-                type: "function",
-                function: {
-                  name: tool.name,
-                  description: tool.description,
-                  parameters: tool.inputSchema,
-                },
-              })),
-            }
-          : {}),
-        ...(input.toolChoice ? { tool_choice: toOpenAIToolChoice(input.toolChoice) } : {}),
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(buildURL(model.baseURL, "chat/completions", model.query), {
+        method: "POST",
+        ...(input.signal ? { signal: input.signal } : {}),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${model.apiKey}`,
+          ...model.headers,
+        },
+        body: JSON.stringify({
+          model: model.model,
+          messages: input.messages.map(toOpenAIMessage),
+          temperature: input.temperature ?? model.temperature,
+          max_tokens: input.maxOutputTokens ?? model.maxOutputTokens,
+          ...(input.tools?.length
+            ? {
+                tools: input.tools.map((tool) => ({
+                  type: "function",
+                  function: {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.inputSchema,
+                  },
+                })),
+              }
+            : {}),
+          ...(input.toolChoice ? { tool_choice: toOpenAIToolChoice(input.toolChoice) } : {}),
+          ...(streaming
+            ? {
+                stream: true,
+                stream_options: { include_usage: true },
+              }
+            : {}),
+        }),
+      });
+    } catch (error) {
+      throw normalizeProviderNetworkError(error, input.signal);
+    }
 
-    const raw = await response.json();
+    input.onProviderActivity?.();
     if (!response.ok) {
+      const raw = await readJsonResponse(response);
       const message = raw?.error?.message ?? `openai-compatible request failed: ${response.status}`;
       if (isProviderSizeLikeFailure({ status: response.status, message })) {
         throw buildProviderRequestEnvelopeOverflowError({
@@ -62,16 +82,62 @@ export class OpenAICompatibleClient implements ProtocolClient {
           message,
         });
       }
-      throw new Error(message);
+      throw buildProviderRequestError({
+        status: response.status,
+        message,
+        retryAfter: response.headers?.get("retry-after"),
+      });
     }
 
+    if (streaming && isEventStreamResponse(response)) {
+      try {
+        const stream = await consumeOpenAIChatCompletionStream(response, {
+          ...(input.onProviderActivity
+            ? { onActivity: input.onProviderActivity }
+            : {}),
+        });
+        const contentBlocks = sanitizeContentBlocks(
+          stream.text ? [{ type: "text", text: stream.text }] : [],
+        );
+        const text = contentBlocks
+          .filter(
+            (
+              block,
+            ): block is Extract<LLMContentBlock, { type: "text" }> =>
+              block.type === "text",
+          )
+          .map((block) => block.text)
+          .join("");
+        return {
+          text,
+          contentBlocks,
+          ...(stream.toolCalls.length ? { toolCalls: stream.toolCalls } : {}),
+          modelId: input.modelId ?? model.id,
+          providerId: model.providerId,
+          protocol: model.protocol,
+          adapterName: "openai-compatible",
+          ...(stream.finishReason ? { stopReason: stream.finishReason } : {}),
+          ...(stream.usage ? { usage: stream.usage } : {}),
+          raw: {
+            stream: true,
+            eventCount: stream.eventCount,
+            completed: true,
+          },
+        };
+      } catch (error) {
+        throw normalizeProviderNetworkError(error, input.signal);
+      }
+    }
+
+    const raw = await readJsonResponse(response);
     const firstChoice = raw?.choices?.[0];
-    const contentBlocks = extractOpenAIContentBlocks(firstChoice?.message);
+    const contentBlocks = sanitizeContentBlocks(extractOpenAIContentBlocks(firstChoice?.message));
     const text = contentBlocks
       .filter((block): block is Extract<LLMContentBlock, { type: "text" }> => block.type === "text")
       .map((block) => block.text)
       .join("");
     const toolCalls = extractOpenAIToolCalls(firstChoice?.message?.tool_calls);
+    const usage = normalizeOpenAITokenUsage(raw?.usage);
 
     return {
       text,
@@ -82,12 +148,28 @@ export class OpenAICompatibleClient implements ProtocolClient {
       protocol: model.protocol,
       adapterName: "openai-compatible",
       stopReason: firstChoice?.finish_reason,
-      usage: {
-        inputTokens: raw?.usage?.prompt_tokens,
-        outputTokens: raw?.usage?.completion_tokens,
-      },
+      ...(usage ? { usage } : {}),
       raw,
     };
+  }
+}
+
+function openAIStreamingEnabled(): boolean {
+  return process.env.TURNKEYAI_LLM_STREAMING === "1";
+}
+
+function isEventStreamResponse(response: Response): boolean {
+  return response.headers
+    ?.get("content-type")
+    ?.toLowerCase()
+    .includes("text/event-stream") ?? false;
+}
+
+async function readJsonResponse(response: Response): Promise<any> {
+  try {
+    return await response.json();
+  } catch {
+    return {};
   }
 }
 

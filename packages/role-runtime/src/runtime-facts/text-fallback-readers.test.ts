@@ -188,6 +188,12 @@ test("throwIfAborted rethrows a stable AbortError", () => {
     () => throwIfAborted(controller.signal),
     (error) => error instanceof Error && error.name === "AbortError",
   );
+
+  const typedController = new AbortController();
+  const typedReason = new Error("typed cancellation");
+  typedReason.name = "AbortError";
+  typedController.abort(typedReason);
+  assert.throws(() => throwIfAborted(typedController.signal), (error) => error === typedReason);
 });
 
 test("allowsSupplementalBrowserProbe respects unavailable browser capabilities", () => {

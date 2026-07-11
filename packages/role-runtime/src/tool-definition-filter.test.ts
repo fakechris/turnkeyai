@@ -26,6 +26,7 @@ const allTools = [
   tool("sessions_spawn"),
   tool("memory_search"),
   tool("memory_get"),
+  tool("artifacts_read"),
   tool("permission_query"),
   tool("permission_result"),
   tool("permission_applied"),
@@ -68,7 +69,11 @@ test("filterToolDefinitionsForTask narrows focused durable-memory recall to memo
   const filtered = filterToolDefinitionsForTask(allTools, prompt);
 
   assert.equal(taskRequestsFocusedDurableMemoryRecall(prompt), true);
-  assert.deepEqual(names(filtered), ["memory_search", "memory_get"]);
+  assert.deepEqual(names(filtered), [
+    "memory_search",
+    "memory_get",
+    "artifacts_read",
+  ]);
 });
 
 test("focused durable-memory recall is disabled by public-source conflicts", () => {
@@ -81,15 +86,15 @@ test("focused durable-memory recall is disabled by public-source conflicts", () 
   assert.ok(names(filtered).includes("web_fetch"));
 });
 
-test("tool definition filter context builders preserve task, intent, and user message text", () => {
+test("tool definition filter context builders preserve task and user message text", () => {
   const activation = {
     handoff: {
       payload: {
         intent: {
           relayBrief: "relay brief",
           recentMessages: [
-            { content: "recent text" },
-            { content: { nested: "value" } },
+            { role: "user", content: "recent text" },
+            { role: "user", content: { nested: "value" } },
           ],
         },
       },
@@ -115,8 +120,45 @@ test("tool definition filter context builders preserve task, intent, and user me
   const messageContext = buildToolDefinitionFilterMessageContext(messages);
 
   assert.match(taskContext, /task prompt/);
-  assert.match(taskContext, /relay brief/);
   assert.match(taskContext, /recent text/);
   assert.match(taskContext, /"nested":"value"/);
+  assert.doesNotMatch(taskContext, /relay brief/);
   assert.equal(messageContext, "first user\nsecond user");
+});
+
+test("assistant history cannot grant permission tools during read-only recovery", () => {
+  const activation = {
+    handoff: {
+      payload: {
+        intent: {
+          relayBrief: "Continue the original read-only dashboard review.",
+          recentMessages: [
+            {
+              role: "user",
+              content: "Review the rendered dashboard and report residual risk.",
+            },
+            {
+              role: "assistant",
+              content:
+                "An approval-gated browser.form.submit dry-run action is available.",
+            },
+            {
+              role: "tool",
+              content: "permission_query can request operator approval.",
+            },
+          ],
+        },
+      },
+    },
+  } as RoleActivationInput;
+  const taskContext = buildToolDefinitionFilterTaskContext(
+    activation,
+    "System recovery: verify only the missing rendered browser evidence and residual risk.",
+  );
+
+  const filtered = filterToolDefinitionsForTask(allTools, taskContext);
+
+  assert.ok(!names(filtered).includes("permission_query"));
+  assert.ok(!names(filtered).includes("permission_result"));
+  assert.ok(!names(filtered).includes("permission_applied"));
 });

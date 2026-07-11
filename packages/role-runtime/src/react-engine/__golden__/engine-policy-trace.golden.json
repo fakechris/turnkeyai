@@ -1,11 +1,13 @@
 {
   "version": 1,
   "installedHookOrder": [
+    "onRoundMessages",
     "onToolCalls",
     "onSuppressToolCalls",
     "onToolCallsClose",
     "onBeforeExecute",
     "runToolBatch",
+    "onToolResultsForHistory",
     "onAfterExecuteContinue",
     "onAfterExecute",
     "onRoundEmpty",
@@ -15,12 +17,17 @@
     "onFinalize"
   ],
   "contractModuleOpOrder": [
+    "CompactionController.applyRoundMessagesHook",
+    "TaskPlanController.applyRoundMessagesHook",
+    "RunJournal.checkpoint",
     "ToolCallNormalizer.normalize",
     "ExecutionBudgetController.truncateRecoveryBudgetCalls",
     "PermissionPolicy.applySuppressToolCallsHook",
     "CloseoutPolicyRegistry.applyPendingCallsCloseoutHook",
+    "ToolArgumentValidator.validate",
     "ExecutionBudgetController.applyEngineBeforeExecuteHook",
     "ExecutionBudgetController.runEngineToolBatchHook",
+    "ToolResultHistoryExternalizer.externalize",
     "ContinuationController.applyAfterExecuteContinuationHook",
     "CloseoutPolicyRegistry.applyPostExecuteCloseoutHook",
     "ContinuationController.applyRoundEmptyHook",
@@ -33,6 +40,26 @@
     "EngineRunState.captureFinalMessagesIfAbsent"
   ],
   "decisionVocabulary": [
+    {
+      "hook": "onRoundMessages",
+      "scenario": "history unchanged",
+      "entry": {
+        "phase": "before_model",
+        "policyId": "onRoundMessages:unchanged",
+        "outcome": "skipped",
+        "reason": "below compaction threshold"
+      }
+    },
+    {
+      "hook": "onRoundMessages",
+      "scenario": "checkpoint applied",
+      "entry": {
+        "phase": "before_model",
+        "policyId": "onRoundMessages:compacted",
+        "outcome": "applied",
+        "reason": "compacted 1 message(s) to 0"
+      }
+    },
     {
       "hook": "onToolCalls",
       "scenario": "normalize pending calls",
@@ -181,6 +208,26 @@
         "policyId": "runToolBatch:execute",
         "outcome": "applied",
         "reason": "executed 0 tool result(s)"
+      }
+    },
+    {
+      "hook": "onToolResultsForHistory",
+      "scenario": "results remain inline",
+      "entry": {
+        "phase": "after_execute",
+        "policyId": "onToolResultsForHistory:unchanged",
+        "outcome": "skipped",
+        "reason": "tool results remain inline"
+      }
+    },
+    {
+      "hook": "onToolResultsForHistory",
+      "scenario": "oversized result externalized",
+      "entry": {
+        "phase": "after_execute",
+        "policyId": "onToolResultsForHistory:externalized",
+        "outcome": "applied",
+        "reason": "externalized 1 tool result(s)"
       }
     },
     {

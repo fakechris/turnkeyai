@@ -338,14 +338,24 @@ function evaluateTypedMissionTerminalReport(input: {
   }
 
   if (report.status === "completed") {
-    if (isIncompleteLeadFinalAnswer(mission, latest.message, messages)) {
+    const runtimeCoverageVerified =
+      report.source === "runtime_derived" &&
+      report.reason === "completed_sub_agent_final" &&
+      report.coverageVerified === true;
+    if (
+      !runtimeCoverageVerified &&
+      isIncompleteLeadFinalAnswer(mission, latest.message, messages)
+    ) {
       return null;
     }
     return {
       action: "update",
       reason: "final_answer",
       patch: { status: "done", progress: 1, blockers: 0 },
-      completion: { source: "self_report", verified: true },
+      completion: {
+        source: runtimeCoverageVerified ? "verifier" : "self_report",
+        verified: true,
+      },
     };
   }
 
@@ -940,6 +950,8 @@ function readMissionTerminalReport(metadata: Record<string, unknown> | undefined
   const evidenceRefs = readStringArray(record.evidenceRefs);
   const authorizedPartial =
     typeof record.authorizedPartial === "boolean" ? record.authorizedPartial : undefined;
+  const coverageVerified =
+    typeof record.coverageVerified === "boolean" ? record.coverageVerified : undefined;
   const source =
     record.source === "runtime_derived" || record.source === "model_report" ? record.source : undefined;
   return {
@@ -948,6 +960,7 @@ function readMissionTerminalReport(metadata: Record<string, unknown> | undefined
     ...(unverifiedSlots.length ? { unverifiedSlots } : {}),
     ...(evidenceRefs.length ? { evidenceRefs } : {}),
     ...(authorizedPartial !== undefined ? { authorizedPartial } : {}),
+    ...(coverageVerified !== undefined ? { coverageVerified } : {}),
     ...(source ? { source } : {}),
   };
 }

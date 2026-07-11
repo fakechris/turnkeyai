@@ -1,4 +1,9 @@
 import type { GenerateTextInput, ModelProtocol, RequestEnvelopeDiagnostics, ResolvedModelConfig } from "./types";
+import {
+  estimateGenerateTextInputTokens,
+  resolveInputTokenBudget,
+  resolveModelContextWindowTokens,
+} from "./token-estimator";
 
 export interface RequestEnvelopeLimits {
   maxMessages: number;
@@ -20,50 +25,50 @@ export interface RequestEnvelopeLimits {
 }
 
 export const DEFAULT_REQUEST_ENVELOPE_LIMITS: RequestEnvelopeLimits = {
-  maxMessages: 16,
-  maxPromptChars: 120_000,
-  maxPromptBytes: 180_000,
-  maxMetadataBytes: 24_000,
+  maxMessages: 200,
+  maxPromptChars: 1_200_000,
+  maxPromptBytes: 3_200_000,
+  maxMetadataBytes: 96_000,
   maxArtifactCount: 24,
   maxToolCount: 16,
   maxToolSchemaBytes: 64_000,
-  maxToolResultCount: 12,
-  maxToolResultBytes: 40_000,
+  maxToolResultCount: 120,
+  maxToolResultBytes: 160_000,
   maxInlineAttachmentBytes: 2_000_000,
   maxInlineImageCount: 8,
   maxInlineImageBytes: 1_500_000,
   maxInlinePdfCount: 2,
   maxInlinePdfBytes: 1_500_000,
   maxMultimodalPartCount: 24,
-  maxSerializedBytes: 220_000,
+  maxSerializedBytes: 3_500_000,
 };
 
 const OPENAI_SAFE_LIMITS: Partial<RequestEnvelopeLimits> = {
   maxToolCount: 16,
   maxToolSchemaBytes: 72_000,
-  maxToolResultCount: 12,
-  maxToolResultBytes: 48_000,
+  maxToolResultCount: 120,
+  maxToolResultBytes: 192_000,
   maxInlineAttachmentBytes: 2_500_000,
   maxInlineImageCount: 10,
   maxInlineImageBytes: 2_000_000,
   maxInlinePdfCount: 3,
   maxInlinePdfBytes: 2_000_000,
   maxMultimodalPartCount: 20,
-  maxSerializedBytes: 240_000,
+  maxSerializedBytes: 3_500_000,
 };
 
 const ANTHROPIC_SAFE_LIMITS: Partial<RequestEnvelopeLimits> = {
   maxToolCount: 16,
   maxToolSchemaBytes: 56_000,
-  maxToolResultCount: 10,
-  maxToolResultBytes: 36_000,
+  maxToolResultCount: 120,
+  maxToolResultBytes: 160_000,
   maxInlineAttachmentBytes: 1_500_000,
   maxInlineImageCount: 6,
   maxInlineImageBytes: 1_000_000,
   maxInlinePdfCount: 2,
   maxInlinePdfBytes: 1_200_000,
   maxMultimodalPartCount: 12,
-  maxSerializedBytes: 200_000,
+  maxSerializedBytes: 3_200_000,
 };
 
 export class RequestEnvelopeOverflowError extends Error {
@@ -90,7 +95,7 @@ export class RequestEnvelopeOverflowError extends Error {
     };
     const over = input.diagnostics.overLimitKeys.join(", ");
     super(
-      `request envelope exceeds safe limits: ${over} | messages=${input.diagnostics.messageCount} promptBytes=${input.diagnostics.promptBytes} totalBytes=${input.diagnostics.totalSerializedBytes} artifacts=${input.diagnostics.artifactCount}`
+      `request envelope exceeds safe limits: ${over} | messages=${input.diagnostics.messageCount} promptBytes=${input.diagnostics.promptBytes} totalBytes=${input.diagnostics.totalSerializedBytes} estimatedInputTokens=${input.diagnostics.estimatedInputTokens ?? "unknown"} inputTokenLimit=${input.diagnostics.inputTokenLimit ?? "unknown"} artifacts=${input.diagnostics.artifactCount}`
     );
     this.name = "RequestEnvelopeOverflowError";
     this.details = {
@@ -264,12 +269,15 @@ export function buildProviderRequestEnvelopeOverflowError(input: {
   status?: number;
   message?: string;
   limits?: Partial<RequestEnvelopeLimits>;
-  model?: Pick<ResolvedModelConfig, "protocol" | "providerId" | "model"> | null;
+  model?: Pick<ResolvedModelConfig, "protocol" | "providerId" | "model" | "contextWindowTokens" | "maxOutputTokens"> | null;
 }): RequestEnvelopeOverflowError {
+  const resolvedLimits = resolveRequestEnvelopeLimits(input.model, input.limits);
+  const diagnostics = buildRequestEnvelopeDiagnostics(input.request, resolvedLimits);
+  applyTokenDiagnostics(diagnostics, input.request, input.model);
   return new RequestEnvelopeOverflowError({
-    diagnostics: buildRequestEnvelopeDiagnostics(input.request, resolveRequestEnvelopeLimits(input.model, input.limits)),
+    diagnostics,
     source: "provider",
-    limits: resolveRequestEnvelopeLimits(input.model, input.limits),
+    limits: resolvedLimits,
     ...(input.status != null ? { providerStatus: input.status } : {}),
     ...(input.message ? { providerMessage: input.message } : {}),
   });
@@ -278,10 +286,11 @@ export function buildProviderRequestEnvelopeOverflowError(input: {
 export function assertRequestEnvelopeWithinLimits(
   input: GenerateTextInput,
   limits?: Partial<RequestEnvelopeLimits>,
-  model?: Pick<ResolvedModelConfig, "protocol" | "providerId" | "model"> | null
+  model?: Pick<ResolvedModelConfig, "protocol" | "providerId" | "model" | "contextWindowTokens" | "maxOutputTokens"> | null
 ): RequestEnvelopeDiagnostics {
   const resolvedLimits = resolveRequestEnvelopeLimits(model, limits);
   const diagnostics = buildRequestEnvelopeDiagnostics(input, resolvedLimits);
+  applyTokenDiagnostics(diagnostics, input, model);
   if (diagnostics.overLimitKeys.length > 0) {
     throw new RequestEnvelopeOverflowError(
       {
@@ -291,6 +300,32 @@ export function assertRequestEnvelopeWithinLimits(
     );
   }
   return diagnostics;
+}
+
+function applyTokenDiagnostics(
+  diagnostics: RequestEnvelopeDiagnostics,
+  input: GenerateTextInput,
+  model:
+    | Pick<
+        ResolvedModelConfig,
+        "model" | "contextWindowTokens" | "maxOutputTokens"
+      >
+    | null
+    | undefined,
+): void {
+  if (!model) return;
+  const estimatedInputTokens = estimateGenerateTextInputTokens(input);
+  const contextWindowTokens = resolveModelContextWindowTokens(model);
+  const inputTokenLimit = resolveInputTokenBudget({
+    contextWindowTokens,
+    reservedOutputTokens:
+      input.maxOutputTokens ?? model.maxOutputTokens ?? 4_096,
+  });
+  diagnostics.estimatedInputTokens = estimatedInputTokens;
+  diagnostics.inputTokenLimit = inputTokenLimit;
+  if (estimatedInputTokens > inputTokenLimit) {
+    diagnostics.overLimitKeys.push("estimatedInputTokens");
+  }
 }
 
 function resolveProtocolPreset(protocol: ModelProtocol | undefined): Partial<RequestEnvelopeLimits> {

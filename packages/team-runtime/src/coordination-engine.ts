@@ -251,8 +251,12 @@ export class CoordinationEngine {
       throw new Error(`team thread not found: ${input.threadId}`);
     }
 
-    const userMessage = this.buildUserMessage(thread, input.content);
-    const flow = this.buildFlow(thread, userMessage.id);
+    const userMessage = this.buildUserMessage(
+      thread,
+      input.content,
+      input.idempotencyKey,
+    );
+    const flow = this.buildFlow(thread, userMessage.id, input.idempotencyKey);
     const intent: FlowStartIntent = {
       intentId: `${flow.flowId}:start`,
       kind: "user-post",
@@ -694,10 +698,16 @@ export class CoordinationEngine {
     await this.applyRecoveryDecision(recovery, latestFlow, thread, intent.message);
   }
 
-  private buildUserMessage(thread: TeamThread, content: string): TeamMessage {
+  private buildUserMessage(
+    thread: TeamThread,
+    content: string,
+    idempotencyKey?: string,
+  ): TeamMessage {
     const now = this.deps.clock.now();
     return {
-      id: this.deps.idGenerator.messageId(),
+      id: idempotencyKey
+        ? `message:idempotent:${idempotencyKey}`
+        : this.deps.idGenerator.messageId(),
       threadId: thread.threadId,
       role: "user",
       name: "user",
@@ -714,10 +724,16 @@ export class CoordinationEngine {
     };
   }
 
-  private buildFlow(thread: TeamThread, rootMessageId: string): FlowLedger {
+  private buildFlow(
+    thread: TeamThread,
+    rootMessageId: string,
+    idempotencyKey?: string,
+  ): FlowLedger {
     const now = this.deps.clock.now();
     return {
-      flowId: this.deps.idGenerator.flowId(),
+      flowId: idempotencyKey
+        ? `flow:idempotent:${idempotencyKey}`
+        : this.deps.idGenerator.flowId(),
       threadId: thread.threadId,
       rootMessageId,
       mode: "serial",

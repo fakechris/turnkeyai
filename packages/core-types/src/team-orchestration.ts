@@ -85,6 +85,8 @@ export interface RolePromptPacketLike {
     label?: string;
     parentSessionKey?: RunKey;
     toolCallId?: string;
+    background?: boolean;
+    deadlineAt?: number;
   };
   toolUseMode?: "auto" | "disabled";
   resumeTarget?: SessionTarget;

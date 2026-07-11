@@ -580,6 +580,47 @@ describe("mission-routes", () => {
               roleId: "role-lead",
             },
             {
+              progressId: "progress.model.started",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-explore-progress",
+              phase: "started",
+              progressKind: "boundary",
+              heartbeatSource: "control_path",
+              continuityState: "alive",
+              summary: "Model attempt tool_round:1:1:1 started.",
+              recordedAt: 2_100,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+              metadata: {
+                eventType: "run.lifecycle",
+                lifecycleKind: "model_attempt_started",
+                attemptId: "tool_round:1:1:1",
+                phase: "tool_round",
+                round: 1,
+              },
+            },
+            {
+              progressId: "progress.model.activity",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:role-lead:thread:thread-explore-progress",
+              phase: "heartbeat",
+              progressKind: "heartbeat",
+              heartbeatSource: "activity_echo",
+              continuityState: "alive",
+              summary: "Provider activity received for tool_round:1:1:1.",
+              recordedAt: 2_200,
+              taskId: "TASK-1",
+              roleId: "role-lead",
+              metadata: {
+                eventType: "run.lifecycle",
+                lifecycleKind: "provider_activity",
+                attemptId: "tool_round:1:1:1",
+                activity: "body",
+              },
+            },
+            {
               progressId: "progress.role.long-heartbeat",
               threadId,
               subjectKind: "role_run",
@@ -680,6 +721,8 @@ describe("mission-routes", () => {
           "runtime-progress:progress.dispatch.signaled",
           "runtime-progress:progress.role.dequeued",
           "runtime-progress:progress.role.started",
+          "runtime-progress:progress.model.started",
+          "runtime-progress:progress.model.activity",
           "runtime-progress:progress.session.started",
           "runtime-progress:progress.worker.started",
           "runtime-progress:progress.worker.completed",
@@ -693,6 +736,8 @@ describe("mission-routes", () => {
           "Woke role-lead to start work.",
           "Lead picked up the task.",
           "Lead started working.",
+          "Model attempt tool_round:1:1:1 started.",
+          "Provider activity received for tool_round:1:1:1.",
           "Started sessions_spawn.",
           "Research worker started.",
           "Explore worker fetched https://example.com/. Title: Example Domain.",
@@ -701,6 +746,12 @@ describe("mission-routes", () => {
       assert.equal(timeline.some((event) => event.id.includes("long-heartbeat")), false);
       assert.equal(timeline.some((event) => event.id.includes("session-memory")), false);
       assert.equal(timeline.some((event) => event.id.includes("provider.protocol")), false);
+      const providerActivity = timeline.find(
+        (event) => event.id === "runtime-progress:progress.model.activity",
+      );
+      assert.equal(providerActivity?.runtime?.eventType, "run.lifecycle");
+      assert.equal(providerActivity?.runtime?.attemptId, "tool_round:1:1:1");
+      assert.equal(providerActivity?.runtime?.providerActivity, "body");
     } finally {
       t.cleanup();
     }

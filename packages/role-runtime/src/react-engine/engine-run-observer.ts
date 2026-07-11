@@ -85,6 +85,7 @@ export interface EngineObservedRuntimeForcedToolRound {
   executeToolCalls(
     handlers: EngineRuntimeForcedToolRoundHandlers,
   ): Promise<ToolResult[]>;
+  mapToolResultsForHistory?(results: ToolResult[]): Promise<ToolResult[]>;
 }
 
 export class EngineRunObserver {
@@ -214,11 +215,14 @@ export class EngineRunObserver {
       },
     });
 
+    const historyResults = input.mapToolResultsForHistory
+      ? await input.mapToolResultsForHistory(toolResults)
+      : toolResults;
     let messages = appendAssistantToolCallMessage(input.messages, {
       text: input.assistantText,
       toolCalls: input.toolCalls,
     });
-    messages = appendToolResultMessages(messages, toolResults);
+    messages = appendToolResultMessages(messages, historyResults);
     await this.onProviderToolProtocolRound({
       round: input.round,
       toolCalls: input.toolCalls,

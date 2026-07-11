@@ -6,18 +6,20 @@ export const PERMISSION_TOOL_NAMES = ["permission_query", "permission_result", "
 export const MEMORY_TOOL_NAMES = ["memory_search", "memory_get"] as const;
 export const TASK_TOOL_NAMES = ["tasks_list", "tasks_create", "tasks_update"] as const;
 export const WEB_TOOL_NAMES = ["web_fetch"] as const;
+export const ARTIFACT_TOOL_NAMES = ["artifacts_read"] as const;
 export type SessionToolName = (typeof SESSION_TOOL_NAMES)[number];
 export type PermissionToolName = (typeof PERMISSION_TOOL_NAMES)[number];
 export type MemoryToolName = (typeof MEMORY_TOOL_NAMES)[number];
 export type TaskToolName = (typeof TASK_TOOL_NAMES)[number];
 export type WebToolName = (typeof WEB_TOOL_NAMES)[number];
-export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName | TaskToolName | WebToolName;
+export type ArtifactToolName = (typeof ARTIFACT_TOOL_NAMES)[number];
+export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName | TaskToolName | WebToolName | ArtifactToolName;
 
 export interface ToolCapabilityRecord {
   name: NativeToolName;
   definition: LLMToolDefinition;
-  executorKind: "worker-session" | "permission" | "memory" | "task" | "web";
-  promptGroup: "sessions" | "permissions" | "memory" | "tasks" | "web";
+  executorKind: "worker-session" | "permission" | "memory" | "task" | "web" | "artifact";
+  promptGroup: "sessions" | "permissions" | "memory" | "tasks" | "web" | "artifacts";
 }
 
 export interface ToolPromptHarnessInput {
@@ -75,6 +77,7 @@ export function createNativeToolCapabilityRegistry(input: {
   memoryEnabled?: boolean;
   tasksEnabled?: boolean;
   webFetchEnabled?: boolean;
+  artifactsEnabled?: boolean;
   maxSessionToolTimeoutSeconds?: number;
 } = {}): ToolCapabilityRegistry {
   const workerKinds = normalizeWorkerKinds(input.availableWorkerKinds);
@@ -87,6 +90,16 @@ export function createNativeToolCapabilityRegistry(input: {
         executorKind: "web" as const,
         promptGroup: "web" as const,
       }))
+    );
+  }
+  if (input.artifactsEnabled) {
+    records.push(
+      ...buildArtifactToolDefinitions().map((definition) => ({
+        name: definition.name as NativeToolName,
+        definition,
+        executorKind: "artifact" as const,
+        promptGroup: "artifacts" as const,
+      })),
     );
   }
   if (workerKinds.length > 0) {
@@ -158,6 +171,35 @@ export function buildWebToolDefinitions(): LLMToolDefinition[] {
           },
         },
         required: ["url"],
+      },
+    },
+  ];
+}
+
+export function buildArtifactToolDefinitions(): LLMToolDefinition[] {
+  return [
+    {
+      name: "artifacts_read",
+      description:
+        "Read a bounded byte range from an oversized tool result referenced by artifact_id. Continue from next_offset_bytes until eof when more source content is needed.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          artifact_id: { type: "string" },
+          offset_bytes: {
+            type: "number",
+            minimum: 0,
+            description: "UTF-8 byte offset. Defaults to 0.",
+          },
+          limit_bytes: {
+            type: "number",
+            minimum: 256,
+            maximum: 32 * 1024,
+            description: "Maximum bytes to return. Defaults to 8192.",
+          },
+        },
+        required: ["artifact_id"],
       },
     },
   ];
@@ -279,6 +321,11 @@ export function buildSessionToolDefinitions(
             description: "Sub-agent kind backed by an executable worker handler.",
           },
           label: { type: "string", description: "Short user-visible label." },
+          run_in_background: {
+            type: "boolean",
+            description:
+              "Return a running session handle immediately while the independent sub-agent continues in the background.",
+          },
           timeout_seconds: {
             type: "number",
             minimum: 0.001,
@@ -427,6 +474,10 @@ function renderToolPromptHarness(input: {
     sections.push(renderWebFetchSection());
   }
 
+  if (ARTIFACT_TOOL_NAMES.some((name) => enabled.has(name))) {
+    sections.push(renderArtifactSection());
+  }
+
   if (PERMISSION_TOOL_NAMES.some((name) => enabled.has(name))) {
     sections.push(renderPermissionSection());
   }
@@ -453,6 +504,14 @@ function renderWebFetchSection(): string {
     "- web_fetch is source evidence, not browser evidence. If the task asks what a user sees, requires screenshots, or depends on JavaScript-rendered content, use the browser worker instead.",
     "- Cite the returned final_url/requested_url and treat blocked, non-200, or low-content results as incomplete evidence that needs another tool path.",
     "- When a fetched root/docs page exposes navigation text, prefer following the visible nav/link target or searching that exact site+label over guessing URL paths. After two 404/401 guesses on one host, stop guessing paths and switch to site search, provider search, or browser.",
+  ].join("\n");
+}
+
+function renderArtifactSection(): string {
+  return [
+    "## Tool Result Artifacts",
+    "- When a tool result contains a turnkeyai.tool_result_artifact.v1 reference, use artifacts_read only if the inline preview and checkpoint do not contain enough evidence.",
+    "- Read bounded pages using next_offset_bytes. Stop once the needed fact is found or eof is true; do not reload the same byte range.",
   ].join("\n");
 }
 

@@ -36,6 +36,7 @@ import type {
   BrowserArtifactRecord,
   BrowserArtifactStore,
   Clock,
+  RoleRunState,
   RoleRunStore,
   TeamMessage,
   TeamMessageStore,
@@ -74,6 +75,7 @@ export interface MissionThreadBridgeOptions {
     mission: Mission;
     threadId: string;
     workerSession: WorkerSessionRecord;
+    deliveryId: string;
     content: string;
   }) => Promise<void>;
   postIncompleteFinalFollowUp?: (input: {
@@ -279,8 +281,21 @@ export function createMissionThreadBridge(
     await registerMissionArtifacts(mission, messages);
     const events = [...existing, ...toAppend];
     const workerSessions = await listWorkerSessions(threadId, messages, events);
-    await recoverLateWorkerCompletions(mission, threadId, events, workerSessions);
-    await reconcileMissionLifecycle(mission, threadId, messages, workerSessions);
+    const roleRuns = await listRoleRuns(threadId);
+    await recoverLateWorkerCompletions(
+      mission,
+      threadId,
+      events,
+      workerSessions,
+      roleRuns,
+    );
+    await reconcileMissionLifecycle(
+      mission,
+      threadId,
+      messages,
+      workerSessions,
+      roleRuns,
+    );
     return appended;
   }
 
@@ -365,9 +380,9 @@ export function createMissionThreadBridge(
     mission: Mission,
     threadId: string,
     messages: TeamMessage[],
-    workerSessions: WorkerSessionRecord[] | "unknown" | undefined
+    workerSessions: WorkerSessionRecord[] | "unknown" | undefined,
+    roleRuns: RoleRunState[] | "unknown",
   ): Promise<void> {
-    const roleRuns = await listRoleRuns(threadId);
     const decision = evaluateMissionCompletion({
       mission,
       messages,
@@ -502,19 +517,39 @@ export function createMissionThreadBridge(
     mission: Mission,
     threadId: string,
     events: ActivityEvent[],
-    workerSessions: WorkerSessionRecord[] | "unknown" | undefined
+    workerSessions: WorkerSessionRecord[] | "unknown" | undefined,
+    roleRuns: RoleRunState[] | "unknown",
   ): Promise<void> {
     if (!workerSessions || workerSessions === "unknown") return;
+    if (roleRuns !== "unknown" && roleRuns.some(isActiveRoleRun)) return;
 
     for (const workerSession of workerSessions) {
       if (!isLateCompletedWorkerSession(workerSession, events)) continue;
       if (hasLateWorkerCompletionRecovery(events, workerSession)) continue;
+      const deliveryId = workerCompletionDeliveryId(workerSession);
+      if (
+        options.postLateWorkerCompletionFollowUp &&
+        !(await postLateWorkerCompletionFollowUp(
+          mission,
+          threadId,
+          workerSession,
+          deliveryId,
+        ))
+      ) {
+        continue;
+      }
       await appendLateWorkerCompletionEvent(mission.id, threadId, workerSession);
       await reopenMissionForLateWorkerCompletion(mission);
-      if (options.postLateWorkerCompletionFollowUp) {
-        await postLateWorkerCompletionFollowUp(mission, threadId, workerSession);
-      }
     }
+  }
+
+  function isActiveRoleRun(run: RoleRunState): boolean {
+    return (
+      run.status === "queued" ||
+      run.status === "running" ||
+      run.status === "waiting_worker" ||
+      run.status === "resuming"
+    );
   }
 
   function isLateCompletedWorkerSession(
@@ -524,6 +559,7 @@ export function createMissionThreadBridge(
     if (workerSession.state.status !== "done" || !workerSession.state.lastResult) {
       return false;
     }
+    if (workerSession.context?.background === true) return true;
     return hasFailedOrTimedOutSessionToolResult(events, workerSession);
   }
 
@@ -548,20 +584,47 @@ export function createMissionThreadBridge(
     }
     if (linkedToolCallIds.size === 0) return false;
 
-    return events.some((event) => {
+    const resolvedToolCallIds = new Set(
+      events
+        .filter(
+          (event) =>
+            event.kind === "tool" &&
+            event.runtime?.toolPhase === "result" &&
+            typeof event.runtime.toolCallId === "string" &&
+            linkedToolCallIds.has(event.runtime.toolCallId),
+        )
+        .map((event) => event.runtime!.toolCallId!),
+    );
+    const hasUnresolvedParentCall = events.some(
+      (event) =>
+        event.kind === "tool" &&
+        event.runtime?.toolPhase === "call" &&
+        typeof event.runtime.toolCallId === "string" &&
+        linkedToolCallIds.has(event.runtime.toolCallId) &&
+        !resolvedToolCallIds.has(event.runtime.toolCallId),
+    );
+    if (hasUnresolvedParentCall) return false;
+
+    let latestResult: ActivityEvent | null = null;
+    for (const event of events) {
       const runtime = event.runtime;
-      if (event.tMs <= afterMs) return false;
-      if (event.kind !== "tool" || runtime?.toolPhase !== "result") return false;
-      if (!runtime.toolCallId || !linkedToolCallIds.has(runtime.toolCallId)) return false;
+      if (event.tMs <= afterMs) continue;
+      if (event.kind !== "tool" || runtime?.toolPhase !== "result") continue;
+      if (!runtime.toolCallId || !linkedToolCallIds.has(runtime.toolCallId)) continue;
       if (
         runtime.toolName !== "sessions_spawn" &&
         runtime.toolName !== "sessions_send" &&
         runtime.toolName !== "sessions_history"
       ) {
-        return false;
+        continue;
       }
-      return isFailedOrTimedOutSessionToolResult(event);
-    });
+      if (!latestResult || event.tMs >= latestResult.tMs) {
+        latestResult = event;
+      }
+    }
+    return latestResult
+      ? isFailedOrTimedOutSessionToolResult(latestResult)
+      : false;
   }
 
   function sessionToolCallTargetsWorker(callInput: string | undefined, workerRunKey: string): boolean {
@@ -573,11 +636,12 @@ export function createMissionThreadBridge(
 
   function isFailedOrTimedOutSessionToolResult(event: ActivityEvent): boolean {
     if (event.emph === "danger") return true;
-    const result = `${event.runtime?.resultContent ?? ""}\n${event.text ?? ""}`;
-    const structuredStatus = readSessionToolResultStatus(result);
+    const resultContent = event.runtime?.resultContent ?? "";
+    const structuredStatus = readSessionToolResultStatus(resultContent);
     if (structuredStatus) {
       return structuredStatus !== "completed";
     }
+    const result = `${resultContent}\n${event.text ?? ""}`;
     return /\b(?:timed out|failed|cancelled|canceled|Tool call failed)\b/i.test(result) ||
       /\btimeout\b/i.test(result) && !/\b(?:within|before|no|none|without)\s+(?:the\s+)?timeout\b/i.test(result);
   }
@@ -658,22 +722,30 @@ export function createMissionThreadBridge(
   async function postLateWorkerCompletionFollowUp(
     mission: Mission,
     threadId: string,
-    workerSession: WorkerSessionRecord
-  ): Promise<void> {
+    workerSession: WorkerSessionRecord,
+    deliveryId: string,
+  ): Promise<boolean> {
     try {
       await options.postLateWorkerCompletionFollowUp!({
         mission,
         threadId,
         workerSession,
+        deliveryId,
         content: buildLateWorkerCompletionFollowUp(workerSession),
       });
+      return true;
     } catch (error) {
       logger.warn("late worker completion follow-up post failed", {
         missionId: mission.id,
         workerRunKey: workerSession.workerRunKey,
         error: errorMessage(error),
       });
+      return false;
     }
+  }
+
+  function workerCompletionDeliveryId(workerSession: WorkerSessionRecord): string {
+    return `worker-completion:${workerSession.workerRunKey}:${workerSession.state.updatedAt}`;
   }
 
   function buildLateWorkerCompletionFollowUp(workerSession: WorkerSessionRecord): string {
@@ -1620,6 +1692,7 @@ function buildPlainEvent(input: BuildPlainEventInput): ActivityEvent {
   };
   if (input.message.source?.route) runtime.route = input.message.source.route;
   Object.assign(runtime, toolLoopCloseoutRuntime(input.message.metadata));
+  Object.assign(runtime, missionReportRuntime(input.message.metadata));
   Object.assign(runtime, modelUseRuntime(input.message.metadata));
   return {
     id: input.newEventId(),
@@ -1631,6 +1704,29 @@ function buildPlainEvent(input: BuildPlainEventInput): ActivityEvent {
     tags: input.tags,
     runtime,
   };
+}
+
+function missionReportRuntime(metadata: Record<string, unknown> | undefined): Record<string, string> {
+  const report = readRecordMetadata(metadata, "missionReport");
+  if (!report) return {};
+  const runtime: Record<string, string> = {};
+  if (
+    report.status === "completed" ||
+    report.status === "partial" ||
+    report.status === "blocked"
+  ) {
+    runtime.missionReportStatus = report.status;
+  }
+  if (report.source === "runtime_derived" || report.source === "model_report") {
+    runtime.missionReportSource = report.source;
+  }
+  if (typeof report.coverageVerified === "boolean") {
+    runtime.missionReportCoverageVerified = String(report.coverageVerified);
+  }
+  if (typeof report.reason === "string" && report.reason.trim()) {
+    runtime.missionReportReason = report.reason;
+  }
+  return runtime;
 }
 
 function modelUseRuntime(metadata: Record<string, unknown> | undefined): Record<string, string> {

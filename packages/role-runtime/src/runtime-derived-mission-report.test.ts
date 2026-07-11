@@ -21,6 +21,7 @@ test("buildRuntimeDerivedMissionReport maps completed session closeout to comple
     {
       status: "completed",
       reason: "completed_sub_agent_final",
+      coverageVerified: true,
       source: "runtime_derived",
     },
   );

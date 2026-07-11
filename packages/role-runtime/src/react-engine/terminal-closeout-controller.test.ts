@@ -9,6 +9,7 @@ import type {
 
 import type { RolePromptPacket } from "../prompt-policy";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
+import { createRepairPolicyRegistry } from "./repair-policy-registry";
 import { createTerminalCloseoutController } from "./terminal-closeout-controller";
 
 function packet(
@@ -1417,6 +1418,70 @@ test("TerminalCloseoutController owns terminal synthesis invocation boundaries",
   });
 });
 
+test("TerminalCloseoutController repairs non-completed synthesis that drops completed evidence", async () => {
+  const controller = createTerminalCloseoutController();
+  const repairPolicy = createRepairPolicyRegistry();
+  const repairMarkers: LLMMessage[] = [];
+  const calls: string[] = [];
+  repairPolicy.evaluateNaturalFinish = (input) => {
+    assert.deepEqual(input.enabledPolicies, ["source_evidence_carry_forward"]);
+    assert.equal(input.evidenceText, "Source A verified fact 42.");
+    assert.equal(input.resultText, "Partial summary without the source label.");
+    return {
+      kind: "resynthesize",
+      policyId: "source_evidence_carry_forward",
+      evidenceFormula: "source_bounded_evidence",
+      repairPrompt: "GENERIC_SOURCE_CARRY_FORWARD_REPAIR",
+      forceToolChoice: "none",
+    };
+  };
+
+  const repaired = await controller.synthesizeNonCompletedCloseout<
+    string,
+    string,
+    string
+  >({
+    reason: "wall_clock_budget",
+    messages: [{ role: "user", content: "Summarize the verified facts." }],
+    lastText: "unused",
+    synthesize: async () => ({
+      result: result("Partial summary without the source label."),
+      reduction: "initial-reduction",
+      reductionSnapshot: "initial-snapshot",
+      memoryFlush: "initial-flush",
+    }),
+    sourceEvidenceRepair: {
+      taskPrompt: "Summarize the verified facts.",
+      evidenceText: "Source A verified fact 42.",
+      repairMarkers,
+      toolTrace: [],
+      repairPolicy,
+      synthesizeRepair: async ({ messages }) => {
+        calls.push("repair");
+        assert.deepEqual(messages.slice(-2), [
+          { role: "assistant", content: "Partial summary without the source label." },
+          { role: "user", content: "GENERIC_SOURCE_CARRY_FORWARD_REPAIR" },
+        ]);
+        return {
+          result: result("Summary. Evidence: Source A verified fact 42."),
+          reduction: "repair-reduction",
+          reductionSnapshot: "repair-snapshot",
+          memoryFlush: "repair-flush",
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(calls, ["repair"]);
+  assert.equal(repaired.result.text, "Summary. Evidence: Source A verified fact 42.");
+  assert.deepEqual(repaired.memoryFlushes, ["initial-flush", "repair-flush"]);
+  assert.equal(repaired.reduction, "repair-reduction");
+  assert.equal(repaired.reductionSnapshot, "repair-snapshot");
+  assert.deepEqual(repairMarkers, [
+    { role: "user", content: "GENERIC_SOURCE_CARRY_FORWARD_REPAIR" },
+  ]);
+});
+
 test("TerminalCloseoutController owns completed terminal synthesis handoff", async () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Summarize." }];
@@ -1872,6 +1937,98 @@ test("TerminalCloseoutController owns completed terminal hook handoff assembly",
   ]);
 });
 
+test("TerminalCloseoutController wires completed evidence into non-completed source repair", async () => {
+  const controller = createTerminalCloseoutController();
+  const repairPolicy = createRepairPolicyRegistry();
+  const hookContext: { repairMarkers?: LLMMessage[] } = {};
+  const completedSession = {
+    finalContents: ["Source A verified fact 42."],
+    browserRecoverySummaries: [],
+  };
+  const completedToolResults = [
+    {
+      toolCallId: "call-source-a",
+      toolName: "sessions_spawn",
+      content: "Round detail verified value 42.",
+    },
+  ];
+  repairPolicy.evaluateNaturalFinish = (input) => {
+    assert.deepEqual(input.enabledPolicies, ["source_evidence_carry_forward"]);
+    assert.equal(
+      input.evidenceText,
+      "Source A verified fact 42.\n\nRound detail verified value 42.",
+    );
+    return {
+      kind: "resynthesize",
+      policyId: "source_evidence_carry_forward",
+      evidenceFormula: "source_bounded_evidence",
+      repairPrompt: "GENERIC_SOURCE_CARRY_FORWARD_REPAIR",
+      forceToolChoice: "none",
+    };
+  };
+  const closeout: ToolLoopCloseoutMetadata = {
+    reason: "wall_clock_budget",
+    maxRounds: 8,
+    maxWallClockMs: 120_000,
+    pendingToolCallCount: 1,
+    toolCallCount: 3,
+    roundCount: 3,
+    evidenceAvailable: true,
+  };
+  const { events, target } = recordingTarget();
+  let repairCalls = 0;
+
+  const completion = await controller.handleTerminalCloseoutHook({
+    reason: "wall_clock_budget",
+    decision: { closeout, reasonLines: ["budget reached"] },
+    messages: [{ role: "user", content: "Summarize the verified facts." }],
+    lastText: "unused",
+    target,
+    synthesize: async () => ({
+      result: result("Partial summary without Source A."),
+    }),
+    completedCloseoutHook: {
+      completedCloseout: {
+        synthesizeTerminalCloseout: async () => {
+          throw new Error("completed closeout synthesis must not run");
+        },
+      },
+      state: {
+        completedSession: () => completedSession,
+        completedSessionToolResults: () => completedToolResults,
+      },
+      hookContext,
+      evidence: {
+        roundEvidenceText: () => "Round detail verified value 42.",
+      },
+      packet: packet("Summarize the verified facts."),
+      baseGatewayInput: baseGatewayInput(),
+      repairPolicy,
+      toolTrace: [],
+      synthesizeRepair: async ({ gatewayInput, messages }) => {
+        repairCalls += 1;
+        assert.equal(gatewayInput.toolChoice, "none");
+        assert.equal(gatewayInput.tools, undefined);
+        assert.equal(gatewayInput.messages, messages);
+        return { result: result("Summary. Evidence: Source A verified fact 42.") };
+      },
+      synthesizeToolCallArtifactCleanup: async () => {
+        throw new Error("cleanup synthesis must not run");
+      },
+    },
+  });
+
+  assert.deepEqual(completion, {
+    kind: "final",
+    response: { text: "Summary. Evidence: Source A verified fact 42." },
+  });
+  assert.equal(repairCalls, 1);
+  assert.deepEqual(events, [
+    ["overwrite", closeout],
+    ["result", result("Summary. Evidence: Source A verified fact 42.")],
+  ]);
+});
+
 test("TerminalCloseoutController owns terminal synthesis callback wiring", async () => {
   const controller = createTerminalCloseoutController();
   const messages: LLMMessage[] = [{ role: "user", content: "Finish." }];
@@ -1954,6 +2111,9 @@ test("TerminalCloseoutController owns completed closeout reason and session guar
     finalContents: ["Delegated final evidence."],
     browserRecoverySummaries: [],
   };
+  const noRepairPolicy = createRepairPolicyRegistry();
+  noRepairPolicy.evaluateNaturalFinish = () => null;
+  let evidenceReads = 0;
   const guardedCompletedCloseout = {
     completedCloseout: {
       synthesizeTerminalCloseout: async () => {
@@ -1963,11 +2123,13 @@ test("TerminalCloseoutController owns completed closeout reason and session guar
     baseGatewayInput: baseGatewayInput(),
     evidence: {
       roundEvidenceText: () => {
-        throw new Error("completed evidence should not be read");
+        evidenceReads += 1;
+        return "";
       },
     },
     packet: packet("Finish."),
     repairMarkers,
+    repairPolicy: noRepairPolicy,
     toolTrace: [],
     synthesizeRepair: async () => {
       throw new Error("completed repair should not run");
@@ -2004,6 +2166,32 @@ test("TerminalCloseoutController owns completed closeout reason and session guar
     kind: "final",
     response: { text: "round limit final" },
   });
+  assert.equal(evidenceReads, 1);
+
+  const operatorCancelledCloseout: ToolLoopCloseoutMetadata = {
+    reason: "operator_cancelled",
+    maxRounds: 2,
+    toolCallCount: 1,
+    roundCount: 1,
+    evidenceAvailable: true,
+  };
+  const operatorCancelled = await controller.handleTerminalCloseoutHook({
+    reason: "operator_cancelled",
+    decision: { closeout: operatorCancelledCloseout },
+    messages,
+    lastText: "unused",
+    target: recordingTarget().target,
+    synthesize: async () => ({ result: result("cancelled final") }),
+    completedCloseout: {
+      ...guardedCompletedCloseout,
+      completedSession,
+    },
+  });
+  assert.deepEqual(operatorCancelled, {
+    kind: "final",
+    response: { text: "cancelled final" },
+  });
+  assert.equal(evidenceReads, 1);
 
   const completedCloseout: ToolLoopCloseoutMetadata = {
     reason: "completed_sub_agent_final",

@@ -15,6 +15,7 @@ import type {
   RuntimeProgressRecorder,
   WorkerKind,
 } from "@turnkeyai/core-types/team";
+import { resolveModelContextWindowTokens } from "@turnkeyai/llm-adapter/token-estimator";
 import {
   getContinuationContext,
   getDispatchContinuityMode,
@@ -231,7 +232,9 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       model: {
         provider: modelHint.provider,
         name: modelHint.name,
-        contextWindow: inferContextWindow(modelHint.name),
+        contextWindow: resolveModelContextWindowTokens({
+          model: modelHint.name ?? "",
+        }),
       },
       reservedOutputTokens: this.reservedOutputTokens,
       mode: currentRole.seat === "lead" ? "lead" : "member",
@@ -745,22 +748,6 @@ function buildOutputContract(role: RoleSlot, profile: { leadDirective: string; m
   }
 
   return profile.memberDirective;
-}
-
-function inferContextWindow(modelName?: string): number {
-  if (!modelName) {
-    return 128_000;
-  }
-
-  if (/claude|gemini|gpt-5|opus|sonnet/i.test(modelName)) {
-    return 1_000_000;
-  }
-
-  if (/minimax/i.test(modelName)) {
-    return 256_000;
-  }
-
-  return 128_000;
 }
 
 function inferRequestedCapabilities(role: RoleSlot): string[] {

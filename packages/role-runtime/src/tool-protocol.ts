@@ -76,10 +76,56 @@ export function isControlPlaneToolResultName(
   return (
     toolName === "sessions_list" ||
     toolName === "sessions_history" ||
+    toolName === "memory_search" ||
     toolName === "permission_query" ||
     toolName === "permission_result" ||
     toolName === "permission_applied"
   );
+}
+
+type ParsedSessionToolResult = NonNullable<
+  ReturnType<typeof parseSessionToolResult>
+>;
+
+export function sessionToolResultHasUsableEvidence(
+  result: ParsedSessionToolResult,
+): boolean {
+  if (result.status === "completed") {
+    return Boolean(
+      result.evidence_summary?.trim() ||
+        result.final_content?.trim() ||
+        result.result.trim(),
+    );
+  }
+  if (result.status === "partial" || result.status === "timeout") {
+    return Boolean(
+      result.evidence_available === true ||
+        result.evidence_summary?.trim() ||
+        result.final_content?.trim(),
+    );
+  }
+  return false;
+}
+
+export function nativeToolResultTraceHasUsableEvidence(
+  result: NativeToolResultTrace,
+): boolean {
+  if (
+    result.isError ||
+    result.cancelled ||
+    result.skipped
+  ) {
+    return false;
+  }
+  const content = result.content?.trim() ?? "";
+  if (!content) {
+    return false;
+  }
+  const parsedSession = parseSessionToolResult(content);
+  if (parsedSession) {
+    return sessionToolResultHasUsableEvidence(parsedSession);
+  }
+  return !isControlPlaneToolResultName(result.toolName);
 }
 
 export function parseJsonObject(value: unknown): Record<string, unknown> | null {
@@ -97,6 +143,9 @@ export function parseJsonObject(value: unknown): Record<string, unknown> | null 
 export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) {
     return;
+  }
+  if (signal.reason instanceof Error) {
+    throw signal.reason;
   }
   const error = new Error("operation aborted");
   error.name = "AbortError";
@@ -385,7 +434,7 @@ export function compactToolResultTraceContent(content: string): {
       ? {}
       : { evidence_available: parsed.evidence_available }),
     tool_chain: parsed.tool_chain,
-    ...compactSessionPayloadArtifactRefs(parsed.payload),
+    ...compactSessionPayloadReferences(parsed.payload),
     ...compactSessionPayloadEvidenceExcerpt(parsed.payload),
     ...(typeof parsed.evidence_summary === "string"
       ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1024) }
@@ -518,19 +567,133 @@ export function compactSessionPayloadArtifactRefs(
   };
 }
 
+function compactSessionPayloadReferences(
+  payload: unknown,
+):
+  | {
+      payload: {
+        artifactIds?: string[];
+        screenshotPaths?: string[];
+        sourceResults?: Array<Record<string, unknown>>;
+        sourceResultsCount?: number;
+        sourceResultsTruncated?: boolean;
+        pages?: Array<Record<string, unknown>>;
+        pagesCount?: number;
+        pagesTruncated?: boolean;
+      };
+    }
+  | Record<string, never> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {};
+  }
+  const record = payload as Record<string, unknown>;
+  const compacted: {
+    artifactIds?: string[];
+    screenshotPaths?: string[];
+    sourceResults?: Array<Record<string, unknown>>;
+    sourceResultsCount?: number;
+    sourceResultsTruncated?: boolean;
+    pages?: Array<Record<string, unknown>>;
+    pagesCount?: number;
+    pagesTruncated?: boolean;
+  } = {};
+  const artifactIds = readStringArray(record.artifactIds);
+  const screenshotPaths = readStringArray(record.screenshotPaths);
+  if (artifactIds.length > 0) compacted.artifactIds = artifactIds;
+  if (screenshotPaths.length > 0) compacted.screenshotPaths = screenshotPaths;
+
+  const sourceResults = compactPayloadSourceResults(record.sourceResults);
+  if (sourceResults.values.length > 0) {
+    compacted.sourceResults = sourceResults.values;
+    if (sourceResults.total > sourceResults.values.length) {
+      compacted.sourceResultsCount = sourceResults.total;
+      compacted.sourceResultsTruncated = true;
+    }
+  } else {
+    const pages = readPayloadEvidencePages(record)
+      .map(compactPayloadEvidencePage)
+      .filter((page): page is Record<string, unknown> => page !== null);
+    if (pages.length > 0) {
+      compacted.pages = pages.slice(0, 8);
+      if (pages.length > compacted.pages.length) {
+        compacted.pagesCount = pages.length;
+        compacted.pagesTruncated = true;
+      }
+    }
+  }
+  return Object.keys(compacted).length > 0 ? { payload: compacted } : {};
+}
+
+function compactPayloadSourceResults(value: unknown): {
+  values: Array<Record<string, unknown>>;
+  total: number;
+} {
+  if (!Array.isArray(value)) {
+    return { values: [], total: 0 };
+  }
+  const values = value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return null;
+      }
+      const record = item as Record<string, unknown>;
+      const url = readStringField(record.url);
+      const label = readStringField(record.label);
+      const status = readStringField(record.status);
+      const page = compactPayloadEvidencePage(record.page);
+      if (!url && !label && !status && !page) {
+        return null;
+      }
+      return {
+        ...(url ? { url: sliceUtf8(url, 512) } : {}),
+        ...(label ? { label: sliceUtf8(label, 256) } : {}),
+        ...(status ? { status: sliceUtf8(status, 64) } : {}),
+        ...(page ? { page } : {}),
+      };
+    })
+    .filter((item): item is Record<string, unknown> => item !== null);
+  return { values: values.slice(0, 8), total: values.length };
+}
+
+function compactPayloadEvidencePage(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const requestedUrl = readStringField(record.requestedUrl);
+  const finalUrl = readStringField(record.finalUrl);
+  const title = readStringField(record.title);
+  const statusCode =
+    typeof record.statusCode === "number" && Number.isFinite(record.statusCode)
+      ? record.statusCode
+      : null;
+  if (!requestedUrl && !finalUrl && !title && statusCode === null) {
+    return null;
+  }
+  return {
+    ...(requestedUrl ? { requestedUrl: sliceUtf8(requestedUrl, 512) } : {}),
+    ...(finalUrl ? { finalUrl: sliceUtf8(finalUrl, 512) } : {}),
+    ...(title ? { title: sliceUtf8(title, 256) } : {}),
+    ...(statusCode === null ? {} : { statusCode }),
+  };
+}
+
 export function readPayloadEvidenceExcerpt(payload: unknown): string | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return null;
   }
   const record = payload as Record<string, unknown>;
   const pages = readPayloadEvidencePages(record);
+  const pageParts = pages.flatMap((page) => [
+    readStringField(page.finalUrl),
+    readStringField(page.title),
+    readStringField(page.textExcerpt),
+  ]);
   const parts = [
+    ...pageParts,
     readStringField(record.content),
-    ...pages.flatMap((page) => [
-      readStringField(page.finalUrl),
-      readStringField(page.title),
-      readStringField(page.textExcerpt),
-    ]),
   ]
     .filter((part): part is string => Boolean(part))
     .map((part) => part.trim());

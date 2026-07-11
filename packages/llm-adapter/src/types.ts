@@ -14,6 +14,8 @@ export interface ModelConfigEntry {
   query?: Record<string, string>;
   temperature?: number;
   maxOutputTokens?: number;
+  contextWindowTokens?: number;
+  promptCacheMode?: "off" | "active";
   aliases?: string[];
   enabled?: boolean;
 }
@@ -136,6 +138,8 @@ export interface RequestEnvelopeDiagnostics {
   inlinePdfBytes: number;
   multimodalPartCount: number;
   totalSerializedBytes: number;
+  estimatedInputTokens?: number;
+  inputTokenLimit?: number;
   overLimitKeys: Array<
     | "messageCount"
     | "promptChars"
@@ -153,6 +157,7 @@ export interface RequestEnvelopeDiagnostics {
     | "inlinePdfBytes"
     | "multimodalPartCount"
     | "totalSerializedBytes"
+    | "estimatedInputTokens"
   >;
 }
 
@@ -160,6 +165,8 @@ export interface GenerateTextInput {
   modelId?: string;
   modelChainId?: string;
   signal?: AbortSignal;
+  /** Absolute runtime deadline shared by every physical provider attempt. */
+  deadlineAt?: number;
   messages: LLMMessage[];
   tools?: LLMToolDefinition[];
   toolChoice?: LLMToolChoice;
@@ -167,6 +174,101 @@ export interface GenerateTextInput {
   maxOutputTokens?: number;
   metadata?: Record<string, unknown>;
   envelope?: RequestEnvelopeHint;
+  /** Internal provider transport heartbeat used to reset the gateway idle timer. */
+  onProviderActivity?: (activity?: ProviderActivityKind) => void;
+  /** Internal physical-provider lifecycle signal for durable runtime tracing. */
+  onProviderLifecycle?: (
+    event: ProviderLifecycleEvent,
+  ) => void | Promise<void>;
+}
+
+export type ProviderActivityKind = "headers" | "body" | "event";
+
+interface ProviderLifecycleEventBase {
+  at: number;
+  attempt: number;
+  modelId: string;
+  providerId: string;
+  protocol: ModelProtocol;
+}
+
+export type ProviderLifecycleEvent =
+  | (ProviderLifecycleEventBase & { kind: "attempt_started" })
+  | (ProviderLifecycleEventBase & {
+      kind: "activity";
+      activity: ProviderActivityKind;
+    })
+  | (ProviderLifecycleEventBase & {
+      kind: "attempt_failed";
+      code: string;
+      message: string;
+      retryable: boolean;
+    })
+  | (ProviderLifecycleEventBase & {
+      kind: "retry_wait";
+      code: string;
+      retry: number;
+      delayMs: number;
+    })
+  | (ProviderLifecycleEventBase & { kind: "attempt_completed" });
+
+export type ProviderRequestErrorCode =
+  | "authentication"
+  | "not_found"
+  | "rate_limit"
+  | "server_error"
+  | "network_error"
+  | "timeout"
+  | "deadline_exceeded"
+  | "provider_error";
+
+export class ProviderRequestError extends Error {
+  readonly status: number | undefined;
+  readonly code: ProviderRequestErrorCode;
+  readonly retryAfterMs: number | undefined;
+  readonly retryable: boolean;
+
+  constructor(
+    message: string,
+    input: {
+      status?: number;
+      code: ProviderRequestErrorCode;
+      retryAfterMs?: number;
+      retryable: boolean;
+      cause?: unknown;
+    },
+  ) {
+    super(message);
+    this.name = "ProviderRequestError";
+    this.status = input.status;
+    this.code = input.code;
+    this.retryAfterMs = input.retryAfterMs;
+    this.retryable = input.retryable;
+    if (input.cause !== undefined) {
+      this.cause = input.cause;
+    }
+  }
+}
+
+export interface ModelRetryDiagnostics {
+  modelId: string;
+  attempts: number;
+  retries: number;
+  errors: string[];
+}
+
+export interface RetryDiagnostics {
+  totalAttempts: number;
+  totalRetries: number;
+  models: ModelRetryDiagnostics[];
+}
+
+export interface LLMTokenUsage {
+  inputTokens?: number;
+  uncachedInputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface GenerateTextResult {
@@ -180,11 +282,9 @@ export interface GenerateTextResult {
   adapterName: string;
   attemptedModelIds?: string[];
   stopReason?: string;
-  usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-  };
+  usage?: LLMTokenUsage;
   requestEnvelope?: RequestEnvelopeDiagnostics;
+  retryDiagnostics?: RetryDiagnostics;
   raw: unknown;
 }
 

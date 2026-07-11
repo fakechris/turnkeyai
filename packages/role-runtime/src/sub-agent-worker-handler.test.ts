@@ -16,6 +16,7 @@ import type { GenerateTextInput, GenerateTextResult } from "@turnkeyai/llm-adapt
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
 import { LLMSubAgentWorkerHandler } from "./sub-agent-worker-handler";
+import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 
 test("LLMSubAgentWorkerHandler runs a private worker tool before returning a final result", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
@@ -71,6 +72,84 @@ test("LLMSubAgentWorkerHandler runs a private worker tool before returning a fin
   );
 });
 
+test("LLMSubAgentWorkerHandler can recover externalized private-tool evidence", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("tool-read", "artifacts_read", {
+        artifact_id: "tool-result-sub-agent",
+        offset_bytes: 0,
+        limit_bytes: 4096,
+      });
+    }
+    assert.match(
+      readToolContent(input.messages.at(-1)?.content ?? ""),
+      /SUB_AGENT_FACT/,
+    );
+    return textResult("Recovered the source fact.");
+  };
+  const store: ToolResultArtifactStore = {
+    async put(input) {
+      return {
+        protocol: "turnkeyai.tool_result_artifact.v1",
+        artifactId: "tool-result-sub-agent",
+        threadId: input.threadId,
+        runKey: input.runKey,
+        toolCallId: input.toolCallId,
+        toolName: input.toolName,
+        sizeBytes: Buffer.byteLength(input.content, "utf8"),
+        sha256: "b".repeat(64),
+        createdAt: input.createdAt,
+      };
+    },
+    async read() {
+      return {
+        record: {
+          protocol: "turnkeyai.tool_result_artifact.v1",
+          artifactId: "tool-result-sub-agent",
+          threadId: "thread-1",
+          runKey: "run-1",
+          toolCallId: "tool-large",
+          toolName: "explore_run",
+          sizeBytes: 70_000,
+          sha256: "b".repeat(64),
+          createdAt: 1,
+        },
+        content: "SUB_AGENT_FACT",
+        offsetBytes: 0,
+        nextOffsetBytes: 14,
+        eof: false,
+      };
+    },
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run() {
+        return {
+          workerType: "explore",
+          status: "completed",
+          summary: "Fetched source.",
+          payload: {},
+        };
+      },
+    }),
+    gateway,
+    toolResultArtifactStore: store,
+  });
+
+  const result = await handler.run(buildInvocationInput("explore"));
+
+  assert.equal(result?.summary, "Recovered the source fact.");
+  assert.deepEqual(
+    gatewayInputs[0]?.tools?.map((tool) => tool.name),
+    ["explore_run", "artifacts_read"],
+  );
+});
+
 test("LLMSubAgentWorkerHandler keeps browser work on a browser-specific private tool", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -101,7 +180,7 @@ test("LLMSubAgentWorkerHandler keeps browser work on a browser-specific private 
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /same browser operation at most three times/i);
 });
 
-test("LLMSubAgentWorkerHandler blocks recursive session tools at executor level", async () => {
+test("LLMSubAgentWorkerHandler blocks recursive session tools before execution", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let innerCalled = false;
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -142,8 +221,15 @@ test("LLMSubAgentWorkerHandler blocks recursive session tools at executor level"
   assert.deepEqual(advertisedToolNames, ["explore_run"]);
   const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
   const toolContent = readToolContent(toolMessage?.content ?? "");
-  assert.match(toolContent, /recursive_session_tool_blocked/);
-  assert.match(toolContent, /Sub-agents cannot call session coordination tool sessions_spawn/);
+  assert.deepEqual(JSON.parse(toolContent), {
+    protocol: "turnkeyai.tool_argument_error.v1",
+    code: "unknown_tool",
+    tool_name: "sessions_spawn",
+    issues: [
+      { path: "/", keyword: "tool", expected: "an offered tool name" },
+    ],
+    instruction: "Choose an offered tool and resend the call.",
+  });
   const metadata = (result?.payload as { metadata?: { toolUse?: { rounds?: Array<{ results: Array<{ isError: boolean }> }> } } })
     .metadata;
   assert.equal(metadata?.toolUse?.rounds?.[0]?.results?.[0]?.isError, true);
@@ -325,6 +411,14 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   const payload = result?.payload as Record<string, unknown>;
   assert.deepEqual(payload.artifactIds, ["task-open:screenshot", "task-snapshot:artifact"]);
   assert.deepEqual(payload.screenshotPaths, ["/tmp/browser-session-1/open.png"]);
+  assert.deepEqual(payload.pages, [
+    {
+      requestedUrl: "https://example.test/",
+      finalUrl: "https://example.test/",
+      title: "Example",
+      textExcerpt: "Example page text.",
+    },
+  ]);
   const transcript = result?.sessionHistoryEntries ?? [];
   assert.deepEqual(transcript.filter((entry) => entry.role !== "system").map((entry) => [entry.role, entry.toolName ?? null]), [
     ["assistant", "browser_open"],
@@ -970,7 +1064,7 @@ test("LLMSubAgentWorkerHandler reports failed private browser action traces as t
     gatewayInputs.push(input);
     const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
     if (!sawToolResult) {
-      return toolCallResult("tool-1", "browser_screenshot", { fullPage: true });
+      return toolCallResult("tool-1", "browser_screenshot", { label: "failure-trace" });
     }
     return textResult("Reported browser failure.");
   };
@@ -1331,7 +1425,13 @@ test("LLMSubAgentWorkerHandler returns a tool error for malformed private browse
 
   assert.equal(result?.status, "completed");
   assert.equal(bridgeCalled, false);
-  assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /requires an object input/);
+  const toolContent = readToolContent(
+    gatewayInputs[1]?.messages.find((message) => message.role === "tool")
+      ?.content ?? "",
+  );
+  assert.match(toolContent, /turnkeyai\.tool_argument_error\.v1/);
+  assert.match(toolContent, /invalid_tool_arguments/);
+  assert.match(toolContent, /"expected":"object"/);
 });
 
 test("LLMSubAgentWorkerHandler derives private refId click labels from prior browser snapshots", async () => {
@@ -1697,7 +1797,10 @@ test("LLMSubAgentWorkerHandler returns a tool error for malformed private tool i
   assert.equal(result?.status, "completed");
   assert.equal(result?.summary, "Recovered after malformed tool input.");
   const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
-  assert.match(readToolContent(toolMessage?.content ?? ""), /Missing required string field: instruction/);
+  const toolContent = readToolContent(toolMessage?.content ?? "");
+  assert.match(toolContent, /turnkeyai\.tool_argument_error\.v1/);
+  assert.match(toolContent, /invalid_tool_arguments/);
+  assert.match(toolContent, /"expected":"object"/);
 });
 
 function buildInnerHandler(input: {

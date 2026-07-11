@@ -11,8 +11,10 @@ import type {
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "./native-tool-messages";
+import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 import type { TaskToolService } from "./task-tool-service";
 import type { RolePromptPacket } from "./prompt-policy";
+import { parseBackgroundWorkerSessionAccepted } from "./background-worker-session";
 import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
 import {
@@ -23,6 +25,118 @@ import {
   recordRoleToolProgressSafely,
   type RoleToolProgressEvent,
 } from "./tool-use";
+
+test("sessions_spawn launches independent background workers without awaiting completion", async () => {
+  let spawnCount = 0;
+  let sendStarted = 0;
+  let sendCompleted = 0;
+  const releases: Array<() => void> = [];
+  const workerRuntime = {
+    async spawn() {
+      spawnCount += 1;
+      return {
+        workerType: "explore",
+        workerRunKey: `worker:explore:background:${spawnCount}`,
+      };
+    },
+    async send() {
+      sendStarted += 1;
+      await new Promise<void>((resolve) => releases.push(resolve));
+      sendCompleted += 1;
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "background source complete",
+        payload: {},
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+  });
+  const deadlineAt = Date.now() + 60_000;
+  const executions = Promise.all(
+    ["a", "b", "c"].map((suffix) =>
+      executor.execute({
+        call: {
+          id: `call-background-${suffix}`,
+          name: "sessions_spawn",
+          input: {
+            agent_id: "explore",
+            task: `Inspect independent source ${suffix}.`,
+            label: `source ${suffix}`,
+            run_in_background: true,
+          },
+        },
+        activation: buildActivation(),
+        packet: buildPacket(),
+        deadlineAt,
+      }),
+    ),
+  );
+  await waitUntilForTest(() => sendStarted === 3);
+  const early = await Promise.race([
+    executions.then((results) => ({ returned: true as const, results })),
+    sleep(10).then(() => ({ returned: false as const })),
+  ]);
+  assert.equal(sendCompleted, 0);
+  for (const release of releases) release();
+  const results = early.returned ? early.results : await executions;
+
+  assert.equal(early.returned, true);
+  assert.equal(spawnCount, 3);
+  for (const [index, result] of results.entries()) {
+    const accepted = parseBackgroundWorkerSessionAccepted(result.content);
+    assert.equal(accepted?.status, "running");
+    assert.equal(accepted?.tool_call_id, `call-background-${["a", "b", "c"][index]}`);
+    assert.equal(accepted?.deadline_at, deadlineAt);
+  }
+  await waitUntilForTest(() => sendCompleted === 3);
+});
+
+test("sessions_spawn consumes background rejection and deduplicates the tool call", async () => {
+  let spawnCount = 0;
+  let sendCount = 0;
+  const observedErrors: unknown[] = [];
+  const failure = new Error("background worker failed");
+  const workerRuntime = {
+    async spawn() {
+      spawnCount += 1;
+      return { workerType: "explore", workerRunKey: "worker:explore:deduped" };
+    },
+    async send() {
+      sendCount += 1;
+      throw failure;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    onBackgroundWorkerError: (error) => observedErrors.push(error),
+  });
+  const execute = () => executor.execute({
+    call: {
+      id: "call-background-deduped",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Inspect one source exactly once.",
+        run_in_background: true,
+      },
+    },
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  const [first, second] = await Promise.all([execute(), execute()]);
+  await waitUntilForTest(() => observedErrors.length === 1);
+
+  assert.equal(first.content, second.content);
+  assert.equal(spawnCount, 1);
+  assert.equal(sendCount, 1);
+  assert.equal(observedErrors[0], failure);
+});
 
 test("recordRoleToolProgressSafely records runtime tool progress", async () => {
   const events: Array<{
@@ -96,6 +210,67 @@ test("recordRoleToolProgressSafely swallows recorder failures", async () => {
 
   assert.equal(errors.length, 1);
   assert.equal(errors[0]?.[0], "runtime tool progress recording failed");
+});
+
+test("artifacts_read exposes bounded tool-result artifact pages", async () => {
+  const store: ToolResultArtifactStore = {
+    async put() {
+      throw new Error("not used");
+    },
+    async read(input) {
+      assert.deepEqual(input, {
+        artifactId: "tool-result-1",
+        offsetBytes: 512,
+        limitBytes: 4_096,
+      });
+      return {
+        record: {
+          protocol: "turnkeyai.tool_result_artifact.v1",
+          artifactId: "tool-result-1",
+          threadId: "thread-1",
+          runKey: "run-1",
+          toolCallId: "source-call",
+          toolName: "web_fetch",
+          sizeBytes: 70_000,
+          sha256: "a".repeat(64),
+          createdAt: 1,
+        },
+        content: "page content",
+        offsetBytes: 512,
+        nextOffsetBytes: 524,
+        eof: false,
+      };
+    },
+  };
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolResultArtifactStore: store,
+  });
+
+  assert.equal(
+    executor.definitions().some((definition) => definition.name === "artifacts_read"),
+    true,
+  );
+  const result = await executor.execute({
+    call: {
+      id: "read-1",
+      name: "artifacts_read",
+      input: {
+        artifact_id: "tool-result-1",
+        offset_bytes: 512,
+        limit_bytes: 4_096,
+      },
+    },
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+  const payload = JSON.parse(result.content) as Record<string, unknown>;
+
+  assert.equal(payload["artifact_id"], "tool-result-1");
+  assert.equal(payload["content"], "page content");
+  assert.equal(payload["next_offset_bytes"], 524);
+  assert.equal(payload["eof"], false);
+  assert.equal(payload["sha256"], "a".repeat(64));
 });
 
 test("emitRoleToolProgressSafely records runtime progress and forwards to observer", async () => {
@@ -316,6 +491,56 @@ test("executeRuntimeForcedToolRound records native trace, appends messages, and 
     {},
   ]);
   assert.deepEqual(providerRounds, [{ round: 4, messagesLength: 3 }]);
+});
+
+test("executeRuntimeForcedToolRound externalizes history without changing returned evidence", async () => {
+  const originalContent = "original oversized evidence";
+  const referenceContent = JSON.stringify({
+    protocol: "turnkeyai.tool_result_artifact.v1",
+    artifact_id: "tool-result-1",
+  });
+  const result = await executeRuntimeForcedToolRound({
+    toolLoop: {
+      executor: {
+        definitions: () => [],
+        async execute() {
+          return {
+            toolCallId: "call-1",
+            toolName: "web_fetch",
+            content: originalContent,
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    now: () => 1234,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    messages: [{ role: "user", content: "fetch it" }],
+    toolTrace: [],
+    toolCalls: [{ id: "call-1", name: "web_fetch", input: {} }],
+    round: 1,
+    toolLoopStartedAtMs: 1200,
+    assistantText: "Fetching.",
+    mapToolResultsForHistory: async (results) =>
+      results.map((toolResult) => ({
+        ...toolResult,
+        content: referenceContent,
+      })),
+    persistNativeToolTrace: async () => undefined,
+    recordProviderToolProtocolRound: async () => undefined,
+  });
+
+  assert.equal(result.toolResults[0]?.content, originalContent);
+  assert.equal(result.messages.at(-1)?.role, "tool");
+  const historyContent = result.messages.at(-1)?.content;
+  assert.equal(Array.isArray(historyContent), true);
+  assert.equal(
+    Array.isArray(historyContent) && historyContent[0]?.type === "tool_result"
+      ? historyContent[0].content
+      : undefined,
+    referenceContent,
+  );
 });
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {
@@ -3550,7 +3775,7 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
   assert.equal(result.progress?.at(-1)?.detail?.evidence_available, true);
 });
 
-test("sessions_spawn preserves cooperative partial evidence returned after timeout interrupt", async () => {
+test("sessions_spawn preserves cooperative partial evidence inside a resumable timeout result", async () => {
   let sendStarted!: () => void;
   let releasePartial!: () => void;
   let interruptedReason: string | null = null;
@@ -3637,19 +3862,18 @@ test("sessions_spawn preserves cooperative partial evidence returned after timeo
   const body = JSON.parse(result.content) as {
     status: string;
     result: string;
+    resumable?: boolean;
     evidence_summary?: string;
-    payload?: { page?: { textExcerpt?: string }; artifactIds?: string[]; screenshotPaths?: string[] };
   };
   assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
-  assert.equal(result.isError, undefined);
-  assert.equal(body.status, "partial");
-  assert.match(body.result, /Rendered browser evidence/);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.resumable, true);
+  assert.match(body.result, /timed out/);
   assert.match(body.evidence_summary ?? "", /Hello World/);
-  assert.equal(body.payload?.page?.textExcerpt, "Dynamically Loaded Page Elements Example 1 Hello World!");
-  assert.deepEqual(body.payload?.artifactIds, ["browser-step:hello-world"]);
-  assert.deepEqual(body.payload?.screenshotPaths, ["/Users/chris/.turnkeyai/data/browser-artifacts/hello-world.png"]);
-  assert.equal(result.progress?.at(-1)?.phase, "completed");
-  assert.equal(result.progress?.at(-1)?.detail?.status, "partial");
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+  assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+  assert.equal(result.progress?.at(-1)?.detail?.evidence_available, true);
 });
 
 test("sessions_spawn keeps timeout result when worker returns completed after timeout interrupt", async () => {
@@ -4470,7 +4694,7 @@ test("sessions_spawn runs one no-tools timeout summary continuation for LLM sub-
   assert.equal(body.status, "timeout");
   assert.equal(body.resumable, true);
   assert.match(body.result, /Sub-agent session timed out/);
-  assert.match(body.evidence_summary, /Evidence-only summary after timeout/);
+  assert.match(body.evidence_summary, /Verified source A before timeout/);
 });
 
 test("sessions_send interrupts a follow-up worker call on timeout", async () => {
@@ -7463,6 +7687,14 @@ function buildPacket(): RolePromptPacket {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntilForTest(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await sleep(2);
+  }
+  throw new Error("condition was not met");
 }
 
 test("sessions_list accepts snake_case filters matching its own output fields", async () => {

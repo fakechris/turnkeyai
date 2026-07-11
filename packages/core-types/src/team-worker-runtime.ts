@@ -105,6 +105,8 @@ export interface WorkerSessionContextRecord {
   parentSessionKey?: RunKey;
   toolCallId?: string;
   label?: string;
+  background?: boolean;
+  deadlineAt?: number;
 }
 
 export interface WorkerSessionRecord {
@@ -112,6 +114,11 @@ export interface WorkerSessionRecord {
   state: WorkerSessionState;
   executionToken: number;
   context?: WorkerSessionContextRecord;
+  pendingInvocation?: {
+    activation: RoleActivationInput;
+    packet: RolePromptPacketLike;
+    toolCallId?: string;
+  };
 }
 
 export interface WorkerMessageInput {
@@ -119,6 +126,7 @@ export interface WorkerMessageInput {
   activation: RoleActivationInput;
   packet: RolePromptPacketLike;
   toolCallId?: string;
+  signal?: AbortSignal;
 }
 
 export interface WorkerResumeInput {
@@ -126,6 +134,7 @@ export interface WorkerResumeInput {
   activation: RoleActivationInput;
   packet: RolePromptPacketLike;
   toolCallId?: string;
+  signal?: AbortSignal;
 }
 
 export interface WorkerInterruptInput {

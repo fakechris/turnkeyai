@@ -38,7 +38,8 @@
       "label": "MiniMax via OpenAI-Compatible",
       "providerId": "minimax",
       "protocol": "openai-compatible",
-      "model": "minimax",
+      "model": "MiniMax-M3[1m]",
+      "contextWindowTokens": 1000000,
       "baseURL": "https://your-minimax-compatible-baseurl.example/v1",
       "apiKeyEnv": "MINIMAX_API_KEY"
     }

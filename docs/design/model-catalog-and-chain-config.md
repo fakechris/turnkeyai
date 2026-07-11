@@ -40,6 +40,7 @@
 - `query`
 - `temperature`
 - `maxOutputTokens`
+- `contextWindowTokens`
 - `aliases`
 - `enabled`
 

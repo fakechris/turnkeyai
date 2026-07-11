@@ -22,8 +22,17 @@ import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
-import { SESSION_TOOL_NAMES } from "./tool-capability-registry";
-import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor } from "./tool-use";
+import {
+  buildArtifactToolDefinitions,
+  SESSION_TOOL_NAMES,
+} from "./tool-capability-registry";
+import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
+import {
+  executeToolResultArtifactRead,
+  type RoleToolExecutionInput,
+  type RoleToolExecutionResult,
+  type RoleToolExecutor,
+} from "./tool-use";
 import { summarizeWorkerSessionEvidence } from "./worker-session-transcript";
 
 const DEFAULT_BROWSER_SUB_AGENT_MAX_ROUNDS = 15;
@@ -53,6 +62,7 @@ export interface LLMSubAgentWorkerHandlerOptions {
   gateway: LLMGateway;
   browserBridge?: BrowserBridge;
   runtimeProgressRecorder?: RuntimeProgressRecorder;
+  toolResultArtifactStore?: ToolResultArtifactStore;
   clock?: Clock;
   maxRounds?: number;
   maxWallClockMs?: number;
@@ -64,6 +74,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
   private readonly gateway: LLMGateway;
   private readonly browserBridge: BrowserBridge | undefined;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
+  private readonly toolResultArtifactStore: ToolResultArtifactStore | undefined;
   private readonly clock: Clock;
   private readonly maxRounds: number;
   private readonly maxWallClockMs: number;
@@ -74,6 +85,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
     this.gateway = options.gateway;
     this.browserBridge = options.browserBridge;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
+    this.toolResultArtifactStore = options.toolResultArtifactStore;
     this.clock = options.clock ?? { now: () => Date.now() };
     this.maxRounds =
       options.maxRounds ??
@@ -108,11 +120,17 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       innerHandler: this.innerHandler,
       parentInput: input,
       ...(this.browserBridge ? { browserBridge: this.browserBridge } : {}),
+      ...(this.toolResultArtifactStore
+        ? { toolResultArtifactStore: this.toolResultArtifactStore }
+        : {}),
     });
     const generator = new LLMRoleResponseGenerator({
       gateway: this.gateway,
       ...(this.runtimeProgressRecorder ? { runtimeProgressRecorder: this.runtimeProgressRecorder } : {}),
       clock: this.clock,
+      ...(this.toolResultArtifactStore
+        ? { toolResultArtifactStore: this.toolResultArtifactStore }
+        : {}),
       toolLoop: {
         executor,
         maxRounds: this.maxRounds,
@@ -137,6 +155,8 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
         this.kind === "browser" ? summarizeBrowserPrivateToolRecovery(reply.metadata ?? {}) : null;
       const browserArtifacts =
         this.kind === "browser" ? collectBrowserPrivateToolArtifacts(reply.metadata ?? {}) : null;
+      const browserPages =
+        this.kind === "browser" ? collectBrowserPrivateToolPages(reply.metadata ?? {}) : [];
       const summary = browserRecovery
         ? `${browserRecovery.summary} ${summarizeReply(reply.content)}`
         : summarizeReply(reply.content);
@@ -162,6 +182,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
           ...(browserRecovery ? { browserRecovery } : {}),
           content: reply.content,
           metadata: reply.metadata ?? {},
+          ...(browserPages.length ? { pages: browserPages } : {}),
           ...(browserArtifacts?.artifactIds.length ? { artifactIds: browserArtifacts.artifactIds } : {}),
           ...(browserArtifacts?.screenshotPaths.length ? { screenshotPaths: browserArtifacts.screenshotPaths } : {}),
         },
@@ -239,6 +260,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   private readonly innerHandler: WorkerHandler;
   private readonly parentInput: WorkerInvocationInput;
   private readonly browserBridge: BrowserBridge | undefined;
+  private readonly toolResultArtifactStore: ToolResultArtifactStore | undefined;
   private readonly fallbackWorkerRunKey: string;
   private innerSessionState: WorkerSessionState | undefined;
   private toolExecutionCount = 0;
@@ -248,11 +270,13 @@ class SubAgentToolExecutor implements RoleToolExecutor {
     innerHandler: WorkerHandler;
     parentInput: WorkerInvocationInput;
     browserBridge?: BrowserBridge;
+    toolResultArtifactStore?: ToolResultArtifactStore;
   }) {
     this.kind = options.kind;
     this.innerHandler = options.innerHandler;
     this.parentInput = options.parentInput;
     this.browserBridge = options.browserBridge;
+    this.toolResultArtifactStore = options.toolResultArtifactStore;
     this.fallbackWorkerRunKey =
       options.parentInput.sessionState?.workerRunKey ??
       `sub-agent:${options.kind}:${options.parentInput.activation.handoff.taskId}:${++fallbackWorkerRunKeyCounter}`;
@@ -288,8 +312,11 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   }
 
   definitions(): LLMToolDefinition[] {
+    const artifactTools = this.toolResultArtifactStore
+      ? buildArtifactToolDefinitions()
+      : [];
     if (this.kind === "browser" && this.browserBridge) {
-      return buildBrowserPrivateToolDefinitions();
+      return [...buildBrowserPrivateToolDefinitions(), ...artifactTools];
     }
     return [
       {
@@ -307,6 +334,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
           required: ["instruction"],
         },
       },
+      ...artifactTools,
     ];
   }
 
@@ -323,6 +351,13 @@ class SubAgentToolExecutor implements RoleToolExecutor {
           toolName: input.call.name,
         },
       };
+    }
+
+    if (input.call.name === "artifacts_read") {
+      return executeToolResultArtifactRead(
+        input.call,
+        this.toolResultArtifactStore,
+      );
     }
 
     if (this.kind === "browser" && this.browserBridge) {
@@ -1484,6 +1519,35 @@ function collectBrowserPrivateToolArtifacts(metadata: Record<string, unknown>):
   };
 }
 
+type BrowserEvidencePage = Pick<
+  BrowserTaskResult["page"],
+  "requestedUrl" | "finalUrl" | "title" | "textExcerpt"
+>;
+
+function collectBrowserPrivateToolPages(metadata: Record<string, unknown>): BrowserEvidencePage[] {
+  const pages = new Map<string, BrowserEvidencePage>();
+  for (const round of readNativeToolRounds(metadata)) {
+    for (const result of round.results) {
+      if (!result.toolName.startsWith("browser_") || !result.content || result.isError) {
+        continue;
+      }
+      const parsed = parseBrowserPrivateToolPayload(result.content);
+      if (!parsed?.page) {
+        continue;
+      }
+      const key =
+        parsed.page.finalUrl ||
+        parsed.page.requestedUrl ||
+        parsed.page.title ||
+        parsed.page.textExcerpt.slice(0, 120);
+      if (!pages.has(key)) {
+        pages.set(key, parsed.page);
+      }
+    }
+  }
+  return [...pages.values()];
+}
+
 function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
   | {
       resumeMode?: NonNullable<BrowserTaskResult["resumeMode"]>;
@@ -1533,7 +1597,12 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
       if (!parsed || parsed.resumeMode === "hot") {
         continue;
       }
-      latest = parsed;
+      latest = {
+        resumeMode: parsed.resumeMode,
+        sessionId: parsed.sessionId,
+        ...(parsed.profileFallback ? { profileFallback: parsed.profileFallback } : {}),
+        ...(parsed.targetId ? { targetId: parsed.targetId } : {}),
+      };
     }
   }
   const failureBuckets = [...failureBucketCounts.entries()]
@@ -1581,6 +1650,7 @@ function parseBrowserPrivateToolPayload(content: string):
       targetId?: string;
       artifactIds?: string[];
       screenshotPaths?: string[];
+      page?: BrowserEvidencePage;
     }
   | null {
   let parsed: unknown;
@@ -1599,6 +1669,7 @@ function parseBrowserPrivateToolPayload(content: string):
   const profileFallback = parseBrowserPrivateProfileFallback(payload["profileFallback"]);
   const artifactIds = readStringArray(payload["artifactIds"]);
   const screenshotPaths = readStringArray(payload["screenshotPaths"]);
+  const page = readBrowserEvidencePage(payload["page"]);
   if ((resumeMode !== "hot" && resumeMode !== "warm" && resumeMode !== "cold") || typeof sessionId !== "string") {
     return null;
   }
@@ -1609,7 +1680,31 @@ function parseBrowserPrivateToolPayload(content: string):
     ...(typeof targetId === "string" ? { targetId } : {}),
     ...(artifactIds.length ? { artifactIds } : {}),
     ...(screenshotPaths.length ? { screenshotPaths } : {}),
+    ...(page ? { page } : {}),
   };
+}
+
+function readBrowserEvidencePage(value: unknown): BrowserEvidencePage | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const requestedUrl = readString(value["requestedUrl"]) ?? "";
+  const finalUrl = readString(value["finalUrl"]) ?? requestedUrl;
+  const title = readString(value["title"]) ?? "";
+  const textExcerpt = readString(value["textExcerpt"]) ?? "";
+  if (!requestedUrl && !finalUrl && !title && !textExcerpt) {
+    return null;
+  }
+  return {
+    requestedUrl: requestedUrl || finalUrl,
+    finalUrl,
+    title,
+    textExcerpt,
+  };
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function addStringArray(target: Set<string>, value: unknown): void {

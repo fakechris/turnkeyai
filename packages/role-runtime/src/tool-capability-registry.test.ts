@@ -21,7 +21,10 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(spawn?.description ?? "", /Use browser directly for authenticated, interactive, visual, JS-rendered, localhost/);
   assert.match(spawn?.description ?? "", /loopback, private-network, internal, dashboard, user-session, or browser-visible page-review tasks/);
   const spawnSchema = spawn?.inputSchema as {
-    properties?: { agent_id?: { enum?: string[] } };
+    properties?: {
+      agent_id?: { enum?: string[] };
+      run_in_background?: { type?: string };
+    };
   };
   const listSchema = list?.inputSchema as {
     properties?: { agent_id?: { enum?: string[] }; kinds?: { items?: { enum?: string[] } } };
@@ -29,6 +32,7 @@ test("native tool capability registry drives schemas and prompt harness from the
 
   assert.deepEqual(registry.availableWorkerKinds(), ["browser", "explore"]);
   assert.deepEqual(spawnSchema.properties?.agent_id?.enum, ["browser", "explore"]);
+  assert.equal(spawnSchema.properties?.run_in_background?.type, "boolean");
   assert.deepEqual(listSchema.properties?.agent_id?.enum, ["browser", "explore"]);
   assert.deepEqual(listSchema.properties?.kinds?.items?.enum, ["browser", "explore"]);
   assert.deepEqual(
@@ -179,4 +183,23 @@ test("native tool capability registry includes task tools only when enabled", ()
   );
   assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Mission Task Management/);
   assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Mark a task done only after/);
+});
+
+test("native tool capability registry includes artifact paging only when enabled", () => {
+  const disabled = createNativeToolCapabilityRegistry();
+  assert.equal(
+    disabled.definitions().some((definition) => definition.name === "artifacts_read"),
+    false,
+  );
+
+  const enabled = createNativeToolCapabilityRegistry({ artifactsEnabled: true });
+  assert.deepEqual(enabled.names(), ["artifacts_read"]);
+  const definition = enabled.definitions()[0]!;
+  const schema = definition.inputSchema as {
+    required?: string[];
+    properties?: Record<string, { type?: string; maximum?: number }>;
+  };
+  assert.deepEqual(schema.required, ["artifact_id"]);
+  assert.equal(schema.properties?.["offset_bytes"]?.type, "number");
+  assert.equal(schema.properties?.["limit_bytes"]?.maximum, 32 * 1024);
 });

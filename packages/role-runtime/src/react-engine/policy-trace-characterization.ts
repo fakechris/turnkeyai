@@ -40,6 +40,30 @@ interface HookScenario {
 function buildScenarios(): HookScenario[] {
   return [
     {
+      hook: "onRoundMessages",
+      label: "history unchanged",
+      emit: async (trace) => {
+        const messages = [] as never[];
+        const h = traceEngineHooks(
+          { onRoundMessages: async () => ({ messages }) },
+          trace,
+        );
+        await h.onRoundMessages!(messages, 0, fakeCtx);
+      },
+    },
+    {
+      hook: "onRoundMessages",
+      label: "checkpoint applied",
+      emit: async (trace) => {
+        const messages = [{ role: "user", content: "old" }] as never;
+        const h = traceEngineHooks(
+          { onRoundMessages: async () => ({ messages: [] }) },
+          trace,
+        );
+        await h.onRoundMessages!(messages, 1, fakeCtx);
+      },
+    },
+    {
       hook: "onToolCalls",
       label: "normalize pending calls",
       emit: (trace) => {
@@ -126,6 +150,42 @@ function buildScenarios(): HookScenario[] {
       emit: async (trace) => {
         const h = traceEngineHooks({ runToolBatch: async () => [] }, trace);
         await h.runToolBatch!([], async () => ({}) as never, fakeCtx);
+      },
+    },
+    {
+      hook: "onToolResultsForHistory",
+      label: "results remain inline",
+      emit: async (trace) => {
+        const result = {
+          toolCallId: "call-1",
+          toolName: "web_fetch",
+          content: "small evidence",
+        };
+        const h = traceEngineHooks(
+          { onToolResultsForHistory: async () => [result] },
+          trace,
+        );
+        await h.onToolResultsForHistory!([result], fakeState, fakeCtx);
+      },
+    },
+    {
+      hook: "onToolResultsForHistory",
+      label: "oversized result externalized",
+      emit: async (trace) => {
+        const result = {
+          toolCallId: "call-1",
+          toolName: "web_fetch",
+          content: "large evidence",
+        };
+        const h = traceEngineHooks(
+          {
+            onToolResultsForHistory: async () => [
+              { ...result, content: "artifact reference" },
+            ],
+          },
+          trace,
+        );
+        await h.onToolResultsForHistory!([result], fakeState, fakeCtx);
       },
     },
     {

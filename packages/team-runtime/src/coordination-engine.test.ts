@@ -5047,6 +5047,25 @@ test("coordination engine: concurrent user posts on same thread persist both mes
   // Each flow should have dispatched to lead exactly once → 2 handoffs total,
   // none duplicated.
   assert.equal(enqueued.length, 2, "each flow should enqueue exactly one handoff to lead");
+
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "background completion",
+    idempotencyKey: "worker-completion:worker-1:300",
+  });
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "background completion",
+    idempotencyKey: "worker-completion:worker-1:300",
+  });
+
+  assert.equal(
+    (await teamMessageStore.list(thread.threadId)).filter((message) => message.role === "user").length,
+    3,
+    "replayed idempotent ingress must persist one message",
+  );
+  assert.equal(flows.size, 3, "replayed idempotent ingress must persist one flow");
+  assert.equal(enqueued.length, 3, "replayed idempotent ingress must dispatch once");
 });
 
 test("coordination engine dispatches user posts before slow context refresh finishes", async () => {

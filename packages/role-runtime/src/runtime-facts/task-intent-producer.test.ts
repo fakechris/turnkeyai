@@ -130,6 +130,20 @@ test("TaskIntentProducer infers independent evidence stream counts", () => {
   assert.equal(threeStream.facts.requiredIndependentEvidenceStreams, 3);
 });
 
+test("TaskIntentProducer does not count a truncated URL echo as a second source", () => {
+  const envelope = produceTaskIntentEnvelope({
+    taskPrompt: [
+      "Review https://docs.example.test/catalog/item for comparison-ready notes.",
+      "Thread summary: prior evidence came from https://docs.example.test/catalog/ite…",
+      "Continue from the same research context and prepare the comparison note.",
+    ].join("\n"),
+    activation: undefined,
+    messages: [],
+  });
+
+  assert.equal(envelope.facts.requiredIndependentEvidenceStreams, 0);
+});
+
 test("TaskIntentProducer owns approval and continuation task-language facts", () => {
   const approval = produceTaskIntentEnvelope({
     taskPrompt:

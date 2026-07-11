@@ -82,10 +82,29 @@ test("appendModelCallBoundary records gateway/result metadata", () => {
     usage: { inputTokens: 10, outputTokens: 5 },
     requestEnvelope: { messageCount: 2 },
     reductionLevel: "compact",
+    replayResponse: {
+      text: "hello",
+      contentBlocks: [{ type: "text", text: "hello" }],
+      toolCalls: [{ id: "call-1", name: "web_fetch", input: {} }],
+      modelId: "model-a",
+      modelChainId: "chain-a",
+      providerId: "provider-a",
+      protocol: "openai-compatible",
+      adapterName: "adapter-a",
+      attemptedModelIds: ["model-a", "model-b"],
+      stopReason: "tool_calls",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      requestEnvelope: { messageCount: 2 },
+    },
   });
+  assert.equal(
+    "replayResponse" in
+      ((summarizeModelUseTrace(trace).calls as Array<Record<string, unknown>>)[0] ?? {}),
+    false,
+  );
 });
 
-test("summarizeModelUseTrace sums finite usage totals", () => {
+test("summarizeModelUseTrace sums provider cache economics", () => {
   const trace: ModelCallBoundaryTrace[] = [
     {
       index: 1,
@@ -100,7 +119,12 @@ test("summarizeModelUseTrace sums finite usage totals", () => {
       toolCallsReturned: 0,
       contentBlockCount: 0,
       textBytes: 3,
-      usage: { inputTokens: 7, outputTokens: 11 },
+      usage: {
+        inputTokens: 1000,
+        uncachedInputTokens: 200,
+        cacheReadInputTokens: 800,
+        outputTokens: 25,
+      },
     },
     {
       index: 2,
@@ -115,7 +139,12 @@ test("summarizeModelUseTrace sums finite usage totals", () => {
       toolCallsReturned: 0,
       contentBlockCount: 0,
       textBytes: 4,
-      usage: { inputTokens: Number.NaN, outputTokens: 13 },
+      usage: {
+        inputTokens: 600,
+        uncachedInputTokens: 100,
+        cacheCreationInputTokens: 500,
+        outputTokens: 15,
+      },
     },
   ];
 
@@ -123,7 +152,11 @@ test("summarizeModelUseTrace sums finite usage totals", () => {
     calls: trace,
     callCount: 2,
     source: "turnkeyai-role-runtime",
-    totalInputTokens: 7,
-    totalOutputTokens: 24,
+    totalInputTokens: 1600,
+    totalUncachedInputTokens: 300,
+    totalCacheReadInputTokens: 800,
+    totalCacheCreationInputTokens: 500,
+    totalOutputTokens: 40,
+    cacheHitCalls: 1,
   });
 });

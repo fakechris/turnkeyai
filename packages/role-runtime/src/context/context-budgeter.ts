@@ -75,7 +75,7 @@ export class DefaultContextBudgeter implements ContextBudgeter {
     reservedOutputTokens = 0,
     maxInputTokens?: number
   ): Promise<PromptTokenEstimate> {
-    const inputTokens = roughTokenEstimate(input.systemPrompt) + roughTokenEstimate(input.userPrompt);
+    const inputTokens = estimateTextTokens(input.systemPrompt) + estimateTextTokens(input.userPrompt);
     const totalProjectedTokens = inputTokens + reservedOutputTokens;
 
     return {
@@ -86,7 +86,4 @@ export class DefaultContextBudgeter implements ContextBudgeter {
     };
   }
 }
-
-function roughTokenEstimate(content: string): number {
-  return Math.ceil(content.length / 4);
-}
+import { estimateTextTokens } from "@turnkeyai/llm-adapter/token-estimator";

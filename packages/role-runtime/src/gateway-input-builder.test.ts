@@ -195,6 +195,31 @@ test("buildToolRoundGatewayRequest prepares active tool-round gateway input", ()
   assert.ok((request.gatewayInput.envelope?.toolResultBytes ?? 0) > 0);
 });
 
+test("buildToolRoundGatewayRequest applies the model-derived aggregate result budget", () => {
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "task" },
+    ...Array.from({ length: 8 }, (_, index) => ({
+      role: "tool" as const,
+      toolCallId: `tool-${index}`,
+      name: "web_fetch",
+      content: String(index).repeat(10_000),
+    })),
+  ];
+
+  const request = buildToolRoundGatewayRequest({
+    baseGatewayInput: { messages: messages.slice(0, 2) },
+    messages,
+    inputTokenLimit: 100_000,
+  });
+
+  assert.equal(request.pruning?.limits.totalMaxBytes, 60_000);
+  assert.ok(
+    (request.pruning?.toolResultBytesAfter ?? Number.POSITIVE_INFINITY) <=
+      60_000,
+  );
+});
+
 test("buildToolRoundGatewayRequest prepares tool-free gateway input", () => {
   const baseGatewayInput: GenerateTextInput = {
     messages: [{ role: "user", content: "old task" }],

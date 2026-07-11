@@ -183,6 +183,10 @@ function normalizeModelEntry(id: string, entry: ModelConfigEntry | NamedModelCon
     ...(entry.query ? { query: entry.query } : {}),
     ...(entry.temperature != null ? { temperature: entry.temperature } : {}),
     ...(entry.maxOutputTokens != null ? { maxOutputTokens: entry.maxOutputTokens } : {}),
+    ...(entry.contextWindowTokens != null
+      ? { contextWindowTokens: entry.contextWindowTokens }
+      : {}),
+    ...(entry.promptCacheMode ? { promptCacheMode: entry.promptCacheMode } : {}),
     ...(entry.aliases ? { aliases: entry.aliases } : {}),
     ...(entry.enabled != null ? { enabled: entry.enabled } : {}),
   };

@@ -50,15 +50,35 @@ function assistantToolUse(id: string, name = "web_fetch"): LLMMessage {
 
 const baseLimits: ToolResultPruningLimits = {
   historyMaxMessages: 20,
+  historyMaxBytes: 1024 * 1024,
   recentFullCount: 1,
   totalMaxBytes: 1024 * 1024,
   softMaxBytes: 50,
   hardMaxBytes: 500,
 };
 
+test("readToolResultPruningLimits keeps message and byte caps as high sanity guards", () => {
+  const limits = readToolResultPruningLimits({});
+
+  assert.equal(limits.historyMaxMessages, 200);
+  assert.equal(limits.historyMaxBytes, 3 * 1024 * 1024);
+});
+
+test("readToolResultPruningLimits derives aggregate result budget from model context", () => {
+  const limits = readToolResultPruningLimits({}, { inputTokenLimit: 100_000 });
+  const overridden = readToolResultPruningLimits(
+    { TURNKEYAI_TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES: "45000" },
+    { inputTokenLimit: 100_000 },
+  );
+
+  assert.equal(limits.totalMaxBytes, 60_000);
+  assert.equal(overridden.totalMaxBytes, 45_000);
+});
+
 test("readToolResultPruningLimits reads positive env overrides and ignores invalid values", () => {
   const limits = readToolResultPruningLimits({
     TURNKEYAI_TOOL_HISTORY_MAX_MESSAGES: "8",
+    TURNKEYAI_TOOL_HISTORY_MAX_BYTES: "4096",
     TURNKEYAI_TOOL_RESULT_RECENT_FULL_COUNT: "3",
     TURNKEYAI_TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES: "not-a-number",
     TURNKEYAI_TOOL_RESULT_SOFT_PRUNE_MAX_BYTES: "-1",
@@ -66,6 +86,7 @@ test("readToolResultPruningLimits reads positive env overrides and ignores inval
   });
 
   assert.equal(limits.historyMaxMessages, 8);
+  assert.equal(limits.historyMaxBytes, 4096);
   assert.equal(limits.recentFullCount, 3);
   assert.equal(limits.totalMaxBytes, 32 * 1024);
   assert.equal(limits.softMaxBytes, 16 * 1024);
@@ -113,11 +134,77 @@ test("compactOlderToolHistoryForGateway replaces old assistant/tool pairs with o
   assert.equal(compacted[2]!.role, "user");
   assert.match(
     readToolResultContentText(compacted[2]!.content),
-    /Earlier tool history compacted/,
+    /Earlier loop history compacted/,
   );
   assert.match(readToolResultContentText(compacted[2]!.content), /call-old/);
   assert.equal(compacted[3], messages[4]);
   assert.equal(compacted[4], messages[5]);
+});
+
+test("compactOlderToolHistoryForGateway compacts repair-heavy history without tool pairs", () => {
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "task" },
+    ...Array.from({ length: 18 }, (_, index): LLMMessage => ({
+      role: index % 2 === 0 ? "assistant" : "user",
+      content: `repair round ${index + 1}`,
+    })),
+  ];
+
+  const compacted = compactOlderToolHistoryForGateway(messages, {
+    ...baseLimits,
+    historyMaxMessages: 8,
+  });
+
+  assert.ok(compacted.length <= 8);
+  assert.deepEqual(compacted.slice(0, 2), messages.slice(0, 2));
+  assert.match(
+    readToolResultContentText(compacted[2]!.content),
+    /Earlier loop history compacted/,
+  );
+  assert.equal(compacted.at(-1)?.content, "repair round 18");
+});
+
+test("compactOlderToolHistoryForGateway preserves recent tool protocol pairs atomically", () => {
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "task" },
+    ...Array.from({ length: 8 }, (_, index): LLMMessage => ({
+      role: "assistant",
+      content: `older repair ${index + 1}`,
+    })),
+    assistantToolUse("call-latest"),
+    toolMessage("call-latest", "latest evidence"),
+    { role: "user", content: "write the final answer" },
+  ];
+
+  const compacted = compactOlderToolHistoryForGateway(messages, {
+    ...baseLimits,
+    historyMaxMessages: 6,
+  });
+
+  assert.equal(compacted.length, 6);
+  assert.equal(compacted[3], messages.at(-3));
+  assert.equal(compacted[4], messages.at(-2));
+  assert.equal(compacted[5], messages.at(-1));
+});
+
+test("compactOlderToolHistoryForGateway enforces a loop-history byte budget", () => {
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "task" },
+    { role: "assistant", content: `old analysis ${"x".repeat(4_000)}` },
+    { role: "user", content: `old repair ${"y".repeat(4_000)}` },
+    { role: "assistant", content: "latest bounded answer" },
+  ];
+
+  const compacted = compactOlderToolHistoryForGateway(messages, {
+    ...baseLimits,
+    historyMaxBytes: 2_048,
+  });
+
+  assert.ok(Buffer.byteLength(JSON.stringify(compacted.slice(2)), "utf8") <= 2_048);
+  assert.equal(compacted.at(-1)?.content, "latest bounded answer");
 });
 
 test("tool history block counters find the latest assistant call and following results", () => {

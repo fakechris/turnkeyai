@@ -18,6 +18,7 @@ import type {
   ThreadSummaryRecord,
   WorkerEvidenceDigest,
 } from "@turnkeyai/core-types/team";
+import { estimateTextTokens } from "@turnkeyai/llm-adapter/token-estimator";
 
 import type { PromptTokenBudget, PromptTokenEstimate } from "../context/context-budgeter";
 import { EXPLICIT_RECALL_HITS } from "../context/role-memory-resolver";
@@ -1047,11 +1048,22 @@ function forceCompactLineIntoBudget(input: {
     return null;
   }
 
-  const maxChars = Math.max(24, remainingTokens * 4 - 4);
   const compacted = compactListItem(input.line);
-  const forcedLine = truncate(compacted, maxChars);
-  const candidate = [base, forcedLine].filter(Boolean).join("\n");
-  return roughTokenEstimate(candidate) <= input.maxTokens ? forcedLine : null;
+  let low = 1;
+  let high = compacted.length;
+  let best: string | null = null;
+  while (low <= high) {
+    const midpoint = Math.floor((low + high) / 2);
+    const candidateLine = truncate(compacted, midpoint);
+    const candidate = [base, candidateLine].filter(Boolean).join("\n");
+    if (roughTokenEstimate(candidate) <= input.maxTokens) {
+      best = candidateLine;
+      low = midpoint + 1;
+    } else {
+      high = midpoint - 1;
+    }
+  }
+  return best;
 }
 
 function findPreferredCompactedLineIndex(lines: string[], startIndex: number): number {
@@ -1087,9 +1099,7 @@ function findCompactableSectionIndex(
   return -1;
 }
 
-function roughTokenEstimate(content: string): number {
-  return Math.ceil(content.length / 4);
-}
+const roughTokenEstimate = estimateTextTokens;
 
 function truncate(content: string, maxChars: number): string {
   return content.length > maxChars ? `${content.slice(0, maxChars - 1)}…` : content;

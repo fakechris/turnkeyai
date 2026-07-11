@@ -28,6 +28,12 @@ import {
   type ToolLoopCloseoutMetadata,
 } from "../runtime-derived-mission-report";
 import { finalizeEngineAnswer } from "./finalization-pipeline";
+import {
+  buildEngineRunReplaySeed,
+  buildRunTrace,
+  type BuildRunTraceInput,
+  type EngineRunReplaySeed,
+} from "./run-trace";
 import type { EnginePolicyTrace } from "./types";
 import type { RolePromptPacket } from "../prompt-policy";
 
@@ -54,6 +60,11 @@ export interface EngineFinalResponseInput {
   reduction?: EngineFinalResponseReduction | undefined;
   memoryFlushes: readonly PreCompactionMemoryFlushResult[];
   toolLoopCloseout?: ToolLoopCloseoutMetadata | undefined;
+  runTrace?: Omit<BuildRunTraceInput, "finalText"> | undefined;
+  runReplay?: Omit<
+    Parameters<typeof buildEngineRunReplaySeed>[0],
+    "finalText"
+  > | undefined;
 }
 
 export interface EngineReductionBoundaryInput {
@@ -114,6 +125,16 @@ export function createEngineFinalResponseBuilder(
     const missionReport = buildRuntimeDerivedMissionReport(
       responseInput.toolLoopCloseout,
     );
+    const runTrace = responseInput.runTrace
+      ? buildRunTrace({ ...responseInput.runTrace, finalText: content })
+      : undefined;
+    const engineRunReplay: EngineRunReplaySeed | undefined =
+      responseInput.runReplay
+        ? buildEngineRunReplaySeed({
+            ...responseInput.runReplay,
+            finalText: content,
+          })
+        : undefined;
     return {
       content,
       mentions: extractMentions(content),
@@ -154,6 +175,8 @@ export function createEngineFinalResponseBuilder(
           ? { toolLoopCloseout: responseInput.toolLoopCloseout }
           : {}),
         ...(missionReport ? { missionReport } : {}),
+        ...(runTrace ? { runTrace } : {}),
+        ...(engineRunReplay ? { engineRunReplay } : {}),
         reactEngine: true,
         ...(input.enginePolicyTraceDebugEnabled()
           ? { enginePolicyTrace: input.policyTrace.snapshot() }
