@@ -26,6 +26,10 @@ import { DefaultContextCompressor } from "./compression/context-compressor";
 import type { GeneratedRoleReply, RoleResponseGenerator } from "./deterministic-response-generator";
 import { PolicyRoleRuntime } from "./policy-role-runtime";
 import type { RolePromptPacket, RolePromptPolicy } from "./prompt-policy";
+import {
+  attachEngineRunDiagnostics,
+  buildRunTrace,
+} from "./react-engine/run-trace";
 
 test("policy role runtime persists worker evidence and appends worker summary to the prompt", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "policy-role-runtime-"));
@@ -224,6 +228,179 @@ test("policy role runtime persists worker evidence and appends worker summary to
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("policy role runtime persists the full engine RunTrace only in the replay record", async () => {
+  const recorded: ReplayRecord[] = [];
+  const packet: RolePromptPacket = {
+    roleId: "role-operator",
+    roleName: "Operator",
+    seat: "member",
+    systemPrompt: "Operate carefully.",
+    taskPrompt: "Inspect the source.",
+    outputContract: "Return evidence.",
+    suggestedMentions: [],
+  };
+  const runTrace = {
+    protocol: "turnkeyai.run_trace.v1",
+    version: 1,
+    wallClock: { startedAt: 10, completedAt: 20, durationMs: 10 },
+    resumedAfterCrash: false,
+    modelCalls: [],
+    toolRounds: [],
+    policy: [],
+    compactions: [],
+    pruning: [],
+    externalizations: [],
+    outcome: {
+      status: "completed",
+      finalTextBytes: 5,
+      finalTextSha256: "sha-final",
+    },
+    incidents: {},
+    totals: {
+      modelCalls: 1,
+      toolRounds: 1,
+      toolCalls: 1,
+      policyEntries: 2,
+      compactions: 0,
+      pruningEvents: 0,
+      externalizations: 0,
+    },
+  };
+  const engineRunReplay = {
+    protocol: "turnkeyai.engine_run_replay.v1",
+    toolDefinitions: [],
+    toolLoop: { maxRounds: 16 },
+    artifactExternalizationEnabled: false,
+    clockValues: [1, 2, 3],
+    modelResponses: [],
+    expected: { finalText: "Done.", policy: [] },
+  };
+  const toolUse = {
+    toolCallCount: 1,
+    rounds: [
+      {
+        round: 1,
+        calls: [{ id: "call-1", name: "echo", input: {} }],
+        results: [
+          {
+            toolCallId: "call-1",
+            toolName: "echo",
+            isError: false,
+            contentBytes: 2,
+            content: "ok",
+          },
+        ],
+      },
+    ],
+  };
+  const runtime = new PolicyRoleRuntime({
+    idGenerator: { messageId: () => "msg-run-trace" },
+    clock: { now: () => 100 },
+    promptPolicy: { async buildPacket() { return packet; } },
+    responseGenerator: {
+      async generate() {
+        return {
+          content: "Done.",
+          mentions: [],
+          metadata: { runTrace, engineRunReplay, toolUse },
+        };
+      },
+    },
+    replayRecorder: {
+      async record(record) {
+        recorded.push(record);
+        return record.replayId;
+      },
+      async get() { return null; },
+      async list() { return []; },
+    },
+  });
+
+  const activation = buildOperatorActivationInput();
+  const result = await runtime.runActivation(activation);
+  const roleReplay = recorded.find((record) => record.layer === "role");
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.message?.metadata?.runTrace, undefined);
+  assert.equal(result.message?.metadata?.engineRunReplay, undefined);
+  assert.deepEqual(result.message?.metadata?.runTraceSummary, {
+    protocol: "turnkeyai.run_trace.v1",
+    wallClock: runTrace.wallClock,
+    outcome: runTrace.outcome,
+    incidents: {},
+    totals: runTrace.totals,
+  });
+  assert.deepEqual(roleReplay?.metadata?.runTrace, runTrace);
+  assert.deepEqual(
+    (roleReplay?.metadata?.engineRunReplay as Record<string, unknown>)?.toolUse,
+    toolUse,
+  );
+  assert.deepEqual(
+    (roleReplay?.metadata?.engineRunReplay as Record<string, unknown>)?.packet,
+    packet,
+  );
+  assert.equal(
+    ((roleReplay?.metadata?.engineRunReplay as Record<string, unknown>)?.activation as RoleActivationInput)
+      .runState.runKey,
+    activation.runState.runKey,
+  );
+});
+
+test("policy role runtime preserves terminal engine RunTrace on failed role replays", async () => {
+  const recorded: ReplayRecord[] = [];
+  const runTrace = buildRunTrace({
+    startedAt: 10,
+    completedAt: 20,
+    resumedAfterCrash: false,
+    modelCalls: [],
+    toolRounds: [],
+    policyEntries: [],
+    compactions: [],
+    pruning: [],
+    externalizations: [],
+    finalText: "",
+    failureCategory: "provider_timeout",
+  });
+  const runtime = new PolicyRoleRuntime({
+    idGenerator: { messageId: () => "unused" },
+    clock: { now: () => 100 },
+    promptPolicy: {
+      async buildPacket() {
+        return {
+          roleId: "role-operator",
+          roleName: "Operator",
+          seat: "member" as const,
+          systemPrompt: "system",
+          taskPrompt: "task",
+          outputContract: "answer",
+          suggestedMentions: [],
+        };
+      },
+    },
+    responseGenerator: {
+      async generate() {
+        throw attachEngineRunDiagnostics(new Error("provider timed out"), {
+          runTrace,
+        });
+      },
+    },
+    replayRecorder: {
+      async record(record) {
+        recorded.push(record);
+        return record.replayId;
+      },
+      async get() { return null; },
+      async list() { return []; },
+    },
+  });
+
+  const result = await runtime.runActivation(buildOperatorActivationInput());
+  const roleReplay = recorded.find((record) => record.layer === "role");
+
+  assert.equal(result.status, "failed");
+  assert.deepEqual(roleReplay?.metadata?.runTrace, runTrace);
 });
 
 test("policy role runtime returns native tool-use message sequence before the final assistant answer", async () => {

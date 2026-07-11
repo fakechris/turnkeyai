@@ -33,6 +33,7 @@ import type {
   ExecutionBudgetController,
   RecoveryToolBudget,
 } from "./execution-budget-controller";
+import { applyBoundedSourceCheckTimeoutBudget } from "./session-timeout-budget";
 
 // Stage 8 engine cleanup — ToolCallNormalizer.
 //
@@ -95,21 +96,22 @@ export interface EngineToolCallsHookInput {
  * The engine's slice of the inline tool-call normalization pipeline, declared as
  * data so the order is explicit and table-test-assertable.
  *
- * Mirrors inline exactly, in order:
+ * Applies engine normalization in dependency order:
  *   1. normalizeSessionToolAliasCalls
  *   2. enforceMissingApprovalGateRepairToolCalls
- *   3. enforceSupplementalLocalTimeoutProbeToolCall
- *   4. applySessionContinuationDirective
- *   5. applySessionContinuationLookupDirective
- *   6. normalizeExplicitContinuationHistoryCalls
- *   7. normalizeSessionToolCalls
- *   8. normalizePrivateUrlResearchSpawnCalls
- *   9. normalizeLocalUrlWebFetchCalls
- *  10. normalizeBoundedTimeoutSourceSpawnAgents
- *  11. normalizeBoundedTimeoutDuplicateSourceSpawns
- *  12. applySessionContinuationDirective (repeat)
- *  13. normalizeApprovalGatedBrowserSpawnCalls
- *  14. limitIndependentEvidenceSpawnCalls
+ *   3. applySessionContinuationDirective
+ *   4. applySessionContinuationLookupDirective
+ *   5. normalizeExplicitContinuationHistoryCalls
+ *   6. normalizeSessionToolCalls
+ *   7. normalizePrivateUrlResearchSpawnCalls
+ *   8. normalizeLocalUrlWebFetchCalls
+ *   9. normalizeBoundedTimeoutSourceSpawnAgents
+ *  10. applyBoundedSourceCheckTimeoutBudget
+ *  11. enforceSupplementalLocalTimeoutProbeToolCall
+ *  12. normalizeBoundedTimeoutDuplicateSourceSpawns
+ *  13. applySessionContinuationDirective (repeat)
+ *  14. normalizeApprovalGatedBrowserSpawnCalls
+ *  15. limitIndependentEvidenceSpawnCalls
  */
 const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
   { name: "sessionToolAlias", apply: (c) => normalizeSessionToolAliasCalls(c) },
@@ -124,10 +126,6 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
         toolTrace: x.toolTrace,
         sessionContext: x.sessionContinuationContext,
       }),
-  },
-  {
-    name: "supplementalLocalTimeoutProbe",
-    apply: (c, x) => enforceSupplementalLocalTimeoutProbeToolCall(c, x.messages),
   },
   {
     name: "sessionContinuationDirective",
@@ -165,6 +163,18 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
         exploreAvailable: x.exploreAvailable,
         taskPrompt: x.taskPrompt,
       }),
+  },
+  {
+    name: "boundedSourceTimeoutBudget",
+    apply: (c, x) =>
+      applyBoundedSourceCheckTimeoutBudget(c, {
+        toolTrace: x.toolTrace,
+        ...(x.taskFacts === undefined ? {} : { taskFacts: x.taskFacts }),
+      }),
+  },
+  {
+    name: "supplementalLocalTimeoutProbe",
+    apply: (c, x) => enforceSupplementalLocalTimeoutProbeToolCall(c, x.messages),
   },
   {
     name: "boundedTimeoutDuplicateSourceSpawn",
@@ -235,6 +245,7 @@ export function buildToolCallNormalizationContext(
   const sessionContinuationLookupDirective =
     !probePending &&
     !sessionContinuationDirective &&
+    !hasSuccessfulSessionListResult(input.toolTrace) &&
     !appliedApprovalBrowserContinuationRequested(input)
       ? findSessionContinuationLookupDirective(
           sessionContinuationContext,
@@ -257,6 +268,20 @@ export function buildToolCallNormalizationContext(
       ? {}
       : { permissionPolicy: input.permissionPolicy }),
   };
+}
+
+function hasSuccessfulSessionListResult(
+  toolTrace: NativeToolRoundTrace[],
+): boolean {
+  return toolTrace.some((round) =>
+    round.results.some(
+      (result) =>
+        result.toolName === "sessions_list" &&
+        !result.isError &&
+        !result.cancelled &&
+        !result.skipped,
+    ),
+  );
 }
 
 function appliedApprovalBrowserContinuationRequested(input: {

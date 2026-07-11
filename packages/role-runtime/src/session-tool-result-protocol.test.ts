@@ -69,6 +69,30 @@ test("session tool result protocol preserves timeout evidence semantics", () => 
   assert.equal(parsed?.evidence_available, true);
 });
 
+test("session tool result protocol maps typed worker timeout to resumable session state", () => {
+  const result = buildSessionToolResult({
+    taskId: "task-1",
+    sessionKey: "worker:explore:deadline",
+    agentId: "explore",
+    missingResultMessage: "missing",
+    result: {
+      workerType: "explore",
+      status: "timeout",
+      summary: "Sub-agent timed out at the absolute run deadline.",
+      payload: {
+        mode: "llm_sub_agent",
+        resumableReason: "run_deadline_exceeded",
+        content: "Non-authoritative partial text.",
+      },
+    },
+  });
+
+  assert.equal(result.status, "timeout");
+  assert.equal(result.resumable, true);
+  assert.equal(result.final_content, null);
+  assert.equal(result.result, "Sub-agent timed out at the absolute run deadline.");
+});
+
 test("session tool result protocol persists browser page evidence summary", () => {
   const result = buildSessionToolResult({
     taskId: "task-1",

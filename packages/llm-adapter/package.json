@@ -8,6 +8,8 @@
     "./gateway": "./src/gateway.ts",
     "./index": "./src/index.ts",
     "./openai-compatible-client": "./src/openai-compatible-client.ts",
+    "./retry-policy": "./src/retry-policy.ts",
+    "./token-estimator": "./src/token-estimator.ts",
     "./registry": "./src/registry.ts",
     "./types": "./src/types.ts"
   }

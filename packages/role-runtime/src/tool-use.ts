@@ -26,6 +26,7 @@ import {
 
 import type { RolePromptPacket } from "./prompt-policy";
 import {
+  buildArtifactToolDefinitions,
   buildMemoryToolDefinitions,
   buildPermissionToolDefinitions,
   buildSessionToolDefinitions,
@@ -34,8 +35,13 @@ import {
   createNativeToolCapabilityRegistry,
   type ToolCapabilityRegistry,
 } from "./tool-capability-registry";
+import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 import type { MemoryHit, RoleMemoryResolver } from "./context/role-memory-resolver";
 import type { TaskToolService } from "./task-tool-service";
+import {
+  buildBackgroundWorkerSessionAccepted,
+  serializeBackgroundWorkerSessionAccepted,
+} from "./background-worker-session";
 import type { ToolCancellationRegistration, ToolCancellationRegistry } from "./tool-cancellation-registry";
 import type {
   ToolPermissionAppliedResult,
@@ -47,6 +53,7 @@ import {
   buildSessionToolCancelledResult,
   buildSessionToolResult,
   buildSessionToolTimeoutResult,
+  extractWorkerEvidenceSummary,
   serializeSessionToolResult,
   sanitizeEvidenceSummary,
 } from "./session-tool-result-protocol";
@@ -72,6 +79,7 @@ export interface RoleToolExecutionInput {
   activation: RoleActivationInput;
   packet: RolePromptPacket;
   signal?: AbortSignal;
+  deadlineAt?: number;
 }
 
 // Structural aliases of the reusable agent-core tool types. The field shapes
@@ -92,6 +100,7 @@ export interface RoleToolContext extends ToolContext {
    *  The engine path sets it so `onRepairRound` can guard `shouldRepair*` across
    *  re-synthesis rounds; absent on contexts that never repair. */
   repairMarkers?: LLMMessage[];
+  deadlineAt?: number;
 }
 
 export interface RoleToolExecutor {
@@ -121,6 +130,11 @@ const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
 const DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS = 60_000;
 const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
 const WORKER_TOOL_CANCELLED = Symbol("worker_tool_cancelled");
+
+interface WorkerToolTimeout {
+  kind: typeof WORKER_TOOL_TIMEOUT;
+  lateResult: WorkerExecutionResult | null;
+}
 
 export interface WorkerSessionConcurrencyLimits {
   maxPerParentConcurrent?: number;
@@ -451,6 +465,9 @@ export async function executeRuntimeForcedToolRound(input: {
     toolResults: RoleToolExecutionResult[];
     messages: LLMMessage[];
   }): Promise<void>;
+  mapToolResultsForHistory?(
+    results: RoleToolExecutionResult[],
+  ): Promise<RoleToolExecutionResult[]>;
 }): Promise<{ messages: LLMMessage[]; toolResults: RoleToolExecutionResult[] }> {
   if (input.observer) {
     return input.observer.observeRuntimeForcedToolRound({
@@ -472,6 +489,9 @@ export async function executeRuntimeForcedToolRound(input: {
           onProgress,
           onResult,
         }),
+      ...(input.mapToolResultsForHistory
+        ? { mapToolResultsForHistory: input.mapToolResultsForHistory }
+        : {}),
     });
   }
 
@@ -509,11 +529,14 @@ export async function executeRuntimeForcedToolRound(input: {
       await input.persistNativeToolTrace();
     },
   });
+  const historyResults = input.mapToolResultsForHistory
+    ? await input.mapToolResultsForHistory(toolResults)
+    : toolResults;
   let messages = appendAssistantToolCallMessage(input.messages, {
     text: input.assistantText,
     toolCalls: input.toolCalls,
   });
-  messages = appendToolResultMessages(messages, toolResults);
+  messages = appendToolResultMessages(messages, historyResults);
   await input.recordProviderToolProtocolRound({
     round: input.round,
     toolCalls: input.toolCalls,
@@ -534,8 +557,10 @@ export function createWorkerSessionToolExecutor(options: {
   toolPermissionService?: ToolPermissionService;
   taskToolService?: TaskToolService;
   memoryResolver?: Pick<RoleMemoryResolver, "retrieveMemory" | "getMemory">;
+  toolResultArtifactStore?: ToolResultArtifactStore;
   webFetchEnabled?: boolean;
   fetchFn?: typeof fetch;
+  onBackgroundWorkerError?: (error: unknown, workerRunKey: string) => void;
 }): RoleToolExecutor {
   const { workerRuntime } = options;
   const toolCapabilityRegistry =
@@ -549,10 +574,15 @@ export function createWorkerSessionToolExecutor(options: {
       memoryEnabled: Boolean(options.memoryResolver),
       tasksEnabled: Boolean(options.taskToolService),
       webFetchEnabled: options.webFetchEnabled === true,
+      artifactsEnabled: Boolean(options.toolResultArtifactStore),
     });
   const definitions = toolCapabilityRegistry.definitions();
   const executableWorkerKinds = new Set(toolCapabilityRegistry.availableWorkerKinds());
   const sessionSpawnGate = new AsyncSerialGate();
+  const backgroundSpawnByToolCall = new Map<
+    string,
+    Promise<RoleToolExecutionResult>
+  >();
 
   // Source a definition for every dispatchable tool name so the toolkit carries
   // honest schemas. The capability registry above stays the authority for which
@@ -563,6 +593,7 @@ export function createWorkerSessionToolExecutor(options: {
   const toolDefinitionsByName = new Map<string, LLMToolDefinition>();
   for (const definition of [
     ...buildWebToolDefinitions(),
+    ...buildArtifactToolDefinitions(),
     ...buildSessionToolDefinitions(
       workerKinds,
       options.maxSessionToolTimeoutMs
@@ -588,14 +619,15 @@ export function createWorkerSessionToolExecutor(options: {
         activation: ctx.activation,
         packet: ctx.packet,
         ...(ctx.signal ? { signal: ctx.signal } : {}),
+        ...(ctx.deadlineAt === undefined ? {} : { deadlineAt: ctx.deadlineAt }),
       };
       return run(input);
     },
   });
 
   const toolkit = createToolkit<RoleToolContext>([
-    roleTool("sessions_spawn", (input) =>
-      executeSessionsSpawn(
+    roleTool("sessions_spawn", (input) => {
+      const launch = () => executeSessionsSpawn(
         workerRuntime,
         input,
         executableWorkerKinds,
@@ -604,9 +636,17 @@ export function createWorkerSessionToolExecutor(options: {
         options.maxSessionToolTimeoutMs,
         options.hardTimeoutGraceMs,
         options.sessionConcurrency,
-        sessionSpawnGate
-      )
-    ),
+        sessionSpawnGate,
+        options.onBackgroundWorkerError,
+      );
+      if (input.call.input.run_in_background !== true) return launch();
+      const key = `${input.activation.runState.runKey}:${input.call.id}`;
+      const existing = backgroundSpawnByToolCall.get(key);
+      if (existing) return existing;
+      const pending = launch();
+      backgroundSpawnByToolCall.set(key, pending);
+      return pending;
+    }),
     roleTool("sessions_send", (input) =>
       executeSessionsSend(
         workerRuntime,
@@ -620,6 +660,9 @@ export function createWorkerSessionToolExecutor(options: {
     roleTool("sessions_list", (input) => executeSessionsList(workerRuntime, input)),
     roleTool("sessions_history", (input) => executeSessionsHistory(workerRuntime, input)),
     roleTool("web_fetch", (input) => executeWebFetch(input, options.fetchFn ?? fetch)),
+    roleTool("artifacts_read", (input) =>
+      executeArtifactRead(input, options.toolResultArtifactStore)
+    ),
     roleTool("permission_query", (input) => executePermissionQuery(input, options.toolPermissionService)),
     roleTool("permission_result", (input) => executePermissionResult(input, options.toolPermissionService)),
     roleTool("permission_applied", (input) => executePermissionApplied(input, options.toolPermissionService)),
@@ -639,10 +682,64 @@ export function createWorkerSessionToolExecutor(options: {
         activation: input.activation,
         packet: input.packet,
         ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
       };
       return toolkit.execute(input.call, ctx);
     },
   };
+}
+
+async function executeArtifactRead(
+  input: RoleToolExecutionInput,
+  store?: ToolResultArtifactStore,
+): Promise<RoleToolExecutionResult> {
+  return executeToolResultArtifactRead(input.call, store);
+}
+
+export async function executeToolResultArtifactRead(
+  call: LLMToolCall,
+  store?: ToolResultArtifactStore,
+): Promise<RoleToolExecutionResult> {
+  if (!store) {
+    return errorResult(call, "tool result artifact store is not configured");
+  }
+  const artifactId = requiredString(call.input.artifact_id);
+  if (!artifactId) {
+    return errorResult(call, "artifacts_read requires artifact_id");
+  }
+  const offsetBytes = nonNegativeInteger(call.input.offset_bytes) ?? 0;
+  const limitBytes = Math.min(
+    positiveInteger(call.input.limit_bytes) ?? 8 * 1024,
+    32 * 1024,
+  );
+  try {
+    const page = await store.read({ artifactId, offsetBytes, limitBytes });
+    if (!page) {
+      return errorResult(call, `tool result artifact not found: ${artifactId}`);
+    }
+    return {
+      toolCallId: call.id,
+      toolName: call.name,
+      content: JSON.stringify({
+        protocol: "turnkeyai.tool_result_artifact_page.v1",
+        artifact_id: page.record.artifactId,
+        source_tool_call_id: page.record.toolCallId,
+        source_tool_name: page.record.toolName,
+        offset_bytes: page.offsetBytes,
+        next_offset_bytes: page.nextOffsetBytes,
+        eof: page.eof,
+        total_bytes: page.record.sizeBytes,
+        sha256: page.record.sha256,
+        content: page.content,
+      }),
+      raw: page,
+    };
+  } catch (error) {
+    return errorResult(
+      call,
+      error instanceof Error ? error.message : "artifacts_read failed",
+    );
+  }
 }
 
 async function executeWebFetch(
@@ -1713,7 +1810,8 @@ async function executeSessionsSpawn(
   maxSessionToolTimeoutMs?: number,
   hardTimeoutGraceMs?: number,
   sessionConcurrency?: WorkerSessionConcurrencyLimits,
-  sessionSpawnGate?: AsyncSerialGate
+  sessionSpawnGate?: AsyncSerialGate,
+  onBackgroundWorkerError?: (error: unknown, workerRunKey: string) => void,
 ): Promise<RoleToolExecutionResult> {
   const task = requiredString(input.call.input.task);
   const agentId = requiredString(input.call.input.agent_id) as WorkerKind | null;
@@ -1740,6 +1838,7 @@ async function executeSessionsSpawn(
   }
   const approvalProgress = gate?.progress ?? [];
   const label = requiredString(input.call.input.label);
+  const runInBackground = input.call.input.run_in_background === true;
   const delegatedTaskPrompt = buildDelegatedTaskPrompt(
     task,
     input.activation.handoff.payload,
@@ -1748,6 +1847,18 @@ async function executeSessionsSpawn(
   const runtimeApprovalContext = appendRuntimeBrowserApprovalContext(
     input.packet.runtimeApprovalContext,
     gate?.approvedContext
+  );
+  const timeoutMs = resolveToolTimeoutMsForTask({
+    value: input.call.input.timeout_seconds,
+    workerKind: effectiveAgentId,
+    ...(maxSessionToolTimeoutMs !== undefined ? { maxTimeoutMs: maxSessionToolTimeoutMs } : {}),
+    taskText: task,
+    parentTaskPrompt: input.packet.taskPrompt,
+  });
+  const acceptedAt = Date.now();
+  const backgroundDeadlineAt = Math.min(
+    acceptedAt + timeoutMs,
+    input.deadlineAt ?? Number.POSITIVE_INFINITY,
   );
   const packet = {
     ...input.packet,
@@ -1759,16 +1870,12 @@ async function executeSessionsSpawn(
       parentSessionKey: input.activation.runState.runKey,
       toolCallId: input.call.id,
       ...(label ? { label } : {}),
+      ...(runInBackground
+        ? { background: true, deadlineAt: backgroundDeadlineAt }
+        : {}),
     },
   };
   const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
-  const timeoutMs = resolveToolTimeoutMsForTask({
-    value: input.call.input.timeout_seconds,
-    workerKind: effectiveAgentId,
-    ...(maxSessionToolTimeoutMs !== undefined ? { maxTimeoutMs: maxSessionToolTimeoutMs } : {}),
-    taskText: task,
-    parentTaskPrompt: input.packet.taskPrompt,
-  });
   const spawnAttempt = await (sessionSpawnGate ?? new AsyncSerialGate()).run(async () => {
     const concurrencyError = await maybeRejectSessionConcurrency(workerRuntime, input, sessionConcurrency);
     if (concurrencyError) {
@@ -1794,6 +1901,55 @@ async function executeSessionsSpawn(
       await workerRuntime.cancel({ workerRunKey: spawned.workerRunKey, reason });
     },
   });
+  if (runInBackground) {
+    const accepted = buildBackgroundWorkerSessionAccepted({
+      taskId: input.activation.handoff.taskId,
+      sessionKey: spawned.workerRunKey,
+      agentId: spawned.workerType,
+      label: label ?? `${spawned.workerType} sub-agent`,
+      toolCallId: input.call.id,
+      acceptedAt,
+      deadlineAt: backgroundDeadlineAt,
+    });
+    const backgroundSend = workerRuntime.send({
+      workerRunKey: spawned.workerRunKey,
+      activation: workerActivation,
+      packet,
+      toolCallId: input.call.id,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    void backgroundSend
+      .catch((error) => {
+        if (onBackgroundWorkerError) {
+          onBackgroundWorkerError(error, spawned.workerRunKey);
+        } else {
+          console.error("background worker execution failed", {
+            workerRunKey: spawned.workerRunKey,
+            error,
+          });
+        }
+      })
+      .finally(() => registration?.unregister());
+    return {
+      toolCallId: input.call.id,
+      toolName: input.call.name,
+      content: serializeBackgroundWorkerSessionAccepted(accepted),
+      progress: [
+        ...approvalProgress,
+        {
+          phase: "started",
+          toolName: input.call.name,
+          summary: `Started ${effectiveAgentId} background sub-agent session ${spawned.workerRunKey}.`,
+          detail: {
+            session_key: spawned.workerRunKey,
+            agent_id: spawned.workerType,
+            status: "running",
+          },
+        },
+      ],
+      raw: accepted,
+    };
+  }
   let result: WorkerExecutionResult | null;
   try {
     const sendResult = await sendWorkerWithOptionalCancellation(
@@ -1821,14 +1977,16 @@ async function executeSessionsSpawn(
         toolCallId: input.call.id,
       });
     }
-    if (sendResult === WORKER_TOOL_TIMEOUT) {
+    if (isWorkerToolTimeout(sendResult)) {
       const timeoutState = await getWorkerStateSafely(workerRuntime, spawned.workerRunKey);
       return timedOutResult(input.call, {
         sessionKey: spawned.workerRunKey,
         agentId: spawned.workerType,
         taskId: input.activation.handoff.taskId,
         timeoutMs,
-        evidenceSummary: summarizeWorkerEvidence(timeoutState),
+        evidenceSummary:
+          extractWorkerEvidenceSummary(sendResult.lateResult) ??
+          summarizeWorkerEvidence(timeoutState),
         label,
         parentSessionKey: input.activation.runState.runKey,
         toolCallId: input.call.id,
@@ -1884,7 +2042,7 @@ async function executeSessionsSpawn(
     // structured failure payload — otherwise the repeated-failure breaker
     // (findRepeatedFailedToolCall) never counts it and the message-level
     // toolStatus reads as a successful turn.
-    ...(!result || result.status === "failed" ? { isError: true } : {}),
+    ...(!result || isFailedOrTimedOutWorkerResult(result) ? { isError: true } : {}),
     content: serializeSessionToolResult(sessionToolResult),
     progress: [
       ...approvalProgress,
@@ -1895,7 +2053,7 @@ async function executeSessionsSpawn(
         detail: { session_key: spawned.workerRunKey, agent_id: spawned.workerType },
       },
       {
-        phase: !result || result.status === "failed" ? "failed" : "completed",
+        phase: !result || isFailedOrTimedOutWorkerResult(result) ? "failed" : "completed",
         toolName: input.call.name,
         summary: result?.summary ?? missingResultMessage,
         detail: { session_key: spawned.workerRunKey, status: result?.status ?? "failed" },
@@ -2147,6 +2305,15 @@ async function executeSessionsSend(
   if (!requestedSessionKey || !message) {
     return errorResult(input.call, "sessions_send requires session_key and message");
   }
+  const requestedMode = input.call.input.mode;
+  const mode = requestedMode === undefined || requestedMode === "continue"
+    ? "continue"
+    : requestedMode === "read_result"
+      ? "read_result"
+      : null;
+  if (!mode) {
+    return errorResult(input.call, "sessions_send mode must be continue or read_result");
+  }
   // codex K3.5: enforce thread ownership before sending — without
   // this, a lead role on thread A could drive sub-agents owned by
   // thread B.
@@ -2162,7 +2329,17 @@ async function executeSessionsSend(
     return errorResult(input.call, `session not found: ${sessionKey}`);
   }
   const label = requiredString(input.call.input.label) ?? record.context?.label ?? null;
-  if (state.status === "done" && state.lastResult && isCachedSummaryRequest(message)) {
+  if (mode === "read_result") {
+    if (
+      state.status !== "done" ||
+      !state.lastResult ||
+      state.lastResult.status !== "completed"
+    ) {
+      return errorResult(
+        input.call,
+        `sessions_send read_result requires a completed session result: ${sessionKey}`
+      );
+    }
     return cachedCompletedSessionResult(input.call, {
       taskId: input.activation.handoff.taskId,
       sessionKey,
@@ -2236,14 +2413,16 @@ async function executeSessionsSend(
         toolCallId: input.call.id,
       });
     }
-    if (sendResult === WORKER_TOOL_TIMEOUT) {
+    if (isWorkerToolTimeout(sendResult)) {
       const timeoutState = await getWorkerStateSafely(workerRuntime, sessionKey);
       return timedOutResult(input.call, {
         sessionKey,
         agentId: state.workerType,
         taskId: input.activation.handoff.taskId,
         timeoutMs,
-        evidenceSummary: summarizeWorkerEvidence(timeoutState),
+        evidenceSummary:
+          extractWorkerEvidenceSummary(sendResult.lateResult) ??
+          summarizeWorkerEvidence(timeoutState),
         label,
         parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
         toolCallId: input.call.id,
@@ -2296,12 +2475,12 @@ async function executeSessionsSend(
     toolName: input.call.name,
     // Same rule as sessions_spawn: a structured failure is still an error
     // result for the breaker and message toolStatus.
-    ...(!result || result.status === "failed" ? { isError: true } : {}),
+    ...(!result || isFailedOrTimedOutWorkerResult(result) ? { isError: true } : {}),
     content: serializeSessionToolResult(sessionToolResult),
     progress: [
       ...approvalProgress,
       {
-        phase: !result || result.status === "failed" ? "failed" : "completed",
+        phase: !result || isFailedOrTimedOutWorkerResult(result) ? "failed" : "completed",
         toolName: input.call.name,
         summary: result?.summary ?? missingResultMessage,
         detail: { session_key: sessionKey, status: result?.status ?? "failed" },
@@ -2443,7 +2622,7 @@ function cachedCompletedSessionResult(
   return {
     toolCallId: call.id,
     toolName: call.name,
-    ...(input.result.status === "failed" ? { isError: true } : {}),
+    ...(isFailedOrTimedOutWorkerResult(input.result) ? { isError: true } : {}),
     content: serializeSessionToolResult(sessionToolResult),
     progress: [
       {
@@ -2461,28 +2640,20 @@ function cachedCompletedSessionResult(
   };
 }
 
-function isCachedSummaryRequest(message: string): boolean {
-  const normalized = message.toLowerCase();
-  const englishSummaryOnlyAsk =
-    /\b(return|provide|give|summari[sz]e|recap|produce|extract)\b/.test(normalized) &&
-    /\b(final|complete|summary|report|result|plain text|findings|evidence|overview|conclusion|key points)\b/.test(normalized);
-  const chineseSummaryOnlyAsk =
-    /(提取|总结|汇总|概括|返回|给出|提供|整理|复述)/.test(message) &&
-    /(最终|完整|总结|摘要|报告|结果|结论|证据|要点|核心)/.test(message);
-  const isSummaryOnlyAsk = englishSummaryOnlyAsk || chineseSummaryOnlyAsk;
-  const includesFreshWork =
-    /\b(new|another|additional|recheck|re-run|rerun|visit|open|fetch|search|click|navigate|update|create|submit|delete|purchase|send)\b/.test(
-      normalized
-    ) || /(重新|再次|新的|继续查|访问|打开|抓取|搜索|点击|导航|更新|创建|提交|删除|购买|发送)/.test(message);
-  return isSummaryOnlyAsk && !includesFreshWork;
-}
-
 function mapCachedWorkerResultPhase(
   status: WorkerExecutionResult["status"]
 ): "completed" | "progress" | "failed" {
   return (
-    status === "failed" ? "failed" : status === "partial" ? "progress" : "completed"
+    status === "failed" || status === "timeout"
+      ? "failed"
+      : status === "partial"
+        ? "progress"
+        : "completed"
   );
+}
+
+function isFailedOrTimedOutWorkerResult(result: WorkerExecutionResult): boolean {
+  return result.status === "failed" || result.status === "timeout";
 }
 
 async function executeSessionsList(
@@ -2982,7 +3153,7 @@ async function sendWorkerWithOptionalTimeout(
   hardTimeoutGraceMs = DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS,
   cancellationPromise?: Promise<typeof WORKER_TOOL_CANCELLED>,
   abortSignal?: AbortSignal
-): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> {
+): Promise<WorkerExecutionResult | null | WorkerToolTimeout | typeof WORKER_TOOL_CANCELLED> {
   const executeWorker = (): Promise<WorkerExecutionResult | null> =>
     input.resumeExisting
       ? workerRuntime.resume({
@@ -3028,19 +3199,22 @@ async function sendWorkerWithOptionalTimeout(
       throw error;
     },
   );
-  const timeoutPromise = new Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT>((resolve) => {
+  const timeoutPromise = new Promise<WorkerToolTimeout>((resolve) => {
     softTimeoutHandle = setTimeout(() => {
       softTimeoutFired = true;
       void workerRuntime
         .interrupt({ workerRunKey: input.workerRunKey, reason: timeoutReason, preserveLateResult: true })
         .then(() => raceTimeoutSummary(sendPromise, graceMs))
         .then(async (lateResult) => {
-          const cooperativePartial = preserveLateTimeoutPartial(lateResult);
-          if (cooperativePartial) {
-            return cooperativePartial;
+          if (lateResult?.status === "partial") {
+            return lateResult;
           }
-          await runWorkerTimeoutSummaryPass(workerRuntime, input, timeoutReason, graceMs);
-          return null;
+          return runWorkerTimeoutSummaryPass(
+            workerRuntime,
+            input,
+            timeoutReason,
+            graceMs,
+          );
         })
         .catch((error) => {
           console.error("worker timeout interrupt failed", {
@@ -3049,7 +3223,9 @@ async function sendWorkerWithOptionalTimeout(
           });
           return null;
         })
-        .then((lateResult) => resolve(lateResult ?? WORKER_TOOL_TIMEOUT));
+        .then((lateResult) =>
+          resolve({ kind: WORKER_TOOL_TIMEOUT, lateResult }),
+        );
     }, timeoutMs);
   });
   try {
@@ -3069,12 +3245,6 @@ async function sendWorkerWithOptionalTimeout(
   }
 }
 
-function preserveLateTimeoutPartial(
-  lateResult: WorkerExecutionResult | null,
-): WorkerExecutionResult | null {
-  return lateResult?.status === "partial" ? lateResult : null;
-}
-
 async function sendWorkerWithOptionalCancellation(
   workerRuntime: WorkerRuntime,
   input: {
@@ -3089,7 +3259,7 @@ async function sendWorkerWithOptionalCancellation(
   hardTimeoutGraceMs: number | undefined,
   registration: ToolCancellationRegistration | undefined,
   abortSignal?: AbortSignal
-): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> {
+): Promise<WorkerExecutionResult | null | WorkerToolTimeout | typeof WORKER_TOOL_CANCELLED> {
   if (!registration) {
     return sendWorkerWithOptionalTimeout(
       workerRuntime,
@@ -3137,7 +3307,7 @@ function createWorkerAbortWatcher(
   graceMs: number
 ):
   | {
-      promise: Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED>;
+      promise: Promise<WorkerExecutionResult | WorkerToolTimeout | typeof WORKER_TOOL_CANCELLED>;
       dispose(): void;
     }
   | null {
@@ -3145,16 +3315,20 @@ function createWorkerAbortWatcher(
     return null;
   }
   let onAbort: (() => void) | null = null;
-  const runAbort = async (): Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> => {
+  const runAbort = async (): Promise<WorkerExecutionResult | WorkerToolTimeout | typeof WORKER_TOOL_CANCELLED> => {
     const reason = readAbortReason(signal, "Tool call aborted.");
     if (isToolLoopWallClockAbort(reason)) {
       await workerRuntime.interrupt({ workerRunKey: input.workerRunKey, reason, preserveLateResult: true });
       const lateResult = await raceTimeoutSummary(sendPromise, graceMs);
-      if (lateResult) {
-        return lateResult;
-      }
-      await runWorkerTimeoutSummaryPass(workerRuntime, input, reason, graceMs);
-      return WORKER_TOOL_TIMEOUT;
+      const timeoutSummary =
+        lateResult ??
+        (await runWorkerTimeoutSummaryPass(
+          workerRuntime,
+          input,
+          reason,
+          graceMs,
+        ));
+      return { kind: WORKER_TOOL_TIMEOUT, lateResult: timeoutSummary };
     }
     await workerRuntime.cancel({ workerRunKey: input.workerRunKey, reason });
     return WORKER_TOOL_CANCELLED;
@@ -3166,9 +3340,9 @@ function createWorkerAbortWatcher(
     });
     return WORKER_TOOL_CANCELLED;
   };
-  const promise: Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> = signal.aborted
+  const promise: Promise<WorkerExecutionResult | WorkerToolTimeout | typeof WORKER_TOOL_CANCELLED> = signal.aborted
     ? runAbort().catch(recoverAbortFailure)
-    : new Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED>((resolve) => {
+    : new Promise<WorkerExecutionResult | WorkerToolTimeout | typeof WORKER_TOOL_CANCELLED>((resolve) => {
         onAbort = () => {
           void runAbort()
             .catch(recoverAbortFailure)
@@ -3184,6 +3358,15 @@ function createWorkerAbortWatcher(
       }
     },
   };
+}
+
+function isWorkerToolTimeout(value: unknown): value is WorkerToolTimeout {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === WORKER_TOOL_TIMEOUT
+  );
 }
 
 function readAbortReason(signal: AbortSignal, fallback: string): string {

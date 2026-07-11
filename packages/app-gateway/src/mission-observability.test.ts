@@ -682,6 +682,74 @@ test("buildMissionObservabilitySnapshot counts compacted multi-source evidence s
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot prefers typed sources over an aggregate session label", () => {
+  const resultContent = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    status: "completed",
+    payload: {
+      sourceResults: [
+        {
+          status: "completed",
+          label: "https://alpha.example.test/guide",
+          page: {
+            finalUrl: "https://alpha.example.test/guide",
+            title: "Alpha Guide",
+          },
+        },
+        {
+          status: "completed",
+          label: "https://beta.example.test/guide",
+          page: {
+            finalUrl: "https://beta.example.test/guide",
+            title: "Beta Guide",
+          },
+        },
+      ],
+    },
+    result: "Reviewed two documentation sources.",
+  });
+  const resultEvent = tool(
+    "result-1",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-1",
+    "Tool sessions_spawn returned structured evidence.",
+  );
+
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      title: "Compare two documentation sources.",
+      desc: "Use the collected evidence and identify residual risk.",
+    }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Compare the Alpha Guide and Beta Guide."),
+      {
+        ...resultEvent,
+        runtime: {
+          ...resultEvent.runtime,
+          resultContent,
+          sourceLabel: "Combined documentation review",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        4_000,
+        "role-lead",
+        "Alpha Guide and Beta Guide were both reviewed. Recommendation: use the documented common behavior; residual risk is future source drift.",
+      ),
+    ],
+  });
+
+  const sourceCoverage = snapshot.qualityGate.checks.find((check) => check.name === "source_coverage");
+  assert.equal(sourceCoverage?.status, "pass");
+  assert.equal(sourceCoverage?.detail, "Final answer covers 2/2 visible source label(s).");
+  assert.doesNotMatch(sourceCoverage?.detail ?? "", /Combined documentation review/);
+});
+
 test("buildMissionObservabilitySnapshot does not require quoted excerpts for generic evidence-bounded requests", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({
@@ -1610,6 +1678,42 @@ test("buildMissionObservabilitySnapshot blocks done missions whose requested pro
   );
 });
 
+test("buildMissionObservabilitySnapshot trusts runtime-verified goal coverage", () => {
+  const final = event(
+    "final-1",
+    "thought",
+    5_000,
+    "role-lead",
+    [
+      "Rendered browser evidence: the DOM shows queue depth 11 and owner Incident Commander.",
+      "| Residual risk / unverified scope | The page is local; verified to be missing from the rendered DOM: runbook and acknowledge controls. |",
+    ].join("\n")
+  );
+  final.runtime = {
+    missionReportStatus: "completed",
+    missionReportSource: "runtime_derived",
+    missionReportReason: "completed_sub_agent_final",
+    missionReportCoverageVerified: "true",
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({
+      status: "done",
+      desc: "Review this dashboard as a user would see it in the browser and report residual risk or unverified scope.",
+    }),
+    nowMs: 6_000,
+    events: [
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Browser returned rendered DOM evidence."),
+      final,
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.status, "pass");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "goal_slot_coverage")?.detail ?? "",
+    /runtime-verified/i
+  );
+});
+
 test("buildMissionObservabilitySnapshot blocks timeout closeouts with blocked provider search pricing slots", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({
@@ -1867,6 +1971,35 @@ test("buildMissionObservabilitySnapshot passes source coverage when all evidence
           "Based on verified source evidence from Vendor Alpha and Vendor Beta, the recommendation is evidence-backed.",
           "The answer covers both source labels, names residual risk, and avoids unsupported future pricing or adoption claims.",
           "Residual risk is limited to source updates after this run.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot ignores connector words in evidence source labels", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool("result-northwind", 3_000, "result", "sessions_spawn", "call-northwind", "Northwind source returned evidence."),
+        evidence: [{ kind: "extract", id: "ev-northwind", label: "Northwind baseline" }],
+      },
+      {
+        ...tool("result-contoso", 4_000, "result", "sessions_spawn", "call-contoso", "Contoso source returned evidence."),
+        evidence: [{ kind: "extract", id: "ev-contoso", label: "Verification of Contoso endpoint" }],
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Northwind baseline and the Contoso endpoint were both verified.",
+          "Residual risk is limited to source freshness after this run.",
         ].join(" ")
       ),
     ],

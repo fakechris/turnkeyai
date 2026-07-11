@@ -39,6 +39,7 @@ import type {
   TimeoutEvidenceFact,
 } from "./evidence-ledger";
 import type { TaskFactsSnapshot } from "./task-facts";
+import { BOUNDED_SOURCE_CHECK_TIMEOUT_SECONDS } from "./session-timeout-budget";
 import type { EngineContinueAction } from "./types";
 
 // Stage 8 engine cleanup — ContinuationController.
@@ -216,6 +217,7 @@ export class ContinuationController {
         name: "sessions_send",
         input: {
           session_key: directive.sessionKey,
+          mode: "continue",
           message: directive.messageHint,
         },
       };
@@ -239,7 +241,33 @@ export class ContinuationController {
         name: "sessions_list",
         input: {
           limit: 5,
-          reason: `continuation lookup: ${lookupDirective.messageHint}`,
+        },
+      };
+    }
+
+    const taskFacts =
+      input.taskFacts ??
+      produceTaskIntentEnvelope({
+        taskPrompt: input.taskPrompt,
+        messages: [],
+      }).facts;
+    if (
+      taskFacts.timeoutRecoveryRequested &&
+      taskFacts.sourceCheckContinuationRequested &&
+      !taskFacts.browserVisibleEvidenceRequired &&
+      !hasExecutedSessionTool(input.toolTrace) &&
+      hasToolDefinition(input.tools, "sessions_spawn")
+    ) {
+      return {
+        id: `runtime-bounded-source-check-${input.round + 1}`,
+        name: "sessions_spawn",
+        input: {
+          agent_id: taskFacts.browserVisibleEvidenceRequired
+            ? "browser"
+            : "explore",
+          label: "Bounded source check",
+          task: input.taskPrompt,
+          timeout_seconds: BOUNDED_SOURCE_CHECK_TIMEOUT_SECONDS,
         },
       };
     }
@@ -257,7 +285,9 @@ export class ContinuationController {
       reason:
         call.name === "sessions_send"
           ? "empty_round_session_continuation"
-          : "empty_round_session_lookup",
+          : call.name === "sessions_list"
+            ? "empty_round_session_lookup"
+            : "empty_round_bounded_source_check",
     };
   }
 
@@ -658,6 +688,15 @@ function hasToolDefinition(
   name: string,
 ): boolean {
   return (tools ?? []).some((tool) => tool.name === name);
+}
+
+function hasExecutedSessionTool(toolTrace: NativeToolRoundTrace[]): boolean {
+  return toolTrace.some((round) =>
+    round.calls.some(
+      (call) =>
+        call.name === "sessions_spawn" || call.name === "sessions_send",
+    ),
+  );
 }
 
 function collectCompletedSessionFinalContents(

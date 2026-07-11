@@ -44,6 +44,7 @@ export function buildRuntimeDerivedMissionReport(
   return {
     status,
     reason: closeout.reason,
+    ...(status === "completed" ? { coverageVerified: true } : {}),
     source: "runtime_derived",
   };
 }

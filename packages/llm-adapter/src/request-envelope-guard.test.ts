@@ -88,6 +88,57 @@ test("request envelope limits resolve per protocol/provider with stricter media 
   assert.ok(openaiLimits.maxMultimodalPartCount > anthropicLimits.maxMultimodalPartCount);
 });
 
+test("message count is a sanity cap instead of the primary loop-history limit", () => {
+  const diagnostics = assertRequestEnvelopeWithinLimits(
+    {
+      messages: Array.from({ length: 40 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" as const : "assistant" as const,
+        content: `short round ${index}`,
+      })),
+    },
+    undefined,
+    {
+      protocol: "anthropic-compatible",
+      providerId: "minimax",
+      model: "MiniMax-M3[1m]",
+      contextWindowTokens: 1_000_000,
+    },
+  );
+
+  assert.equal(diagnostics.messageCount, 40);
+  assert.equal(diagnostics.overLimitKeys.includes("messageCount"), false);
+  assert.ok((diagnostics.estimatedInputTokens ?? 0) < (diagnostics.inputTokenLimit ?? 0));
+});
+
+test("token guard counts CJK near one token per character", () => {
+  assert.throws(
+    () =>
+      assertRequestEnvelopeWithinLimits(
+        { messages: [{ role: "user", content: "中".repeat(120_000) }] },
+        undefined,
+        {
+          protocol: "openai-compatible",
+          providerId: "test",
+          model: "small-model",
+          contextWindowTokens: 128_000,
+        },
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof RequestEnvelopeOverflowError);
+      assert.ok(
+        error.details.diagnostics.overLimitKeys.includes(
+          "estimatedInputTokens",
+        ),
+      );
+      assert.ok(
+        (error.details.diagnostics.estimatedInputTokens ?? 0) >
+          (error.details.diagnostics.inputTokenLimit ?? Infinity),
+      );
+      return true;
+    },
+  );
+});
+
 test("anthropic-compatible envelope allows the full native tool runtime schema", () => {
   const diagnostics = assertRequestEnvelopeWithinLimits(
     {
@@ -149,7 +200,7 @@ test("gateway blocks oversized request envelopes before the protocol client runs
           modelId: "test-model",
           messages: [
             { role: "system", content: "You are helpful." },
-            { role: "user", content: "x".repeat(200_000) },
+            { role: "user", content: "x".repeat(1_300_000) },
           ],
         }),
       (error: unknown) => {
@@ -158,7 +209,11 @@ test("gateway blocks oversized request envelopes before the protocol client runs
         assert.equal(error.code, "REQUEST_ENVELOPE_OVERFLOW");
         assert.equal(error.retryable, false);
         assert.ok(error.details.diagnostics.overLimitKeys.includes("promptChars"));
-        assert.ok(error.details.diagnostics.overLimitKeys.includes("promptBytes"));
+        assert.ok(
+          error.details.diagnostics.overLimitKeys.includes(
+            "estimatedInputTokens",
+          ),
+        );
         return true;
       }
     );

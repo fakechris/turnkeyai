@@ -13,6 +13,7 @@ import type { EngineRunObserver } from "./engine-run-observer";
 export interface EngineAgentRunnerInput<Ctx extends ToolContext> {
   agent: ReActLoop<Ctx>;
   messages: LLMMessage[];
+  initialRound?: number | undefined;
   ctx: Ctx;
   signal?: AbortSignal | undefined;
   observer: Pick<
@@ -57,6 +58,9 @@ export async function runEngineAgent<Ctx extends ToolContext>(
   for await (const event of input.agent.run({
     messages: input.messages,
     ctx: input.ctx,
+    ...(input.initialRound === undefined
+      ? {}
+      : { initialRound: input.initialRound }),
     ...(input.signal ? { signal: input.signal } : {}),
   })) {
     if (event.type === "model_response") {

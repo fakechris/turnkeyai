@@ -34,6 +34,9 @@ export interface CreateEngineRuntimeForcedToolRoundRunnerInput {
   observer?: RuntimeForcedToolRoundObserver | undefined;
   toolLoopStartedAtMs: number;
   signal?: AbortSignal | undefined;
+  mapToolResultsForHistory?: (
+    results: RoleToolExecutionResult[],
+  ) => Promise<RoleToolExecutionResult[]>;
 }
 
 export interface CreateRoleEngineRuntimeForcedToolRoundRunnerInput
@@ -71,6 +74,9 @@ export function createEngineRuntimeForcedToolRoundRunner(
       round: roundInput.round ?? input.toolTrace.length + 1,
       toolLoopStartedAtMs: input.toolLoopStartedAtMs,
       ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.mapToolResultsForHistory
+        ? { mapToolResultsForHistory: input.mapToolResultsForHistory }
+        : {}),
       assistantText: roundInput.assistantText,
       persistNativeToolTrace: (options) =>
         persistNativeToolTraceSafely({

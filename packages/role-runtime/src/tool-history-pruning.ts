@@ -13,6 +13,7 @@ import { sliceUtf8 } from "./tool-protocol";
 
 export interface ToolResultPruningLimits {
   historyMaxMessages: number;
+  historyMaxBytes: number;
   recentFullCount: number;
   totalMaxBytes: number;
   softMaxBytes: number;
@@ -32,14 +33,19 @@ export interface ToolResultPruningSnapshot {
   limits: ToolResultPruningLimits;
 }
 
-const ROLE_TOOL_HISTORY_MAX_MESSAGES = 16;
+const ROLE_TOOL_HISTORY_MAX_MESSAGES = 200;
+const ROLE_TOOL_HISTORY_MAX_BYTES = 3 * 1024 * 1024;
 const TOOL_RESULT_RECENT_FULL_COUNT = 2;
 const TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES = 32 * 1024;
+const TOOL_RESULT_CONTEXT_SHARE = 0.15;
+const ESTIMATED_UTF8_BYTES_PER_TOKEN = 4;
+const TOOL_RESULT_MIN_TOTAL_BYTES = 8 * 1024;
 const TOOL_RESULT_SOFT_PRUNE_MAX_BYTES = 16 * 1024;
 const TOOL_RESULT_HARD_PRUNE_MAX_BYTES = 64 * 1024;
 
 export function readToolResultPruningLimits(
   env: NodeJS.ProcessEnv = process.env,
+  context: { inputTokenLimit?: number } = {},
 ): ToolResultPruningLimits {
   const recentFullCount = readPositiveIntegerEnv(
     env,
@@ -52,11 +58,16 @@ export function readToolResultPruningLimits(
       "TURNKEYAI_TOOL_HISTORY_MAX_MESSAGES",
       ROLE_TOOL_HISTORY_MAX_MESSAGES,
     ),
+    historyMaxBytes: readPositiveIntegerEnv(
+      env,
+      "TURNKEYAI_TOOL_HISTORY_MAX_BYTES",
+      ROLE_TOOL_HISTORY_MAX_BYTES,
+    ),
     recentFullCount,
     totalMaxBytes: readPositiveIntegerEnv(
       env,
       "TURNKEYAI_TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES",
-      TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES,
+      deriveToolResultTotalBudgetBytes(context.inputTokenLimit),
     ),
     softMaxBytes: readPositiveIntegerEnv(
       env,
@@ -69,6 +80,29 @@ export function readToolResultPruningLimits(
       TOOL_RESULT_HARD_PRUNE_MAX_BYTES,
     ),
   };
+}
+
+function deriveToolResultTotalBudgetBytes(
+  inputTokenLimit: number | undefined,
+): number {
+  if (
+    inputTokenLimit === undefined ||
+    !Number.isFinite(inputTokenLimit) ||
+    inputTokenLimit <= 0
+  ) {
+    return TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES;
+  }
+  return Math.min(
+    ROLE_TOOL_HISTORY_MAX_BYTES,
+    Math.max(
+      TOOL_RESULT_MIN_TOTAL_BYTES,
+      Math.floor(
+        inputTokenLimit *
+          TOOL_RESULT_CONTEXT_SHARE *
+          ESTIMATED_UTF8_BYTES_PER_TOKEN,
+      ),
+    ),
+  );
 }
 
 export function deriveToolResultEnvelope(messages: LLMMessage[]): {
@@ -87,8 +121,8 @@ export function deriveToolResultEnvelope(messages: LLMMessage[]): {
 
 export function prepareToolHistoryForGateway(
   messages: LLMMessage[],
+  limits: ToolResultPruningLimits = readToolResultPruningLimits(),
 ): LLMMessage[] {
-  const limits = readToolResultPruningLimits();
   return compactOlderToolHistoryForGateway(
     pruneToolResultMessagesForGateway(messages, limits),
     limits,
@@ -105,8 +139,8 @@ export function summarizeToolResultPruning(
     .map((message) => readToolResultContentText(message.content))
     .filter(isPrunedToolResultContent);
   const compactedHistory = afterMessages.some((message) =>
-    readToolResultContentText(message.content).startsWith(
-      "Earlier tool history compacted to fit the request envelope:",
+    /^Earlier (?:tool|loop) history compacted to fit the request envelope:/.test(
+      readToolResultContentText(message.content),
     ),
   );
   if (prunedToolContents.length === 0 && !compactedHistory) {
@@ -374,38 +408,109 @@ export function compactOlderToolHistoryForGateway(
   messages: LLMMessage[],
   limits: ToolResultPruningLimits,
 ): LLMMessage[] {
-  if (messages.length <= limits.historyMaxMessages) {
+  const historyBytes = serializedMessageBytes(messages.slice(2));
+  if (
+    messages.length <= limits.historyMaxMessages &&
+    historyBytes <= limits.historyMaxBytes
+  ) {
     return messages;
   }
-  const toolMessageIndexes = messages
-    .map((message, index) => (message.role === "tool" ? index : -1))
-    .filter((index) => index >= 0);
-  if (toolMessageIndexes.length <= limits.recentFullCount) {
-    return messages;
+  const prefix = messages.slice(0, 2);
+  const units = buildHistoryProtocolUnits(messages.slice(2));
+  const maxMessages = Math.max(prefix.length + 1, limits.historyMaxMessages);
+  const maxBytes = Math.max(512, limits.historyMaxBytes);
+  const rawMessageCapacity = Math.max(0, maxMessages - prefix.length - 1);
+  const keptUnits: HistoryProtocolUnit[] = [];
+  let keptMessageCount = 0;
+  let keptBytes = 0;
+
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index]!;
+    const unitBytes = serializedMessageBytes(unit.messages);
+    if (
+      !unit.protocolSafe ||
+      keptMessageCount + unit.messages.length > rawMessageCapacity ||
+      keptBytes + unitBytes > Math.max(0, maxBytes - 512)
+    ) {
+      break;
+    }
+    keptUnits.unshift(unit);
+    keptMessageCount += unit.messages.length;
+    keptBytes += unitBytes;
   }
 
-  for (
-    let keepToolCount = limits.recentFullCount;
-    keepToolCount >= 1;
-    keepToolCount -= 1
-  ) {
-    const firstKeptToolIndex = toolMessageIndexes.slice(-keepToolCount)[0];
-    if (firstKeptToolIndex === undefined) continue;
-    const keepStart = findToolCallAssistantIndex(messages, firstKeptToolIndex);
-    if (keepStart <= 2) continue;
-    const compactedHistory = messages.slice(2, keepStart);
-    const summary = buildCompactedToolHistoryMessage(compactedHistory);
-    const compacted: LLMMessage[] = [
-      ...messages.slice(0, 2),
-      summary,
-      ...messages.slice(keepStart),
-    ];
-    if (compacted.length <= limits.historyMaxMessages) {
+  let droppedUnitCount = units.length - keptUnits.length;
+  while (true) {
+    const droppedMessages = units
+      .slice(0, droppedUnitCount)
+      .flatMap((unit) => unit.messages);
+    const keptMessages = keptUnits.flatMap((unit) => unit.messages);
+    const summaryBudget = Math.max(
+      128,
+      Math.min(6 * 1024, maxBytes - serializedMessageBytes(keptMessages) - 64),
+    );
+    const summary = buildCompactedLoopHistoryMessage(
+      droppedMessages,
+      summaryBudget,
+    );
+    const compacted = [...prefix, summary, ...keptMessages];
+    if (
+      compacted.length <= maxMessages &&
+      serializedMessageBytes(compacted.slice(prefix.length)) <= maxBytes
+    ) {
       return compacted;
     }
+    const removed = keptUnits.shift();
+    if (!removed) {
+      return [...prefix, buildCompactedLoopHistoryMessage(messages.slice(2), maxBytes - 64)];
+    }
+    droppedUnitCount += 1;
   }
+}
 
-  return messages;
+export interface HistoryProtocolUnit {
+  messages: LLMMessage[];
+  protocolSafe: boolean;
+}
+
+export function buildHistoryProtocolUnits(messages: LLMMessage[]): HistoryProtocolUnit[] {
+  const units: HistoryProtocolUnit[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    const toolUseIds =
+      message.role === "assistant" ? extractAssistantToolUseIds(message) : [];
+    if (toolUseIds.length === 0) {
+      units.push({
+        messages: [message],
+        protocolSafe: message.role !== "tool",
+      });
+      continue;
+    }
+
+    const unitMessages = [message];
+    const resultIds = new Set<string>();
+    let cursor = index + 1;
+    while (cursor < messages.length && messages[cursor]?.role === "tool") {
+      const result = messages[cursor]!;
+      const toolCallId = result.role === "tool" ? result.toolCallId : undefined;
+      if (toolCallId && !toolUseIds.includes(toolCallId)) {
+        break;
+      }
+      unitMessages.push(result);
+      if (toolCallId) resultIds.add(toolCallId);
+      cursor += 1;
+    }
+    units.push({
+      messages: unitMessages,
+      protocolSafe: toolUseIds.every((id) => resultIds.has(id)),
+    });
+    index = cursor - 1;
+  }
+  return units;
+}
+
+function serializedMessageBytes(messages: LLMMessage[]): number {
+  return Buffer.byteLength(JSON.stringify(messages), "utf8");
 }
 
 export function findLatestAssistantToolUseMessageIndex(
@@ -517,10 +622,17 @@ function extractAssistantToolUseIds(message: LLMMessage): string[] {
     .filter((id) => id.length > 0);
 }
 
-function buildCompactedToolHistoryMessage(messages: LLMMessage[]): LLMMessage {
-  const lines = ["Earlier tool history compacted to fit the request envelope:"];
+function buildCompactedLoopHistoryMessage(
+  messages: LLMMessage[],
+  maxBytes: number,
+): LLMMessage {
+  const lines = ["Earlier loop history compacted to fit the request envelope:"];
   for (const message of messages) {
     if (message.role === "assistant") {
+      const text = readAssistantText(message);
+      if (text) {
+        lines.push(`- assistant: ${summarizeHistoryText(text)}`);
+      }
       const calls = Array.isArray(message.content)
         ? message.content.filter(
             (block): block is Extract<LLMContentBlock, { type: "tool_use" }> =>
@@ -539,12 +651,33 @@ function buildCompactedToolHistoryMessage(messages: LLMMessage[]): LLMMessage {
       lines.push(
         `- result ${message.name ?? "tool"} (${message.toolCallId ?? "unknown"}): ${summarizeToolResultContent(content)}`,
       );
+      continue;
+    }
+    const content = readToolResultContentText(message.content);
+    if (content.trim()) {
+      lines.push(`- ${message.role}: ${summarizeHistoryText(content)}`);
     }
   }
   return {
     role: "user",
-    content: sliceUtf8(lines.join("\n"), 6 * 1024),
+    content: sliceUtf8(lines.join("\n"), Math.max(64, maxBytes)),
   };
+}
+
+function readAssistantText(message: LLMMessage): string {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function summarizeHistoryText(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 360 ? `${normalized.slice(0, 360)}...` : normalized;
 }
 
 function summarizeToolArgs(input: Record<string, unknown>): string {

@@ -3,7 +3,11 @@ import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import { produceTaskIntentEnvelope } from "./runtime-facts/task-intent-producer";
 import { parseSessionToolResult } from "./session-tool-result-protocol";
-import { dedupeStrings, sliceUtf8 } from "./tool-protocol";
+import {
+  dedupeStrings,
+  nativeToolResultTraceHasUsableEvidence,
+  sliceUtf8,
+} from "./tool-protocol";
 import {
   hasApprovedBrowserTimeoutContinuationPrompt,
   hasCoverageTimeoutContinuationPrompt,
@@ -370,6 +374,6 @@ export function collectToolTraceResultContent(
 
 export function hasUsableEvidence(rounds: NativeToolRoundTrace[]): boolean {
   return rounds.some((round) =>
-    round.results.some((result) => !result.isError && result.skipped !== true),
+    round.results.some(nativeToolResultTraceHasUsableEvidence),
   );
 }

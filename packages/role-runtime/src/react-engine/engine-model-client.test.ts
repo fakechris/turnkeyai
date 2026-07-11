@@ -5,7 +5,11 @@ import type {
   RoleActivationInput,
   RuntimeProgressEvent,
 } from "@turnkeyai/core-types/team";
-import type { GenerateTextInput, LLMMessage } from "@turnkeyai/llm-adapter/index";
+import type {
+  GenerateTextInput,
+  GenerateTextResult,
+  LLMMessage,
+} from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
 import {
@@ -104,6 +108,127 @@ test("createEngineModelClient builds tool-round gateway requests and records mod
   assert.equal(engineModel.lastResult()?.text, "engine answer");
 });
 
+test("createEngineModelClient calibrates later token estimates from provider usage", async () => {
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "检查状态。" },
+  ];
+  let initialRawEstimate = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => ({
+    text: "done",
+    modelId: "model-1",
+    providerId: "provider",
+    protocol: "anthropic-compatible",
+    adapterName: "test",
+    usage: { inputTokens: initialRawEstimate + 20, outputTokens: 2 },
+    requestEnvelope: {
+      estimatedInputTokens: initialRawEstimate,
+      inputTokenLimit: 1_000,
+    } as NonNullable<GenerateTextResult["requestEnvelope"]>,
+    raw: {},
+  });
+  const engineModel = createEngineModelClient({
+    gateway,
+    now: () => 1,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    selection: { modelId: "model-1" },
+    baseGatewayInput: { modelId: "model-1", messages },
+    modelCallTrace: [],
+    maxRounds: 2,
+    activeToolLoop: true,
+    executionBudget: {
+      applyFinalToolRoundWarning(input) {
+        return input.messages;
+      },
+    },
+    runState: {
+      recordReduction() {},
+      recordMemoryFlush() {},
+    },
+    recordPruning() {},
+  });
+  initialRawEstimate = engineModel.estimateTokenBudget({ messages })
+    .rawInputTokens;
+
+  await engineModel.model.generate({ messages });
+  const calibrated = engineModel.estimateTokenBudget({ messages });
+
+  assert.equal(calibrated.source, "provider_calibrated");
+  assert.equal(
+    calibrated.estimatedInputTokens,
+    calibrated.rawInputTokens + 20,
+  );
+  assert.equal(calibrated.inputTokenLimit, 1_000);
+  assert.equal(
+    calibrated.utilization,
+    calibrated.estimatedInputTokens / 1_000,
+  );
+});
+
+test("createEngineModelClient applies the observed context limit to later tool-result budgets", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => ({
+    text: "continue",
+    modelId: "model-1",
+    providerId: "provider",
+    protocol: "openai-compatible",
+    adapterName: "test",
+    requestEnvelope: {
+      estimatedInputTokens: 1_000,
+      inputTokenLimit: 100_000,
+    } as NonNullable<GenerateTextResult["requestEnvelope"]>,
+    raw: {},
+  });
+  const snapshots: Array<unknown> = [];
+  const engineModel = createEngineModelClient({
+    gateway,
+    now: () => 1,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    selection: { modelId: "model-1" },
+    baseGatewayInput: { modelId: "model-1", messages: [] },
+    modelCallTrace: [],
+    maxRounds: 3,
+    activeToolLoop: true,
+    executionBudget: {
+      applyFinalToolRoundWarning(input) {
+        return input.messages;
+      },
+    },
+    runState: {
+      recordReduction() {},
+      recordMemoryFlush() {},
+    },
+    recordPruning(snapshot) {
+      snapshots.push(snapshot);
+    },
+  });
+
+  await engineModel.model.generate({
+    messages: [{ role: "user", content: "start" }],
+  });
+  await engineModel.model.generate({
+    messages: [
+      { role: "system", content: "system" },
+      { role: "user", content: "task" },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        role: "tool" as const,
+        toolCallId: `tool-${index}`,
+        name: "web_fetch",
+        content: String(index).repeat(10_000),
+      })),
+    ],
+  });
+
+  assert.equal(
+    (snapshots[1] as { limits?: { totalMaxBytes?: number } } | undefined)
+      ?.limits?.totalMaxBytes,
+    60_000,
+  );
+});
+
 test("createRoleEngineModelClient records pruning boundaries through role-runtime recorder", async () => {
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async () => ({
@@ -115,6 +240,7 @@ test("createRoleEngineModelClient records pruning boundaries through role-runtim
     raw: {},
   });
   const events: RuntimeProgressEvent[] = [];
+  const runTracePruning: Array<{ round: number; prunedToolResults: number }> = [];
   const trace: ModelCallBoundaryTrace[] = [];
   const engineModel = createRoleEngineModelClient({
     gateway,
@@ -134,6 +260,11 @@ test("createRoleEngineModelClient records pruning boundaries through role-runtim
       async record(event) {
         events.push(event);
       },
+    },
+    onPruning(snapshot, round) {
+      if (snapshot) {
+        runTracePruning.push({ round, prunedToolResults: snapshot.prunedToolResults });
+      }
     },
     executionBudget: {
       applyFinalToolRoundWarning(input) {
@@ -164,8 +295,72 @@ test("createRoleEngineModelClient records pruning boundaries through role-runtim
     "number",
   );
   assert.ok(
-    Number(events[0]?.metadata?.toolResultCountBefore) >
-      Number(events[0]?.metadata?.toolResultCountAfter),
+    Number(events[0]?.metadata?.toolResultBytesBefore) >
+      Number(events[0]?.metadata?.toolResultBytesAfter),
+  );
+  assert.deepEqual(runTracePruning, [{ round: 0, prunedToolResults: 16 }]);
+});
+
+test("createEngineModelClient leaves ordinary long history to calibrated checkpoint compaction", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input) => {
+    gatewayInputs.push(input);
+    return {
+      text: "bounded answer",
+      modelId: "model-1",
+      providerId: "provider",
+      protocol: "openai-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const engineModel = createEngineModelClient({
+    gateway,
+    now: () => 1,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    selection: { modelId: "model-1" },
+    baseGatewayInput: {
+      modelId: "model-1",
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "task" },
+      ],
+    },
+    modelCallTrace: [],
+    maxRounds: 20,
+    activeToolLoop: true,
+    executionBudget: {
+      applyFinalToolRoundWarning(input) {
+        return input.messages;
+      },
+    },
+    runState: {
+      recordReduction() {},
+      recordMemoryFlush() {},
+    },
+    recordPruning() {},
+  });
+  const roundMessages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "task" },
+    ...Array.from({ length: 23 }, (_, index): LLMMessage => ({
+      role: index % 2 === 0 ? "assistant" : "user",
+      content: `repair or continuation round ${index + 1}`,
+    })),
+  ];
+
+  await engineModel.model.generate({ messages: roundMessages });
+
+  assert.equal(gatewayInputs[0]?.messages.length, roundMessages.length);
+  assert.doesNotMatch(
+    String(gatewayInputs[0]?.messages[2]?.content ?? ""),
+    /Earlier loop history compacted/,
+  );
+  assert.equal(
+    gatewayInputs[0]?.messages.at(-1)?.content,
+    "repair or continuation round 23",
   );
 });
 

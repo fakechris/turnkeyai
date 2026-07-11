@@ -930,6 +930,17 @@ function buildTimelineEventFromRuntimeProgress(
   if (event.roleId) runtime.teamRole = event.roleId;
   if (event.workerType) runtime.workerType = event.workerType;
   if (toolName) runtime.toolName = toolName;
+  const lifecycleEventType = readStringFromRecord(event.metadata, "eventType");
+  if (lifecycleEventType === "run.lifecycle") {
+    runtime.eventType = lifecycleEventType;
+    copyRuntimeMetadataString(event.metadata, runtime, "lifecycleKind");
+    copyRuntimeMetadataString(event.metadata, runtime, "attemptId");
+    copyRuntimeMetadataString(event.metadata, runtime, "activity", "providerActivity");
+    copyRuntimeMetadataString(event.metadata, runtime, "phase", "modelPhase");
+    copyRuntimeMetadataString(event.metadata, runtime, "round", "modelRound");
+    copyRuntimeMetadataString(event.metadata, runtime, "code");
+    copyRuntimeMetadataString(event.metadata, runtime, "status");
+  }
   const toolCallId = readStringFromRecord(event.metadata, "toolCallId");
   if (toolCallId) runtime.toolCallId = toolCallId;
   const detail = readRecordFromRecord(event.metadata, "detail");
@@ -968,6 +979,9 @@ function shouldExposeRuntimeProgressOnTimeline(event: RuntimeProgressEvent, tool
   }
   if (event.summary.startsWith("Provider tool protocol round")) {
     return false;
+  }
+  if (event.metadata?.["eventType"] === "run.lifecycle") {
+    return true;
   }
   if (event.progressKind === "heartbeat" && event.heartbeatSource === "long_running_tick") {
     return false;
@@ -1038,6 +1052,9 @@ function displayRuntimeProgressEvent(
 }
 
 function humanizeRoleProgress(event: RuntimeProgressEvent): string {
+  if (event.metadata?.["eventType"] === "run.lifecycle") {
+    return event.summary;
+  }
   switch (event.statusReason) {
     case "role_loop_dequeued":
       return "Lead picked up the task.";
@@ -1047,6 +1064,20 @@ function humanizeRoleProgress(event: RuntimeProgressEvent): string {
       if (event.phase === "started") return "Lead started working.";
       if (event.phase === "completed") return "Lead finished this turn.";
       return event.summary;
+  }
+}
+
+function copyRuntimeMetadataString(
+  metadata: Record<string, unknown> | undefined,
+  runtime: Record<string, string>,
+  sourceKey: string,
+  targetKey = sourceKey,
+): void {
+  const value = metadata?.[sourceKey];
+  if (typeof value === "string" && value.trim()) {
+    runtime[targetKey] = value;
+  } else if (typeof value === "number" && Number.isFinite(value)) {
+    runtime[targetKey] = String(value);
   }
 }
 

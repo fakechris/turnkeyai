@@ -44,7 +44,8 @@ test("model registry normalizes object-based model and chain catalogs", async ()
             label: "MiniMax Reasoning",
             providerId: "minimax",
             apiType: "anthropic",
-            model: "MiniMax-M2.7-highspeed",
+            model: "MiniMax-M3[1m]",
+            contextWindowTokens: 1_000_000,
             baseURLEnv: "TEST_MINIMAX_BASE_URL",
             apiKeyEnv: "TEST_MINIMAX_API_KEY",
           },
@@ -67,12 +68,14 @@ test("model registry normalizes object-based model and chain catalogs", async ()
     const described = await registry.describeSelection({ modelChainId: "reasoning_primary" });
     assert.equal(described.primary.id, "minimax_reasoning");
     assert.equal(described.primary.protocol, "anthropic-compatible");
+    assert.equal(described.primary.contextWindowTokens, 1_000_000);
     assert.equal(described.fallbacks[0]?.id, "gpt-5");
 
     const resolved = await registry.resolve("minimax_reasoning");
     assert.equal(resolved.baseURL, "https://minimax.example/v1");
     assert.equal(resolved.apiKey, "test-minimax-key");
     assert.equal(resolved.protocol, "anthropic-compatible");
+    assert.equal(resolved.contextWindowTokens, 1_000_000);
   } finally {
     if (previousApiKey == null) {
       delete process.env.TEST_MINIMAX_API_KEY;

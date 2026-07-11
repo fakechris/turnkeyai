@@ -52,6 +52,64 @@ const run = (model: ModelClient, hooks: ReActHooks<Ctx>, tools = [echoTool("sear
     })
   );
 
+test("aborting while a model call resolves prevents tool dispatch", async () => {
+  const controller = new AbortController();
+  const events: ReActEvent[] = [];
+  let executions = 0;
+  const model: ModelClient = {
+    async generate() {
+      controller.abort(new Error("stop after model"));
+      return { text: "use a tool", toolCalls: [call("c1", "search")] };
+    },
+  };
+  const tool: Tool<Ctx> = {
+    definition: { name: "search", description: "search", inputSchema: { type: "object" } },
+    async execute(toolCall) {
+      executions += 1;
+      return { toolCallId: toolCall.id, toolName: toolCall.name, content: "should not run" };
+    },
+  };
+  const agent = createReActAgent<Ctx>({
+    model,
+    toolkit: createToolkit([tool]),
+    hooks: { onProgress: (event) => events.push(event) },
+  });
+
+  await assert.rejects(
+    () => drain(agent.run({ messages: [{ role: "user", content: "hi" }], ctx: {}, signal: controller.signal })),
+    /stop after model/
+  );
+  assert.equal(executions, 0);
+  assert.deepEqual(events, []);
+});
+
+test("aborting while a tool call resolves suppresses its result and final events", async () => {
+  const controller = new AbortController();
+  const events: ReActEvent[] = [];
+  const model = scriptedModel([{ text: "use a tool", toolCalls: [call("c1", "search")] }]);
+  const tool: Tool<Ctx> = {
+    definition: { name: "search", description: "search", inputSchema: { type: "object" } },
+    async execute(toolCall) {
+      controller.abort(new Error("stop after tool"));
+      return { toolCallId: toolCall.id, toolName: toolCall.name, content: "cancelled result" };
+    },
+  };
+  const agent = createReActAgent<Ctx>({
+    model,
+    toolkit: createToolkit([tool]),
+    hooks: { onProgress: (event) => events.push(event) },
+  });
+
+  await assert.rejects(
+    () => drain(agent.run({ messages: [{ role: "user", content: "hi" }], ctx: {}, signal: controller.signal })),
+    /stop after tool/
+  );
+  assert.equal(events.filter((event) => event.type === "model_response").length, 1);
+  assert.equal(events.filter((event) => event.type === "tool_started").length, 1);
+  assert.equal(events.filter((event) => event.type === "tool_result").length, 0);
+  assert.equal(events.filter((event) => event.type === "final").length, 0);
+});
+
 test("filterTools restricts the tool definitions offered to the model", async () => {
   const model = scriptedModel([{ text: "answer" }]);
   let offered: string[] = [];
@@ -69,6 +127,56 @@ test("onRoundMessages can force a tool-free synthesis round", async () => {
   assert.equal(model.seen[0]!.hadTools, false); // tool schemas dropped for a forced tool-free round
   assert.equal(model.seen[0]!.messageCount, 2); // injected message persisted
   assert.equal(events.at(-1)?.type === "final" && events.at(-1)!.type, "final");
+});
+
+test("onRoundMessages awaits asynchronous message rewrites", async () => {
+  const model = scriptedModel([{ text: "compacted answer" }]);
+  let hookCompleted = false;
+
+  await run(model, {
+    onRoundMessages: async (messages) => {
+      await Promise.resolve();
+      hookCompleted = true;
+      return {
+        messages: [
+          ...messages,
+          { role: "user", content: "async checkpoint" },
+        ],
+      };
+    },
+  });
+
+  assert.equal(hookCompleted, true);
+  assert.equal(model.seen[0]?.messageCount, 2);
+});
+
+test("aborting during async onRoundMessages prevents the model call", async () => {
+  const model = scriptedModel([{ text: "must not run" }]);
+  const controller = new AbortController();
+  const agent = createReActAgent({
+    model,
+    toolkit: createToolkit([]),
+    hooks: {
+      onRoundMessages: async (messages) => {
+        controller.abort(new Error("stop during compaction"));
+        await Promise.resolve();
+        return { messages };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      drain(
+        agent.run({
+          messages: [{ role: "user", content: "hi" }],
+          ctx: {},
+          signal: controller.signal,
+        }),
+      ),
+    /stop during compaction/,
+  );
+  assert.equal(model.seen.length, 0);
 });
 
 test("onModelCallError recovers a thrown model call into a terminal synthesis", async () => {
@@ -159,6 +267,112 @@ test("onAfterExecute can close out the loop with a reason", async () => {
   const final = events.at(-1);
   assert.equal(final?.type === "final" && final.text, "closed: evidence_complete");
   assert.equal(final?.type === "final" && final.closeoutReason, "evidence_complete");
+});
+
+test("onToolResultsForHistory externalizes model history without changing evidence hooks or events", async () => {
+  const modelInputs: Array<Parameters<ModelClient["generate"]>[0]> = [];
+  let modelCall = 0;
+  const model: ModelClient = {
+    async generate(input) {
+      modelInputs.push(input);
+      modelCall += 1;
+      return modelCall === 1
+        ? { text: "fetch", toolCalls: [call("c1", "search")] }
+        : { text: "done" };
+    },
+  };
+  const originalContent = "original producer evidence";
+  const tool: Tool<Ctx> = {
+    definition: {
+      name: "search",
+      description: "search",
+      inputSchema: { type: "object" },
+    },
+    async execute(toolCall) {
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: originalContent,
+      };
+    },
+  };
+  let postExecuteContent = "";
+
+  const events = await run(
+    model,
+    {
+      onToolResultsForHistory: async (results) =>
+        results.map((result) => ({
+          ...result,
+          content: '{"artifact_id":"tool-result-1"}',
+        })),
+      onAfterExecute: (results) => {
+        postExecuteContent = results[0]?.content ?? "";
+        return null;
+      },
+    },
+    [tool],
+  );
+
+  assert.equal(postExecuteContent, originalContent);
+  const emitted = events.find((event) => event.type === "tool_result");
+  assert.equal(
+    emitted?.type === "tool_result" ? emitted.result.content : undefined,
+    originalContent,
+  );
+  const historyToolMessage = modelInputs[1]?.messages.find(
+    (message) => message.role === "tool",
+  );
+  const historyContent = JSON.stringify(historyToolMessage?.content);
+  assert.match(historyContent, /tool-result-1/);
+  assert.doesNotMatch(historyContent, /original producer evidence/);
+});
+
+test("initialRound resumes within the original total round budget", async () => {
+  const observedRounds: number[] = [];
+  const agent = createReActAgent({
+    model: {
+      async generate() {
+        return {
+          text: "continue",
+          toolCalls: [{ id: "call-1", name: "echo", input: {} }],
+        };
+      },
+    },
+    toolkit: createToolkit([
+      {
+        definition: { name: "echo", description: "", inputSchema: {} },
+        async execute(call) {
+          return {
+            toolCallId: call.id,
+            toolName: call.name,
+            content: "done",
+          };
+        },
+      },
+    ]),
+    maxRounds: 10,
+    hooks: {
+      onProgress(event) {
+        if (event.type === "model_response") observedRounds.push(event.round);
+      },
+      onAfterExecute: () => "resumed_complete",
+      onTerminate: async () => ({ text: "finished" }),
+    },
+  });
+
+  const events = await drain(
+    agent.run({
+      messages: [{ role: "user", content: "resume" }],
+      ctx: {},
+      initialRound: 7,
+    }),
+  );
+
+  assert.deepEqual(observedRounds, [7]);
+  const final = events.at(-1);
+  assert.equal(final?.type, "final");
+  assert.equal(final?.type === "final" ? final.rounds : undefined, 7);
 });
 
 test("onAfterExecuteContinue runs another round and pre-empts the onAfterExecute closeout", async () => {

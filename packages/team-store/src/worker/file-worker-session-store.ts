@@ -39,20 +39,20 @@ export class FileWorkerSessionStore implements WorkerSessionStore {
   }
 
   async listByThread(threadId: string, limit?: number): Promise<WorkerSessionRecord[]> {
-    const indexed = await this.listByThreadFromIndex(threadId, limit);
-    if (indexed.length > 0) {
-      return indexed;
-    }
-
-    const legacyRecords = (await this.list()).filter((record) => record.context?.threadId === threadId);
+    const indexed = await this.listByThreadFromIndex(threadId);
+    const canonical = (await this.list()).filter((record) => record.context?.threadId === threadId);
+    const recordsByRunKey = new Map(
+      [...indexed, ...canonical].map((record) => [record.workerRunKey, record]),
+    );
+    const records = [...recordsByRunKey.values()];
     await Promise.allSettled(
-      legacyRecords.map((record) =>
+      records.map((record) =>
         writeJsonFileAtomic(this.threadIndexPath(threadId, record.workerRunKey), {
           workerRunKey: record.workerRunKey,
         })
       )
     );
-    const sorted = legacyRecords.sort((left, right) => right.state.updatedAt - left.state.updatedAt);
+    const sorted = records.sort((left, right) => right.state.updatedAt - left.state.updatedAt);
     return typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? sorted.slice(0, limit) : sorted;
   }
 

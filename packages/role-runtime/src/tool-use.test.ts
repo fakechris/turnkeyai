@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type {
   RoleActivationInput,
+  WorkerExecutionResult,
   WorkerInvocationInput,
   WorkerMessageInput,
   WorkerRuntime,
@@ -11,8 +12,10 @@ import type {
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "./native-tool-messages";
+import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 import type { TaskToolService } from "./task-tool-service";
 import type { RolePromptPacket } from "./prompt-policy";
+import { parseBackgroundWorkerSessionAccepted } from "./background-worker-session";
 import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
 import {
@@ -23,6 +26,118 @@ import {
   recordRoleToolProgressSafely,
   type RoleToolProgressEvent,
 } from "./tool-use";
+
+test("sessions_spawn launches independent background workers without awaiting completion", async () => {
+  let spawnCount = 0;
+  let sendStarted = 0;
+  let sendCompleted = 0;
+  const releases: Array<() => void> = [];
+  const workerRuntime = {
+    async spawn() {
+      spawnCount += 1;
+      return {
+        workerType: "explore",
+        workerRunKey: `worker:explore:background:${spawnCount}`,
+      };
+    },
+    async send() {
+      sendStarted += 1;
+      await new Promise<void>((resolve) => releases.push(resolve));
+      sendCompleted += 1;
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "background source complete",
+        payload: {},
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+  });
+  const deadlineAt = Date.now() + 60_000;
+  const executions = Promise.all(
+    ["a", "b", "c"].map((suffix) =>
+      executor.execute({
+        call: {
+          id: `call-background-${suffix}`,
+          name: "sessions_spawn",
+          input: {
+            agent_id: "explore",
+            task: `Inspect independent source ${suffix}.`,
+            label: `source ${suffix}`,
+            run_in_background: true,
+          },
+        },
+        activation: buildActivation(),
+        packet: buildPacket(),
+        deadlineAt,
+      }),
+    ),
+  );
+  await waitUntilForTest(() => sendStarted === 3);
+  const early = await Promise.race([
+    executions.then((results) => ({ returned: true as const, results })),
+    sleep(10).then(() => ({ returned: false as const })),
+  ]);
+  assert.equal(sendCompleted, 0);
+  for (const release of releases) release();
+  const results = early.returned ? early.results : await executions;
+
+  assert.equal(early.returned, true);
+  assert.equal(spawnCount, 3);
+  for (const [index, result] of results.entries()) {
+    const accepted = parseBackgroundWorkerSessionAccepted(result.content);
+    assert.equal(accepted?.status, "running");
+    assert.equal(accepted?.tool_call_id, `call-background-${["a", "b", "c"][index]}`);
+    assert.equal(accepted?.deadline_at, deadlineAt);
+  }
+  await waitUntilForTest(() => sendCompleted === 3);
+});
+
+test("sessions_spawn consumes background rejection and deduplicates the tool call", async () => {
+  let spawnCount = 0;
+  let sendCount = 0;
+  const observedErrors: unknown[] = [];
+  const failure = new Error("background worker failed");
+  const workerRuntime = {
+    async spawn() {
+      spawnCount += 1;
+      return { workerType: "explore", workerRunKey: "worker:explore:deduped" };
+    },
+    async send() {
+      sendCount += 1;
+      throw failure;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    onBackgroundWorkerError: (error) => observedErrors.push(error),
+  });
+  const execute = () => executor.execute({
+    call: {
+      id: "call-background-deduped",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Inspect one source exactly once.",
+        run_in_background: true,
+      },
+    },
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  const [first, second] = await Promise.all([execute(), execute()]);
+  await waitUntilForTest(() => observedErrors.length === 1);
+
+  assert.equal(first.content, second.content);
+  assert.equal(spawnCount, 1);
+  assert.equal(sendCount, 1);
+  assert.equal(observedErrors[0], failure);
+});
 
 test("recordRoleToolProgressSafely records runtime tool progress", async () => {
   const events: Array<{
@@ -96,6 +211,67 @@ test("recordRoleToolProgressSafely swallows recorder failures", async () => {
 
   assert.equal(errors.length, 1);
   assert.equal(errors[0]?.[0], "runtime tool progress recording failed");
+});
+
+test("artifacts_read exposes bounded tool-result artifact pages", async () => {
+  const store: ToolResultArtifactStore = {
+    async put() {
+      throw new Error("not used");
+    },
+    async read(input) {
+      assert.deepEqual(input, {
+        artifactId: "tool-result-1",
+        offsetBytes: 512,
+        limitBytes: 4_096,
+      });
+      return {
+        record: {
+          protocol: "turnkeyai.tool_result_artifact.v1",
+          artifactId: "tool-result-1",
+          threadId: "thread-1",
+          runKey: "run-1",
+          toolCallId: "source-call",
+          toolName: "web_fetch",
+          sizeBytes: 70_000,
+          sha256: "a".repeat(64),
+          createdAt: 1,
+        },
+        content: "page content",
+        offsetBytes: 512,
+        nextOffsetBytes: 524,
+        eof: false,
+      };
+    },
+  };
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolResultArtifactStore: store,
+  });
+
+  assert.equal(
+    executor.definitions().some((definition) => definition.name === "artifacts_read"),
+    true,
+  );
+  const result = await executor.execute({
+    call: {
+      id: "read-1",
+      name: "artifacts_read",
+      input: {
+        artifact_id: "tool-result-1",
+        offset_bytes: 512,
+        limit_bytes: 4_096,
+      },
+    },
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+  const payload = JSON.parse(result.content) as Record<string, unknown>;
+
+  assert.equal(payload["artifact_id"], "tool-result-1");
+  assert.equal(payload["content"], "page content");
+  assert.equal(payload["next_offset_bytes"], 524);
+  assert.equal(payload["eof"], false);
+  assert.equal(payload["sha256"], "a".repeat(64));
 });
 
 test("emitRoleToolProgressSafely records runtime progress and forwards to observer", async () => {
@@ -316,6 +492,56 @@ test("executeRuntimeForcedToolRound records native trace, appends messages, and 
     {},
   ]);
   assert.deepEqual(providerRounds, [{ round: 4, messagesLength: 3 }]);
+});
+
+test("executeRuntimeForcedToolRound externalizes history without changing returned evidence", async () => {
+  const originalContent = "original oversized evidence";
+  const referenceContent = JSON.stringify({
+    protocol: "turnkeyai.tool_result_artifact.v1",
+    artifact_id: "tool-result-1",
+  });
+  const result = await executeRuntimeForcedToolRound({
+    toolLoop: {
+      executor: {
+        definitions: () => [],
+        async execute() {
+          return {
+            toolCallId: "call-1",
+            toolName: "web_fetch",
+            content: originalContent,
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    now: () => 1234,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    messages: [{ role: "user", content: "fetch it" }],
+    toolTrace: [],
+    toolCalls: [{ id: "call-1", name: "web_fetch", input: {} }],
+    round: 1,
+    toolLoopStartedAtMs: 1200,
+    assistantText: "Fetching.",
+    mapToolResultsForHistory: async (results) =>
+      results.map((toolResult) => ({
+        ...toolResult,
+        content: referenceContent,
+      })),
+    persistNativeToolTrace: async () => undefined,
+    recordProviderToolProtocolRound: async () => undefined,
+  });
+
+  assert.equal(result.toolResults[0]?.content, originalContent);
+  assert.equal(result.messages.at(-1)?.role, "tool");
+  const historyContent = result.messages.at(-1)?.content;
+  assert.equal(Array.isArray(historyContent), true);
+  assert.equal(
+    Array.isArray(historyContent) && historyContent[0]?.type === "tool_result"
+      ? historyContent[0].content
+      : undefined,
+    referenceContent,
+  );
 });
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {
@@ -550,6 +776,64 @@ test("sessions_spawn maps null worker output with timeout summary state to resum
   assert.equal(body.evidence_available, true);
   assert.match(body.evidence_summary, /loopback source/);
   assert.doesNotMatch(body.result, /no executable result/i);
+  assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+});
+
+test("sessions_spawn preserves a worker absolute-deadline result as resumable timeout", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:absolute-deadline" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "timeout",
+        summary: "Sub-agent timed out: run deadline exceeded at 12345",
+        payload: {
+          mode: "llm_sub_agent",
+          workerType: "explore",
+          resumableReason: "run_deadline_exceeded",
+          deadlineAt: 12_345,
+        },
+      } as unknown as WorkerExecutionResult;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-absolute-deadline",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Inspect the source within the parent absolute deadline.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Inspect the source within the parent absolute deadline.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as {
+    status: string;
+    resumable?: boolean;
+    result: string;
+  };
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.resumable, true);
+  assert.match(body.result, /run deadline exceeded at 12345/i);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
   assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
 });
 
@@ -3550,7 +3834,7 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
   assert.equal(result.progress?.at(-1)?.detail?.evidence_available, true);
 });
 
-test("sessions_spawn preserves cooperative partial evidence returned after timeout interrupt", async () => {
+test("sessions_spawn preserves cooperative partial evidence inside a resumable timeout result", async () => {
   let sendStarted!: () => void;
   let releasePartial!: () => void;
   let interruptedReason: string | null = null;
@@ -3637,19 +3921,18 @@ test("sessions_spawn preserves cooperative partial evidence returned after timeo
   const body = JSON.parse(result.content) as {
     status: string;
     result: string;
+    resumable?: boolean;
     evidence_summary?: string;
-    payload?: { page?: { textExcerpt?: string }; artifactIds?: string[]; screenshotPaths?: string[] };
   };
   assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
-  assert.equal(result.isError, undefined);
-  assert.equal(body.status, "partial");
-  assert.match(body.result, /Rendered browser evidence/);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.resumable, true);
+  assert.match(body.result, /timed out/);
   assert.match(body.evidence_summary ?? "", /Hello World/);
-  assert.equal(body.payload?.page?.textExcerpt, "Dynamically Loaded Page Elements Example 1 Hello World!");
-  assert.deepEqual(body.payload?.artifactIds, ["browser-step:hello-world"]);
-  assert.deepEqual(body.payload?.screenshotPaths, ["/Users/chris/.turnkeyai/data/browser-artifacts/hello-world.png"]);
-  assert.equal(result.progress?.at(-1)?.phase, "completed");
-  assert.equal(result.progress?.at(-1)?.detail?.status, "partial");
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+  assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+  assert.equal(result.progress?.at(-1)?.detail?.evidence_available, true);
 });
 
 test("sessions_spawn keeps timeout result when worker returns completed after timeout interrupt", async () => {
@@ -4470,7 +4753,7 @@ test("sessions_spawn runs one no-tools timeout summary continuation for LLM sub-
   assert.equal(body.status, "timeout");
   assert.equal(body.resumable, true);
   assert.match(body.result, /Sub-agent session timed out/);
-  assert.match(body.evidence_summary, /Evidence-only summary after timeout/);
+  assert.match(body.evidence_summary, /Verified source A before timeout/);
 });
 
 test("sessions_send interrupts a follow-up worker call on timeout", async () => {
@@ -5405,6 +5688,365 @@ test("sessions_send carries approved browser context into resumed sessions", asy
   assert.equal(approvedRuntimeAction, "browser.form.submit");
 });
 
+test("sessions_send read_result returns completed evidence without resuming or requesting permission", async () => {
+  let permissionRequested = false;
+  let resumeCalled = false;
+  let sessionStatus: "done" | "running" = "done";
+  const lastResult = {
+    workerType: "browser" as const,
+    status: "completed" as const,
+    summary: "Existing source evidence is complete.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "browser",
+      content: "Source-backed pricing, strength, and risk evidence.",
+    },
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-browser",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:existing",
+            workerType: "browser",
+            status: sessionStatus,
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:existing",
+        workerType: "browser",
+        status: sessionStatus,
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async resume() {
+      resumeCalled = true;
+      throw new Error("completed evidence synthesis must reuse the cached result");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService: {
+      async request() {
+        permissionRequested = true;
+        throw new Error("read-only evidence identifiers must not request approval");
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-completed-evidence-synthesis",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:existing",
+        mode: "read_result",
+        message: "Read the completed result only.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the read-only source review.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(permissionRequested, false);
+  assert.equal(resumeCalled, false);
+  const body = JSON.parse(result.content) as { cached: boolean; final_content?: string };
+  assert.equal(body.cached, true);
+  assert.equal(body.final_content, "Source-backed pricing, strength, and risk evidence.");
+
+  sessionStatus = "running";
+  const activeResult = await executor.execute({
+    call: {
+      id: "call-running-result-read",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:existing",
+        mode: "read_result",
+        message: "Read the completed result only.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the read-only source review.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+  assert.equal(activeResult.isError, true);
+  assert.match(activeResult.content, /requires a completed session result/);
+  assert.equal(permissionRequested, false);
+  assert.equal(resumeCalled, false);
+});
+
+test("sessions_send still requires credential approval for an actual session token", async () => {
+  const requestedActions: string[] = [];
+  let resumeCalls = 0;
+  const lastResult = {
+    workerType: "browser" as const,
+    status: "completed" as const,
+    summary: "Existing browser evidence.",
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-browser",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:existing",
+            workerType: "browser",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:existing",
+        workerType: "browser",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async resume() {
+      resumeCalls += 1;
+      throw new Error("credentialed browser work must not resume before approval");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService: {
+      async request(input) {
+        requestedActions.push(input.action);
+        return {
+          status: "pending",
+          approvalId: `ap.thread-1.fresh-action-${requestedActions.length}`,
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "missing",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Approval is pending.",
+        };
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const cases = [
+    {
+      message:
+        "Summarize the old evidence. Do not browse the old page. Then use the session token to authenticate to the account and open the private dashboard.",
+      action: "browser.credential.access",
+    },
+    {
+      message: "Summarize the existing evidence and use session token ABC123 to access the account.",
+      action: "browser.credential.access",
+    },
+    {
+      message: "Summarize the existing evidence. Do not browse! Submit the form.",
+      action: "browser.form.submit",
+    },
+    {
+      message: "Return the complete report and publish the draft.",
+      action: "browser.publish",
+    },
+    {
+      message: "Summarize the evidence and save the form.",
+      action: "browser.mutate",
+    },
+  ];
+  for (const [index, item] of cases.entries()) {
+    const result = await executor.execute({
+      call: {
+        id: `call-fresh-action-${index}`,
+        name: "sessions_send",
+        input: {
+          session_key: "worker:browser:existing",
+          mode: "continue",
+          message: item.message,
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Continue authenticated browser work.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content, /requires_approval/);
+  }
+
+  assert.deepEqual(requestedActions, cases.map((item) => item.action));
+  assert.equal(resumeCalls, 0);
+});
+
+test("sessions_send still requires credential approval for a token used by a browser session", async () => {
+  const requestedActions: string[] = [];
+  let resumeCalls = 0;
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-browser",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:existing",
+            workerType: "browser",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:existing",
+        workerType: "browser",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume() {
+      resumeCalls += 1;
+      throw new Error("credentialed browser work must not resume before approval");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService: {
+      async request(input) {
+        requestedActions.push(input.action);
+        return {
+          status: "pending",
+          approvalId: `ap.thread-1.reverse-session-token-${requestedActions.length}`,
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "missing",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Approval is pending.",
+        };
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const messages = [
+    "Use token ABC123 to resume the browser session.",
+    "Use token ABC123 as the session key to open the private dashboard.",
+    "Summarize token usage. Use token ABC123 to resume the browser session.",
+  ];
+  for (const [index, message] of messages.entries()) {
+    const result = await executor.execute({
+      call: {
+        id: `call-reverse-session-token-${index}`,
+        name: "sessions_send",
+        input: {
+          session_key: "worker:browser:existing",
+          mode: "continue",
+          message,
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Continue authenticated browser work.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content, /requires_approval/);
+  }
+
+  assert.deepEqual(requestedActions, messages.map(() => "browser.credential.access"));
+  assert.equal(resumeCalls, 0);
+});
+
 test("sessions_send does not reuse completed browser submit results before approval", async () => {
   let resumeCalled = false;
   const lastResult = {
@@ -5547,6 +6189,7 @@ test("sessions_send reuses a completed session for summary-only follow-ups", asy
       name: "sessions_send",
       input: {
         session_key: "worker:explore:done",
+        mode: "read_result",
         message: "Please return your complete final research report as plain text.",
       },
     },
@@ -5628,6 +6271,7 @@ test("sessions_send resolves a task-only session key prefix when one visible ses
       name: "sessions_send",
       input: {
         session_key: "worker:explore:task:TASK-1780322295338-120",
+        mode: "read_result",
         message: "Please return your complete final report from the existing child session.",
       },
     },
@@ -5798,6 +6442,7 @@ test("sessions_send reuses a completed session for Chinese evidence extraction f
       name: "sessions_send",
       input: {
         session_key: "worker:explore:done-cn",
+        mode: "read_result",
         message: "请提取你的最终研究结论中的核心证据和要点，每个点给出具体证据来源。",
       },
     },
@@ -5907,7 +6552,7 @@ test("sessions_send does not reuse a completed session for mixed action follow-u
   assert.equal(body.result, "Follow-up action executed.");
 });
 
-test("sessions_send cached result preserves failed worker status", async () => {
+test("sessions_send read_result rejects an inconsistent failed result on a done session", async () => {
   let sendCalled = false;
   const lastResult = {
     workerType: "explore" as const,
@@ -5966,6 +6611,7 @@ test("sessions_send cached result preserves failed worker status", async () => {
       name: "sessions_send",
       input: {
         session_key: "worker:explore:done-failed",
+        mode: "read_result",
         message: "Please provide the final result summary.",
       },
     },
@@ -5981,12 +6627,10 @@ test("sessions_send cached result preserves failed worker status", async () => {
     },
   });
 
-  const body = JSON.parse(result.content) as { cached: boolean; status: string };
   assert.equal(sendCalled, false);
   assert.equal(result.isError, true);
+  assert.match(result.content, /requires a completed session result/);
   assert.equal(result.progress?.at(-1)?.phase, "failed");
-  assert.equal(body.cached, true);
-  assert.equal(body.status, "failed");
 });
 
 test("permission tools request, observe, and apply operator approval", async () => {
@@ -7463,6 +8107,14 @@ function buildPacket(): RolePromptPacket {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntilForTest(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await sleep(2);
+  }
+  throw new Error("condition was not met");
 }
 
 test("sessions_list accepts snake_case filters matching its own output fields", async () => {

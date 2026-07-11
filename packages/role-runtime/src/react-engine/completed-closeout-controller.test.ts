@@ -134,6 +134,124 @@ test("CompletedCloseoutController repairs completed-only synthesis and cleans up
   assert.equal(messageText(cleanupMessagesSeen[0]?.at(-1)), "Calling a tool.");
 });
 
+test("CompletedCloseoutController keeps producer evidence stable across repair rounds", async () => {
+  const controller = createCompletedCloseoutController();
+  const repairPolicy = createRepairPolicyRegistry();
+  const producerEvidence = "PRODUCER_EVIDENCE: verified source fact";
+  const sourceEvidenceSeen: Array<string | undefined> = [];
+  let completedDecisionCalls = 0;
+  repairPolicy.evaluateCompletedSynthesis = () => {
+    completedDecisionCalls += 1;
+    return {
+      kind: "resynthesize",
+      policyId: "missing_browser_evidence_dimensions",
+      evidenceFormula: "completed_session_evidence",
+      repairPrompt: "COMPLETED_REPAIR_PROMPT",
+      forceToolChoice: "none",
+    };
+  };
+  repairPolicy.evaluateNaturalFinish = (input) => {
+    if (
+      completedDecisionCalls > 0 &&
+      input.enabledPolicies?.includes("source_evidence_carry_forward")
+    ) {
+      sourceEvidenceSeen.push(input.evidenceText);
+      if (sourceEvidenceSeen.length === 1) {
+        return {
+          kind: "resynthesize",
+          policyId: "source_evidence_carry_forward",
+          evidenceFormula: "source_bounded_evidence",
+          repairPrompt: "SOURCE_REPAIR_PROMPT",
+          forceToolChoice: "none",
+        };
+      }
+    }
+    return null;
+  };
+  let synthesisCalls = 0;
+
+  const result = await controller.runRepairLoop({
+    taskPrompt: "Use the completed evidence.",
+    toolTrace: [],
+    repairMessages: [
+      { role: "system", content: "system" },
+      { role: "user", content: "task" },
+    ],
+    repairMarkers: [],
+    completedSessionFinalContents: [producerEvidence],
+    completedEvidenceText: producerEvidence,
+    delegatedEvidenceText: producerEvidence,
+    initialResult: textResult("candidate zero"),
+    repairPolicy,
+    synthesizeRepair: async () => {
+      synthesisCalls += 1;
+      return { result: textResult(`MODEL_ECHO_${synthesisCalls}`) };
+    },
+    synthesizeToolCallArtifactCleanup: async () => {
+      throw new Error("cleanup should not run");
+    },
+  });
+
+  assert.equal(result.kind, "final");
+  assert.equal(completedDecisionCalls, 1);
+  assert.equal(synthesisCalls, 2);
+  assert.deepEqual(sourceEvidenceSeen, [producerEvidence, producerEvidence]);
+});
+
+test("CompletedCloseoutController preserves the accepted candidate when a repair is aborted", async () => {
+  const controller = createCompletedCloseoutController();
+  const repairPolicy = createRepairPolicyRegistry();
+  repairPolicy.evaluateNaturalFinish = () => null;
+  repairPolicy.evaluateCompletedSynthesis = () => ({
+    kind: "resynthesize",
+    policyId: "missing_required_final_deliverables",
+    evidenceFormula: "completed_session_evidence",
+    repairPrompt: "GENERIC_REPAIR_PROMPT",
+    forceToolChoice: "none",
+  });
+
+  let repairCalls = 0;
+  const result = await controller.runRepairLoop({
+    taskPrompt: "Summarize the evidence and include a conclusion.",
+    toolTrace: [],
+    repairMessages: [],
+    repairMarkers: [],
+    completedSessionFinalContents: ["Source A verified the relevant fact."],
+    completedEvidenceText: "Source A verified the relevant fact.",
+    delegatedEvidenceText: "Source A verified the relevant fact.",
+    initialResult: {
+      ...textResult(
+        "Complete evidence summary. Conclusion: use the verified result.",
+      ),
+      stopReason: "end_turn",
+    },
+    repairPolicy,
+    synthesizeRepair: async () => {
+      repairCalls += 1;
+      return {
+        result: {
+          ...textResult("Incomplete evidence summary. Conclusion:"),
+          stopReason: "abort",
+        },
+        reduction: { level: "repair-attempt" },
+        reductionSnapshot: { level: "repair-attempt", artifactIds: [] },
+        memoryFlush: "repair-attempt-flush",
+      };
+    },
+    synthesizeToolCallArtifactCleanup: async () => {
+      throw new Error("cleanup must not run for the preserved candidate");
+    },
+  });
+
+  assert.equal(result.kind, "final");
+  assert.equal(
+    result.result.text,
+    "Complete evidence summary. Conclusion: use the verified result.",
+  );
+  assert.equal(repairCalls, 1);
+  assert.deepEqual(result.memoryFlushes, ["repair-attempt-flush"]);
+});
+
 test("CompletedCloseoutController re-arms through registry before round>0 table repairs and returns pending reduction", async () => {
   const controller = createCompletedCloseoutController();
   const repairMarkers: LLMMessage[] = [];

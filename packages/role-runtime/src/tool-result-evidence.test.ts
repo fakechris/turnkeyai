@@ -178,3 +178,27 @@ test("tool result content collectors keep non-empty text and usable evidence ign
   );
   assert.equal(hasUsableEvidence(rounds), true);
 });
+
+test("hasUsableEvidence ignores a failed session envelope not marked as a transport error", () => {
+  const rounds: NativeToolRoundTrace[] = [
+    {
+      round: 1,
+      calls: [],
+      results: [
+        {
+          toolCallId: "call-session",
+          toolName: "sessions_spawn",
+          isError: false,
+          contentBytes: 20,
+          content: sessionResult({
+            status: "failed",
+            result: "Sub-agent request failed.",
+            final_content: null,
+          }),
+        },
+      ],
+    },
+  ];
+
+  assert.equal(hasUsableEvidence(rounds), false);
+});

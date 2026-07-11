@@ -34,6 +34,7 @@ import type {
   TeamMessageStore,
   TeamThread,
   TeamThreadStore,
+  WorkerCompletionIngressInput,
   WorkerKind,
 } from "@turnkeyai/core-types/team";
 import {
@@ -44,6 +45,7 @@ import {
   toMessageSummary,
 } from "@turnkeyai/core-types/team";
 import type { DispatchGoal } from "@turnkeyai/core-types/team";
+import { hasContinuationDirectiveSignal } from "@turnkeyai/core-types/continuation-semantics";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import { detectConflictRoleIds, detectDuplicateRoleIds } from "@turnkeyai/core-types/shard-result-analysis";
@@ -65,7 +67,7 @@ interface CoordinationEngineDeps {
   runtimeLimits: Pick<RuntimeLimits, "flowMaxHops">;
   clock: Clock;
   contextStateMaintainer?: ContextStateMaintainer;
-  workerRuntime?: Pick<WorkerRuntime, "getState">;
+  workerRuntime?: Pick<WorkerRuntime, "getState" | "listSessions">;
   replayRecorder?: ReplayStore;
   runtimeChainRecorder?: import("@turnkeyai/core-types/team").RuntimeChainRecorder;
   runtimeProgressRecorder?: RuntimeProgressRecorder;
@@ -89,7 +91,7 @@ interface CoordinationEngineDeps {
 
 interface FlowStartIntent {
   intentId: string;
-  kind: "user-post" | "scheduled-task";
+  kind: "user-post" | "worker-completion" | "scheduled-task";
   threadId: string;
   message: TeamMessage;
   flow: FlowLedger;
@@ -246,16 +248,31 @@ export class CoordinationEngine {
   }
 
   async handleUserPost(input: SendTeamMessageInput): Promise<void> {
+    await this.handleMessageIngress(input, "user-post");
+  }
+
+  async handleWorkerCompletion(input: WorkerCompletionIngressInput): Promise<void> {
+    await this.handleMessageIngress(input, "worker-completion");
+  }
+
+  private async handleMessageIngress(
+    input: Pick<SendTeamMessageInput, "threadId" | "content" | "idempotencyKey">,
+    kind: Extract<FlowStartIntent["kind"], "user-post" | "worker-completion">,
+  ): Promise<void> {
     const thread = await this.deps.teamThreadStore.get(input.threadId);
     if (!thread) {
       throw new Error(`team thread not found: ${input.threadId}`);
     }
 
-    const userMessage = this.buildUserMessage(thread, input.content);
-    const flow = this.buildFlow(thread, userMessage.id);
+    const userMessage = this.buildUserMessage(
+      thread,
+      input.content,
+      input.idempotencyKey,
+    );
+    const flow = this.buildFlow(thread, userMessage.id, input.idempotencyKey);
     const intent: FlowStartIntent = {
       intentId: `${flow.flowId}:start`,
-      kind: "user-post",
+      kind,
       threadId: thread.threadId,
       message: userMessage,
       flow,
@@ -694,10 +711,16 @@ export class CoordinationEngine {
     await this.applyRecoveryDecision(recovery, latestFlow, thread, intent.message);
   }
 
-  private buildUserMessage(thread: TeamThread, content: string): TeamMessage {
+  private buildUserMessage(
+    thread: TeamThread,
+    content: string,
+    idempotencyKey?: string,
+  ): TeamMessage {
     const now = this.deps.clock.now();
     return {
-      id: this.deps.idGenerator.messageId(),
+      id: idempotencyKey
+        ? `message:idempotent:${idempotencyKey}`
+        : this.deps.idGenerator.messageId(),
       threadId: thread.threadId,
       role: "user",
       name: "user",
@@ -714,10 +737,16 @@ export class CoordinationEngine {
     };
   }
 
-  private buildFlow(thread: TeamThread, rootMessageId: string): FlowLedger {
+  private buildFlow(
+    thread: TeamThread,
+    rootMessageId: string,
+    idempotencyKey?: string,
+  ): FlowLedger {
     const now = this.deps.clock.now();
     return {
-      flowId: this.deps.idGenerator.flowId(),
+      flowId: idempotencyKey
+        ? `flow:idempotent:${idempotencyKey}`
+        : this.deps.idGenerator.flowId(),
       threadId: thread.threadId,
       rootMessageId,
       mode: "serial",
@@ -1304,6 +1333,63 @@ export class CoordinationEngine {
     }
   }
 
+  private async resolveUserContinuationContext(input: {
+    threadId: string;
+    roleId: RoleId;
+    content: string;
+  }): Promise<DispatchContinuationContext | undefined> {
+    if (!hasContinuationDirectiveSignal(input.content) || !this.deps.workerRuntime?.listSessions) {
+      return undefined;
+    }
+
+    try {
+      const candidates = (await this.deps.workerRuntime.listSessions()).filter(
+        (record) =>
+          record.context?.threadId === input.threadId &&
+          record.context.roleId === input.roleId &&
+          record.state.status === "resumable",
+      );
+      if (candidates.length !== 1) {
+        return undefined;
+      }
+
+      const candidate = candidates[0]!;
+      const summary =
+        candidate.state.continuationDigest?.summary ??
+        candidate.state.lastResult?.summary ??
+        candidate.state.lastError?.message;
+      const browserSession =
+        candidate.state.workerType === "browser"
+          ? decodeBrowserSessionPayload(candidate.state.lastResult?.payload)
+          : null;
+      return {
+        source: "follow_up",
+        workerType: candidate.state.workerType,
+        workerRunKey: candidate.workerRunKey,
+        ...(summary ? { summary } : {}),
+        ...(browserSession
+          ? {
+              browserSession: {
+                sessionId: browserSession.sessionId,
+                ...(browserSession.targetId ? { targetId: browserSession.targetId } : {}),
+                ...(browserSession.resumeMode ? { resumeMode: browserSession.resumeMode } : {}),
+                ownerType: "thread" as const,
+                ownerId: input.threadId,
+                leaseHolderRunKey: candidate.workerRunKey,
+              },
+            }
+          : {}),
+      };
+    } catch (error) {
+      console.error("user continuation context lookup failed", {
+        threadId: input.threadId,
+        roleId: input.roleId,
+        error,
+      });
+      return undefined;
+    }
+  }
+
   private hasDuplicateHandoff(flow: FlowLedger, sourceMessageId: string, targetRoleId: RoleId): boolean {
     return flow.edges.some(
       (edge) =>
@@ -1492,8 +1578,27 @@ export class CoordinationEngine {
       await this.ensureMessagePersisted(intent.message);
       const flow = await this.ensureFlowPersisted(intent.flow);
 
-      if (intent.kind === "user-post") {
-        await this.dispatchToLead(thread, flow, intent.message);
+      if (intent.kind === "user-post" || intent.kind === "worker-completion") {
+        const continuationContext = intent.kind === "user-post"
+          ? await this.resolveUserContinuationContext({
+              threadId: thread.threadId,
+              roleId: thread.leadRoleId,
+              content: intent.message.content,
+            })
+          : undefined;
+        await this.dispatchToRole({
+          thread,
+          flow,
+          sourceMessage: intent.message,
+          toRoleId: thread.leadRoleId,
+          activationType: "cascade",
+          ...(continuationContext
+            ? {
+                continuityMode: "resume-existing" as const,
+                continuationContext,
+              }
+            : {}),
+        });
         this.refreshThreadContextInBackground(thread.threadId);
         return;
       }

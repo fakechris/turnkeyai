@@ -26,6 +26,7 @@ import type {
   TeamThread,
   TeamThreadStore,
   WorkerRuntime,
+  WorkerSessionRecord,
 } from "@turnkeyai/core-types/team";
 import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 import { buildReplayInspectionReport } from "@turnkeyai/qc-runtime/replay-inspection";
@@ -3096,6 +3097,213 @@ test("coordination engine carries scheduled worker resume hints into the handoff
   });
 });
 
+test("coordination engine carries a unique durable worker into an explicit user follow-up", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-user-continuation",
+    teamId: "team-user-continuation",
+    teamName: "Continuation",
+    leadRoleId: "lead",
+    roles: [{ roleId: "lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const messages = new Map<string, TeamMessage>();
+  const flows = new Map<string, FlowLedger>();
+  const enqueued: HandoffEnvelope[] = [];
+  const leadRunKey = `role:lead:thread:${thread.threadId}`;
+  const workerRunKey = "worker:browser:task:task-prior:call_prior";
+  const workerSessions: WorkerSessionRecord[] = [
+    {
+      workerRunKey,
+      executionToken: 1,
+      context: {
+        threadId: thread.threadId,
+        flowId: "flow-prior",
+        taskId: "task-prior",
+        roleId: "lead",
+        parentSpanId: `role:${leadRunKey}`,
+        parentSessionKey: leadRunKey,
+        label: "Prior browser work",
+      },
+      state: {
+        workerRunKey,
+        workerType: "browser",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "The previous browser operation timed out with partial evidence.",
+          createdAt: 2,
+        },
+        lastResult: {
+          workerType: "browser",
+          status: "timeout",
+          summary: "The previous browser operation timed out with partial evidence.",
+          payload: {
+            sessionId: "browser-session-prior",
+            targetId: "target-prior",
+            resumeMode: "warm",
+          },
+        },
+      },
+    },
+  ];
+  const engine = buildEngine({
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append(message) {
+        messages.set(message.id, message);
+      },
+      async appendIfAbsent(message) {
+        const existing = messages.get(message.id);
+        if (existing) return { written: false, existing };
+        messages.set(message.id, message);
+        return { written: true };
+      },
+      async list(threadId) {
+        return [...messages.values()].filter((message) => message.threadId === threadId);
+      },
+      async get(messageId) {
+        return messages.get(messageId) ?? null;
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return flows.get(flowId) ?? null;
+      },
+      async put(flow) {
+        flows.set(flow.flowId, flow);
+      },
+      async listByThread(threadId) {
+        return [...flows.values()].filter((flow) => flow.threadId === threadId);
+      },
+    },
+    roleRunCoordinator: {
+      async getOrCreate() {
+        return {
+          runKey: leadRunKey,
+          threadId: thread.threadId,
+          roleId: "lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 0,
+          maxIterations: 5,
+          inbox: [],
+          lastActiveAt: 1,
+        };
+      },
+      async enqueue(runKey, handoff) {
+        enqueued.push(handoff);
+        return {
+          runKey,
+          threadId: thread.threadId,
+          roleId: "lead",
+          mode: "group",
+          status: "queued",
+          iterationCount: 0,
+          maxIterations: 5,
+          inbox: [handoff],
+          lastActiveAt: 2,
+        };
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus() {},
+      async incrementIteration() {
+        return 1;
+      },
+      async fail() {},
+      async finish() {},
+    },
+    roleLoopRunner: {
+      async ensureRunning() {},
+    },
+    workerRuntime: {
+      async getState() {
+        return null;
+      },
+      async listSessions() {
+        return workerSessions;
+      },
+    },
+  });
+
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "Please resume the same browser session after the timeout.",
+  });
+
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0]?.payload.continuity?.mode, "resume-existing");
+  assert.deepEqual(enqueued[0]?.payload.continuity?.context, {
+    source: "follow_up",
+    workerType: "browser",
+    workerRunKey,
+    summary: "The previous browser operation timed out with partial evidence.",
+    browserSession: {
+      sessionId: "browser-session-prior",
+      targetId: "target-prior",
+      resumeMode: "warm",
+      ownerType: "thread",
+      ownerId: thread.threadId,
+      leaseHolderRunKey: workerRunKey,
+    },
+  });
+
+  await engine.handleWorkerCompletion({
+    threadId: thread.threadId,
+    content: "Please resume the same browser session after the timeout.",
+    idempotencyKey: "worker-completion-batch:runtime-ingress",
+  });
+
+  assert.equal(enqueued.length, 2);
+  assert.equal(
+    enqueued[1]?.payload.continuity,
+    undefined,
+    "runtime worker completion ingress must not be treated as an explicit user continuation",
+  );
+
+  const secondWorkerRunKey = "worker:explore:task:task-other:call_other";
+  workerSessions.push({
+    ...workerSessions[0]!,
+    workerRunKey: secondWorkerRunKey,
+    state: {
+      ...workerSessions[0]!.state,
+      workerRunKey: secondWorkerRunKey,
+      workerType: "explore",
+      updatedAt: 3,
+    },
+  });
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "Please resume the previous work.",
+  });
+
+  assert.equal(enqueued.length, 3);
+  assert.equal(enqueued[2]?.payload.continuity, undefined);
+});
+
 test("coordination engine treats scheduled continuation lookup as best effort", async () => {
   const thread: TeamThread = {
     threadId: "thread-scheduled-fallback",
@@ -5047,6 +5255,25 @@ test("coordination engine: concurrent user posts on same thread persist both mes
   // Each flow should have dispatched to lead exactly once → 2 handoffs total,
   // none duplicated.
   assert.equal(enqueued.length, 2, "each flow should enqueue exactly one handoff to lead");
+
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "background completion",
+    idempotencyKey: "worker-completion:worker-1:300",
+  });
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "background completion",
+    idempotencyKey: "worker-completion:worker-1:300",
+  });
+
+  assert.equal(
+    (await teamMessageStore.list(thread.threadId)).filter((message) => message.role === "user").length,
+    3,
+    "replayed idempotent ingress must persist one message",
+  );
+  assert.equal(flows.size, 3, "replayed idempotent ingress must persist one flow");
+  assert.equal(enqueued.length, 3, "replayed idempotent ingress must dispatch once");
 });
 
 test("coordination engine dispatches user posts before slow context refresh finishes", async () => {
@@ -5567,7 +5794,7 @@ function buildEngine(input: {
   flowLedgerStore: FlowLedgerStore;
   roleRunCoordinator: RoleRunCoordinator;
   roleLoopRunner: RoleLoopRunner;
-  workerRuntime?: Pick<WorkerRuntime, "getState">;
+  workerRuntime?: Pick<WorkerRuntime, "getState" | "listSessions">;
   runtimeChainRecorder?: RuntimeChainRecorder;
   runtimeProgressRecorder?: RuntimeProgressRecorder;
   teamEventBus?: TeamEventBus;

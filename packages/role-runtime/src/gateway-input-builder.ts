@@ -18,6 +18,7 @@ import type { RequestEnvelopeReductionResult } from "./request-envelope-reducer"
 import {
   deriveToolResultEnvelope,
   prepareToolHistoryForGateway,
+  readToolResultPruningLimits,
   summarizeToolResultPruning,
   type ToolResultPruningSnapshot,
 } from "./tool-history-pruning";
@@ -28,6 +29,7 @@ export function buildGatewayInput(input: {
   modelId?: string;
   modelChainId?: string;
   signal?: AbortSignal;
+  deadlineAt?: number;
   overrideSystemPrompt?: string;
   overrideTaskPrompt?: string;
   artifactIds?: string[];
@@ -60,6 +62,7 @@ export function buildGatewayInput(input: {
     ...(input.modelId ? { modelId: input.modelId } : {}),
     ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
     ...(input.tools?.length ? { tools: input.tools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     messages: [
@@ -279,8 +282,18 @@ export function buildToolRoundGatewayRequest(input: {
   messages: LLMMessage[];
   noToolRound?: boolean;
   toolChoice?: GenerateTextInput["toolChoice"];
+  inputTokenLimit?: number;
 }): ToolRoundGatewayRequest {
-  const gatewayMessages = prepareToolHistoryForGateway(input.messages);
+  const pruningLimits = readToolResultPruningLimits(
+    process.env,
+    input.inputTokenLimit === undefined
+      ? {}
+      : { inputTokenLimit: input.inputTokenLimit },
+  );
+  const gatewayMessages = prepareToolHistoryForGateway(
+    input.messages,
+    pruningLimits,
+  );
   const gatewayInput = input.noToolRound
     ? {
         ...buildToolFreeGatewayInput({
@@ -298,7 +311,11 @@ export function buildToolRoundGatewayRequest(input: {
           ...deriveToolResultEnvelope(gatewayMessages),
         },
       };
-  const pruning = summarizeToolResultPruning(input.messages, gatewayMessages);
+  const pruning = summarizeToolResultPruning(
+    input.messages,
+    gatewayMessages,
+    pruningLimits,
+  );
   return {
     gatewayMessages,
     gatewayInput,
@@ -343,6 +360,20 @@ export function buildReducedRetryGatewayInput(input: {
       ...input.reduction.envelopeHint,
       artifactIds: input.reduction.artifactIds,
       ...deriveToolResultEnvelope(reducedMessages),
+    },
+  };
+}
+
+export function buildForcedCompactionGatewayInput(input: {
+  gatewayInput: GenerateTextInput;
+  messages: LLMMessage[];
+}): GenerateTextInput {
+  return {
+    ...input.gatewayInput,
+    messages: input.messages,
+    envelope: {
+      ...(input.gatewayInput.envelope ?? {}),
+      ...deriveToolResultEnvelope(input.messages),
     },
   };
 }

@@ -73,6 +73,31 @@ test("runEngineAgent consumes ReAct events and dispatches engine observer callba
   ]);
 });
 
+test("runEngineAgent forwards a resumed initial round to agent-core", async () => {
+  let observedInitialRound: number | undefined;
+  const agent: ReActLoop<TestContext> = {
+    async *run(input) {
+      observedInitialRound = input.initialRound;
+      yield { type: "final", text: "resumed", rounds: 7 };
+    },
+  };
+
+  const finalText = await runEngineAgent({
+    agent,
+    messages: [{ role: "user", content: "Resume." }],
+    initialRound: 7,
+    ctx: { activation: "activation" },
+    observer: {
+      onModelResponse() {},
+      async onToolStarted() {},
+      async onToolResult() {},
+    },
+  });
+
+  assert.equal(finalText, "resumed");
+  assert.equal(observedInitialRound, 7);
+});
+
 test("createRoleEngineAgentRunner preserves the boundary model round for pending-call closeout", async () => {
   const call: LLMToolCall = {
     id: "call-1",

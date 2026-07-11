@@ -4,6 +4,7 @@ import test from "node:test";
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
 import { createContinuationController } from "./continuation-controller";
 
 const sessionKey = "worker:explore:task-source:toolu-timeout";
@@ -327,13 +328,9 @@ test("ContinuationController injects sessions_list when continuation lacks a ses
     action.kind === "inject_calls" && action.calls[0]?.name,
     "sessions_list",
   );
-  assert.equal(
-    action.kind === "inject_calls" && action.calls[0]?.input["limit"],
-    5,
-  );
-  assert.match(
-    String(action.kind === "inject_calls" && action.calls[0]?.input["reason"]),
-    /^continuation lookup: Continue from the slow-source attempt in this mission/,
+  assert.deepEqual(
+    action.kind === "inject_calls" && action.calls[0]?.input,
+    { limit: 5 },
   );
 });
 
@@ -428,6 +425,42 @@ test("ContinuationController owns round-empty hook selection and application", (
     }),
     "terminate",
   );
+});
+
+test("ContinuationController forces one resumable bounded source check when the model returns only text", () => {
+  const controller = createContinuationController();
+  const taskPrompt = [
+    "Evaluate this source for a release-risk note: https://slow.example/source.",
+    "Use a bounded attempt first and close out if it does not return in time.",
+    "A follow-up may ask you to resume that same source-check context.",
+  ].join("\n");
+  const taskFacts = produceTaskIntentEnvelope({
+    taskPrompt,
+    activation: undefined,
+    messages: [],
+  }).facts;
+
+  const action = controller.onRoundEmpty({
+    active: true,
+    messages: [],
+    round: 0,
+    taskPrompt,
+    toolTrace: [],
+    tools: [{ name: "sessions_spawn" }],
+    taskFacts,
+  });
+
+  assert.equal(action.kind, "inject_calls");
+  assert.deepEqual(action.kind === "inject_calls" && action.calls[0], {
+    id: "runtime-bounded-source-check-1",
+    name: "sessions_spawn",
+    input: {
+      agent_id: "explore",
+      label: "Bounded source check",
+      task: taskPrompt,
+      timeout_seconds: 25,
+    },
+  });
 });
 
 test("ContinuationController continues an approved browser timeout before coverage timeout", () => {

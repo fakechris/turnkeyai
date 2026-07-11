@@ -31,14 +31,28 @@ const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
 const ENGINE_RUN_OBSERVER = path.join(ENGINE_DIR, "engine-run-observer.ts");
 const RUNTIME_POLICY_DIR = path.join(ROLE_RUNTIME_DIR, "runtime-policy");
 const RUNTIME_FACTS_DIR = path.join(ROLE_RUNTIME_DIR, "runtime-facts");
-const INLINE_POLICY_RUNNER = path.join(
-  RUNTIME_POLICY_DIR,
-  "inline-policy-runner.ts",
-);
 const GATEWAY_INPUT_BUILDER = path.join(
   ROLE_RUNTIME_DIR,
   "gateway-input-builder.ts",
 );
+const PACKAGES_DIR = path.resolve(ROLE_RUNTIME_DIR, "../..");
+
+const FORBIDDEN_RUNTIME_FIXTURE_LITERALS = [
+  "Vendor Alpha",
+  "Vendor Beta",
+  "$19 per seat",
+  "$29 per workspace",
+  "DeepSeek V4",
+  "OpenRouter",
+  "Together",
+  "Fireworks",
+  "agent workbench",
+  "Incident Commander",
+  "Frame Captain",
+  "P-42",
+];
+
+const FORBIDDEN_RUNTIME_FIXTURE_MARKER = /\bTURNKEYAI_[A-Z0-9_]+_OK\b/;
 
 const ACTIVE_ENGINE_POLICY_FILES = [
   "permission-policy.ts",
@@ -68,160 +82,6 @@ const POLICY_TEXT_VIEW_NAMES = [
   "runtimeEvidenceText",
   "toolResultContentText",
 ];
-
-// Stage 8 closeout ratchet: this is a snapshot of the inline adapter's current
-// fact/render/protocol imports. It may shrink as TaskIntentFacts and split
-// modules land. New reader/detector imports need review; DETECTOR(temporary)
-// entries are specifically expected to disappear in the task-intent producer
-// migration.
-const INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST = new Set<string>([
-  // renderer / prompt assembly
-  "FORCED_PERMISSION_RESULT_ASSISTANT_TEXT",
-  "buildApprovedBrowserTimeoutContinuationPrompt",
-  "buildCompletedBrowserEvidenceDimensionCarryForwardLines",
-  "buildForcedPendingApprovalWaitTimeoutPermissionResultCall",
-  "buildIncompleteApprovedBrowserActionRepairPrompt",
-  "buildIncompleteApprovedBrowserSessionContinuationPrompt",
-  "buildIndependentEvidenceStreamContinuationPrompt",
-  "buildMissingBrowserEvidenceRepairPrompt",
-  "buildMissingProductSignalBrowserEvidenceRepairPrompt",
-  "buildSupplementalLocalTimeoutProbePrompt",
-  "buildReadOnlyPermissionQuerySuppressionPrompt",
-  "buildContinuationDirectiveContext",
-  "buildCoverageTimeoutContinuationPrompt",
-  "buildApprovalWaitTimeoutCloseoutRepairPrompt",
-  "buildApprovalWaitTimeoutLocalEvidenceCloseout",
-  "buildFalseEvidenceBlockedSynthesisRepairPrompt",
-  "buildFinalRecoveryBudgetCloseoutReasonLines",
-  "buildFinalRecoveryBudgetCloseoutRepairPrompt",
-  "buildMissingApprovalGateRepairPrompt",
-  "buildMissingBrowserEvidenceDimensionsRepairPrompt",
-  "buildMissingRequestedNextActionRepairPrompt",
-  "buildMissingRequiredFinalDeliverablesRepairPrompt",
-  "buildLocalEvidenceCloseout",
-  "buildPendingApprovalWaitTimeoutCheckRepairPrompt",
-  "buildPrematurePendingApprovalRepairPrompt",
-  "buildSourceEvidenceCarryForwardRepairPrompt",
-  "buildStaleDeniedApprovalRepairPrompt",
-  "buildStalePendingApprovalRepairPrompt",
-  "buildTimeoutFollowupFinalGuidanceRepairPrompt",
-  "buildWeakEvidenceSynthesisRepairPrompt",
-  "maybeAppendBrowserFailureBucketVisibility",
-  "maybeAppendBrowserRecoveryVisibility",
-  "maybeAppendBrowserRecoveryResidualRiskVisibility",
-  "maybeAppendRecoveredTimeoutCloseoutVisibility",
-  "maybeAppendRequiredTimeoutFollowupVisibility",
-  "maybeAppendTimeoutContinuationVisibility",
-  "maybeRedactForbiddenLocalUrls",
-  "withFinalToolRoundWarning",
-
-  // protocol / neutral utilities
-  "applySessionContinuationDirective",
-  "applySessionContinuationLookupDirective",
-  "containsAnyToolCallForm",
-  "dedupeStrings",
-  "enforceMissingApprovalGateRepairToolCalls",
-  "enforceSupplementalLocalTimeoutProbeToolCall",
-  "extractHttpUrls",
-  "formatDurationMs",
-  "isAbortError",
-  "isControlPlaneToolResultName",
-  "isExplicitSessionContinuationRequest",
-  "isLoopbackHostname",
-  "matchesAny",
-  "normalizeApprovalGatedBrowserSpawnCalls",
-  "normalizeBoundedTimeoutDuplicateSourceSpawns",
-  "normalizeBoundedTimeoutSourceSpawnAgents",
-  "normalizeExplicitContinuationHistoryCalls",
-  "normalizeLocalUrlWebFetchCalls",
-  "normalizePrivateUrlResearchSpawnCalls",
-  "normalizeSessionToolAliasCalls",
-  "normalizeSessionToolCalls",
-  "parseJsonObject",
-  "readSessionKeyFromToolInput",
-  "readStringField",
-  "readStringInput",
-  "sliceUtf8",
-  "toNativeToolProgressTrace",
-  "toNativeToolResultTrace",
-  "throwIfAborted",
-
-  // reader / compatibility producer outputs
-  "allowsSupplementalBrowserProbe",
-  "contextHasTimeoutSessionResult",
-  "continuationRequestPrefersResumableSession",
-  "countCompletedSessionEvidenceResults",
-  "countRecoveryToolCallsBeforeActivation",
-  "extractLatestUserContinuationText",
-  "findExcessiveSessionContinuationCall",
-  "findRepeatedSessionInspectionCall",
-  "findSessionContinuationDirective",
-  "findSessionContinuationLookupDirective",
-  "findIncompleteApprovedBrowserSession",
-  "findMissingRequiredFinalDeliverables",
-  "hasCompletedBrowserSessionEvidence",
-  "hasExecutedSessionsSend",
-  "hasSessionTimeoutEvidence",
-  "hasTimeoutCloseoutGuidance",
-  "hasTimeoutContinuationGuidance",
-  "hasMissingRequiredFinalDeliverablesRepairPrompt",
-  "hasLatestSupplementalLocalTimeoutProbePrompt",
-  "limitIndependentEvidenceSpawnCalls",
-  "resolveRecoveryToolBudgetForActivation",
-  "resolveEffectiveToolLoopWallClockMs",
-  "shouldCloseoutCancelledSessionWithoutContinuation",
-  "shouldRunSupplementalLocalTimeoutProbe",
-  "shouldAppendRecoveredTimeoutCloseoutVisibility",
-  "shouldAppendTimeoutContinuationVisibility",
-  "shouldPreserveRecoveredTimeoutCloseout",
-  "toolTraceHasCall",
-
-]);
-
-const INLINE_ADAPTER_FACT_IMPORT_MODULES = [
-  "./runtime-facts/text-fallback-readers",
-  "./runtime-facts/repair-marker-facts",
-  "./runtime-policy/prompt-renderers",
-  "./runtime-policy/synthesis-visibility",
-  "./tool-protocol",
-];
-
-const INLINE_REPAIR_POLICY_NAME_MAP = new Map<string, string>([
-  ["readFinalRecoveryBudgetCloseoutRepair", "final_recovery_budget_closeout_repair"],
-  ["readMissingBrowserEvidenceRepair", "missing_browser_evidence"],
-  [
-    "readMissingProductSignalBrowserEvidenceRepair",
-    "missing_product_signal_browser_evidence",
-  ],
-  ["readMissingApprovalGateRepair", "missing_approval_gate"],
-  [
-    "readPendingApprovalWaitTimeoutCheckRepair",
-    "pending_approval_wait_timeout_check",
-  ],
-  ["readPrematurePendingApprovalFinalRepair", "premature_pending_approval"],
-  ["readStalePendingApprovalRepair", "stale_pending_approval"],
-  ["readStaleDeniedApprovalRepair", "stale_denied_approval"],
-  ["readApprovalWaitTimeoutCloseoutRepair", "approval_wait_timeout_closeout"],
-  [
-    "readForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair",
-    "approval_wait_timeout_local_closeout",
-  ],
-  [
-    "readIncompleteApprovedBrowserActionRepair",
-    "incomplete_approved_browser_action",
-  ],
-  ["readSourceEvidenceCarryForwardRepair", "source_evidence_carry_forward"],
-  ["readWeakEvidenceSynthesisRepair", "weak_evidence_synthesis"],
-  ["readTimeoutFollowupFinalGuidanceRepair", "timeout_followup_final_guidance"],
-  ["readMissingRequestedNextActionRepair", "missing_requested_next_action"],
-  [
-    "readMissingBrowserEvidenceDimensionsRepair",
-    "missing_browser_evidence_dimensions",
-  ],
-  ["readFalseEvidenceBlockedSynthesisRepair", "false_evidence_blocked_synthesis"],
-]);
-
-const REPAIR_POLICY_CORE = path.join(RUNTIME_POLICY_DIR, "repair-policy-core.ts");
 
 const TASK_LANGUAGE_HELPER_REFERENCE_PATTERN =
   /\b(taskPrompt[A-Za-z0-9_]*|taskLooksLike[A-Za-z0-9_]*|taskAllows[A-Za-z0-9_]*|requestsApproval[A-Za-z0-9_]*|expectsExact[A-Za-z0-9_]*|disclaimsApprovalGatedBrowserAction|is(?:AppliedApprovalBrowserContinuation|CoverageCriticalDelegationTask|ProviderSearchPricingResearchTask|TwoSourceComparisonTask))\s*\(/g;
@@ -404,68 +264,6 @@ function coreFactHelperExportNames(source: string): string[] {
   );
 }
 
-function stringArrayConst(source: string, constName: string): string[] {
-  const match = source.match(
-    new RegExp(`export const ${constName} = \\[([\\s\\S]*?)\\] as const;`),
-  );
-  assert.ok(match, `${constName} must exist`);
-  return Array.from(match[1]!.matchAll(/"([^"]+)"/g), (item) => item[1]!);
-}
-
-function lineNumberAt(source: string, index: number): number {
-  return source.slice(0, index).split("\n").length;
-}
-
-function inlineRepairPolicyOccurrences(source: string): Array<{
-  line: number;
-  name: string;
-  policyId: string;
-}> {
-  const names = Array.from(INLINE_REPAIR_POLICY_NAME_MAP.keys()).map((name) =>
-    name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-  );
-  const pattern = new RegExp(`\\b(${names.join("|")})\\s*\\(`, "g");
-  return Array.from(source.matchAll(pattern), (match) => {
-    const name = match[1]!;
-    return {
-      line: lineNumberAt(source, match.index ?? 0),
-      name,
-      policyId: INLINE_REPAIR_POLICY_NAME_MAP.get(name)!,
-    };
-  });
-}
-
-function assertNearbyPolicyOrderCompatible(input: {
-  occurrences: Array<{ line: number; name: string; policyId: string }>;
-  policyOrder: readonly string[];
-  maxAdjacentLineGap: number;
-}): void {
-  const orderIndex = new Map(
-    input.policyOrder.map((policyId, index) => [policyId, index]),
-  );
-  const offenders: string[] = [];
-  for (let index = 1; index < input.occurrences.length; index++) {
-    const previous = input.occurrences[index - 1]!;
-    const current = input.occurrences[index]!;
-    const previousIndex = orderIndex.get(previous.policyId);
-    const currentIndex = orderIndex.get(current.policyId);
-    if (previousIndex === undefined || currentIndex === undefined) continue;
-    if (
-      currentIndex < previousIndex &&
-      current.line - previous.line <= input.maxAdjacentLineGap
-    ) {
-      offenders.push(
-        `${previous.line}:${previous.name}(${previous.policyId}) before ${current.line}:${current.name}(${current.policyId})`,
-      );
-    }
-  }
-  assert.deepEqual(
-    offenders,
-    [],
-    `nearby inline repair checks must stay compatible with runtime-policy order:\n${offenders.join("\n")}`,
-  );
-}
-
 function coreFactHelperReferences(source: string): string[] {
   return Array.from(
     new Set(
@@ -491,6 +289,18 @@ test("no react-engine module imports llm-response-generator", () => {
     offenders,
     [],
     `react-engine modules must not import the composition root:\n${offenders.join("\n")}`,
+  );
+});
+
+test("role response generation has one engine path and no inline escape hatch", () => {
+  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  assert.equal(source.includes("private async runEngine"), true);
+  assert.equal(source.includes("TURNKEYAI_REACT_ENGINE"), false);
+  assert.equal(source.includes("reactEngine?:"), false);
+  assert.equal(source.includes("runViaReActEngine"), false);
+  assert.equal(
+    existsSync(path.join(RUNTIME_POLICY_DIR, "inline-policy-runner.ts")),
+    false,
   );
 });
 
@@ -542,6 +352,10 @@ test("forced engine tool rounds delegate observer-owned trace persistence when a
 
 test("forced runtime provider protocol fallback routes through tool-history owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const runnerSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-forced-tool-round-runner.ts"),
+    "utf8",
+  );
 
   assert.equal(
     source.includes("private async recordRuntimeForcedToolRoundProviderProtocol"),
@@ -549,38 +363,38 @@ test("forced runtime provider protocol fallback routes through tool-history owne
     "adapter must not keep a private forced-round provider protocol wrapper",
   );
   assert.equal(
-    source.includes("recordRuntimeForcedToolRoundProviderProtocolSafely({"),
+    runnerSource.includes("recordRuntimeForcedToolRoundProviderProtocolSafely({"),
     true,
-    "adapter should call the neutral forced-round provider protocol recorder",
+    "forced-round owner should call the neutral provider protocol recorder",
   );
 });
 
 test("engine forced runtime tool-round executor wiring routes through runner owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
 
   assert.equal(
     engineSource.includes("executeRuntimeForcedToolRound({"),
     false,
-    "engine forced-round execution wiring must not stay inline in runViaReActEngine",
+    "engine forced-round execution wiring must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("createRoleEngineRuntimeForcedToolRoundRunner({"),
     true,
-    "runViaReActEngine should create role-engine forced-round runners through the react-engine owner",
+    "runEngine should create role-engine forced-round runners through the react-engine owner",
   );
 });
 
 test("engine forced runtime tool-round role wiring routes through runner owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const runnerSource = readFileSync(
     path.join(ENGINE_DIR, "engine-forced-tool-round-runner.ts"),
@@ -590,7 +404,7 @@ test("engine forced runtime tool-round role wiring routes through runner owner",
   assert.equal(
     engineSource.includes("createEngineRuntimeForcedToolRoundRunner({"),
     false,
-    "engine forced-round role wiring must not stay inline in runViaReActEngine",
+    "engine forced-round role wiring must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("providerRuntimeProgressRecorder:"),
@@ -600,7 +414,7 @@ test("engine forced runtime tool-round role wiring routes through runner owner",
   assert.equal(
     engineSource.includes("createRoleEngineRuntimeForcedToolRoundRunner({"),
     true,
-    "runViaReActEngine should create role-engine forced-round runners through the owner",
+    "runEngine should create role-engine forced-round runners through the owner",
   );
   assert.equal(
     runnerSource.includes("providerRuntimeProgressRecorder:"),
@@ -611,55 +425,55 @@ test("engine forced runtime tool-round role wiring routes through runner owner",
 
 test("engine final generated reply assembly routes through final-response owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
 
   assert.equal(
     engineSource.includes("buildRuntimeDerivedMissionReport("),
     false,
-    "engine final mission report assembly must not stay inline in runViaReActEngine",
+    "engine final mission report assembly must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("summarizeModelUseTrace("),
     false,
-    "engine final model-use summary assembly must not stay inline in runViaReActEngine",
+    "engine final model-use summary assembly must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("createEngineFinalResponseBuilder({"),
     true,
-    "runViaReActEngine should build final replies through the react-engine owner",
+    "runEngine should build final replies through the react-engine owner",
   );
 });
 
 test("engine agent event consumption routes through runner owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
 
   assert.equal(
     engineSource.includes("for await (const event of agent.run("),
     false,
-    "engine ReAct event consumption must not stay inline in runViaReActEngine",
+    "engine ReAct event consumption must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("createRoleEngineAgentRunner"),
     true,
-    "runViaReActEngine should consume ReAct events through the react-engine runner factory",
+    "runEngine should consume ReAct events through the react-engine runner factory",
   );
 });
 
 test("engine ReAct agent creation routes through runner owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const runnerSource = readFileSync(
     path.join(ENGINE_DIR, "engine-agent-runner.ts"),
@@ -674,7 +488,7 @@ test("engine ReAct agent creation routes through runner owner", () => {
   assert.equal(
     engineSource.includes("createReActAgent<RoleToolContext>({"),
     false,
-    "engine ReAct agent construction must not stay inline in runViaReActEngine",
+    "engine ReAct agent construction must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("maxRounds: maxRounds + 1"),
@@ -684,7 +498,7 @@ test("engine ReAct agent creation routes through runner owner", () => {
   assert.equal(
     engineSource.includes("createRoleEngineAgentRunner"),
     true,
-    "runViaReActEngine should create the ReAct runner through the react-engine owner",
+    "runEngine should create the ReAct runner through the react-engine owner",
   );
   assert.equal(
     runnerSource.includes("createReActAgent"),
@@ -695,16 +509,16 @@ test("engine ReAct agent creation routes through runner owner", () => {
 
 test("engine task intent facts are built at the adapter boundary and consumed by owners", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
 
   assert.equal(
     engineSource.includes("const taskFacts = buildTaskFacts({"),
     true,
-    "runViaReActEngine should build one TaskFacts snapshot at the composition boundary",
+    "runEngine should build one TaskFacts snapshot at the composition boundary",
   );
   for (const forbiddenAccess of [
     "taskFacts.requestedTableColumns",
@@ -718,7 +532,7 @@ test("engine task intent facts are built at the adapter boundary and consumed by
     assert.equal(
       engineSource.includes(forbiddenAccess),
       false,
-      `runViaReActEngine must pass task facts through, not branch on ${forbiddenAccess}`,
+      `runEngine must pass task facts through, not branch on ${forbiddenAccess}`,
     );
   }
 
@@ -746,30 +560,30 @@ test("engine task intent facts are built at the adapter boundary and consumed by
 
 test("engine role toolkit wiring routes through toolkit owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
 
   assert.equal(
     engineSource.includes("const toolkit: Toolkit<RoleToolContext>"),
     false,
-    "engine role toolkit construction must not stay inline in runViaReActEngine",
+    "engine role toolkit construction must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("createEngineRoleToolkit({"),
     true,
-    "runViaReActEngine should create the ReAct toolkit through the react-engine owner",
+    "runEngine should create the ReAct toolkit through the react-engine owner",
   );
 });
 
 test("engine onToolCalls hook routes through tool-call normalizer owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const normalizerSource = readFileSync(
     path.join(ENGINE_DIR, "tool-call-normalizer.ts"),
@@ -779,22 +593,22 @@ test("engine onToolCalls hook routes through tool-call normalizer owner", () => 
   assert.equal(
     engineSource.includes("buildToolCallNormalizationContext({"),
     false,
-    "engine onToolCalls normalization context construction must not stay inline in runViaReActEngine",
+    "engine onToolCalls normalization context construction must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("normalizeEngineToolCalls("),
     false,
-    "engine onToolCalls normalizer invocation must not stay inline in runViaReActEngine",
+    "engine onToolCalls normalizer invocation must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("truncateForRecoveryBudget({"),
     false,
-    "engine onToolCalls recovery-budget truncation must not stay inline in runViaReActEngine",
+    "engine onToolCalls recovery-budget truncation must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("applyEngineToolCallsHook({"),
     true,
-    "runViaReActEngine should delegate onToolCalls to the normalizer owner",
+    "runEngine should delegate onToolCalls to the normalizer owner",
   );
   assert.equal(
     normalizerSource.includes("normalizeEngineToolCalls("),
@@ -810,35 +624,49 @@ test("engine onToolCalls hook routes through tool-call normalizer owner", () => 
 
 test("engine execution budget hooks route through execution-budget owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const budgetSource = readFileSync(
     path.join(ENGINE_DIR, "execution-budget-controller.ts"),
+    "utf8",
+  );
+  const validatorSource = readFileSync(
+    path.join(ENGINE_DIR, "tool-argument-validator.ts"),
     "utf8",
   );
 
   assert.equal(
     engineSource.includes("limitToolCallsPerRound({"),
     false,
-    "engine onBeforeExecute admission must not stay inline in runViaReActEngine",
+    "engine onBeforeExecute admission must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("runToolBatch<RoleToolContext>({"),
     false,
-    "engine runToolBatch hook wiring must not stay inline in runViaReActEngine",
+    "engine runToolBatch hook wiring must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("applyEngineBeforeExecuteHook({"),
     true,
-    "runViaReActEngine should delegate onBeforeExecute to the execution-budget owner",
+    "runEngine should delegate onBeforeExecute to the execution-budget owner",
+  );
+  assert.equal(
+    engineSource.includes("createToolArgumentValidator(toolDefinitions)"),
+    true,
+    "runEngine should compile the exact offered tool schemas once per run",
+  );
+  assert.equal(
+    engineSource.includes("applyToolArgumentValidationBeforeAdmission({"),
+    true,
+    "runEngine should validate tool arguments before budget admission",
   );
   assert.equal(
     engineSource.includes("runEngineToolBatchHook({"),
     true,
-    "runViaReActEngine should delegate runToolBatch to the execution-budget owner",
+    "runEngine should delegate runToolBatch to the execution-budget owner",
   );
   assert.equal(
     budgetSource.includes("limitToolCallsPerRound({"),
@@ -850,14 +678,20 @@ test("engine execution budget hooks route through execution-budget owner", () =>
     true,
     "execution-budget owner should keep role tool-batch wiring",
   );
+  assert.equal(
+    validatorSource.indexOf("input.validator.validate(input.calls)") <
+      validatorSource.indexOf("input.admit(validated.executable)"),
+    true,
+    "tool schema validation must run before execution-budget admission",
+  );
 });
 
 test("engine pending-call closeout hook routes through closeout-policy owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const hookStart = engineSource.indexOf("onToolCallsClose: (calls, state)");
   const hookEnd = engineSource.indexOf(
@@ -890,7 +724,7 @@ test("engine pending-call closeout hook routes through closeout-policy owner", (
   assert.equal(
     hookSource.includes("applyPendingCallsCloseoutHook("),
     true,
-    "runViaReActEngine should delegate onToolCallsClose to the closeout-policy owner",
+    "runEngine should delegate onToolCallsClose to the closeout-policy owner",
   );
   assert.equal(
     registrySource.includes("applyPendingCallsCloseout("),
@@ -901,10 +735,10 @@ test("engine pending-call closeout hook routes through closeout-policy owner", (
 
 test("engine lightweight hook entrypoints route through their owners", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
 
   const suppressStart = engineSource.indexOf(
@@ -957,7 +791,7 @@ test("engine lightweight hook entrypoints route through their owners", () => {
   assert.equal(
     afterExecuteSource.includes("applyPostExecuteCloseout("),
     false,
-    "post-execute generic closeout application must not stay inline in runViaReActEngine",
+    "post-execute generic closeout application must not stay inline in runEngine",
   );
   assert.equal(
     afterExecuteSource.includes("applyPostExecuteCloseoutHook("),
@@ -967,12 +801,12 @@ test("engine lightweight hook entrypoints route through their owners", () => {
   assert.equal(
     roundEmptySource.includes("const action = continuation.onRoundEmpty({"),
     false,
-    "round-empty action selection must not stay inline in runViaReActEngine",
+    "round-empty action selection must not stay inline in runEngine",
   );
   assert.equal(
     roundEmptySource.includes("applyRoundEmptyAction(action)"),
     false,
-    "round-empty action application must not stay inline in runViaReActEngine",
+    "round-empty action application must not stay inline in runEngine",
   );
   assert.equal(
     roundEmptySource.includes("applyRoundEmptyHook({"),
@@ -983,10 +817,10 @@ test("engine lightweight hook entrypoints route through their owners", () => {
 
 test("engine natural-finish repair hook routes through repair-policy owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const hookStart = engineSource.indexOf("onRepairRound: (state, ctx)");
   const hookEnd = engineSource.indexOf(
@@ -1014,7 +848,7 @@ test("engine natural-finish repair hook routes through repair-policy owner", () 
   assert.equal(
     hookSource.includes("applyNaturalFinishRepair({"),
     false,
-    "natural-finish repair application must not stay inline in runViaReActEngine",
+    "natural-finish repair application must not stay inline in runEngine",
   );
   assert.equal(
     hookSource.includes("applyNaturalFinishRepairHook("),
@@ -1030,10 +864,10 @@ test("engine natural-finish repair hook routes through repair-policy owner", () 
 
 test("engine model-call-error hook routes through terminal closeout owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const hookStart = engineSource.indexOf(
     "onModelCallError: async (error, state",
@@ -1089,10 +923,10 @@ test("engine model-call-error hook routes through terminal closeout owner", () =
 
 test("engine terminate decision hook routes through closeout-policy owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const hookStart = engineSource.indexOf("onTerminate: async (reason, state");
   const hookEnd = engineSource.indexOf(
@@ -1146,10 +980,10 @@ test("engine terminate decision hook routes through closeout-policy owner", () =
 
 test("engine completed terminal handoff routes through terminal closeout owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const hookStart = engineSource.indexOf("onTerminate: async (reason, state");
   const hookEnd = engineSource.indexOf(
@@ -1250,10 +1084,10 @@ test("engine policy owners consume completed/timeout facts through EvidenceLedge
 
 test("engine terminal synthesis callbacks route through terminal closeout owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const hookStart = engineSource.indexOf("onTerminate: async (reason, state");
   const hookEnd = engineSource.indexOf(
@@ -1307,10 +1141,10 @@ test("engine terminal synthesis callbacks route through terminal closeout owner"
 
 test("engine approval wait-timeout fallback hook routes through terminal closeout owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const hookStart = engineSource.indexOf("onTerminate: async (reason, state");
   const hookEnd = engineSource.indexOf(
@@ -1383,36 +1217,36 @@ test("engine permission policy facts route through EvidenceLedger", () => {
 
 test("engine run-state role value typing routes through run-state owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
 
   assert.equal(
     engineSource.includes("type RoleEngineRunStateValues"),
     false,
-    "role-engine run-state value typing must not stay local to runViaReActEngine",
+    "role-engine run-state value typing must not stay local to runEngine",
   );
   assert.equal(
     engineSource.includes("createRoleEngineRunState()"),
     true,
-    "runViaReActEngine should create typed role-engine run state through the owner",
+    "runEngine should create typed role-engine run state through the owner",
   );
 });
 
 test("engine run observer wiring routes through observer owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
 
   assert.equal(
     engineSource.includes("createEngineRunObserver(toolTrace, {"),
     false,
-    "engine run observer dependency wiring must not stay inline in runViaReActEngine",
+    "engine run observer dependency wiring must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("recordToolProgress: (call, progress) =>"),
@@ -1432,7 +1266,7 @@ test("engine run observer wiring routes through observer owner", () => {
   assert.equal(
     engineSource.includes("createRoleEngineRunObserver({"),
     true,
-    "runViaReActEngine should create observers through the react-engine owner",
+    "runEngine should create observers through the react-engine owner",
   );
 });
 
@@ -1635,10 +1469,10 @@ test("engine model gateway request construction routes through neutral gateway b
 
 test("engine model client role-runtime wiring routes through model owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const modelSource = readFileSync(
     path.join(ENGINE_DIR, "engine-model-client.ts"),
@@ -1648,7 +1482,7 @@ test("engine model client role-runtime wiring routes through model owner", () =>
   assert.equal(
     engineSource.includes("createEngineModelClient({"),
     false,
-    "engine model client dependency wiring must not stay inline in runViaReActEngine",
+    "engine model client dependency wiring must not stay inline in runEngine",
   );
   assert.equal(
     engineSource.includes("recordPruning: (snapshot) =>"),
@@ -1663,7 +1497,7 @@ test("engine model client role-runtime wiring routes through model owner", () =>
   assert.equal(
     engineSource.includes("createRoleEngineModelClient({"),
     true,
-    "runViaReActEngine should create role-engine model clients through the owner",
+    "runEngine should create role-engine model clients through the owner",
   );
   assert.equal(
     modelSource.includes("recordToolResultPruningBoundarySafely({"),
@@ -1674,6 +1508,10 @@ test("engine model client role-runtime wiring routes through model owner", () =>
 
 test("tool-result pruning boundary recording routes through neutral pruning owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const modelSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-model-client.ts"),
+    "utf8",
+  );
 
   assert.equal(
     source.includes("private async recordToolResultPruningBoundary"),
@@ -1686,9 +1524,9 @@ test("tool-result pruning boundary recording routes through neutral pruning owne
     "tool-result pruning boundary metadata construction must live in tool-history-pruning",
   );
   assert.equal(
-    source.includes("recordToolResultPruningBoundarySafely({"),
+    modelSource.includes("recordToolResultPruningBoundarySafely({"),
     true,
-    "adapter should call the neutral safe pruning boundary recorder",
+    "engine model owner should call the neutral safe pruning boundary recorder",
   );
 });
 
@@ -1766,8 +1604,54 @@ test("pre-compaction memory flush routes through flusher owner", () => {
   );
 });
 
+test("the engine composition root installs typed loop compaction and run journaling", () => {
+  const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+
+  assert.equal(
+    adapterSource.includes("createCompactionController({"),
+    true,
+    "engine composition must create the calibrated loop compaction owner",
+  );
+  assert.equal(
+    adapterSource.includes("createRuntimeCheckpointSummarizer({"),
+    true,
+    "checkpoint compaction must use the tool-free summarizer owner",
+  );
+  assert.equal(
+    adapterSource.includes("onRoundMessages: async (messages, round, hookCtx) =>"),
+    true,
+    "engine hooks must route pre-model messages through checkpoint compaction",
+  );
+  assert.equal(
+    adapterSource.includes("createRunJournal({"),
+    true,
+    "engine composition must create the durable round journal owner",
+  );
+  assert.equal(
+    adapterSource.includes("createTaskPlanController()"),
+    true,
+    "engine composition must install typed task-plan maintenance",
+  );
+  assert.ok(
+    adapterSource.indexOf("compactionController.applyRoundMessagesHook(") <
+      adapterSource.indexOf("taskPlanController.applyRoundMessagesHook({") &&
+      adapterSource.indexOf("taskPlanController.applyRoundMessagesHook({") <
+        adapterSource.indexOf("checkpointRunJournalSafely("),
+    "compaction and typed task-plan maintenance must precede the safe journal boundary",
+  );
+  assert.equal(
+    adapterSource.includes("forceCompact: ({ messages, round }) =>"),
+    true,
+    "request-envelope overflow must route through the same persistent compaction owner",
+  );
+});
+
 test("request-envelope reduction boundary recording routes through reducer owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const finalResponseSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-final-response.ts"),
+    "utf8",
+  );
 
   assert.equal(
     source.includes("private async recordReductionBoundary"),
@@ -1780,18 +1664,18 @@ test("request-envelope reduction boundary recording routes through reducer owner
     "request-envelope reduction boundary metadata construction must live in request-envelope-reducer",
   );
   assert.equal(
-    source.includes("recordReductionBoundarySafely({"),
+    finalResponseSource.includes("recordReductionBoundarySafely({"),
     true,
-    "adapter should call the neutral safe reduction boundary recorder",
+    "engine final-response owner should call the neutral reduction boundary recorder",
   );
 });
 
 test("engine request-envelope reduction boundary wiring routes through final response owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const start = source.indexOf("private async runViaReActEngine");
+  const start = source.indexOf("private async runEngine");
   const end = source.indexOf("\n}\n\n// ORDER_DEPENDENT_TOOL_NAMES", start);
-  assert.notEqual(start, -1, "runViaReActEngine must exist");
-  assert.notEqual(end, -1, "runViaReActEngine boundary must be found");
+  assert.notEqual(start, -1, "runEngine must exist");
+  assert.notEqual(end, -1, "runEngine boundary must be found");
   const engineSource = source.slice(start, end);
   const finalResponseSource = readFileSync(
     path.join(ENGINE_DIR, "engine-final-response.ts"),
@@ -1801,17 +1685,17 @@ test("engine request-envelope reduction boundary wiring routes through final res
   assert.equal(
     engineSource.includes("recordReductionBoundarySafely({"),
     false,
-    "engine reduction boundary recorder wiring must not stay in runViaReActEngine",
+    "engine reduction boundary recorder wiring must not stay in runEngine",
   );
   assert.equal(
     engineSource.includes("const reductionSnapshot = runState.reductionSnapshot();"),
     false,
-    "engine reduction snapshot wiring must not stay in runViaReActEngine",
+    "engine reduction snapshot wiring must not stay in runEngine",
   );
   assert.equal(
     engineSource.includes("recordEngineReductionBoundary({"),
     true,
-    "runViaReActEngine should record reduction boundaries through the final response owner",
+    "runEngine should record reduction boundaries through the final response owner",
   );
   assert.equal(
     finalResponseSource.includes("recordReductionBoundarySafely({"),
@@ -1842,6 +1726,7 @@ test("prompt assembly compaction boundary recording routes through prompt owner"
 
 test("provider tool protocol boundary recording routes through neutral history owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const observerSource = readFileSync(ENGINE_RUN_OBSERVER, "utf8");
 
   assert.equal(
     source.includes("private async recordProviderToolProtocolRound"),
@@ -1854,9 +1739,9 @@ test("provider tool protocol boundary recording routes through neutral history o
     "provider tool protocol boundary metadata construction must live outside the adapter",
   );
   assert.equal(
-    source.includes("recordProviderToolProtocolRoundSafely({"),
+    observerSource.includes("recordProviderToolProtocolRoundSafely({"),
     true,
-    "adapter should call the neutral safe provider protocol boundary recorder",
+    "engine observer should call the neutral provider protocol boundary recorder",
   );
 });
 
@@ -1878,6 +1763,7 @@ test("runtime tool progress safe recording routes through tool-use owner", () =>
 
 test("native tool trace persistence routes through native message owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const observerSource = readFileSync(ENGINE_RUN_OBSERVER, "utf8");
 
   assert.equal(
     source.includes("private async persistNativeToolTraceSafely"),
@@ -1885,14 +1771,15 @@ test("native tool trace persistence routes through native message owner", () => 
     "native tool trace persistence must not stay as an adapter-private method",
   );
   assert.equal(
-    source.includes("persistNativeToolTraceSafely({"),
+    observerSource.includes("persistNativeToolTraceSafely({"),
     true,
-    "adapter should call the neutral safe native tool trace persister",
+    "engine observer should call the neutral native tool trace persister",
   );
 });
 
 test("runtime tool progress emission routes through tool-use owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const observerSource = readFileSync(ENGINE_RUN_OBSERVER, "utf8");
   const toolUseSource = readFileSync(TOOL_USE, "utf8");
 
   assert.equal(
@@ -1901,9 +1788,9 @@ test("runtime tool progress emission routes through tool-use owner", () => {
     "runtime tool progress emission must not stay as an adapter-private method",
   );
   assert.equal(
-    source.includes("executeRoleToolCalls({"),
+    observerSource.includes("recordRoleToolProgressSafely({"),
     true,
-    "adapter should call the neutral role tool-call executor",
+    "engine observer should route progress through the neutral recorder",
   );
   assert.equal(
     toolUseSource.includes("emitRoleToolProgressSafely({"),
@@ -1914,6 +1801,10 @@ test("runtime tool progress emission routes through tool-use owner", () => {
 
 test("role tool-call execution routes through tool-use owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const toolkitSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-role-toolkit.ts"),
+    "utf8",
+  );
 
   assert.equal(
     source.includes("private async executeToolCalls"),
@@ -1921,14 +1812,18 @@ test("role tool-call execution routes through tool-use owner", () => {
     "role tool-call execution must not stay as an adapter-private method",
   );
   assert.equal(
-    source.includes("executeRoleToolCalls({"),
+    toolkitSource.includes("activeToolLoop.executor.execute({"),
     true,
-    "adapter should call the neutral role tool-call executor",
+    "engine toolkit owner should delegate calls to the configured role executor",
   );
 });
 
 test("forced runtime tool-round orchestration routes through tool-use owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const runnerSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-forced-tool-round-runner.ts"),
+    "utf8",
+  );
 
   assert.equal(
     source.includes("private async executeRuntimeForcedToolRound"),
@@ -1936,9 +1831,9 @@ test("forced runtime tool-round orchestration routes through tool-use owner", ()
     "forced runtime tool-round orchestration must not stay as an adapter-private method",
   );
   assert.equal(
-    source.includes("executeRuntimeForcedToolRound({"),
+    runnerSource.includes("executeRuntimeForcedToolRound({"),
     true,
-    "adapter should call the neutral forced runtime tool-round runner",
+    "engine forced-round owner should call the neutral runtime runner",
   );
 });
 
@@ -2012,46 +1907,6 @@ test("active runtime policy boundary does not use renamed legacy fact shims", ()
     [],
     `active runtime code must consume producer-owned facts, not renamed legacy shims:\n${offenders.join("\n")}`,
   );
-});
-
-test("inline adapter routes policy booleans through runtime-policy runner", () => {
-  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const producerImports = importedNamesFrom(source, [
-    "./runtime-facts/text-fallback-readers",
-    "./runtime-facts/repair-marker-facts",
-  ]).join("\n");
-  const forbiddenProducerPolicyImports = Array.from(
-    producerImports.matchAll(
-      /\b(read[A-Za-z0-9_]*(?:Repair|Continuation|Suppression))\b/g,
-    ),
-    (match) => match[1]!,
-  );
-  assert.deepEqual(
-    forbiddenProducerPolicyImports,
-    [],
-    `inline adapter must not import policy decision booleans directly from text producers:\n${forbiddenProducerPolicyImports.join("\n")}`,
-  );
-  assert.equal(
-    source.includes('from "./runtime-policy/inline-policy-runner"'),
-    true,
-    "inline adapter must route policy booleans through runtime-policy/inline-policy-runner",
-  );
-
-  const runnerSource = readFileSync(INLINE_POLICY_RUNNER, "utf8");
-  for (const selector of [
-    "selectNaturalFinishRepairPolicy",
-    "selectCompletedSynthesisRepairPolicy",
-    "selectPermissionSuppressionPolicy",
-    "selectTimeoutContinuationPolicy",
-    "selectIndependentEvidenceStreamsPolicy",
-    "selectRecoveryToolBudgetCloseoutPolicy",
-  ]) {
-    assert.equal(
-      runnerSource.includes(selector),
-      true,
-      `inline policy runner must use ${selector}`,
-    );
-  }
 });
 
 test("policy-text-facts facade is retired", () => {
@@ -2129,30 +1984,6 @@ test("runtime policy cores import runtime facts as types only", () => {
   );
 });
 
-test("inline adapter fact imports stay inside the reviewed allowlist", () => {
-  const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const imported = importedNamesFrom(
-    source,
-    INLINE_ADAPTER_FACT_IMPORT_MODULES,
-  );
-  const offenders = imported.filter(
-    (name) => !INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST.has(name),
-  );
-  const stale = Array.from(INLINE_ADAPTER_FACT_IMPORT_ALLOWLIST)
-    .filter((name) => !imported.includes(name))
-    .sort();
-  assert.deepEqual(
-    offenders,
-    [],
-    `new fact-layer imports need explicit review:\n${offenders.join("\n")}`,
-  );
-  assert.deepEqual(
-    stale,
-    [],
-    `stale fact-layer allowlist entries must be removed as the boundary shrinks:\n${stale.join("\n")}`,
-  );
-});
-
 test("text fallback export budget only shrinks", () => {
   const budget = JSON.parse(
     readFileSync(path.join(ENGINE_DIR, "fact-export-budget.json"), "utf8"),
@@ -2185,47 +2016,6 @@ test("active policy and adapter code do not call task-language detector helpers"
     [],
     `task-language parsing must go through TaskIntentFacts:\n${offenders.join("\n")}`,
   );
-});
-
-test("inline repair policy call order stays compatible with policy-core order", () => {
-  const inlineSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
-  const runnerSource = readFileSync(INLINE_POLICY_RUNNER, "utf8");
-  const repairCoreSource = readFileSync(REPAIR_POLICY_CORE, "utf8");
-  const naturalOrder = stringArrayConst(
-    repairCoreSource,
-    "RUNTIME_NATURAL_FINISH_REPAIR_POLICY_ORDER",
-  );
-  const completedOrder = stringArrayConst(
-    repairCoreSource,
-    "RUNTIME_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER",
-  );
-  const naturalPolicyIds = new Set(naturalOrder);
-  const completedPolicyIds = new Set(completedOrder);
-
-  for (const [label, source, maxAdjacentLineGap] of [
-    ["inline adapter", inlineSource, 40],
-    ["inline policy runner", runnerSource, Number.POSITIVE_INFINITY],
-  ] as const) {
-    const occurrences = inlineRepairPolicyOccurrences(source);
-    assertNearbyPolicyOrderCompatible({
-      occurrences: occurrences.filter((item) =>
-        naturalPolicyIds.has(item.policyId),
-      ),
-      policyOrder: naturalOrder,
-      maxAdjacentLineGap,
-    });
-    assertNearbyPolicyOrderCompatible({
-      occurrences: occurrences.filter((item) =>
-        completedPolicyIds.has(item.policyId),
-      ),
-      policyOrder: completedOrder,
-      maxAdjacentLineGap,
-    });
-    assert.ok(
-      occurrences.length > 0,
-      `${label} must expose reviewed inline repair policy checks`,
-    );
-  }
 });
 
 test("active policy modules do not receive final-synthesis text views", () => {
@@ -2295,3 +2085,60 @@ test("core fact helper allowlist entries point at real exports", () => {
     `core fact helper allowlist entries must be real task-facts-shared exports:\n${missing.join("\n")}`,
   );
 });
+
+test("active runtime policy is free of acceptance-fixture literals", () => {
+  const roots = [
+    path.join(PACKAGES_DIR, "role-runtime/src"),
+    path.join(PACKAGES_DIR, "app-gateway/src"),
+  ];
+  const offenders: string[] = [];
+  const sourceFiles = roots.flatMap((root) =>
+    runtimeProductionSourceFiles(root),
+  );
+  assert.ok(
+    sourceFiles.length > 100,
+    `fixture guard must scan the active runtime tree, got ${sourceFiles.length} files`,
+  );
+  for (const file of sourceFiles) {
+    const source = readFileSync(file, "utf8");
+    for (const literal of FORBIDDEN_RUNTIME_FIXTURE_LITERALS) {
+      if (source.includes(literal)) {
+        offenders.push(
+          `${path.relative(PACKAGES_DIR, file)}: ${literal}`,
+        );
+      }
+    }
+    const marker = source.match(FORBIDDEN_RUNTIME_FIXTURE_MARKER)?.[0];
+    if (marker) {
+      offenders.push(`${path.relative(PACKAGES_DIR, file)}: ${marker}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `acceptance fixtures must stay in tests/harnesses, never active runtime policy:\n${offenders.join("\n")}`,
+  );
+});
+
+function runtimeProductionSourceFiles(root: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const file = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "mock" || entry.name === "fixtures") continue;
+      files.push(...runtimeProductionSourceFiles(file));
+      continue;
+    }
+    if (
+      !entry.isFile() ||
+      !entry.name.endsWith(".ts") ||
+      entry.name.endsWith(".test.ts") ||
+      entry.name.endsWith(".spec.ts") ||
+      entry.name === "mission-demo-fixtures.ts"
+    ) {
+      continue;
+    }
+    files.push(file);
+  }
+  return files;
+}

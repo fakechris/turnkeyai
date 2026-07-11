@@ -1,8 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
   applyNaturalFixtureUrlOverrides,
+  attachNaturalRuntimeArtifacts,
   assertNaturalPromptAllowed,
   assertFollowupReusedSession,
   assertNaturalFollowupReusedExistingSession,
@@ -10,6 +14,7 @@ import {
   buildNaturalFixtureReportManifest,
   buildNaturalScenarioSpec,
   buildNaturalMissionE2eJsonReport,
+  buildNaturalMissionInterruptedFailureJsonReport,
   buildNaturalMissionPartialFailureJsonReport,
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
@@ -26,13 +31,99 @@ import {
   formatNaturalMissionScenarioPass,
   formatNaturalMissionScenarioStart,
   isStalePendingApprovalThought,
+  NaturalScenarioAbortError,
+  NaturalScenarioDeadlineError,
+  runWithScenarioDeadline,
+  shouldRetainE2eRuntimeRoot,
   summarizeNaturalMissionScenarioResult,
   summarizeMissionScenarioResult,
+  writeNaturalRunnerFallbackReport,
   type NaturalMissionScenarioResult,
   type MissionScenarioResult,
 } from "./mission-tool-use-e2e";
 
 describe("mission tool-use e2e report", () => {
+  it("retains runtime roots for every non-passed invocation", () => {
+    assert.equal(
+      shouldRetainE2eRuntimeRoot({ passed: false, forceKeep: false }),
+      true,
+    );
+    assert.equal(
+      shouldRetainE2eRuntimeRoot({ passed: true, forceKeep: true }),
+      true,
+    );
+    assert.equal(
+      shouldRetainE2eRuntimeRoot({ passed: true, forceKeep: false }),
+      false,
+    );
+  });
+
+  it("attaches retained runtime and replay paths to failed reports", () => {
+    const report = buildNaturalMissionInterruptedFailureJsonReport({
+      startedAt: 100,
+      completedAt: 200,
+      results: [],
+      interrupted: {
+        scenario: "natural-long-delegation",
+        error: "daemon exited",
+        termination: "crash",
+        durationMs: 100,
+        timeline: [],
+      },
+    });
+    const attached = attachNaturalRuntimeArtifacts(report, {
+      runtimeRoot: "/tmp/runtime-failed",
+      retained: true,
+      replayPaths: ["/tmp/runtime-failed/data/replays/by-id/run.json"],
+    });
+
+    assert.deepEqual(attached.runtimeArtifacts, {
+      runtimeRoot: "/tmp/runtime-failed",
+      retained: true,
+      replayPaths: ["/tmp/runtime-failed/data/replays/by-id/run.json"],
+    });
+  });
+
+  it("preserves the allocated runtime root when startup placeholder becomes a crash report", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "turnkeyai-runner-report-"));
+    const jsonPath = path.join(dir, "report.json");
+    const runtimeRoot = path.join(dir, "runtime");
+    const options = {
+      scenarioTimeoutMs: 1_000,
+      scenario: "basic" as const,
+      matrix: false,
+      natural: true,
+      naturalScenario: "natural-long-delegation" as const,
+      naturalMatrix: false,
+      threadEntry: false,
+      jsonPath,
+      continueOnFailure: false,
+    };
+    try {
+      writeNaturalRunnerFallbackReport({
+        options,
+        startedAt: 100,
+        error: "runner started but has not emitted a terminal result",
+        termination: "crash",
+        runtimeRoot,
+      });
+      writeNaturalRunnerFallbackReport({
+        options,
+        startedAt: 100,
+        error: "daemon failed before health check",
+        termination: "crash",
+        onlyIfStartupPlaceholder: true,
+      });
+
+      const report = JSON.parse(readFileSync(jsonPath, "utf8"));
+      assert.equal(report.interruptedScenario.error, "daemon failed before health check");
+      assert.equal(report.runtimeArtifacts.runtimeRoot, runtimeRoot);
+      assert.equal(report.runtimeArtifacts.retained, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not treat browser session recovery wording as a tool-unavailable fallback", () => {
     assert.deepEqual(
       findWeakAnswerSignals(
@@ -46,6 +137,15 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(
       findWeakAnswerSignals("The browser tool is unavailable, so I am using general knowledge instead."),
       ["tool unavailable fallback"]
+    );
+  });
+
+  it("does not treat source-bounded missing estimates as placeholder uncertainty", () => {
+    assert.deepEqual(
+      findWeakAnswerSignals(
+        "Verified route and budget evidence. Not verified: total distance and estimated duration because those fields are absent from the source. Next action: obtain the missing schedule metadata."
+      ),
+      []
     );
   });
 
@@ -1845,6 +1945,77 @@ describe("mission tool-use e2e report", () => {
       unsupportedClaims: [],
     });
     assert.equal(report.scenarios[0]?.metrics.browser.profileFallbacks, 0);
+    assert.equal(report.scenarios[0]?.runTrace.schema, "turnkeyai.e2e_run_trace.v1");
+    assert.equal(report.scenarios[0]?.runTrace.outcome.status, "passed");
+    assert.equal(report.scenarios[0]?.runTrace.durationMs, 3210);
+  });
+
+  it("reports provider cache economics from model-call boundaries", () => {
+    const result = fakeNaturalResult();
+    result.timeline.push({
+      kind: "progress",
+      text: "model call diagnostics",
+      tMs: 3100,
+      runtime: {
+        modelCallSource: "turnkeyai-role-runtime",
+        modelCallCount: 2,
+        modelCallBoundaries: JSON.stringify([
+          {
+            index: 1,
+            durationMs: 10,
+            modelId: "model-a",
+            providerId: "provider-a",
+            toolCallsReturned: 1,
+            usage: {
+              inputTokens: 1000,
+              uncachedInputTokens: 200,
+              cacheReadInputTokens: 800,
+              outputTokens: 25,
+            },
+          },
+          {
+            index: 2,
+            durationMs: 20,
+            modelId: "model-a",
+            providerId: "provider-a",
+            toolCallsReturned: 0,
+            usage: {
+              inputTokens: 600,
+              uncachedInputTokens: 100,
+              cacheCreationInputTokens: 500,
+              outputTokens: 15,
+            },
+          },
+        ]),
+      },
+    });
+
+    const report = summarizeNaturalMissionScenarioResult(result);
+
+    assert.deepEqual(report.modelCallSummary, {
+      source: "turnkeyai-role-runtime",
+      count: 2,
+      totalDurationMs: 30,
+      totalInputTokens: 1600,
+      totalUncachedInputTokens: 300,
+      totalCacheReadInputTokens: 800,
+      totalCacheCreationInputTokens: 500,
+      totalOutputTokens: 40,
+      cacheHitCalls: 1,
+      toolCallsReturned: 1,
+      modelIds: ["model-a"],
+      providerIds: ["provider-a"],
+    });
+    assert.deepEqual(report.runTrace.modelCalls, {
+      count: 2,
+      totalDurationMs: 30,
+      inputTokens: 1600,
+      uncachedInputTokens: 300,
+      cacheReadInputTokens: 800,
+      cacheCreationInputTokens: 500,
+      outputTokens: 40,
+      cacheHitCalls: 1,
+    });
   });
 
   it("keeps complete natural matrix evidence when quality failures are collected", () => {
@@ -1945,6 +2116,166 @@ describe("mission tool-use e2e report", () => {
         error: "mission did not complete within 240000ms",
       },
     ]);
+  });
+
+  it("records a structured RunTrace for interrupted natural scenarios", () => {
+    const report = buildNaturalMissionPartialFailureJsonReport({
+      startedAt: 1000,
+      completedAt: 1400,
+      results: [],
+      interruptedScenario: {
+        scenario: "natural-timeout-followup-continuation",
+        error: "scenario deadline exceeded",
+        termination: "timeout",
+        durationMs: 400,
+        timeline: [
+          {
+            kind: "thought",
+            text: "Model attempt started.",
+            tMs: 1050,
+            runtime: {
+              eventType: "run.lifecycle",
+              lifecycleKind: "model_attempt_started",
+              attemptId: "tool_round:2:1:1",
+              modelPhase: "tool_round",
+              modelRound: "2",
+            },
+          },
+          {
+            kind: "thought",
+            text: "Provider activity received.",
+            tMs: 1075,
+            runtime: {
+              eventType: "run.lifecycle",
+              lifecycleKind: "provider_activity",
+              attemptId: "tool_round:2:1:1",
+              providerActivity: "body",
+            },
+          },
+          {
+            kind: "tool",
+            text: "Calling sessions_send",
+            tMs: 1100,
+            runtime: {
+              toolName: "sessions_send",
+              toolPhase: "call",
+              callInput: JSON.stringify({ session_key: "worker:explore:1", message: "continue" }),
+            },
+          },
+          {
+            kind: "tool",
+            text: "Calling sessions_send again",
+            tMs: 1200,
+            runtime: {
+              toolName: "sessions_send",
+              toolPhase: "call",
+              callInput: JSON.stringify({ session_key: "worker:explore:1", message: "continue" }),
+            },
+          },
+        ],
+      },
+    });
+
+    assert.equal(report.interruptedScenario?.termination, "timeout");
+    assert.equal(report.interruptedScenario?.durationMs, 400);
+    assert.equal(report.interruptedScenario?.runTrace.schema, "turnkeyai.e2e_run_trace.v1");
+    assert.equal(report.interruptedScenario?.runTrace.outcome.status, "timeout");
+    assert.equal(report.interruptedScenario?.runTrace.timelineEvents, 4);
+    assert.deepEqual(report.interruptedScenario?.runTrace.modelAttempts, {
+      started: 1,
+      completed: 0,
+      failed: 0,
+      retryWaits: 0,
+      providerActivityEvents: 1,
+      inFlightAttemptIds: ["tool_round:2:1:1"],
+      lastProviderActivityAt: 1075,
+    });
+    assert.deepEqual(report.interruptedScenario?.runTrace.duplicateToolCalls, [
+      {
+        toolName: "sessions_send",
+        count: 2,
+        signature: 'sessions_send:{"message":"continue","session_key":"worker:explore:1"}',
+      },
+    ]);
+  });
+
+  it("preserves the complete fail-fast interruption in the terminal report", () => {
+    const report = buildNaturalMissionInterruptedFailureJsonReport({
+      startedAt: 1000,
+      completedAt: 1400,
+      results: [],
+      interrupted: {
+        scenario: "natural-timeout-followup-continuation",
+        error: "timeout E2E worker session must remain resumable",
+        termination: "failed",
+        durationMs: 400,
+        missionId: "mission.timeout.1",
+        threadId: "thread.timeout.1",
+        timeline: [
+          {
+            kind: "tool",
+            text: "sessions_spawn completed",
+            tMs: 1200,
+            runtime: {
+              toolName: "sessions_spawn",
+              toolPhase: "result",
+              resultContent: JSON.stringify({
+                status: "completed",
+                session_key: "worker:explore:1",
+              }),
+            },
+          },
+        ],
+      },
+    });
+
+    assert.equal(report.interruptedScenario?.termination, "failed");
+    assert.equal(report.interruptedScenario?.durationMs, 400);
+    assert.equal(report.interruptedScenario?.missionId, "mission.timeout.1");
+    assert.equal(report.interruptedScenario?.threadId, "thread.timeout.1");
+    assert.equal(report.interruptedScenario?.runTrace.timelineEvents, 1);
+    assert.equal(report.interruptedScenario?.runTrace.outcome.status, "failed");
+  });
+
+  it("enforces a scenario deadline and bounds cleanup grace", async () => {
+    let cleanupCalls = 0;
+    const startedAt = Date.now();
+
+    await assert.rejects(
+      runWithScenarioDeadline({
+        timeoutMs: 20,
+        graceMs: 30,
+        run: () => new Promise<never>(() => {}),
+        onDeadline: async () => {
+          cleanupCalls += 1;
+        },
+      }),
+      NaturalScenarioDeadlineError,
+    );
+
+    assert.equal(cleanupCalls, 1);
+    assert.ok(Date.now() - startedAt < 200, "deadline cleanup must remain bounded");
+  });
+
+  it("uses the same bounded cleanup path when a scenario is aborted", async () => {
+    const controller = new AbortController();
+    let cleanupCalls = 0;
+    setTimeout(() => controller.abort(), 10);
+
+    await assert.rejects(
+      runWithScenarioDeadline({
+        timeoutMs: 500,
+        graceMs: 30,
+        signal: controller.signal,
+        run: () => new Promise<never>(() => {}),
+        onDeadline: async () => {
+          cleanupCalls += 1;
+        },
+      }),
+      NaturalScenarioAbortError,
+    );
+
+    assert.equal(cleanupCalls, 1);
   });
 
   it("fails natural quality on weak fallback answers and missing browser evidence", () => {
@@ -6055,6 +6386,29 @@ describe("mission tool-use e2e report", () => {
     ];
 
     assert.equal(extractTimedOutSessionKey(timeline), "wrk.timeout.2");
+  });
+
+  it("does not classify a completed session as timed out from result prose", () => {
+    const timeline = [
+      {
+        kind: "tool",
+        text: "slow source check completed",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-completed",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "completed",
+            session_key: "wrk.completed.timeout-prose",
+            final: "The source request hit an internal timeout before this completed response.",
+          }),
+        },
+      },
+    ];
+
+    assert.equal(extractTimedOutSessionKey(timeline), null);
   });
 
   it("extracts the timed-out session key from failed tool progress detail", () => {

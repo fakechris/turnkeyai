@@ -11,12 +11,29 @@ import {
 } from "./terminal-final-synthesis";
 import type { ModelCallBoundaryTrace } from "./model-call-trace";
 import type { RolePromptPacket } from "./prompt-policy";
+import { createRunLifecycleRecorder } from "./react-engine/run-lifecycle";
 
 test("generateFinalAfterToolRoundLimit invokes a tool-free final synthesis through the gateway owner", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
+    await input.onProviderLifecycle?.({
+      kind: "attempt_started",
+      at: 20,
+      attempt: 1,
+      modelId: "model-1",
+      providerId: "provider",
+      protocol: "openai-compatible",
+    });
+    await input.onProviderLifecycle?.({
+      kind: "attempt_completed",
+      at: 21,
+      attempt: 1,
+      modelId: "model-1",
+      providerId: "provider",
+      protocol: "openai-compatible",
+    });
     return {
       text: "final answer",
       modelId: "model-1",
@@ -27,6 +44,7 @@ test("generateFinalAfterToolRoundLimit invokes a tool-free final synthesis throu
     };
   };
   const trace: ModelCallBoundaryTrace[] = [];
+  const lifecycle = createRunLifecycleRecorder({ activation: buildActivation() });
 
   const generated = await generateFinalAfterToolRoundLimit({
     gateway,
@@ -47,6 +65,7 @@ test("generateFinalAfterToolRoundLimit invokes a tool-free final synthesis throu
     ],
     maxRounds: 3,
     modelCallTrace: trace,
+    lifecycle,
   });
 
   assert.equal(generated.result.text, "final answer");
@@ -57,6 +76,19 @@ test("generateFinalAfterToolRoundLimit invokes a tool-free final synthesis throu
   assert.equal(trace[0]?.phase, "final_synthesis");
   assert.equal(trace[0]?.toolSchemaCount, 0);
   assert.equal(trace[0]?.toolChoice, "none");
+  assert.deepEqual(lifecycle.snapshot().events, [
+    {
+      kind: "model_attempt_started",
+      at: 20,
+      attemptId: "final_synthesis:none:1:1",
+      phase: "final_synthesis",
+    },
+    {
+      kind: "model_attempt_completed",
+      at: 21,
+      attemptId: "final_synthesis:none:1:1",
+    },
+  ]);
 });
 
 test("createTerminalFinalSynthesisRunner injects shared dependencies for closeout calls", async () => {

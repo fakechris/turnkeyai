@@ -26,7 +26,7 @@ export interface WorkerEvidenceDigest {
   workerRunKey: string;
   threadId: string;
   workerType: string;
-  status: "completed" | "partial" | "failed";
+  status: "completed" | "partial" | "failed" | "timeout";
   updatedAt: number;
   findings: string[];
   artifactIds: string[];

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -17,7 +17,7 @@ import { FileTeamThreadStore } from "@turnkeyai/team-store/file-team-thread-stor
 import { FileRuntimeProgressStore } from "@turnkeyai/team-store/file-runtime-progress-store";
 import { isLifecycleStatusText } from "../packages/app-gateway/src/mission-final-answer-guard";
 
-interface MissionToolUseE2eOptions {
+export interface MissionToolUseE2eOptions {
   modelCatalogPath?: string;
   scenarioTimeoutMs: number;
   scenario: MissionE2eScenario;
@@ -42,6 +42,8 @@ interface NaturalMissionModelProvenance {
 type DaemonChildProcess = ChildProcessByStdio<null, Readable, Readable>;
 const INITIAL_DAEMON_HEALTH_TIMEOUT_MS = 20_000;
 const RESTART_DAEMON_HEALTH_TIMEOUT_MS = 60_000;
+const SCENARIO_TERMINATION_GRACE_MS = 10_000;
+const RUNNER_STARTUP_PLACEHOLDER_ERROR = "runner started but has not emitted a terminal result";
 
 export type MissionE2eScenario =
   | "basic"
@@ -638,7 +640,11 @@ export interface NaturalMissionScenarioReport {
     count: number;
     totalDurationMs: number;
     totalInputTokens?: number;
+    totalUncachedInputTokens?: number;
+    totalCacheReadInputTokens?: number;
+    totalCacheCreationInputTokens?: number;
     totalOutputTokens?: number;
+    cacheHitCalls?: number;
     toolCallsReturned: number;
     modelIds: string[];
     providerIds: string[];
@@ -705,6 +711,67 @@ export interface NaturalMissionScenarioReport {
       }>;
     };
   };
+  runTrace: NaturalE2eRunTrace;
+}
+
+export type NaturalE2eRunTermination = "passed" | "failed" | "timeout" | "abort" | "crash";
+
+export interface NaturalE2eRunTrace {
+  schema: "turnkeyai.e2e_run_trace.v1";
+  outcome: {
+    status: NaturalE2eRunTermination;
+    error?: string;
+  };
+  durationMs: number;
+  timelineEvents: number;
+  modelCalls: {
+    count: number;
+    totalDurationMs: number;
+    inputTokens: number;
+    uncachedInputTokens?: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
+    outputTokens: number;
+    cacheHitCalls?: number;
+  };
+  modelAttempts: {
+    started: number;
+    completed: number;
+    failed: number;
+    retryWaits: number;
+    providerActivityEvents: number;
+    inFlightAttemptIds: string[];
+    lastProviderActivityAt?: number;
+  };
+  compactions: number;
+  resumeEvents: number;
+  duplicateToolCalls: Array<{
+    toolName: string;
+    count: number;
+    signature: string;
+  }>;
+  closeoutReasons: string[];
+}
+
+export interface InterruptedNaturalScenarioReport {
+  scenario: NaturalMissionE2eScenario;
+  completedScenarioCount: number;
+  error: string;
+  termination?: Exclude<NaturalE2eRunTermination, "passed">;
+  durationMs?: number;
+  missionId?: string;
+  threadId?: string;
+  runTrace?: NaturalE2eRunTrace;
+}
+
+export interface InterruptedNaturalScenarioInput {
+  scenario: NaturalMissionE2eScenario;
+  error: string;
+  termination?: Exclude<NaturalE2eRunTermination, "passed">;
+  durationMs?: number;
+  missionId?: string;
+  threadId?: string;
+  timeline?: ActivityEvent[];
 }
 
 export interface NaturalMissionE2eJsonReport {
@@ -735,17 +802,14 @@ export interface NaturalMissionE2eJsonReport {
   completedAt: string;
   durationMs: number;
   failureCollectionMode: "fail-fast" | "quality-failures-collected" | "partial-failure-collected";
-  interruptedScenario?: {
-    scenario: NaturalMissionE2eScenario;
-    completedScenarioCount: number;
-    error: string;
-  };
-  interruptedScenarios?: Array<{
-    scenario: NaturalMissionE2eScenario;
-    completedScenarioCount: number;
-    error: string;
-  }>;
+  interruptedScenario?: InterruptedNaturalScenarioReport;
+  interruptedScenarios?: InterruptedNaturalScenarioReport[];
   scenarios: NaturalMissionScenarioReport[];
+  runtimeArtifacts?: {
+    runtimeRoot: string;
+    retained: boolean;
+    replayPaths: string[];
+  };
 }
 
 type ThreadEntryScenario = "thread-entry-private-comparison" | "thread-entry-private-followup";
@@ -818,6 +882,74 @@ class NaturalMissionScenarioQualityError extends Error {
     super(message);
     this.name = "NaturalMissionScenarioQualityError";
   }
+}
+
+export class NaturalScenarioDeadlineError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`natural mission scenario exceeded its ${timeoutMs}ms deadline`);
+    this.name = "NaturalScenarioDeadlineError";
+  }
+}
+
+export class NaturalScenarioAbortError extends Error {
+  constructor() {
+    super("natural mission scenario aborted");
+    this.name = "NaturalScenarioAbortError";
+  }
+}
+
+export async function runWithScenarioDeadline<T>(input: {
+  timeoutMs: number;
+  graceMs: number;
+  run: () => Promise<T>;
+  onDeadline: () => Promise<void>;
+  signal?: AbortSignal;
+}): Promise<T> {
+  const settledRun = Promise.resolve()
+    .then(input.run)
+    .then(
+      (value) => ({ kind: "value" as const, value }),
+      (error) => ({ kind: "error" as const, error }),
+    );
+  let timeout: NodeJS.Timeout | undefined;
+  const deadline = new Promise<{ kind: "deadline" }>((resolve) => {
+    timeout = setTimeout(() => resolve({ kind: "deadline" }), input.timeoutMs);
+  });
+  let removeAbortListener = () => {};
+  const aborted = new Promise<{ kind: "abort" }>((resolve) => {
+    if (!input.signal) return;
+    const onAbort = () => resolve({ kind: "abort" });
+    if (input.signal.aborted) {
+      onAbort();
+      return;
+    }
+    input.signal.addEventListener("abort", onAbort, { once: true });
+    removeAbortListener = () => input.signal?.removeEventListener("abort", onAbort);
+  });
+  const winner = await Promise.race([settledRun, deadline, aborted]);
+  if (timeout) clearTimeout(timeout);
+  removeAbortListener();
+  if (winner.kind === "value") return winner.value;
+  if (winner.kind === "error") throw winner.error;
+
+  const graceDeadline = Date.now() + input.graceMs;
+  await Promise.race([input.onDeadline().catch(() => undefined), sleep(input.graceMs)]);
+  const remainingGraceMs = Math.max(0, graceDeadline - Date.now());
+  if (remainingGraceMs > 0) {
+    await Promise.race([settledRun, sleep(remainingGraceMs)]);
+  }
+  if (winner.kind === "abort") throw new NaturalScenarioAbortError();
+  throw new NaturalScenarioDeadlineError(input.timeoutMs);
+}
+
+async function runAbortableRunnerStep<T>(step: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return step;
+  if (signal.aborted) throw new NaturalScenarioAbortError();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new NaturalScenarioAbortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    step.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 interface WorkerSessionRecord {
@@ -1054,7 +1186,7 @@ function printHelp(exitCode: number): never {
   process.exit(exitCode);
 }
 
-async function main(options: MissionToolUseE2eOptions): Promise<void> {
+async function main(options: MissionToolUseE2eOptions, signal?: AbortSignal): Promise<void> {
   const startedAt = Date.now();
   const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
   const modelProvenance = readNaturalMissionModelProvenance(modelCatalogPath);
@@ -1062,6 +1194,13 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   const fixture = applyNaturalFixtureUrlOverrides(localFixture);
   await assertRenderedFixtureEvidenceHidden(localFixture);
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-mission-e2e-"));
+  writeNaturalRunnerFallbackReport({
+    options,
+    startedAt,
+    error: RUNNER_STARTUP_PLACEHOLDER_ERROR,
+    termination: "crash",
+    runtimeRoot,
+  });
   const port = await allocatePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const token = `mission-e2e-${Date.now()}`;
@@ -1079,9 +1218,12 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     extraEnv: daemonEnvOverrides,
     ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
   });
+  let scenarioTerminationRequested = false;
+  let invocationPassed = false;
   const restartDaemon = async (envOverrides?: Record<string, string>) => {
     daemonEnvOverrides = envOverrides ?? daemonEnvOverrides;
     await stopDaemon(daemon.child);
+    if (scenarioTerminationRequested) return;
     daemon = startDaemon({
       runtimeRoot,
       port,
@@ -1093,7 +1235,10 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: RESTART_DAEMON_HEALTH_TIMEOUT_MS });
   };
   try {
-    await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: INITIAL_DAEMON_HEALTH_TIMEOUT_MS });
+    await runAbortableRunnerStep(
+      waitForDaemonHealth({ baseUrl, daemon, timeoutMs: INITIAL_DAEMON_HEALTH_TIMEOUT_MS }),
+      signal,
+    );
     if (options.threadEntry) {
       const results = await runThreadEntryScenarios({
         baseUrl,
@@ -1114,6 +1259,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
         console.log(`thread-entry-e2e-json: ${path.resolve(options.jsonPath)}`);
       }
       console.log(`thread entry real llm scenarios passed: ${results.map((result) => result.scenario).join(",")}`);
+      invocationPassed = true;
       return;
     }
     if (options.natural) {
@@ -1122,22 +1268,30 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
         (options.naturalMatrix ? [...NATURAL_MISSION_E2E_SCENARIOS] : [options.naturalScenario]);
       const naturalResults: NaturalMissionScenarioResult[] = [];
       const naturalQualityErrors: string[] = [];
-      const interruptedNaturalScenarios: Array<{
-        scenario: NaturalMissionE2eScenario;
-        error: string;
-      }> = [];
+      const interruptedNaturalScenarios: InterruptedNaturalScenarioInput[] = [];
       for (const [index, scenario] of naturalScenarios.entries()) {
+        scenarioTerminationRequested = false;
         const scenarioStartedAt = Date.now();
+        const missionIdsBeforeScenario = listPersistedMissionIds(runtimeRoot);
         console.log(formatNaturalMissionScenarioStart({ scenario, index: index + 1, total: naturalScenarios.length }));
         try {
-          const result = await runNaturalMissionScenario({
-            baseUrl,
-            token,
-            fixture,
-            runtimeRoot,
-            scenario,
+          const result = await runWithScenarioDeadline({
             timeoutMs: options.scenarioTimeoutMs,
-            restartDaemon,
+            graceMs: SCENARIO_TERMINATION_GRACE_MS,
+            run: () => runNaturalMissionScenario({
+              baseUrl,
+              token,
+              fixture,
+              runtimeRoot,
+              scenario,
+              timeoutMs: options.scenarioTimeoutMs,
+              restartDaemon,
+            }),
+            onDeadline: async () => {
+              scenarioTerminationRequested = true;
+              await stopDaemon(daemon.child);
+            },
+            ...(signal ? { signal } : {}),
           });
           const durationMs = Date.now() - scenarioStartedAt;
           const timedResult = withNaturalScenarioDuration(result, durationMs);
@@ -1177,18 +1331,33 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
                   scenarioTimeoutMs: options.scenarioTimeoutMs,
                   fixtureContentHashes: fixture.fixtureContentHashes,
                   fixtureManifest: buildNaturalFixtureReportManifest(fixture),
-                })
+                }),
+                runtimeRoot,
               );
               console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
             }
           } else {
+            const termination = classifyNaturalScenarioTermination(error);
+            const persisted = readInterruptedNaturalScenarioEvidence({
+              runtimeRoot,
+              missionIdsBeforeScenario,
+            });
             const interrupted = {
               scenario,
               error: errorMessage(error),
+              termination,
+              durationMs: Date.now() - scenarioStartedAt,
+              ...(persisted.missionId ? { missionId: persisted.missionId } : {}),
+              ...(persisted.threadId ? { threadId: persisted.threadId } : {}),
+              timeline: persisted.timeline,
             };
             interruptedNaturalScenarios.push(interrupted);
             naturalQualityErrors.push(`- ${scenario}: interrupted before quality evaluation: ${compactExcerpt(errorMessage(error), 500)}`);
-            if (options.continueOnFailure) {
+            if (options.continueOnFailure && termination !== "abort") {
+              if (termination === "timeout" || termination === "crash") {
+                scenarioTerminationRequested = false;
+                await restartDaemon();
+              }
               console.error(
                 `natural mission scenario interrupted: ${scenario} (${index + 1}/${naturalScenarios.length}) error=${compactExcerpt(
                   errorMessage(error),
@@ -1207,30 +1376,29 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
                     fixtureContentHashes: fixture.fixtureContentHashes,
                     fixtureManifest: buildNaturalFixtureReportManifest(fixture),
                     interruptedScenarios: interruptedNaturalScenarios,
-                  })
+                  }),
+                  runtimeRoot,
                 );
                 console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
               }
               continue;
             }
             if (options.jsonPath) {
-            writeNaturalMissionE2eJsonReport(
-              options.jsonPath,
-              buildNaturalMissionPartialFailureJsonReport({
-              startedAt,
-              completedAt: Date.now(),
-              results: naturalResults,
-              modelProvenance,
-              scenarioTimeoutMs: options.scenarioTimeoutMs,
-              fixtureContentHashes: fixture.fixtureContentHashes,
-              fixtureManifest: buildNaturalFixtureReportManifest(fixture),
-              interruptedScenario: {
-                scenario,
-                error: errorMessage(error),
-                },
-              })
-            );
-            console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
+              writeNaturalMissionE2eJsonReport(
+                options.jsonPath,
+                buildNaturalMissionInterruptedFailureJsonReport({
+                  startedAt,
+                  completedAt: Date.now(),
+                  results: naturalResults,
+                  modelProvenance,
+                  scenarioTimeoutMs: options.scenarioTimeoutMs,
+                  fixtureContentHashes: fixture.fixtureContentHashes,
+                  fixtureManifest: buildNaturalFixtureReportManifest(fixture),
+                  interrupted,
+                }),
+                runtimeRoot,
+              );
+              console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
             }
           }
           throw new Error(
@@ -1262,7 +1430,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
                 fixtureContentHashes: fixture.fixtureContentHashes,
                 fixtureManifest: buildNaturalFixtureReportManifest(fixture),
               });
-        writeNaturalMissionE2eJsonReport(options.jsonPath, report);
+        writeNaturalMissionE2eJsonReport(options.jsonPath, report, runtimeRoot);
         console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
       }
       if (naturalQualityErrors.length > 0) {
@@ -1278,6 +1446,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
       if (naturalScenarios.length > 1) {
         console.log(`natural mission real llm matrix passed: ${naturalScenarios.join(",")}`);
       }
+      invocationPassed = true;
       return;
     }
     const results: MissionScenarioResult[] = [];
@@ -1322,10 +1491,16 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     if (scenarios.length > 1) {
       console.log(`mission tool-use real llm matrix passed: ${scenarios.join(",")}`);
     }
+    invocationPassed = true;
   } finally {
     await stopDaemon(daemon.child);
     await closeServer(fixture.server);
-    if (process.env.TURNKEYAI_E2E_KEEP_RUNTIME_ROOT === "1") {
+    if (
+      shouldRetainE2eRuntimeRoot({
+        passed: invocationPassed,
+        forceKeep: process.env.TURNKEYAI_E2E_KEEP_RUNTIME_ROOT === "1",
+      })
+    ) {
       console.log(`mission-e2e-runtime-root: ${runtimeRoot}`);
     } else {
       await rm(runtimeRoot, { recursive: true, force: true });
@@ -1347,6 +1522,79 @@ function assertSupportedScenarioMix(scenarios: MissionE2eScenario[]): void {
       ].join(" ")
     );
   }
+}
+
+function classifyNaturalScenarioTermination(
+  error: unknown,
+): Exclude<NaturalE2eRunTermination, "passed"> {
+  if (error instanceof NaturalScenarioDeadlineError) return "timeout";
+  const name = error instanceof Error ? error.name : "";
+  const message = errorMessage(error);
+  if (name === "AbortError" || /\b(?:aborted|abort signal)\b/i.test(message)) {
+    return "abort";
+  }
+  if (/\b(?:daemon exited|ECONNREFUSED|socket hang up|connection reset)\b/i.test(message)) {
+    return "crash";
+  }
+  return "failed";
+}
+
+function listPersistedMissionIds(runtimeRoot: string): Set<string> {
+  const missionDir = path.join(runtimeRoot, "data", "mission", "missions");
+  try {
+    return new Set(
+      readdirSync(missionDir)
+        .filter((entry) => entry.endsWith(".json"))
+        .map((entry) => entry.slice(0, -".json".length)),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function readInterruptedNaturalScenarioEvidence(input: {
+  runtimeRoot: string;
+  missionIdsBeforeScenario: Set<string>;
+}): { missionId?: string; threadId?: string; timeline: ActivityEvent[] } {
+  const newMissionIds = [...listPersistedMissionIds(input.runtimeRoot)]
+    .filter((missionId) => !input.missionIdsBeforeScenario.has(missionId))
+    .sort();
+  const missionId = newMissionIds.at(-1);
+  if (!missionId) return { timeline: [] };
+
+  let threadId: string | undefined;
+  try {
+    const mission = JSON.parse(
+      readFileSync(
+        path.join(input.runtimeRoot, "data", "mission", "missions", `${missionId}.json`),
+        "utf8",
+      ),
+    ) as Mission;
+    threadId = mission.threadId;
+  } catch {}
+
+  const timeline: ActivityEvent[] = [];
+  try {
+    const activityText = readFileSync(
+      path.join(input.runtimeRoot, "data", "mission", "activity", `${missionId}.jsonl`),
+      "utf8",
+    );
+    for (const line of activityText.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line) as ActivityEvent;
+        if (event && typeof event.kind === "string" && typeof event.tMs === "number") {
+          timeline.push(event);
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return {
+    missionId,
+    ...(threadId ? { threadId } : {}),
+    timeline,
+  };
 }
 
 async function runMissionScenario(input: {
@@ -6635,10 +6883,15 @@ function hasPlaceholderUncertainty(text: string): boolean {
     /\b(?:(?:launch|pilot|go\s*\/\s*no-go|go|recommendation|decision|deposit|budget gate|approval|rollout)[^\n.]{0,140})?\b(?:held|gated|blocked|conditional|waiting|pending)?[^\n.]{0,80}\bpending confirmation\b[^\n.]*/gi,
     ""
   );
-  if (/\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b|待确认|估算/i.test(textWithoutActionGatedConfirmation)) {
+  const textWithoutSourceBoundedMissingEstimates =
+    textWithoutActionGatedConfirmation.replace(
+      /\b(?:not verified|unverified)\b[^.\n]{0,360}\bestimat(?:e|ed)\b[^.\n]{0,180}\b(?:absent|missing|not (?:shown|present|available))\b[^.\n]*/gi,
+      "",
+    );
+  if (/\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b|待确认|估算/i.test(textWithoutSourceBoundedMissingEstimates)) {
     return true;
   }
-  const textWithoutConcreteEstimates = textWithoutActionGatedConfirmation.replace(
+  const textWithoutConcreteEstimates = textWithoutSourceBoundedMissingEstimates.replace(
     /\bestimat(?:e|ed)\b[^.\n]{0,100}(?:\$|€|£|¥|%|\b\d[\d,.]*\b)/gi,
     "",
   );
@@ -6973,14 +7226,8 @@ export function buildNaturalMissionPartialFailureJsonReport(input: {
   scenarioTimeoutMs?: number;
   fixtureContentHashes?: Record<string, string>;
   fixtureManifest?: NaturalFixtureReportManifest;
-  interruptedScenario?: {
-    scenario: NaturalMissionE2eScenario;
-    error: string;
-  };
-  interruptedScenarios?: Array<{
-    scenario: NaturalMissionE2eScenario;
-    error: string;
-  }>;
+  interruptedScenario?: InterruptedNaturalScenarioInput;
+  interruptedScenarios?: InterruptedNaturalScenarioInput[];
 }): NaturalMissionE2eJsonReport {
   const report = buildNaturalMissionE2eJsonReport({
     ...input,
@@ -6990,11 +7237,10 @@ export function buildNaturalMissionPartialFailureJsonReport(input: {
     input.interruptedScenario === undefined
       ? {}
       : {
-          interruptedScenario: {
-            scenario: input.interruptedScenario.scenario,
-            completedScenarioCount: input.results.length,
-            error: compactExcerpt(input.interruptedScenario.error, 8000),
-          },
+          interruptedScenario: summarizeInterruptedNaturalScenario(
+            input.interruptedScenario,
+            input.results.length,
+          ),
         };
   const interruptedScenarios = [
     ...(input.interruptedScenarios ?? []),
@@ -7004,17 +7250,58 @@ export function buildNaturalMissionPartialFailureJsonReport(input: {
     interruptedScenarios.length === 0
       ? {}
       : {
-          interruptedScenarios: interruptedScenarios.map((scenario) => ({
-            scenario: scenario.scenario,
-            completedScenarioCount: input.results.length,
-            error: compactExcerpt(scenario.error, 8000),
-          })),
+          interruptedScenarios: interruptedScenarios.map((scenario) =>
+            summarizeInterruptedNaturalScenario(scenario, input.results.length),
+          ),
         };
   return {
     ...report,
     ...interruptedScenario,
     ...interruptedScenarioList,
     status: "failed",
+  };
+}
+
+export function buildNaturalMissionInterruptedFailureJsonReport(input: {
+  startedAt: number;
+  completedAt: number;
+  results: NaturalMissionScenarioResult[];
+  modelProvenance?: NaturalMissionModelProvenance;
+  scenarioTimeoutMs?: number;
+  fixtureContentHashes?: Record<string, string>;
+  fixtureManifest?: NaturalFixtureReportManifest;
+  interrupted: InterruptedNaturalScenarioInput;
+}): NaturalMissionE2eJsonReport {
+  const { interrupted, ...reportInput } = input;
+  return buildNaturalMissionPartialFailureJsonReport({
+    ...reportInput,
+    interruptedScenario: interrupted,
+  });
+}
+
+function summarizeInterruptedNaturalScenario(
+  scenario: InterruptedNaturalScenarioInput,
+  completedScenarioCount: number,
+): InterruptedNaturalScenarioReport {
+  const base = {
+    scenario: scenario.scenario,
+    completedScenarioCount,
+    error: compactExcerpt(scenario.error, 8_000),
+  };
+  if (!scenario.termination) return base;
+  const durationMs = Math.max(0, scenario.durationMs ?? 0);
+  return {
+    ...base,
+    termination: scenario.termination,
+    durationMs,
+    ...(scenario.missionId ? { missionId: scenario.missionId } : {}),
+    ...(scenario.threadId ? { threadId: scenario.threadId } : {}),
+    runTrace: buildNaturalE2eRunTrace({
+      timeline: scenario.timeline ?? [],
+      durationMs,
+      outcome: scenario.termination,
+      error: scenario.error,
+    }),
   };
 }
 
@@ -7119,11 +7406,12 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
 
 export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScenarioResult): NaturalMissionScenarioReport {
   const modelUse = summarizeTimelineModelUse(result.timeline);
+  const durationMs = readNaturalScenarioDurationMs(result);
   return {
     scenario: result.scenario,
     prompt: result.prompt,
     missionId: result.mission.id,
-    durationMs: readNaturalScenarioDurationMs(result),
+    durationMs,
     status: result.mission.status,
     ...(result.mission.threadId ? { threadId: result.mission.threadId } : {}),
     timelineEvents: result.timeline.length,
@@ -7195,7 +7483,153 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       excerpt: compactExcerpt(result.final.text, 500),
     },
     evidenceReplay: summarizeNaturalEvidenceReplay(result),
+    runTrace: buildNaturalE2eRunTrace({
+      timeline: result.timeline,
+      durationMs,
+      outcome: result.quality.status,
+    }),
   };
+}
+
+export function buildNaturalE2eRunTrace(input: {
+  timeline: ActivityEvent[];
+  durationMs: number;
+  outcome: NaturalE2eRunTermination;
+  error?: string;
+}): NaturalE2eRunTrace {
+  const modelUse = summarizeTimelineModelUse(input.timeline);
+  const modelAttempts = summarizeTimelineModelAttempts(input.timeline);
+  const signatures = new Map<string, { toolName: string; count: number }>();
+  const closeoutReasons = new Set<string>();
+  let compactions = 0;
+  let resumeEvents = 0;
+
+  for (const event of input.timeline) {
+    const runtime = event.runtime ?? {};
+    const eventType = typeof runtime["eventType"] === "string" ? runtime["eventType"] : "";
+    const tags = event.tags ?? [];
+    if (/compact/i.test(eventType) || tags.some((tag) => /compact/i.test(tag))) {
+      compactions += 1;
+    }
+    if (/resum/i.test(eventType) || tags.some((tag) => /resum/i.test(tag))) {
+      resumeEvents += 1;
+    }
+    const closeoutReason = runtime["toolLoopCloseoutReason"];
+    if (typeof closeoutReason === "string" && closeoutReason.trim()) {
+      closeoutReasons.add(closeoutReason);
+    }
+    if (event.kind !== "tool" || runtime["toolPhase"] !== "call") continue;
+    const toolName = typeof runtime["toolName"] === "string" ? runtime["toolName"] : "unknown";
+    const signature = `${toolName}:${canonicalizeTraceInput(runtime["callInput"])}`;
+    const current = signatures.get(signature);
+    signatures.set(signature, {
+      toolName,
+      count: (current?.count ?? 0) + 1,
+    });
+  }
+
+  return {
+    schema: "turnkeyai.e2e_run_trace.v1",
+    outcome: {
+      status: input.outcome,
+      ...(input.error ? { error: compactExcerpt(input.error, 8_000) } : {}),
+    },
+    durationMs: Math.max(0, input.durationMs),
+    timelineEvents: input.timeline.length,
+    modelCalls: {
+      count: modelUse.count ?? 0,
+      totalDurationMs: modelUse.summary?.totalDurationMs ?? 0,
+      inputTokens: modelUse.summary?.totalInputTokens ?? 0,
+      ...(modelUse.summary?.totalUncachedInputTokens !== undefined
+        ? { uncachedInputTokens: modelUse.summary.totalUncachedInputTokens }
+        : {}),
+      ...(modelUse.summary?.totalCacheReadInputTokens !== undefined
+        ? { cacheReadInputTokens: modelUse.summary.totalCacheReadInputTokens }
+        : {}),
+      ...(modelUse.summary?.totalCacheCreationInputTokens !== undefined
+        ? { cacheCreationInputTokens: modelUse.summary.totalCacheCreationInputTokens }
+        : {}),
+      outputTokens: modelUse.summary?.totalOutputTokens ?? 0,
+      ...(modelUse.summary?.cacheHitCalls !== undefined
+        ? { cacheHitCalls: modelUse.summary.cacheHitCalls }
+        : {}),
+    },
+    modelAttempts,
+    compactions,
+    resumeEvents,
+    duplicateToolCalls: [...signatures.entries()]
+      .filter(([, value]) => value.count > 1)
+      .map(([signature, value]) => ({
+        toolName: value.toolName,
+        count: value.count,
+        signature,
+      }))
+      .sort((left, right) => left.signature.localeCompare(right.signature)),
+    closeoutReasons: [...closeoutReasons].sort(),
+  };
+}
+
+function summarizeTimelineModelAttempts(
+  timeline: ActivityEvent[],
+): NaturalE2eRunTrace["modelAttempts"] {
+  const started = new Set<string>();
+  const completed = new Set<string>();
+  const failed = new Set<string>();
+  let retryWaits = 0;
+  let providerActivityEvents = 0;
+  let lastProviderActivityAt: number | undefined;
+
+  for (const event of timeline) {
+    const runtime = event.runtime ?? {};
+    if (runtime["eventType"] !== "run.lifecycle") continue;
+    const kind = runtime["lifecycleKind"];
+    const attemptId = runtime["attemptId"];
+    if (kind === "model_retry_wait") retryWaits += 1;
+    if (kind === "provider_activity") {
+      providerActivityEvents += 1;
+      lastProviderActivityAt = Math.max(
+        lastProviderActivityAt ?? event.tMs,
+        event.tMs,
+      );
+    }
+    if (typeof attemptId !== "string" || !attemptId.trim()) continue;
+    if (kind === "model_attempt_started") started.add(attemptId);
+    if (kind === "model_attempt_completed") completed.add(attemptId);
+    if (kind === "model_attempt_failed") failed.add(attemptId);
+  }
+
+  return {
+    started: started.size,
+    completed: completed.size,
+    failed: failed.size,
+    retryWaits,
+    providerActivityEvents,
+    inFlightAttemptIds: [...started]
+      .filter((attemptId) => !completed.has(attemptId) && !failed.has(attemptId))
+      .sort(),
+    ...(lastProviderActivityAt === undefined ? {} : { lastProviderActivityAt }),
+  };
+}
+
+function canonicalizeTraceInput(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      return JSON.stringify(sortTraceValue(JSON.parse(value)));
+    } catch {
+      return value.trim();
+    }
+  }
+  return JSON.stringify(sortTraceValue(value));
+}
+
+function sortTraceValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortTraceValue);
+  if (!isRecordValue(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortTraceValue(value[key])]),
+  );
 }
 
 function summarizeNaturalEvidenceReplay(
@@ -7302,9 +7736,16 @@ function summarizeTimelineModelUse(timeline: ActivityEvent[]): {
   let totalDurationMs = 0;
   let toolCallsReturned = 0;
   let totalInputTokens = 0;
+  let totalUncachedInputTokens = 0;
+  let totalCacheReadInputTokens = 0;
+  let totalCacheCreationInputTokens = 0;
   let totalOutputTokens = 0;
   let hasInputTokens = false;
+  let hasUncachedInputTokens = false;
+  let hasCacheReadInputTokens = false;
+  let hasCacheCreationInputTokens = false;
   let hasOutputTokens = false;
+  let cacheHitCalls = 0;
   for (const boundary of boundaries) {
     const modelId = typeof boundary["modelId"] === "string" ? boundary["modelId"] : null;
     const providerId = typeof boundary["providerId"] === "string" ? boundary["providerId"] : null;
@@ -7314,10 +7755,26 @@ function summarizeTimelineModelUse(timeline: ActivityEvent[]): {
     toolCallsReturned += readRuntimeNumber(boundary, "toolCallsReturned") ?? 0;
     const usage = isRecordValue(boundary["usage"]) ? boundary["usage"] : {};
     const inputTokens = readRuntimeNumber(usage, "inputTokens");
+    const uncachedInputTokens = readRuntimeNumber(usage, "uncachedInputTokens");
+    const cacheReadInputTokens = readRuntimeNumber(usage, "cacheReadInputTokens");
+    const cacheCreationInputTokens = readRuntimeNumber(usage, "cacheCreationInputTokens");
     const outputTokens = readRuntimeNumber(usage, "outputTokens");
     if (inputTokens !== null) {
       totalInputTokens += inputTokens;
       hasInputTokens = true;
+    }
+    if (uncachedInputTokens !== null) {
+      totalUncachedInputTokens += uncachedInputTokens;
+      hasUncachedInputTokens = true;
+    }
+    if (cacheReadInputTokens !== null) {
+      totalCacheReadInputTokens += cacheReadInputTokens;
+      hasCacheReadInputTokens = true;
+      if (cacheReadInputTokens > 0) cacheHitCalls += 1;
+    }
+    if (cacheCreationInputTokens !== null) {
+      totalCacheCreationInputTokens += cacheCreationInputTokens;
+      hasCacheCreationInputTokens = true;
     }
     if (outputTokens !== null) {
       totalOutputTokens += outputTokens;
@@ -7331,7 +7788,11 @@ function summarizeTimelineModelUse(timeline: ActivityEvent[]): {
       count,
       totalDurationMs,
       ...(hasInputTokens ? { totalInputTokens } : {}),
+      ...(hasUncachedInputTokens ? { totalUncachedInputTokens } : {}),
+      ...(hasCacheReadInputTokens ? { totalCacheReadInputTokens } : {}),
+      ...(hasCacheCreationInputTokens ? { totalCacheCreationInputTokens } : {}),
       ...(hasOutputTokens ? { totalOutputTokens } : {}),
+      ...(boundaries.length > 0 ? { cacheHitCalls } : {}),
       toolCallsReturned,
       modelIds: [...modelIds].sort(),
       providerIds: [...providerIds].sort(),
@@ -7540,10 +8001,61 @@ function writeMissionE2eJsonReport(jsonPath: string, report: MissionE2eJsonRepor
   writeFileSync(resolvedPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 }
 
-function writeNaturalMissionE2eJsonReport(jsonPath: string, report: NaturalMissionE2eJsonReport): void {
+function writeNaturalMissionE2eJsonReport(
+  jsonPath: string,
+  report: NaturalMissionE2eJsonReport,
+  runtimeRoot?: string,
+): void {
   const resolvedPath = path.resolve(jsonPath);
   mkdirSync(path.dirname(resolvedPath), { recursive: true });
-  writeFileSync(resolvedPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  const forceKeep = process.env.TURNKEYAI_E2E_KEEP_RUNTIME_ROOT === "1";
+  const retained = shouldRetainE2eRuntimeRoot({
+    passed: report.status === "passed",
+    forceKeep,
+  });
+  const output =
+    runtimeRoot && retained
+      ? attachNaturalRuntimeArtifacts(report, {
+          runtimeRoot,
+          retained: true,
+          replayPaths: listRuntimeReplayPaths(runtimeRoot),
+        })
+      : report;
+  writeFileSync(resolvedPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+}
+
+export function shouldRetainE2eRuntimeRoot(input: {
+  passed: boolean;
+  forceKeep: boolean;
+}): boolean {
+  return input.forceKeep || !input.passed;
+}
+
+export function attachNaturalRuntimeArtifacts(
+  report: NaturalMissionE2eJsonReport,
+  artifacts: NonNullable<NaturalMissionE2eJsonReport["runtimeArtifacts"]>,
+): NaturalMissionE2eJsonReport {
+  return {
+    ...report,
+    runtimeArtifacts: {
+      runtimeRoot: artifacts.runtimeRoot,
+      retained: artifacts.retained,
+      replayPaths: [...artifacts.replayPaths].sort(),
+    },
+  };
+}
+
+function listRuntimeReplayPaths(runtimeRoot: string): string[] {
+  const replayDir = path.join(runtimeRoot, "data", "replays", "by-id");
+  if (!existsSync(replayDir)) return [];
+  try {
+    return readdirSync(replayDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(replayDir, entry.name))
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 function resolveModelCatalogPath(explicitPath?: string): string {
@@ -9984,18 +10496,10 @@ export function extractTimedOutSessionKey(timeline: ActivityEvent[]): string | n
     if (event.runtime?.["toolName"] !== "sessions_spawn") {
       continue;
     }
-    const content = [
-      event.text,
-      String(event.runtime?.["resultContent"] ?? ""),
-      String(event.runtime?.["progressDetail"] ?? ""),
-    ].join("\n");
-    if (!/\btimeout\b|\btimed out\b|WORKER_TIMEOUT/i.test(content)) continue;
-    const resultKey = readSessionKeyFromRuntimeJson(event.runtime?.["resultContent"]);
+    const resultKey = readTimedOutSessionKeyFromRuntimeJson(event.runtime?.["resultContent"]);
     if (resultKey) return resultKey;
-    const progressKey = readSessionKeyFromRuntimeJson(event.runtime?.["progressDetail"]);
+    const progressKey = readTimedOutSessionKeyFromRuntimeJson(event.runtime?.["progressDetail"]);
     if (progressKey) return progressKey;
-    const match = content.match(/"session_key"\s*:\s*"([^"]+)"/);
-    if (match?.[1]) return match[1];
   }
   return null;
 }
@@ -10005,12 +10509,10 @@ function extractTimedOutSessionsSpawnToolCallId(timeline: ActivityEvent[]): stri
     if (event.runtime?.["toolName"] !== "sessions_spawn") {
       continue;
     }
-    const content = [
-      event.text,
-      String(event.runtime?.["resultContent"] ?? ""),
-      String(event.runtime?.["progressDetail"] ?? ""),
-    ].join("\n");
-    if (!/\btimeout\b|\btimed out\b|WORKER_TIMEOUT/i.test(content)) {
+    if (
+      !runtimeJsonHasTimeoutStatus(event.runtime?.["resultContent"]) &&
+      !runtimeJsonHasTimeoutStatus(event.runtime?.["progressDetail"])
+    ) {
       continue;
     }
     const toolCallId = event.runtime?.["toolCallId"];
@@ -10021,16 +10523,36 @@ function extractTimedOutSessionsSpawnToolCallId(timeline: ActivityEvent[]): stri
   return null;
 }
 
-function readSessionKeyFromRuntimeJson(value: unknown): string | null {
+function readTimedOutSessionKeyFromRuntimeJson(value: unknown): string | null {
+  const parsed = parseRuntimeJsonRecord(value);
+  if (parsed?.["status"] !== "timeout") {
+    return null;
+  }
+  const sessionKey = parsed["session_key"];
+  return typeof sessionKey === "string" && sessionKey.trim() ? sessionKey.trim() : null;
+}
+
+function runtimeJsonHasTimeoutStatus(value: unknown): boolean {
+  return parseRuntimeJsonRecord(value)?.["status"] === "timeout";
+}
+
+function parseRuntimeJsonRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "string" || value.trim().length === 0) {
     return null;
   }
   try {
-    const parsed = JSON.parse(value) as { session_key?: unknown };
-    return typeof parsed.session_key === "string" && parsed.session_key.trim() ? parsed.session_key.trim() : null;
+    const parsed = JSON.parse(value) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
+}
+
+function readSessionKeyFromRuntimeJson(value: unknown): string | null {
+  const sessionKey = parseRuntimeJsonRecord(value)?.["session_key"];
+  return typeof sessionKey === "string" && sessionKey.trim() ? sessionKey.trim() : null;
 }
 
 export function extractCancelledSessionKey(timeline: ActivityEvent[]): string | null {
@@ -11402,6 +11924,48 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.stack ?? error.message : String(error);
 }
 
+export function writeNaturalRunnerFallbackReport(input: {
+  options: MissionToolUseE2eOptions;
+  startedAt: number;
+  error: string;
+  termination: Exclude<NaturalE2eRunTermination, "passed">;
+  onlyIfStartupPlaceholder?: boolean;
+  runtimeRoot?: string;
+}): void {
+  if (!input.options.natural || !input.options.jsonPath) return;
+  const resolvedPath = path.resolve(input.options.jsonPath);
+  let runtimeRoot = input.runtimeRoot;
+  if (input.onlyIfStartupPlaceholder && existsSync(resolvedPath)) {
+    try {
+      const current = JSON.parse(readFileSync(resolvedPath, "utf8")) as NaturalMissionE2eJsonReport;
+      if (current.interruptedScenario?.error !== RUNNER_STARTUP_PLACEHOLDER_ERROR) {
+        return;
+      }
+      runtimeRoot ??= current.runtimeArtifacts?.runtimeRoot;
+    } catch {}
+  }
+  const scenario =
+    input.options.naturalMatrixScenarios?.[0] ??
+    (input.options.naturalMatrix ? NATURAL_MISSION_E2E_SCENARIOS[0] : input.options.naturalScenario);
+  writeNaturalMissionE2eJsonReport(
+    resolvedPath,
+    buildNaturalMissionPartialFailureJsonReport({
+      startedAt: input.startedAt,
+      completedAt: Date.now(),
+      results: [],
+      scenarioTimeoutMs: input.options.scenarioTimeoutMs,
+      interruptedScenario: {
+        scenario,
+        error: input.error,
+        termination: input.termination,
+        durationMs: Math.max(0, Date.now() - input.startedAt),
+        timeline: [],
+      },
+    }),
+    runtimeRoot,
+  );
+}
+
 async function allocatePort(): Promise<number> {
   const server = net.createServer();
   const port = await new Promise<number>((resolve, reject) => {
@@ -11499,5 +12063,32 @@ function sleep(ms: number): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await main(parseOptions(process.argv.slice(2)));
+  const options = parseOptions(process.argv.slice(2));
+  const runnerStartedAt = Date.now();
+  const abortController = new AbortController();
+  const onSigint = () => abortController.abort();
+  const onSigterm = () => abortController.abort();
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  writeNaturalRunnerFallbackReport({
+    options,
+    startedAt: runnerStartedAt,
+    error: RUNNER_STARTUP_PLACEHOLDER_ERROR,
+    termination: "crash",
+  });
+  try {
+    await main(options, abortController.signal);
+  } catch (error) {
+    writeNaturalRunnerFallbackReport({
+      options,
+      startedAt: runnerStartedAt,
+      error: errorMessage(error),
+      termination: classifyNaturalScenarioTermination(error),
+      onlyIfStartupPlaceholder: true,
+    });
+    throw error;
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+  }
 }

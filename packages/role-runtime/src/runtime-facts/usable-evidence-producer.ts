@@ -4,19 +4,19 @@ import type {
   RuntimeFactInput,
   UsableEvidenceFacts,
 } from "./types";
+import { nativeToolResultTraceHasUsableEvidence } from "../tool-protocol";
 
 export function produceUsableEvidenceEnvelope(
   input: Pick<RuntimeFactInput, "toolTrace">,
 ): EvidenceEnvelope<"usable_evidence", UsableEvidenceFacts> {
+  const provenance = buildUsableEvidenceProvenance(input.toolTrace);
   return {
     kind: "usable_evidence",
     schemaVersion: 1,
     facts: {
-      usableEvidence: input.toolTrace.some((round) =>
-        round.results.some((result) => !result.isError && result.skipped !== true),
-      ),
+      usableEvidence: provenance.length > 0,
     },
-    provenance: buildUsableEvidenceProvenance(input.toolTrace),
+    provenance,
   };
 }
 
@@ -25,7 +25,7 @@ function buildUsableEvidenceProvenance(
 ): EvidenceProvenance[] {
   return toolTrace.flatMap((round, traceIndex) =>
     round.results
-      .filter((result) => !result.isError && result.skipped !== true)
+      .filter(nativeToolResultTraceHasUsableEvidence)
       .map((result) => ({
         source: "native_tool_trace" as const,
         toolName: result.toolName,

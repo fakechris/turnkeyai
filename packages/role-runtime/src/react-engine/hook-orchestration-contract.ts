@@ -55,8 +55,12 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
   {
     hook: "onRoundMessages",
     phase: "before_model",
-    installed: false,
-    moduleOps: [],
+    installed: true,
+    moduleOps: [
+      "CompactionController.applyRoundMessagesHook",
+      "TaskPlanController.applyRoundMessagesHook",
+      "RunJournal.checkpoint",
+    ],
   },
   {
     hook: "onToolCalls",
@@ -83,13 +87,22 @@ export const ENGINE_HOOK_ORCHESTRATION: readonly EngineHookContract[] = [
     hook: "onBeforeExecute",
     phase: "before_execute",
     installed: true,
-    moduleOps: ["ExecutionBudgetController.applyEngineBeforeExecuteHook"],
+    moduleOps: [
+      "ToolArgumentValidator.validate",
+      "ExecutionBudgetController.applyEngineBeforeExecuteHook",
+    ],
   },
   {
     hook: "runToolBatch",
     phase: "before_execute",
     installed: true,
     moduleOps: ["ExecutionBudgetController.runEngineToolBatchHook"],
+  },
+  {
+    hook: "onToolResultsForHistory",
+    phase: "after_execute",
+    installed: true,
+    moduleOps: ["ToolResultHistoryExternalizer.externalize"],
   },
   {
     hook: "onAfterExecuteContinue",

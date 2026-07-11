@@ -17,6 +17,7 @@ import type {
   PreCompactionMemoryFlusher,
 } from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
+import type { RunLifecycleRecorder } from "./react-engine/run-lifecycle";
 import { createTerminalCloseoutController } from "./react-engine/terminal-closeout-controller";
 import { recordToolResultPruningBoundarySafely } from "./tool-history-pruning";
 
@@ -35,6 +36,7 @@ export interface GenerateFinalAfterToolRoundLimitInput {
   messages: LLMMessage[];
   maxRounds: number;
   modelCallTrace?: ModelCallBoundaryTrace[] | undefined;
+  lifecycle?: RunLifecycleRecorder | undefined;
   reasonLines?: string[] | undefined;
 }
 
@@ -52,6 +54,7 @@ export type TerminalFinalSynthesisRunnerInput = Omit<
   | "selection"
   | "baseGatewayInput"
   | "modelCallTrace"
+  | "lifecycle"
 >;
 
 export type TerminalFinalSynthesisRunner = (
@@ -96,6 +99,7 @@ export async function generateFinalAfterToolRoundLimit(
         selection: input.selection,
         gatewayInput,
         ...(input.modelCallTrace ? { modelCallTrace: input.modelCallTrace } : {}),
+        lifecycle: input.lifecycle,
         tracePhase,
       }),
   });

@@ -152,9 +152,9 @@ function findMissingBrowserEvidenceDimensions(input: {
       label: "embedded frame source state",
       requested: /\b(?:iframe|frame|embedded source)\b/i,
       evidence:
-        /\b(?:Frame panel|embedded source frame|embedded backlog source)\b[\s\S]{0,180}\b(?:backlog\s*7|Frame Captain)\b|\b(?:backlog\s*7|Frame Captain)\b[\s\S]{0,180}\b(?:Frame panel|embedded source frame|embedded backlog source)\b/i,
+        /\b(?:Frame panel|embedded source frame|embedded backlog source)\b[\s\S]{0,180}\b(?:backlog(?:\s*(?:count|data))?\s*[:=]?\s*\d+|owner\s*[:=]\s*[^\n,;]+)\b|\b(?:backlog(?:\s*(?:count|data))?\s*[:=]?\s*\d+|owner\s*[:=]\s*[^\n,;]+)\b[\s\S]{0,180}\b(?:Frame panel|embedded source frame|embedded backlog source)\b/i,
       result:
-        /\b(?:frame|iframe|embedded source)\b[\s\S]{0,220}\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b|\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b[\s\S]{0,220}\b(?:frame|iframe|embedded source)\b/i,
+        /\b(?:frame|iframe|embedded source)\b[\s\S]{0,220}\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b\d+\b|owner\s*[:=]\s*[^\n,;]+)\b|\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b\d+\b|owner\s*[:=]\s*[^\n,;]+)\b[\s\S]{0,220}\b(?:frame|iframe|embedded source)\b/i,
       negated:
         /\bnot verified\b[\s\S]{0,120}\b(?:frame|iframe|embedded source)\b|\b(?:frame|iframe|embedded source)\b[\s\S]{0,120}\bnot verified\b/i,
     },
@@ -172,9 +172,11 @@ function findMissingBrowserEvidenceDimensions(input: {
       label: "details popup state",
       requested: /\bpopup\b/i,
       evidence:
-        /\bpopup\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\bpopup\b/i,
+        /\bpopup\b[\s\S]{0,180}\b(?:manager acknowledgement|opened|details?|record|ticket)\b|\b(?:manager acknowledgement|details?|record|ticket)\b[\s\S]{0,180}\bpopup\b/i,
       result:
-        /\bpopup\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\bpopup\b/i,
+        /\bpopup\b[\s\S]{0,180}\b(?:manager acknowledgement|opened|details?|record|ticket)\b|\b(?:manager acknowledgement|details?|record|ticket)\b[\s\S]{0,180}\bpopup\b/i,
+      negated:
+        /\bnot verified\b[\s\S]{0,120}\b(?:popup|popup details?)\b|\b(?:popup|popup details?)\b[\s\S]{0,120}\bnot verified\b/i,
     },
     {
       label: "product signal dashboard counters",
@@ -229,6 +231,7 @@ export interface SessionContinuationDirective {
 
 export interface SessionContinuationLookupDirective {
   messageHint: string;
+  workerKind?: string;
 }
 
 export interface SubAgentToolTimeoutSignal {
@@ -1055,7 +1058,7 @@ export function readPolicyProductBriefEvidenceCarryForwardRepair(input: {
   if (hasProductBriefEvidenceCarryForwardRepairPrompt(input.repairMarkers)) {
     return false;
   }
-  if (!readPolicyAgentWorkbenchProductBriefRequest(input.taskPrompt)) {
+  if (!isPolicyProductBriefRequest(input.taskPrompt)) {
     return false;
   }
   if (!PRODUCT_BRIEF_MULTI_AGENT_EVIDENCE_PATTERN.test(input.evidenceText)) {
@@ -1084,7 +1087,7 @@ export function readPolicyCompletedSessionLabelCarryForwardRepair(input: {
   if (labels.length === 0) {
     return false;
   }
-  if (readPolicyAgentWorkbenchProductBriefRequest(input.taskPrompt)) {
+  if (isPolicyProductBriefRequest(input.taskPrompt)) {
     return false;
   }
   const labelSensitiveTask =
@@ -1100,13 +1103,12 @@ export function readPolicyCompletedSessionLabelCarryForwardRepair(input: {
   return labels.some((label) => !normalizedTextContains(input.resultText, label));
 }
 
-export function readPolicyAgentWorkbenchProductBriefRequest(taskPrompt: string): boolean {
+function isPolicyProductBriefRequest(taskPrompt: string): boolean {
   return (
-    /\bagent workbench\b/i.test(taskPrompt) &&
     /\b(?:product[- ]ready brief|product brief|audit-ready product brief|next release)\b/i.test(
       taskPrompt,
     ) &&
-    /\b(?:independent evidence streams|specialist work|Mission Control|product-signals|live signal dashboard)\b/i.test(
+    /\b(?:independent evidence streams?|multiple (?:evidence|source) streams?|specialist work|live signal dashboard)\b/i.test(
       taskPrompt,
     )
   );
@@ -2475,25 +2477,41 @@ export function findSessionContinuationLookupDirective(
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
+  const workerKind = readTruncatedContinuationWorkerKind(
+    context,
+    latestUserText,
+  );
+  const directive: SessionContinuationLookupDirective = {
+    messageHint: buildSessionContinuationMessageHint(
+      taskPrompt,
+      latestUserText,
+    ),
+    ...(workerKind ? { workerKind } : {}),
+  };
   if (contextHasSessionListResult(context)) {
     return contextHasTruncatedTimeoutContinuationCandidate(
       context,
       latestUserText,
     )
-      ? {
-          messageHint: buildSessionContinuationMessageHint(
-            taskPrompt,
-            latestUserText,
-          ),
-        }
+      ? directive
       : null;
   }
-  return {
-    messageHint: buildSessionContinuationMessageHint(
-      taskPrompt,
+  return directive;
+}
+
+function readTruncatedContinuationWorkerKind(
+  context: string,
+  latestUserText: string,
+): string | null {
+  const workerKinds = new Set(
+    extractLikelyTruncatedTimeoutSessionKeyPrefixes(
+      context,
       latestUserText,
-    ),
-  };
+    )
+      .map((prefix) => readPolicyWorkerKindFromSessionKey(prefix))
+      .filter((kind): kind is string => Boolean(kind)),
+  );
+  return workerKinds.size === 1 ? [...workerKinds][0]! : null;
 }
 
 export function readPolicyForceSlowSourceRecoveryContinuation(context: string): boolean {
@@ -3361,6 +3379,7 @@ export function normalizeExplicitContinuationHistoryCalls(
       name: "sessions_send",
       input: {
         session_key: sessionKey,
+        mode: "continue",
         message:
           proposedMessage?.trim() ||
           [

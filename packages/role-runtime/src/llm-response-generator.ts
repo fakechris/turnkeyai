@@ -4,271 +4,102 @@ import type {
   RuntimeProgressRecorder,
   TeamMessageStore,
 } from "@turnkeyai/core-types/team";
-import type {
-  GenerateTextInput,
-  GenerateTextResult,
-  LLMMessage,
-  LLMToolCall,
-} from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
+import type { GenerateTextInput } from "@turnkeyai/llm-adapter/index";
 
 import type {
   GeneratedRoleReply,
   RoleResponseGenerator,
 } from "./deterministic-response-generator";
 import {
-  buildGatewayInput,
-  buildToolRoundGatewayRequest,
-  enforceRequestedThreeLineLabelShape,
-  extractMentions,
-  hasToolDefinition,
-} from "./gateway-input-builder";
-import {
   generateWithEnvelopeRetry,
   type GenerateWithEnvelopeRetryInput,
-  type GenerateWithEnvelopeRetryResult,
 } from "./gateway-envelope-retry";
-import {
-  createTerminalFinalSynthesisRunner,
-} from "./terminal-final-synthesis";
-import {
-  collectToolResultContentText,
-  collectToolTraceResultContent,
-  findCompletedSessionEvidence,
-  findSubAgentToolTimeout,
-  hasUsableEvidence,
-  isResumablePartialSessionResult,
-  shouldAllowRequiredTimeoutContinuationPastWallClock,
-} from "./tool-result-evidence";
-import {
-  summarizeModelUseTrace,
-  type ModelCallBoundaryTrace,
-} from "./model-call-trace";
-import {
-  canonicalizeSessionToolTraceCalls,
-  countNativeToolCalls,
-  persistNativeToolTraceSafely,
-  type NativeToolRoundTrace,
-} from "./native-tool-messages";
+import { buildGatewayInput } from "./gateway-input-builder";
+import type { ModelCallBoundaryTrace } from "./model-call-trace";
+import type { NativeToolRoundTrace } from "./native-tool-messages";
+import type { PreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
 import {
   recordPromptAssemblyBoundarySafely,
   type RolePromptPacket,
 } from "./prompt-policy";
-import {
-  recordReductionBoundarySafely,
-  type RequestEnvelopeReductionLevel,
-  type RequestEnvelopeReductionSnapshot,
-} from "./request-envelope-reducer";
 import { getRoleModelSelection } from "./role-model-selection";
+import {
+  createRunDeadline,
+  isRunDeadlineExceeded,
+  type RunDeadline,
+} from "./run-deadline";
+import type { ToolLoopCloseoutMetadata } from "./runtime-derived-mission-report";
+import {
+  allowsSupplementalBrowserProbe,
+  countRecoveryToolCallsBeforeActivation,
+  findSessionContinuationDirective,
+  resolveRecoveryToolBudgetForActivation,
+} from "./runtime-facts/text-fallback-readers";
+import { createTerminalFinalSynthesisRunner } from "./terminal-final-synthesis";
 import {
   buildToolDefinitionFilterMessageContext,
   buildToolDefinitionFilterTaskContext,
   filterToolDefinitionsForTask,
 } from "./tool-definition-filter";
+import { throwIfAborted } from "./tool-protocol";
+import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 import {
-  readToolResultContentText,
-  recordProviderToolProtocolRoundSafely,
-  recordRuntimeForcedToolRoundProviderProtocolSafely,
-  recordToolResultPruningBoundarySafely,
-} from "./tool-history-pruning";
+  createToolResultHistoryExternalizer,
+  type ToolResultHistoryExternalizer,
+} from "./tool-result-history-externalizer";
 import {
-  appendAssistantToolCallMessage,
-  appendToolResultMessages,
   DEFAULT_ROLE_TOOL_MAX_ROUNDS,
-  executeRoleToolCalls,
-  executeRuntimeForcedToolRound,
-  recordRoleToolProgressSafely,
   type RoleToolContext,
   type RoleToolExecutionResult,
   type RoleToolLoopOptions,
 } from "./tool-use";
-import {
-  findRepeatedFailedToolCall,
-  isPositiveFiniteBudget,
-  normalizeToolInputForSignature,
-  roundLimitReached,
-  stableJson,
-  toolCallSignature,
-} from "./react/predicates";
-import {
-  allowsSupplementalBrowserProbe,
-  contextHasTimeoutSessionResult,
-  continuationRequestPrefersResumableSession,
-  countCompletedSessionEvidenceResults,
-  countRecoveryToolCallsBeforeActivation,
-  enforceMissingApprovalGateRepairToolCalls,
-  enforceSupplementalLocalTimeoutProbeToolCall,
-  extractLatestUserContinuationText,
-  findExcessiveSessionContinuationCall,
-  findRepeatedSessionInspectionCall,
-  findSessionContinuationDirective,
-  findSessionContinuationLookupDirective,
-  findIncompleteApprovedBrowserSession,
-  findMissingRequiredFinalDeliverables,
-  hasCompletedBrowserSessionEvidence,
-  hasExecutedSessionsSend,
-  hasSessionTimeoutEvidence,
-  hasTimeoutCloseoutGuidance,
-  isExplicitSessionContinuationRequest,
-  limitIndependentEvidenceSpawnCalls,
-  normalizeApprovalGatedBrowserSpawnCalls,
-  normalizeBoundedTimeoutDuplicateSourceSpawns,
-  normalizeBoundedTimeoutSourceSpawnAgents,
-  normalizeExplicitContinuationHistoryCalls,
-  normalizeLocalUrlWebFetchCalls,
-  normalizePrivateUrlResearchSpawnCalls,
-  resolveRecoveryToolBudgetForActivation,
-  shouldCloseoutCancelledSessionWithoutContinuation,
-  shouldRunSupplementalLocalTimeoutProbe,
-  shouldPreserveRecoveredTimeoutCloseout,
-  toolTraceHasCall,
-} from "./runtime-facts/text-fallback-readers";
-import {
-  FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
-  applySessionContinuationDirective,
-  applySessionContinuationLookupDirective,
-  buildApprovedBrowserTimeoutContinuationPrompt,
-  buildCompletedBrowserEvidenceDimensionCarryForwardLines,
-  buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
-  buildIncompleteApprovedBrowserActionRepairPrompt,
-  buildIncompleteApprovedBrowserSessionContinuationPrompt,
-  buildIndependentEvidenceStreamContinuationPrompt,
-  buildMissingBrowserEvidenceRepairPrompt,
-  buildMissingProductSignalBrowserEvidenceRepairPrompt,
-  buildSupplementalLocalTimeoutProbePrompt,
-  buildReadOnlyPermissionQuerySuppressionPrompt,
-  buildCoverageTimeoutContinuationPrompt,
-  buildApprovalWaitTimeoutCloseoutRepairPrompt,
-  buildApprovalWaitTimeoutLocalEvidenceCloseout,
-  buildFalseEvidenceBlockedSynthesisRepairPrompt,
-  buildFinalRecoveryBudgetCloseoutReasonLines,
-  buildFinalRecoveryBudgetCloseoutRepairPrompt,
-  buildMissingApprovalGateRepairPrompt,
-  buildMissingBrowserEvidenceDimensionsRepairPrompt,
-  buildMissingRequestedNextActionRepairPrompt,
-  buildMissingRequiredFinalDeliverablesRepairPrompt,
-  buildLocalEvidenceCloseout,
-  buildPendingApprovalWaitTimeoutCheckRepairPrompt,
-  buildPrematurePendingApprovalRepairPrompt,
-  buildSourceEvidenceCarryForwardRepairPrompt,
-  buildStaleDeniedApprovalRepairPrompt,
-  buildStalePendingApprovalRepairPrompt,
-  buildTimeoutFollowupFinalGuidanceRepairPrompt,
-  buildWeakEvidenceSynthesisRepairPrompt,
-} from "./runtime-policy/prompt-renderers";
-import {
-  buildContinuationDirectiveContext,
-  dedupeStrings,
-  extractHttpUrls,
-  formatDurationMs,
-  isAbortError,
-  isControlPlaneToolResultName,
-  isLoopbackHostname,
-  matchesAny,
-  containsAnyToolCallForm,
-  normalizeSessionToolAliasCalls,
-  normalizeSessionToolCalls,
-  parseJsonObject,
-  readSessionKeyFromToolInput,
-  readStringField,
-  readStringInput,
-  resolveEffectiveToolLoopWallClockMs,
-  sliceUtf8,
-  toNativeToolProgressTrace,
-  toNativeToolResultTrace,
-  throwIfAborted,
-  withFinalToolRoundWarning,
-} from "./tool-protocol";
-import {
-  hasTimeoutContinuationGuidance,
-  hasMissingRequiredFinalDeliverablesRepairPrompt,
-  hasLatestSupplementalLocalTimeoutProbePrompt,
-} from "./runtime-facts/repair-marker-facts";
-import {
-  maybeAppendBrowserFailureBucketVisibility,
-  maybeAppendBrowserRecoveryVisibility,
-  maybeAppendBrowserRecoveryResidualRiskVisibility,
-  maybeAppendRecoveredTimeoutCloseoutVisibility,
-  maybeAppendRequiredTimeoutFollowupVisibility,
-  maybeAppendTimeoutContinuationVisibility,
-  maybeRedactForbiddenLocalUrls,
-  shouldAppendRecoveredTimeoutCloseoutVisibility,
-  shouldAppendTimeoutContinuationVisibility,
-} from "./runtime-policy/synthesis-visibility";
-import { produceTaskIntentEnvelope } from "./runtime-facts/task-intent-producer";
-import {
-  buildRuntimeDerivedMissionReport,
-  type ToolLoopCloseoutMetadata,
-} from "./runtime-derived-mission-report";
-import {
-  readApprovalWaitTimeoutRuntimeEvidence,
-  readApprovalWaitTimeoutCloseoutRepair,
-  readBrowserRecoverySummariesFromTrace,
-  readCompletedSessionEvidenceText,
-  readFalseEvidenceBlockedSynthesisRepair,
-  readFinalRecoveryBudgetCloseoutRepair,
-  readForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair,
-  readIncompleteApprovedBrowserActionRepair,
-  readIndependentEvidenceStreamCount,
-  readIndependentEvidenceStreamsContinuation,
-  readMissingApprovalGateRepair,
-  readMissingBrowserEvidenceDimensionsRepair,
-  readMissingBrowserEvidenceRepair,
-  readMissingProductSignalBrowserEvidenceRepair,
-  readMissingRequestedNextActionRepair,
-  readPendingApprovalWaitTimeoutCheckRepair,
-  readPrematurePendingApprovalFinalRepair,
-  readReadOnlyPermissionQuerySuppression,
-  readSourceBoundedEvidenceText,
-  readSourceEvidenceCarryForwardRepair,
-  readStaleDeniedApprovalRepair,
-  readStalePendingApprovalRepair,
-  readTimedOutApprovedBrowserSessionContinuation,
-  readTimedOutSiblingSessionContinuation,
-  readTimeoutFollowupFinalGuidanceRepair,
-  readWeakEvidenceSynthesisRepair,
-} from "./runtime-policy/inline-policy-runner";
 // Stage 8 cleanup (Batch 0.5): engine policy-trace plumbing. The trace is a
 // behavior-neutral observability sink that records the per-hook decision sequence
 // so later batches can prove byte-identical behavior and so production-behind-flag
 // failures can answer "which policy fired or skipped." See react-engine/*.
 import {
+  applyEngineToolCallsHook,
+  applyToolArgumentValidationBeforeAdmission,
+  attachEngineRunDiagnostics,
+  buildRunTrace,
+  classifyRunFailure,
   createCloseoutPolicyRegistry,
+  createCompactionController,
   createCompletedCloseoutController,
   createContinuationController,
   createEngineFinalResponseBuilder,
-  recordEngineReductionBoundary,
-  createRoleEngineModelClient,
-  createRoleEngineRuntimeForcedToolRoundRunner,
   createEnginePolicyTrace,
   createEngineRoleToolkit,
-  createRoleEngineRunState,
-  createRoleEngineAgentRunner,
-  enginePolicyTraceDebugEnabled,
-  createExecutionBudgetController,
   createEvidenceLedger,
-  createRoleEngineRunObserver,
+  createExecutionBudgetController,
   createPermissionPolicy,
   createRepairPolicyRegistry,
+  createRoleEngineAgentRunner,
+  createRoleEngineModelClient,
+  createRoleEngineRunObserver,
+  createRoleEngineRunState,
+  createRoleEngineRuntimeForcedToolRoundRunner,
+  createRunJournal,
+  createRunLifecycleRecorder,
+  createRuntimeCheckpointSummarizer,
+  createTaskPlanController,
   createTerminalCloseoutController,
-  applyEngineToolCallsHook,
+  createToolArgumentValidator,
+  enginePolicyTraceDebugEnabled,
+  fingerprintRunJournalTask,
+  recordEngineReductionBoundary,
   traceEngineHooks,
   type EngineCloseoutReason,
+  type RunTraceCompactionEvent,
+  type RunTraceExternalizationEvent,
+  type RunTracePruningEvent,
+  type RunJournal,
+  type RunJournalResumeState,
+  type RunJournalState,
 } from "./react-engine";
-import {
-  buildTaskFacts,
-  buildAwaitingContextSetupNoToolRepairPrompt,
-  buildExtraneousProviderTableSchemaRepairPrompt,
-  buildMissingRequestedTableColumnsRepairPrompt,
-  recordRepairPrompt,
-  readExtraneousProviderTableSchemaRepair,
-  readMissingRequestedTableColumnsRepair,
-  readAwaitingContextSetupNoToolSuppression,
-} from "./task-facts-shared";
-import {
-  type PreCompactionMemoryFlusher,
-  type PreCompactionMemoryFlushResult,
-} from "./pre-compaction-memory-flusher";
+import { buildTaskFacts } from "./task-facts-shared";
+import { readTaskPlanState } from "./task-plan-state";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
@@ -277,40 +108,45 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly nativeToolMessageStore:
     | Pick<TeamMessageStore, "append">
     | undefined;
+  private readonly runJournalStore:
+    | Pick<TeamMessageStore, "append" | "get" | "list">
+    | undefined;
   private readonly preCompactionMemoryFlusher:
     | PreCompactionMemoryFlusher
     | undefined;
+  private readonly toolResultHistoryExternalizer:
+    | ToolResultHistoryExternalizer
+    | undefined;
   private readonly clock: Clock;
   private readonly deferToolObservability: boolean;
-  /**
-   * Cutover flag. "inline" remains the production default; "engine" routes the
-   * role-runtime loop through agent-core's createReActAgent adapter. Full parity is
-   * in place, but the default flip still needs a flagged soak.
-   */
-  private readonly reactEngine: "inline" | "engine";
 
   constructor(options: {
     gateway: LLMGateway;
     runtimeProgressRecorder?: RuntimeProgressRecorder;
     toolLoop?: RoleToolLoopOptions;
     nativeToolMessageStore?: Pick<TeamMessageStore, "append">;
+    runJournalStore?: Pick<TeamMessageStore, "append" | "get" | "list">;
     preCompactionMemoryFlusher?: PreCompactionMemoryFlusher;
+    toolResultArtifactStore?: ToolResultArtifactStore;
     clock?: Clock;
     deferToolObservability?: boolean;
-    reactEngine?: "inline" | "engine";
   }) {
     this.gateway = options.gateway;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
     this.toolLoop = options.toolLoop;
     this.nativeToolMessageStore = options.nativeToolMessageStore;
+    this.runJournalStore = options.runJournalStore;
     this.preCompactionMemoryFlusher = options.preCompactionMemoryFlusher;
+    this.toolResultHistoryExternalizer = options.toolResultArtifactStore
+      ? createToolResultHistoryExternalizer({
+          store: options.toolResultArtifactStore,
+          onError: (error) => {
+            console.error("tool result artifact externalization failed", error);
+          },
+        })
+      : undefined;
     this.clock = options.clock ?? { now: () => Date.now() };
     this.deferToolObservability = options.deferToolObservability === true;
-    this.reactEngine =
-      options.reactEngine ??
-      (typeof process !== "undefined" && process.env?.TURNKEYAI_REACT_ENGINE === "engine"
-        ? "engine"
-        : "inline");
   }
 
   async generate(input: {
@@ -318,6 +154,25 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     packet: RolePromptPacket;
     signal?: AbortSignal;
   }): Promise<GeneratedRoleReply> {
+    const runDeadline = createRunDeadline({
+      maxWallClockMs: this.toolLoop?.maxWallClockMs ?? 5 * 60_000,
+      ...(input.signal ? { parentSignal: input.signal } : {}),
+    });
+    try {
+      return await this.generateWithinDeadline(input, runDeadline);
+    } finally {
+      runDeadline.dispose();
+    }
+  }
+
+  private async generateWithinDeadline(
+    input: {
+      activation: RoleActivationInput;
+      packet: RolePromptPacket;
+      signal?: AbortSignal;
+    },
+    runDeadline: RunDeadline,
+  ): Promise<GeneratedRoleReply> {
     const role = input.activation.thread.roles.find(
       (item) => item.roleId === input.activation.runState.roleId,
     );
@@ -329,19 +184,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         `no model configured for role ${input.activation.runState.roleId}`,
       );
     }
-    throwIfAborted(input.signal);
-
-    let result: GenerateTextResult;
-    let reduction:
-      | {
-          level: RequestEnvelopeReductionLevel;
-          omittedSections: string[];
-        }
-      | undefined;
-    let reductionSnapshot:
-      | RequestEnvelopeReductionSnapshot
-      | undefined;
-    const memoryFlushes: PreCompactionMemoryFlushResult[] = [];
+    throwIfAborted(runDeadline.signal);
 
     await recordPromptAssemblyBoundarySafely({
       activation: input.activation,
@@ -354,9 +197,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       : null;
     const toolDefinitions = activeToolLoop
       ? filterToolDefinitionsForTask(
-          activeToolLoop.executor.definitions(),
-          buildToolDefinitionFilterTaskContext(input.activation, input.packet.taskPrompt),
-        )
+        activeToolLoop.executor.definitions(),
+        buildToolDefinitionFilterTaskContext(input.activation, input.packet.taskPrompt),
+      )
       : undefined;
 
     let initialGatewayInput = buildGatewayInput({
@@ -366,12 +209,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       ...(selection.modelChainId
         ? { modelChainId: selection.modelChainId }
         : {}),
-      ...(input.signal ? { signal: input.signal } : {}),
+      signal: runDeadline.signal,
+      deadlineAt: runDeadline.deadlineAt,
       ...(activeToolLoop && toolDefinitions
         ? {
-            tools: toolDefinitions,
-            toolChoice: "auto" as const,
-          }
+          tools: toolDefinitions,
+          toolChoice: "auto" as const,
+        }
         : {}),
       ...(baseSessionContinuationDirective
         ? { sessionContinuationDirective: baseSessionContinuationDirective }
@@ -393,2105 +237,34 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
     }
 
-    const toolTrace: NativeToolRoundTrace[] = [];
     const modelCallTrace: ModelCallBoundaryTrace[] = [];
-    const synthesizeFinalAfterToolRoundLimit =
-      createTerminalFinalSynthesisRunner({
-        gateway: this.gateway,
-        now: () => this.clock.now(),
-        runtimeProgressRecorder: this.runtimeProgressRecorder,
-        preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
-        activation: input.activation,
-        packet: input.packet,
-        selection,
-        baseGatewayInput: initialGatewayInput,
-        modelCallTrace,
-      });
-    let messages: LLMMessage[] = initialGatewayInput.messages;
     const recoveryToolBudget = activeToolLoop
       ? resolveRecoveryToolBudgetForActivation({
-          activation: input.activation,
-          taskPrompt: input.packet.taskPrompt,
-          messages,
-        })
+        activation: input.activation,
+        taskPrompt: input.packet.taskPrompt,
+        messages: initialGatewayInput.messages,
+      })
       : null;
     const recoveryToolCallsBeforeActivation = recoveryToolBudget
       ? countRecoveryToolCallsBeforeActivation({
-          activation: input.activation,
-          taskPrompt: input.packet.taskPrompt,
-          messages,
-        })
-      : 0;
-    let nextToolChoice: GenerateTextInput["toolChoice"] | undefined;
-    const toolLoopStartedAtMs = this.clock.now();
-    let toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
-    // The engine path drives a tool loop; when there is no active tool loop
-    // (toolUseMode "disabled", :378) there is nothing to loop, so route to the
-    // inline single tool-free model call — exactly what inline does when
-    // activeToolLoop is undefined (no tools attached, no execution). Entering the
-    // ReAct agent here would attach the toolkit and execute the model's tool calls
-    // as "Unknown tool" results, diverging from inline.
-    if (this.reactEngine === "engine" && activeToolLoop) {
-      return this.runViaReActEngine({
-        input,
-        selection,
-        activeToolLoop,
-        initialGatewayInput,
-        modelCallTrace,
-        recoveryToolBudget,
-        recoveryToolCallsBeforeActivation,
-      });
-    }
-    // Stage 6 prereq: repair idempotency ledger. Every `shouldRepair*` "already
-    // tried" guard reads this ledger of injected repair prompts instead of
-    // scanning the full conversation history, so the predicates no longer depend
-    // on how/where messages are stored (the Turnkey-agnostic boundary). Inline
-    // owns a loop-local ledger; the engine will pass `ctx.repairMarkers`.
-    const repairMarkers: LLMMessage[] = [];
-    const inlineTaskIntentFacts = produceTaskIntentEnvelope({
-      taskPrompt: input.packet.taskPrompt,
-      activation: input.activation,
-      messages: initialGatewayInput.messages,
-    }).facts;
-    for (let round = 0; ; round++) {
-      throwIfAborted(input.signal);
-      const maxRounds =
-        activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
-      const warningMessages = withFinalToolRoundWarning(messages, {
-        active: Boolean(activeToolLoop),
-        round,
-        maxRounds,
-      });
-      const gatewayRequest = buildToolRoundGatewayRequest({
-        baseGatewayInput: initialGatewayInput,
-        messages: warningMessages,
-        noToolRound: nextToolChoice === "none",
-        ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
-      });
-      await recordToolResultPruningBoundarySafely({
         activation: input.activation,
-        runtimeProgressRecorder: this.runtimeProgressRecorder,
-        selection,
-        snapshot: gatewayRequest.pruning,
-      });
-      let generated: GenerateWithEnvelopeRetryResult;
-      try {
-        generated = await generateWithEnvelopeRetry({
-          gateway: this.gateway,
-          now: () => this.clock.now(),
-          preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          gatewayInput: gatewayRequest.gatewayInput,
-          modelCallTrace,
-          tracePhase: "tool_round",
-          traceRound: round,
-        });
-      } catch (error) {
-        if (isAbortError(error)) {
-          throw error;
-        }
-        const forcedPermissionResultCall =
-          activeToolLoop && hasUsableEvidence(toolTrace)
-            ? buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
-                taskPrompt: input.packet.taskPrompt,
-                toolTrace,
-                ...(initialGatewayInput.tools === undefined
-                  ? {}
-                  : { tools: initialGatewayInput.tools }),
-              })
-            : null;
-        if (forcedPermissionResultCall) {
-          const forcedRound = await executeRuntimeForcedToolRound({
-            toolLoop: this.toolLoop,
-            runtimeProgressRecorder: this.runtimeProgressRecorder,
-            deferToolObservability: this.deferToolObservability,
-            now: () => this.clock.now(),
-            activation: input.activation,
-            packet: input.packet,
-            messages,
-            toolTrace,
-            toolCalls: [forcedPermissionResultCall],
-            round: round + 1,
-            toolLoopStartedAtMs,
-            ...(input.signal ? { signal: input.signal } : {}),
-            assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
-            persistNativeToolTrace: (options) =>
-              persistNativeToolTraceSafely({
-                activation: input.activation,
-                toolTrace,
-                nativeToolMessageStore: this.nativeToolMessageStore,
-                now: () => this.clock.now(),
-                defer: this.deferToolObservability,
-                ...(options?.forceBlocking === undefined
-                  ? {}
-                  : { forceBlocking: options.forceBlocking }),
-              }),
-            recordProviderToolProtocolRound: (roundInput) =>
-              recordRuntimeForcedToolRoundProviderProtocolSafely({
-                activation: input.activation,
-                runtimeProgressRecorder:
-                  this.toolLoop?.runtimeProgressRecorder ??
-                  this.runtimeProgressRecorder,
-                now: () => this.clock.now(),
-                defer: this.deferToolObservability,
-                ...roundInput,
-              }),
-          });
-          messages = forcedRound.messages;
-          continue;
-        }
-        const localResult =
-          activeToolLoop && hasUsableEvidence(toolTrace)
-            ? buildLocalEvidenceCloseout({
-                activation: input.activation,
-                messages,
-                packet: input.packet,
-                selection,
-                error,
-              })
-            : null;
-        if (!localResult) {
-          throw error;
-        }
-        toolLoopCloseout = {
-          reason: "tool_evidence_fallback",
-          maxRounds,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: true,
-        };
-        result = maybeRedactForbiddenLocalUrls({
-          result: localResult,
-          packet: input.packet,
-        });
-        break;
-      }
-      nextToolChoice = undefined;
-      throwIfAborted(input.signal);
-      result = generated.result;
-      if (generated.reduction) {
-        reduction = generated.reduction;
-        reductionSnapshot = generated.reductionSnapshot;
-      }
-      if (generated.memoryFlush) {
-        memoryFlushes.push(generated.memoryFlush);
-      }
-
-      const supplementalLocalTimeoutProbePending =
-        hasLatestSupplementalLocalTimeoutProbePrompt(messages);
-      const sessionContinuationContext = buildContinuationDirectiveContext(
-        input.packet.taskPrompt,
-        messages,
-      );
-      const contextualSessionContinuationDirective =
-        activeToolLoop && !supplementalLocalTimeoutProbePending
-          ? findSessionContinuationDirective(sessionContinuationContext)
-          : null;
-      const sessionContinuationDirective = supplementalLocalTimeoutProbePending
-        ? null
-        : (contextualSessionContinuationDirective ??
-          baseSessionContinuationDirective);
-      const sessionContinuationLookupDirective =
-        !supplementalLocalTimeoutProbePending &&
-        !sessionContinuationDirective &&
-        activeToolLoop &&
-        !inlineTaskIntentFacts.appliedApprovalBrowserContinuation
-          ? findSessionContinuationLookupDirective(
-              sessionContinuationContext,
-              sessionContinuationContext,
-            )
-          : null;
-      const modelToolCalls = enforceSupplementalLocalTimeoutProbeToolCall(
-        enforceMissingApprovalGateRepairToolCalls(
-          normalizeSessionToolAliasCalls(result.toolCalls ?? []),
-          {
-            messages,
-            repairMarkers,
-            taskPrompt: input.packet.taskPrompt,
-            toolTrace,
-          },
-        ),
-        messages,
-      );
-      // Tool-call normalization pipeline. Flattened from a 12-deep nested
-      // expression into an explicit ordered sequence — identical functions,
-      // arguments, and order, just readable as a pipeline. Each step rewrites
-      // the pending calls before execution.
-      let toolCalls = applySessionContinuationDirective(modelToolCalls, sessionContinuationDirective);
-      toolCalls = applySessionContinuationLookupDirective(toolCalls, sessionContinuationLookupDirective);
-      toolCalls = normalizeExplicitContinuationHistoryCalls(toolCalls, input.packet.taskPrompt);
-      toolCalls = normalizeSessionToolCalls(toolCalls, sessionContinuationContext);
-      toolCalls = normalizePrivateUrlResearchSpawnCalls(toolCalls, {
-        browserAvailable:
-          input.packet.capabilityInspection?.availableWorkers?.includes("browser") ?? false,
         taskPrompt: input.packet.taskPrompt,
-      });
-      toolCalls = normalizeLocalUrlWebFetchCalls(toolCalls, { taskPrompt: input.packet.taskPrompt });
-      toolCalls = normalizeBoundedTimeoutSourceSpawnAgents(toolCalls, {
-        exploreAvailable:
-          input.packet.capabilityInspection?.availableWorkers?.includes("explore") ?? false,
-        taskPrompt: input.packet.taskPrompt,
-      });
-      toolCalls = normalizeBoundedTimeoutDuplicateSourceSpawns(toolCalls, {
-        taskPrompt: input.packet.taskPrompt,
-      });
-      toolCalls = applySessionContinuationDirective(toolCalls, sessionContinuationDirective);
-      toolCalls = normalizeApprovalGatedBrowserSpawnCalls(toolCalls, {
-        taskPrompt: input.packet.taskPrompt,
-        sessionContext: sessionContinuationContext,
-        toolTrace,
-      });
-      toolCalls = limitIndependentEvidenceSpawnCalls(toolCalls, {
-        taskPrompt: input.packet.taskPrompt,
-        toolTrace,
-      });
-      const modelRequestedMoreTools = (result.toolCalls?.length ?? 0) > 0;
-      if (
-        activeToolLoop &&
-        readReadOnlyPermissionQuerySuppression(toolCalls, {
-          taskPrompt: input.packet.taskPrompt,
-          sessionContext: sessionContinuationContext,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          {
-            role: "user",
-            content: buildReadOnlyPermissionQuerySuppressionPrompt(),
-          },
-        ];
-        nextToolChoice = "none";
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        recoveryToolBudget &&
-        toolCalls.length === 0 &&
-        recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace) >=
-          recoveryToolBudget.maxToolCalls &&
-        readFinalRecoveryBudgetCloseoutRepair({
-          messages,
-          repairMarkers,
-          resultText: result.text,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildFinalRecoveryBudgetCloseoutRepairPrompt(
-              recoveryToolBudget.maxToolCalls,
-            ),
-          ),
-        ];
-        nextToolChoice = "none";
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        sessionContinuationDirective &&
-        !hasExecutedSessionsSend(
-          toolTrace,
-          sessionContinuationDirective.sessionKey,
-        ) &&
-        hasToolDefinition(initialGatewayInput.tools, "sessions_send")
-      ) {
-        toolCalls = [
-          {
-            id: `runtime-continuation-${round + 1}`,
-            name: "sessions_send",
-            input: {
-              session_key: sessionContinuationDirective.sessionKey,
-              message: sessionContinuationDirective.messageHint,
-            },
-          },
-        ];
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        !sessionContinuationDirective &&
-        sessionContinuationLookupDirective &&
-        hasToolDefinition(initialGatewayInput.tools, "sessions_list")
-      ) {
-        toolCalls = [
-          {
-            id: `runtime-continuation-lookup-${round + 1}`,
-            name: "sessions_list",
-            input: {
-              limit: 5,
-              reason: `continuation lookup: ${sessionContinuationLookupDirective.messageHint}`,
-            },
-          },
-        ];
-      }
-      if (activeToolLoop && recoveryToolBudget) {
-        const usedToolCalls =
-          recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace);
-        const remainingToolCalls = recoveryToolBudget.maxToolCalls - usedToolCalls;
-        if (remainingToolCalls <= 0) {
-          toolLoopCloseout = {
-            reason: "recovery_tool_budget",
-            maxRounds,
-            pendingToolCallCount: toolCalls.length,
-            toolCallCount: usedToolCalls,
-            roundCount: toolTrace.length,
-            evidenceAvailable: hasUsableEvidence(toolTrace),
-          };
-          throwIfAborted(input.signal);
-          const generated = await synthesizeFinalAfterToolRoundLimit({
-            messages,
-            maxRounds,
-            reasonLines: buildFinalRecoveryBudgetCloseoutReasonLines(
-              recoveryToolBudget.maxToolCalls,
-            ),
-          });
-          throwIfAborted(input.signal);
-          result = generated.result;
-          if (generated.reduction) {
-            reduction = generated.reduction;
-            reductionSnapshot = generated.reductionSnapshot;
-          }
-          if (generated.memoryFlush) {
-            memoryFlushes.push(generated.memoryFlush);
-          }
-          if (
-            readMissingRequestedTableColumnsRepair({
-              activation: input.activation,
-              taskPrompt: input.packet.taskPrompt,
-              messages,
-              repairMarkers,
-              resultText: result.text,
-            })
-          ) {
-            messages = [
-              ...messages,
-              {
-                role: "assistant",
-                content: result.text,
-              },
-              recordRepairPrompt(
-                repairMarkers,
-                buildMissingRequestedTableColumnsRepairPrompt({
-                  activation: input.activation,
-                  taskPrompt: input.packet.taskPrompt,
-                  messages,
-                  resultText: result.text,
-                }),
-              ),
-            ];
-            nextToolChoice = "none";
-            continue;
-          }
-          break;
-        }
-        if (toolCalls.length > remainingToolCalls) {
-          toolCalls = toolCalls.slice(0, remainingToolCalls);
-        }
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length > 0 &&
-        shouldCloseoutCancelledSessionWithoutContinuation({
-          taskPrompt: input.packet.taskPrompt,
-          messages,
-        })
-      ) {
-        const maxRounds =
-          activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
-        toolLoopCloseout = {
-          reason: "operator_cancelled",
-          maxRounds,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: hasUsableEvidence(toolTrace),
-        };
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages,
-          maxRounds,
-          reasonLines: [
-            "A previous sub-agent session was cancelled by the operator.",
-            "The latest user message did not ask to continue, resume, or retry that cancelled session.",
-            "Do not call more tools or spawn a replacement session. Produce the final answer from the cancellation evidence already present.",
-            "State what remains unverified and how the user can continue later if they want the cancelled work resumed.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = generated.result;
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        const completedEvidenceText = readCompletedSessionEvidenceText(toolTrace);
-        if (
-          completedEvidenceText &&
-          readMissingBrowserEvidenceDimensionsRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedEvidenceText,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingBrowserEvidenceDimensionsRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                evidenceText: completedEvidenceText,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        break;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readMissingBrowserEvidenceRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-          ...(initialGatewayInput.tools === undefined
-            ? {}
-            : { tools: initialGatewayInput.tools }),
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildMissingBrowserEvidenceRepairPrompt(
-              input.packet.taskPrompt,
-            ),
-          ),
-        ];
-        nextToolChoice = { type: "tool", name: "sessions_spawn" };
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readMissingProductSignalBrowserEvidenceRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-          ...(initialGatewayInput.tools === undefined
-            ? {}
-            : { tools: initialGatewayInput.tools }),
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildMissingProductSignalBrowserEvidenceRepairPrompt(
-              input.packet.taskPrompt,
-            ),
-          ),
-        ];
-        nextToolChoice = { type: "tool", name: "sessions_spawn" };
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readMissingApprovalGateRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-          ...(initialGatewayInput.tools === undefined
-            ? {}
-            : { tools: initialGatewayInput.tools }),
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildMissingApprovalGateRepairPrompt(),
-          ),
-        ];
-        nextToolChoice = { type: "tool", name: "permission_query" };
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readPendingApprovalWaitTimeoutCheckRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildPendingApprovalWaitTimeoutCheckRepairPrompt(),
-          ),
-        ];
-        nextToolChoice = { type: "tool", name: "permission_result" };
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readPrematurePendingApprovalFinalRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildPrematurePendingApprovalRepairPrompt(),
-          ),
-        ];
-        nextToolChoice = { type: "tool", name: "permission_result" };
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readStalePendingApprovalRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildStalePendingApprovalRepairPrompt(),
-          ),
-        ];
-        nextToolChoice = { type: "tool", name: "sessions_spawn" };
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readStaleDeniedApprovalRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildStaleDeniedApprovalRepairPrompt(),
-          ),
-        ];
-        nextToolChoice = "none";
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readApprovalWaitTimeoutCloseoutRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildApprovalWaitTimeoutCloseoutRepairPrompt(),
-          ),
-        ];
-        nextToolChoice = "none";
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readForceApprovalWaitTimeoutLocalCloseoutAfterFailedRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-        })
-      ) {
-        toolLoopCloseout = {
-          reason: "tool_evidence_fallback",
-          maxRounds,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: true,
-        };
-        result = maybeRedactForbiddenLocalUrls({
-          result: buildApprovalWaitTimeoutLocalEvidenceCloseout({
-            selection,
-            evidenceText: readApprovalWaitTimeoutRuntimeEvidence(toolTrace),
-            error: new Error(
-              "approval wait-timeout repair omitted required pending evidence",
-            ),
-          }),
-          packet: input.packet,
-        });
-        break;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        readIncompleteApprovedBrowserActionRepair({
-          taskPrompt: input.packet.taskPrompt,
-          resultText: result.text,
-          messages,
-          repairMarkers,
-          toolTrace,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildIncompleteApprovedBrowserActionRepairPrompt(),
-          ),
-        ];
-        nextToolChoice = { type: "tool", name: "sessions_spawn" };
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length > 0 &&
-        readAwaitingContextSetupNoToolSuppression({
-          taskPrompt: input.packet.taskPrompt,
-          repairMarkers,
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "assistant",
-            content: result.text,
-          },
-          recordRepairPrompt(
-            repairMarkers,
-            buildAwaitingContextSetupNoToolRepairPrompt(
-              input.packet.taskPrompt,
-            ),
-          ),
-        ];
-        nextToolChoice = "none";
-        continue;
-      }
-      if (
-        activeToolLoop &&
-        toolCalls.length === 0 &&
-        containsAnyToolCallForm(result)
-      ) {
-        const maxRounds =
-          activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
-        toolLoopCloseout = {
-          reason: "pseudo_tool_call",
-          maxRounds,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: hasUsableEvidence(toolTrace),
-        };
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages: [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-          ],
-          maxRounds,
-          reasonLines: [
-            "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
-            "Tools are not available through text markup. Do not call more tools.",
-            "Produce only the final user-facing answer from the evidence already present in the conversation.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = generated.result;
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        const completedEvidenceText = readCompletedSessionEvidenceText(toolTrace);
-        if (
-          completedEvidenceText &&
-          readMissingBrowserEvidenceDimensionsRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedEvidenceText,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingBrowserEvidenceDimensionsRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                evidenceText: completedEvidenceText,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        break;
-      }
-      if (!activeToolLoop || toolCalls.length === 0) {
-        if (activeToolLoop) {
-          if (
-            recoveryToolBudget &&
-            recoveryToolCallsBeforeActivation + countNativeToolCalls(toolTrace) >=
-              recoveryToolBudget.maxToolCalls &&
-            readFinalRecoveryBudgetCloseoutRepair({
-              messages,
-              repairMarkers,
-              resultText: result.text,
-            })
-          ) {
-            messages = [
-              ...messages,
-              {
-                role: "assistant",
-                content: result.text,
-              },
-              recordRepairPrompt(
-                repairMarkers,
-                buildFinalRecoveryBudgetCloseoutRepairPrompt(
-                  recoveryToolBudget.maxToolCalls,
-                ),
-              ),
-            ];
-            nextToolChoice = "none";
-            continue;
-          }
-          if (
-            readMissingRequestedTableColumnsRepair({
-              activation: input.activation,
-              taskPrompt: input.packet.taskPrompt,
-              messages,
-              repairMarkers,
-              resultText: result.text,
-            })
-          ) {
-            messages = [
-              ...messages,
-              {
-                role: "assistant",
-                content: result.text,
-              },
-              recordRepairPrompt(
-                repairMarkers,
-                buildMissingRequestedTableColumnsRepairPrompt({
-                  activation: input.activation,
-                  taskPrompt: input.packet.taskPrompt,
-                  messages,
-                  resultText: result.text,
-                }),
-              ),
-            ];
-            nextToolChoice = "none";
-            continue;
-          }
-          if (
-            readExtraneousProviderTableSchemaRepair({
-              activation: input.activation,
-              taskPrompt: input.packet.taskPrompt,
-              messages,
-              repairMarkers,
-              resultText: result.text,
-            })
-          ) {
-            messages = [
-              ...messages,
-              {
-                role: "assistant",
-                content: result.text,
-              },
-              recordRepairPrompt(
-                repairMarkers,
-                buildExtraneousProviderTableSchemaRepairPrompt({
-                  taskPrompt: input.packet.taskPrompt,
-                  resultText: result.text,
-                }),
-              ),
-            ];
-            nextToolChoice = "none";
-            continue;
-          }
-          const sourceBoundedEvidenceText = [
-            readSourceBoundedEvidenceText({
-              taskPrompt: input.packet.taskPrompt,
-              messages,
-              toolTrace,
-            }),
-            readCompletedSessionEvidenceText(toolTrace),
-          ]
-            .filter((text) => text.trim().length > 0)
-            .join("\n\n");
-          if (
-            sourceBoundedEvidenceText &&
-            readSourceEvidenceCarryForwardRepair({
-              taskPrompt: input.packet.taskPrompt,
-              resultText: result.text,
-              messages,
-              repairMarkers,
-              evidenceText: sourceBoundedEvidenceText,
-            })
-          ) {
-            messages = [
-              ...messages,
-              {
-                role: "assistant",
-                content: result.text,
-              },
-              recordRepairPrompt(
-                repairMarkers,
-                buildSourceEvidenceCarryForwardRepairPrompt({
-                  taskPrompt: input.packet.taskPrompt,
-                  resultText: result.text,
-                  evidenceText: sourceBoundedEvidenceText,
-                }),
-              ),
-            ];
-            nextToolChoice = "none";
-            continue;
-          }
-          if (
-            readWeakEvidenceSynthesisRepair({
-              taskPrompt: input.packet.taskPrompt,
-              resultText: result.text,
-              messages,
-              repairMarkers,
-              evidenceText: sourceBoundedEvidenceText,
-            })
-          ) {
-            messages = [
-              ...messages,
-              {
-                role: "assistant",
-                content: result.text,
-              },
-              recordRepairPrompt(
-                repairMarkers,
-                buildWeakEvidenceSynthesisRepairPrompt(),
-              ),
-            ];
-            nextToolChoice = "none";
-            continue;
-          }
-          if (
-            shouldAppendRecoveredTimeoutCloseoutVisibility({
-              resultText: result.text,
-              taskPrompt: input.packet.taskPrompt,
-              messages,
-              toolTrace,
-            })
-          ) {
-            result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
-          } else if (
-            shouldAppendTimeoutContinuationVisibility({
-              taskPrompt: input.packet.taskPrompt,
-              messages,
-              toolTrace,
-            })
-          ) {
-            result = maybeAppendTimeoutContinuationVisibility(result);
-          }
-        }
-        break;
-      }
-      const maxWallClockMs = resolveEffectiveToolLoopWallClockMs({
-        ...(activeToolLoop.maxWallClockMs !== undefined ? { maxWallClockMs: activeToolLoop.maxWallClockMs } : {}),
-        toolCalls,
-      });
-      const requiredTimeoutContinuationPastWallClock =
-        shouldAllowRequiredTimeoutContinuationPastWallClock({
-          taskPrompt: input.packet.taskPrompt,
-          messages,
-          toolCalls,
-          toolTrace,
-        });
-      if (
-        !requiredTimeoutContinuationPastWallClock &&
-        toolTrace.length > 0 &&
-        isPositiveFiniteBudget(maxWallClockMs) &&
-        this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
-      ) {
-        toolLoopCloseout = {
-          reason: "wall_clock_budget",
-          maxRounds,
-          maxWallClockMs,
-          pendingToolCallCount: toolCalls.length,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: hasUsableEvidence(toolTrace),
-        };
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages,
-          maxRounds,
-          reasonLines: [
-            `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
-            "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-            "State uncertainties and missing verification explicitly instead of trying another lookup.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = generated.result;
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        const completedEvidenceText = readCompletedSessionEvidenceText(toolTrace);
-        if (
-          completedEvidenceText &&
-          readMissingBrowserEvidenceDimensionsRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedEvidenceText,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingBrowserEvidenceDimensionsRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                evidenceText: completedEvidenceText,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        break;
-      }
-      if (roundLimitReached(round, maxRounds)) {
-        toolLoopCloseout = {
-          reason: "round_limit",
-          maxRounds,
-          pendingToolCallCount: toolCalls.length,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: hasUsableEvidence(toolTrace),
-        };
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages,
-          maxRounds,
-          reasonLines: [
-            `Tool-use round limit reached (${maxRounds}).`,
-            "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-            "State uncertainties and missing verification explicitly instead of trying another lookup.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = generated.result;
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        break;
-      }
-      const repeatedFailure = findRepeatedFailedToolCall(toolCalls, toolTrace);
-      if (repeatedFailure) {
-        toolLoopCloseout = {
-          reason: "repeated_tool_failure",
-          maxRounds,
-          pendingToolCallCount: toolCalls.length,
-          toolName: repeatedFailure.toolName,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: hasUsableEvidence(toolTrace),
-        };
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages,
-          maxRounds,
-          reasonLines: [
-            `Repeated failing tool call detected: ${repeatedFailure.toolName} failed ${repeatedFailure.failureCount} times with the same arguments.`,
-            "Do not call the same tool again with those arguments, and do not spawn a fallback session for the same target.",
-            "Produce the best final answer from evidence already gathered. If no usable evidence exists, say verification did not complete and name the next operator/user input needed.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = generated.result;
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        break;
-      }
-      const repeatedSessionInspection = findRepeatedSessionInspectionCall(
-        toolCalls,
-        toolTrace,
-        input.packet.taskPrompt,
-        `${input.packet.taskPrompt}\n${sessionContinuationContext}`,
-      );
-      if (repeatedSessionInspection) {
-        toolLoopCloseout = {
-          reason: "repeated_session_inspection",
-          maxRounds,
-          pendingToolCallCount: toolCalls.length,
-          toolName: repeatedSessionInspection.toolName,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: hasUsableEvidence(toolTrace),
-        };
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages,
-          maxRounds,
-          reasonLines: [
-            `Repeated session inspection detected: ${repeatedSessionInspection.toolName} already inspected ${repeatedSessionInspection.sessionKey}.`,
-            "Do not call sessions_history or sessions_list again for the same session.",
-            "Produce the final answer from the session evidence already gathered. If the gathered evidence is insufficient, state exactly what remains unverified and what follow-up is needed.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = generated.result;
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        break;
-      }
-      const excessiveSessionContinuation = findExcessiveSessionContinuationCall(
-        toolCalls,
-        toolTrace,
-      );
-      if (excessiveSessionContinuation) {
-        toolLoopCloseout = {
-          reason: "excessive_session_continuation",
-          maxRounds,
-          pendingToolCallCount: toolCalls.length,
-          toolName: excessiveSessionContinuation.toolName,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: hasUsableEvidence(toolTrace),
-        };
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages,
-          maxRounds,
-          reasonLines: [
-            `Repeated session continuation detected: ${excessiveSessionContinuation.sessionKey} was already continued ${excessiveSessionContinuation.continuationCount} times.`,
-            "Do not call sessions_send again for the same session.",
-            "Produce the final answer from the gathered session evidence now. If the evidence is incomplete, state the exact unverified scope and the bounded follow-up needed.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = generated.result;
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        break;
-      }
-
-      const roundTrace: NativeToolRoundTrace = {
-        round: round + 1,
-        calls: toolCalls.map((call) => ({
-          id: call.id,
-          name: call.name,
-          input: call.input,
-        })),
-        results: [],
-        progress: [],
-      };
-      toolTrace.push(roundTrace);
-      const toolResults = await executeRoleToolCalls({
-        toolLoop: this.toolLoop,
-        runtimeProgressRecorder: this.runtimeProgressRecorder,
-        deferToolObservability: this.deferToolObservability,
-        now: () => this.clock.now(),
-        activation: input.activation,
-        packet: input.packet,
-        toolCalls,
-        toolLoopStartedAtMs,
-        ...(input.signal ? { signal: input.signal } : {}),
-        onProgress: async (call, progress) => {
-          roundTrace.progress?.push(
-            toNativeToolProgressTrace(call, progress, this.clock.now()),
-          );
-          await persistNativeToolTraceSafely({
-            activation: input.activation,
-            toolTrace,
-            nativeToolMessageStore: this.nativeToolMessageStore,
-            now: () => this.clock.now(),
-            defer: this.deferToolObservability,
-            forceBlocking: progress.phase === "started",
-          });
-        },
-        onResult: async (toolResult) => {
-          roundTrace.results.push(toNativeToolResultTrace(toolResult));
-          await persistNativeToolTraceSafely({
-            activation: input.activation,
-            toolTrace,
-            nativeToolMessageStore: this.nativeToolMessageStore,
-            now: () => this.clock.now(),
-            defer: this.deferToolObservability,
-          });
-        },
-      });
-      if (canonicalizeSessionToolTraceCalls(roundTrace, toolResults)) {
-        await persistNativeToolTraceSafely({
-          activation: input.activation,
-          toolTrace,
-          nativeToolMessageStore: this.nativeToolMessageStore,
-          now: () => this.clock.now(),
-          defer: this.deferToolObservability,
-        });
-      }
-      throwIfAborted(input.signal);
-      messages = appendAssistantToolCallMessage(messages, {
-        text: result.text,
-        toolCalls,
-        ...(result.contentBlocks
-          ? { contentBlocks: result.contentBlocks }
-          : {}),
-      });
-      messages = appendToolResultMessages(messages, toolResults);
-      await recordProviderToolProtocolRoundSafely({
-        activation: input.activation,
-        runtimeProgressRecorder:
-          this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
-        now: () => this.clock.now(),
-        defer: this.deferToolObservability,
-        round: round + 1,
-        toolCalls,
-        toolResults,
-        messages,
-      });
-
-      const completedSession = findCompletedSessionEvidence(toolResults);
-      const timeoutSignal = findSubAgentToolTimeout(toolResults);
-      if (
-        timeoutSignal &&
-        readTimedOutApprovedBrowserSessionContinuation({
-          taskPrompt: input.packet.taskPrompt,
-          messages,
-          toolTrace,
-          timeoutSignal,
-          ...(initialGatewayInput.tools === undefined
-            ? {}
-            : { tools: initialGatewayInput.tools }),
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "user",
-            content:
-              buildApprovedBrowserTimeoutContinuationPrompt(timeoutSignal),
-          },
-        ];
-        nextToolChoice = { type: "tool", name: "sessions_send" };
-        continue;
-      }
-      if (
-        timeoutSignal &&
-        readTimedOutSiblingSessionContinuation({
-          taskPrompt: input.packet.taskPrompt,
-          messages,
-          toolTrace,
-          timeoutSignal,
-          ...(initialGatewayInput.tools === undefined
-            ? {}
-            : { tools: initialGatewayInput.tools }),
-        })
-      ) {
-        messages = [
-          ...messages,
-          {
-            role: "user",
-            content: buildCoverageTimeoutContinuationPrompt(timeoutSignal),
-          },
-        ];
-        nextToolChoice = { type: "tool", name: "sessions_send" };
-        continue;
-      }
-      if (completedSession) {
-        const supplementalLocalTimeoutProbe =
-          shouldRunSupplementalLocalTimeoutProbe({
-            taskPrompt: input.packet.taskPrompt,
-            messages,
-            toolTrace,
-            evidenceText: completedSession.finalContents.join("\n\n"),
-            ...(initialGatewayInput.tools === undefined
-              ? {}
-              : { tools: initialGatewayInput.tools }),
-            browserAvailable: allowsSupplementalBrowserProbe(input.packet),
-          });
-        if (supplementalLocalTimeoutProbe) {
-          messages = [
-            ...messages,
-            {
-              role: "user",
-              content: buildSupplementalLocalTimeoutProbePrompt(
-                supplementalLocalTimeoutProbe,
-              ),
-            },
-          ];
-          nextToolChoice = { type: "tool", name: "sessions_spawn" };
-          continue;
-        }
-        const incompleteApprovedBrowserSession =
-          findIncompleteApprovedBrowserSession({
-            results: toolResults,
-            taskPrompt: input.packet.taskPrompt,
-            messages,
-            toolTrace,
-            ...(initialGatewayInput.tools === undefined
-              ? {}
-              : { tools: initialGatewayInput.tools }),
-          });
-        if (incompleteApprovedBrowserSession) {
-          messages = [
-            ...messages,
-            {
-              role: "user",
-              content: buildIncompleteApprovedBrowserSessionContinuationPrompt(
-                incompleteApprovedBrowserSession,
-              ),
-            },
-          ];
-          nextToolChoice = { type: "tool", name: "sessions_send" };
-          continue;
-        }
-        if (
-          readIndependentEvidenceStreamsContinuation({
-            taskPrompt: input.packet.taskPrompt,
-            messages,
-            toolTrace,
-            ...(initialGatewayInput.tools === undefined
-              ? {}
-              : { tools: initialGatewayInput.tools }),
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "user",
-              content: buildIndependentEvidenceStreamContinuationPrompt({
-                requiredStreams: readIndependentEvidenceStreamCount(
-                  input.packet.taskPrompt,
-                ),
-                completedSessions:
-                  countCompletedSessionEvidenceResults(toolTrace),
-              }),
-            },
-          ];
-          nextToolChoice = { type: "tool", name: "sessions_spawn" };
-          continue;
-        }
-        if (
-          readMissingApprovalGateRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: completedSession.finalContents.join("\n\n"),
-            messages,
-            repairMarkers,
-            toolTrace,
-            ...(initialGatewayInput.tools === undefined
-              ? {}
-              : { tools: initialGatewayInput.tools }),
-          })
-        ) {
-          messages = [
-            ...messages,
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingApprovalGateRepairPrompt(),
-            ),
-          ];
-          nextToolChoice = { type: "tool", name: "permission_query" };
-          continue;
-        }
-        const forcedPermissionResultCall =
-          buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
-            taskPrompt: input.packet.taskPrompt,
-            toolTrace,
-            ...(initialGatewayInput.tools === undefined
-              ? {}
-              : { tools: initialGatewayInput.tools }),
-        });
-        if (forcedPermissionResultCall) {
-          const forcedRound = await executeRuntimeForcedToolRound({
-            toolLoop: this.toolLoop,
-            runtimeProgressRecorder: this.runtimeProgressRecorder,
-            deferToolObservability: this.deferToolObservability,
-            now: () => this.clock.now(),
-            activation: input.activation,
-            packet: input.packet,
-            messages,
-            toolTrace,
-            toolCalls: [forcedPermissionResultCall],
-            round: toolTrace.length + 1,
-            toolLoopStartedAtMs,
-            ...(input.signal ? { signal: input.signal } : {}),
-            assistantText: FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
-            persistNativeToolTrace: (options) =>
-              persistNativeToolTraceSafely({
-                activation: input.activation,
-                toolTrace,
-                nativeToolMessageStore: this.nativeToolMessageStore,
-                now: () => this.clock.now(),
-                defer: this.deferToolObservability,
-                ...(options?.forceBlocking === undefined
-                  ? {}
-                  : { forceBlocking: options.forceBlocking }),
-              }),
-            recordProviderToolProtocolRound: (roundInput) =>
-              recordRuntimeForcedToolRoundProviderProtocolSafely({
-                activation: input.activation,
-                runtimeProgressRecorder:
-                  this.toolLoop?.runtimeProgressRecorder ??
-                  this.runtimeProgressRecorder,
-                now: () => this.clock.now(),
-                defer: this.deferToolObservability,
-                ...roundInput,
-              }),
-          });
-          messages = forcedRound.messages;
-          continue;
-        }
-        const preserveRecoveredTimeoutCloseout =
-          shouldPreserveRecoveredTimeoutCloseout({
-            taskPrompt: input.packet.taskPrompt,
-            messages,
-            toolTrace,
-            evidenceText: completedSession.finalContents.join("\n\n"),
-          });
-        const completedSessionCloseout: ToolLoopCloseoutMetadata = {
-          reason: "completed_sub_agent_final",
-          maxRounds,
-          toolName: completedSession.toolName,
-          finalContentCount: completedSession.finalContents.length,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-          evidenceAvailable: true,
-        };
-        toolLoopCloseout ??= completedSessionCloseout;
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages,
-          maxRounds,
-          reasonLines: [
-            `${completedSession.toolName} returned completed delegated session evidence.`,
-            "Do not call sessions_history or sessions_list just to restate this delegated result.",
-            "Use the delegated session evidence below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
-            "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
-            "Do not add DNS/IP resolution, IANA allocation details, production-environment bans, real-service claims, security-scanner claims, or abuse-risk claims unless those exact facts are stated in this source content.",
-            "If the source states a narrow scope limit or usage caveat, preserve its exact wording (or state that wider use is outside the verified scope); do not upgrade a narrow caveat into a broader production-environment or real-service ban.",
-            ...buildCompletedBrowserEvidenceDimensionCarryForwardLines({
-              taskPrompt: input.packet.taskPrompt,
-              finalContents: completedSession.finalContents,
-            }),
-            "If a requested dimension is missing or uncertain in the source content, write not verified.",
-            "Preserve uncertainty labels. Preserve source URLs only when the original user did not forbid links or source URLs.",
-            "For each Source N evidence block below, carry at least one verified fact into the final answer or explicitly say that source did not verify a required dimension.",
-            "For approval-gated work, include the approved action, the evidence observed after the approved action, and the residual risk or no-external-side-effect boundary.",
-            ...(preserveRecoveredTimeoutCloseout
-              ? [
-                  "This completed source followed a timeout or timed-out continuation.",
-                  "Preserve user-visible timeout closeout: say what was recovered, whether the timeout still limits the conclusion, and what continue/retry/longer-timeout path remains if future evidence is missing.",
-                  "Do not reduce the timeout closeout to 'no action required' solely because resumed evidence eventually arrived.",
-                ]
-              : []),
-            ...(completedSession.browserRecoverySummaries.length
-              ? [
-                  "The source also includes browser continuity metadata.",
-                  "If the user asked to continue, recover, reopen, reconnect, or handle an unavailable browser session, include one concise user-visible continuity sentence in the final answer.",
-                  ...completedSession.browserRecoverySummaries.map(
-                    (summary, index) =>
-                      `Browser continuity ${index + 1}: ${summary}`,
-                  ),
-                ]
-              : []),
-            ...completedSession.finalContents.map(
-              (content, index) =>
-                `Source ${index + 1} evidence:\n${sliceUtf8(content, 8 * 1024)}`,
-            ),
-          ],
-        });
-        throwIfAborted(input.signal);
-        const browserRecoverySummaries = dedupeStrings([
-          ...completedSession.browserRecoverySummaries,
-          ...readBrowserRecoverySummariesFromTrace(toolTrace),
-        ]);
-        result = maybeAppendBrowserRecoveryVisibility({
-          result: generated.result,
-          taskPrompt: input.packet.taskPrompt,
-          browserRecoverySummaries,
-        });
-        result = maybeAppendBrowserFailureBucketVisibility({
-          result,
-          taskPrompt: input.packet.taskPrompt,
-          evidenceText: [
-            collectToolResultContentText(toolResults),
-            ...browserRecoverySummaries,
-            ...completedSession.finalContents,
-          ].join("\n\n"),
-        });
-        const shouldAppendRecoveredTimeoutCloseout =
-          preserveRecoveredTimeoutCloseout ||
-          shouldAppendRecoveredTimeoutCloseoutVisibility({
-            resultText: result.text,
-            taskPrompt: input.packet.taskPrompt,
-            messages,
-            toolTrace,
-          });
-        if (shouldAppendRecoveredTimeoutCloseout) {
-          result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
-        } else if (
-          shouldAppendTimeoutContinuationVisibility({
-            taskPrompt: input.packet.taskPrompt,
-            messages,
-            toolTrace,
-          })
-        ) {
-          result = maybeAppendTimeoutContinuationVisibility(result);
-        }
-        result = maybeRedactForbiddenLocalUrls({
-          result,
-          packet: input.packet,
-        });
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        if (
-          readMissingRequestedTableColumnsRepair({
-            activation: input.activation,
-            taskPrompt: input.packet.taskPrompt,
-            messages,
-            repairMarkers,
-            resultText: result.text,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingRequestedTableColumnsRepairPrompt({
-                activation: input.activation,
-                taskPrompt: input.packet.taskPrompt,
-                messages,
-                resultText: result.text,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          readExtraneousProviderTableSchemaRepair({
-            activation: input.activation,
-            taskPrompt: input.packet.taskPrompt,
-            messages,
-            repairMarkers,
-            resultText: result.text,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildExtraneousProviderTableSchemaRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          readMissingBrowserEvidenceRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            toolTrace,
-            tools: initialGatewayInput.tools,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingBrowserEvidenceRepairPrompt(
-                input.packet.taskPrompt,
-              ),
-            ),
-          ];
-          nextToolChoice = { type: "tool", name: "sessions_spawn" };
-          continue;
-        }
-        if (
-          readMissingProductSignalBrowserEvidenceRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            toolTrace,
-            tools: initialGatewayInput.tools,
-            evidenceText: completedSession.finalContents.join("\n\n"),
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingProductSignalBrowserEvidenceRepairPrompt(
-                input.packet.taskPrompt,
-              ),
-            ),
-          ];
-          nextToolChoice = { type: "tool", name: "sessions_spawn" };
-          continue;
-        }
-        const completedProductBriefEvidenceText = [
-          completedSession.finalContents.join("\n\n"),
-          collectToolResultContentText(toolResults),
-        ]
-          .filter((text) => text.trim().length > 0)
-          .join("\n\n");
-        if (
-          completedProductBriefEvidenceText &&
-          readSourceEvidenceCarryForwardRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedProductBriefEvidenceText,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildSourceEvidenceCarryForwardRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                evidenceText: completedProductBriefEvidenceText,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          readTimeoutFollowupFinalGuidanceRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedProductBriefEvidenceText,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildTimeoutFollowupFinalGuidanceRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                evidenceText: completedProductBriefEvidenceText,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          readMissingRequestedNextActionRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingRequestedNextActionRepairPrompt(),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        const missingRequiredDeliverables = findMissingRequiredFinalDeliverables(
-          {
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-          },
-        );
-        if (
-          missingRequiredDeliverables.length > 0 &&
-          !hasMissingRequiredFinalDeliverablesRepairPrompt(repairMarkers)
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingRequiredFinalDeliverablesRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                missing: missingRequiredDeliverables,
-                evidenceText: completedSession.finalContents.join("\n\n"),
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          completedProductBriefEvidenceText &&
-          readSourceEvidenceCarryForwardRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedProductBriefEvidenceText,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildSourceEvidenceCarryForwardRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                evidenceText: completedProductBriefEvidenceText,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          readTimeoutFollowupFinalGuidanceRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedProductBriefEvidenceText,
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildTimeoutFollowupFinalGuidanceRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                evidenceText: completedProductBriefEvidenceText,
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          completedSession.finalContents.length > 0 &&
-          readMissingBrowserEvidenceDimensionsRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedSession.finalContents.join("\n\n"),
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildMissingBrowserEvidenceDimensionsRepairPrompt({
-                taskPrompt: input.packet.taskPrompt,
-                resultText: result.text,
-                evidenceText: completedSession.finalContents.join("\n\n"),
-              }),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          completedSession.finalContents.length > 0 &&
-          readFalseEvidenceBlockedSynthesisRepair({
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: completedSession.finalContents.join("\n\n"),
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildFalseEvidenceBlockedSynthesisRepairPrompt(
-                completedSession.finalContents,
-              ),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        if (
-          readWeakEvidenceSynthesisRepair({
-            taskPrompt: input.packet.taskPrompt,
-            resultText: result.text,
-            messages,
-            repairMarkers,
-            evidenceText: [
-              completedSession.finalContents.join("\n\n"),
-              collectToolResultContentText(toolResults),
-            ]
-              .filter((text) => text.trim().length > 0)
-              .join("\n\n"),
-          })
-        ) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: result.text,
-            },
-            recordRepairPrompt(
-              repairMarkers,
-              buildWeakEvidenceSynthesisRepairPrompt(),
-            ),
-          ];
-          nextToolChoice = "none";
-          continue;
-        }
-        break;
-      }
-
-      if (timeoutSignal) {
-        const supplementalLocalTimeoutProbe =
-          timeoutSignal.agentId !== "browser"
-            ? shouldRunSupplementalLocalTimeoutProbe({
-                taskPrompt: input.packet.taskPrompt,
-                messages,
-                toolTrace,
-                evidenceText: collectToolResultContentText(toolResults),
-                ...(initialGatewayInput.tools === undefined
-                  ? {}
-                  : { tools: initialGatewayInput.tools }),
-                browserAvailable: allowsSupplementalBrowserProbe(input.packet),
-              })
-            : null;
-        if (supplementalLocalTimeoutProbe) {
-          messages = [
-            ...messages,
-            {
-              role: "user",
-              content: buildSupplementalLocalTimeoutProbePrompt(
-                supplementalLocalTimeoutProbe,
-              ),
-            },
-          ];
-          nextToolChoice = { type: "tool", name: "sessions_spawn" };
-          continue;
-        }
-        toolLoopCloseout = {
-          reason: "sub_agent_timeout",
-          maxRounds,
-          toolName: timeoutSignal.toolName,
-          ...(timeoutSignal.timeoutSeconds == null
-            ? {}
-            : { timeoutSeconds: timeoutSignal.timeoutSeconds }),
-          evidenceAvailable: timeoutSignal.evidenceAvailable,
-          toolCallCount: countNativeToolCalls(toolTrace),
-          roundCount: toolTrace.length,
-        };
-        throwIfAborted(input.signal);
-        const generated = await synthesizeFinalAfterToolRoundLimit({
-          messages,
-          maxRounds,
-          reasonLines: [
-            `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
-            "Do not call more tools or spawn fallback sessions for this timeout.",
-            "Do not copy internal fetch URLs, local fixture URLs, session keys, or raw tool arguments into the final answer unless the original user requested those exact raw identifiers.",
-            timeoutSignal.evidenceAvailable
-              ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
-              : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
-            "Include one concise continuation sentence: the user can continue the same source check if the missing evidence is still worth waiting for.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = maybeAppendTimeoutContinuationVisibility(generated.result);
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        break;
-      }
-    }
-
-    if (reductionSnapshot) {
-      await recordReductionBoundarySafely({
-        activation: input.activation,
-        packet: input.packet,
-        runtimeProgressRecorder: this.runtimeProgressRecorder,
-        selection,
-        reduction: reductionSnapshot,
-      });
-    }
-
-    if (
-      shouldAppendRecoveredTimeoutCloseoutVisibility({
-        resultText: result.text,
-        taskPrompt: input.packet.taskPrompt,
-        messages,
-        toolTrace,
+        messages: initialGatewayInput.messages,
       })
-    ) {
-      result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
-    }
-    result = maybeAppendRequiredTimeoutFollowupVisibility({
-      result,
-      taskPrompt: input.packet.taskPrompt,
-      messages,
-      toolTrace,
+      : 0;
+    return await this.runEngine({
+      input: { ...input, signal: runDeadline.signal },
+      selection,
+      activeToolLoop,
+      initialGatewayInput,
+      modelCallTrace,
+      recoveryToolBudget,
+      recoveryToolCallsBeforeActivation,
     });
-    result = maybeAppendBrowserRecoveryResidualRiskVisibility({
-      result,
-      taskPrompt: input.packet.taskPrompt,
-      messages,
-      toolTrace,
-    });
-    result = maybeAppendBrowserFailureBucketVisibility({
-      result,
-      taskPrompt: input.packet.taskPrompt,
-      evidenceText: collectToolTraceResultContent(toolTrace),
-    });
-
-    const finalText = enforceRequestedThreeLineLabelShape({
-      taskPrompt: input.packet.taskPrompt,
-      resultText: result.text,
-    });
-    const missionReport = buildRuntimeDerivedMissionReport(toolLoopCloseout);
-
-    return {
-      content: finalText,
-      mentions: extractMentions(finalText),
-      metadata: {
-        adapterName: result.adapterName,
-        providerId: result.providerId,
-        modelId: result.modelId,
-        ...(result.modelChainId ? { modelChainId: result.modelChainId } : {}),
-        ...(result.attemptedModelIds?.length
-          ? { attemptedModelIds: result.attemptedModelIds }
-          : {}),
-        protocol: result.protocol,
-        stopReason: result.stopReason,
-        ...(reduction ? { requestEnvelopeReduction: reduction } : {}),
-        ...(result.requestEnvelope
-          ? { requestEnvelope: result.requestEnvelope }
-          : {}),
-        ...(memoryFlushes.length
-          ? { preCompactionMemoryFlushes: memoryFlushes }
-          : {}),
-        ...(toolTrace.length
-          ? {
-              toolUse: {
-                rounds: toolTrace,
-                toolCallCount: toolTrace.reduce(
-                  (sum, round) => sum + round.calls.length,
-                  0,
-                ),
-              },
-            }
-          : {}),
-        ...(modelCallTrace.length
-          ? { modelUse: summarizeModelUseTrace(modelCallTrace) }
-          : {}),
-        ...(toolLoopCloseout ? { toolLoopCloseout } : {}),
-        ...(missionReport ? { missionReport } : {}),
-      },
-    };
   }
 
   /**
-   * ReAct-engine implementation of the role-runtime tool loop. The engine path now
-   * mirrors the inline loop's normalization, execution-budget handling,
-   * continuation/repair closeouts, finalization appenders, and observability
-   * metadata, while production still defaults to the inline path until the engine
-   * has soaked behind the feature flag.
+   * ReAct-engine implementation of the role-runtime tool loop.
    *
    * This method is intentionally still an adapter-heavy bridge: it translates the
    * role-runtime policy surface into agent-core hooks. The next cleanup is to
@@ -2503,20 +276,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
    * new role-engine policy logic — normalization, permission, continuation,
    * execution-budget, closeout, repair, completed-closeout, finalization, and
    * evidence/fact rules — MUST be added in `react-engine/*` modules, never as new
-   * product-policy branches directly inside `runViaReActEngine`. This adapter
+   * product-policy branches directly inside `runEngine`. This adapter
    * only wires those modules and assembles the final `GeneratedRoleReply`.
    * `react-engine/*` modules must not import this file.
    */
-  private async runViaReActEngine(args: {
-    input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal };
+  private async runEngine(args: {
+    input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal; };
     selection: GenerateWithEnvelopeRetryInput["selection"];
     activeToolLoop: RoleToolLoopOptions | undefined;
     initialGatewayInput: GenerateTextInput;
     modelCallTrace: ModelCallBoundaryTrace[];
-    recoveryToolBudget: { maxToolCalls: number } | null;
+    recoveryToolBudget: { maxToolCalls: number; } | null;
     recoveryToolCallsBeforeActivation: number;
   }): Promise<GeneratedRoleReply> {
     const { activation, packet, signal } = args.input;
+    const clockValues: number[] = [];
+    const runNow = () => {
+      const value = this.clock.now();
+      clockValues.push(value);
+      return value;
+    };
+    const runStartedAt = runNow();
     const {
       selection,
       activeToolLoop,
@@ -2525,6 +305,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       recoveryToolBudget,
       recoveryToolCallsBeforeActivation,
     } = args;
+    const lifecycle = createRunLifecycleRecorder({
+      activation,
+      recorder: this.runtimeProgressRecorder,
+    });
+    await lifecycle.record({ kind: "run_started", at: runStartedAt });
 
     // Stage 8 cleanup (Batch 0.5): the per-run engine policy trace. It records the
     // per-hook decision sequence (which policy fired or skipped, in which phase)
@@ -2532,11 +317,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     // snapshot is surfaced into debug metadata behind the engine flag (this whole
     // method is engine-only) so a production-behind-flag failure is diagnosable.
     const policyTrace = createEnginePolicyTrace();
+    const compactionTrace: RunTraceCompactionEvent[] = [];
+    const pruningTrace: RunTracePruningEvent[] = [];
+    const externalizationTrace: RunTraceExternalizationEvent[] = [];
+    const runJournal = this.runJournalStore
+      ? createRunJournal({
+          store: this.runJournalStore,
+          activation,
+          taskFingerprint: fingerprintRunJournalTask(activation),
+          now: runNow,
+        })
+      : undefined;
+    const restoredJournal = runJournal
+      ? await loadRunJournalSafely(runJournal, activation)
+      : null;
+    const replayResumeState: RunJournalState | undefined = restoredJournal
+      ? structuredClone({
+          messages: restoredJournal.messages,
+          nextRound: restoredJournal.nextRound,
+          repairMarkers: restoredJournal.repairMarkers,
+          toolTrace: restoredJournal.toolTrace,
+          planState: restoredJournal.planState,
+        })
+      : undefined;
+    const engineInitialMessages =
+      restoredJournal?.messages ?? initialGatewayInput.messages;
+    const initialRound = restoredJournal?.nextRound ?? 0;
 
     const synthesizeFinalAfterToolRoundLimit =
       createTerminalFinalSynthesisRunner({
         gateway: this.gateway,
-        now: () => this.clock.now(),
+        now: runNow,
         runtimeProgressRecorder: this.runtimeProgressRecorder,
         preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
         activation,
@@ -2544,6 +355,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         selection,
         baseGatewayInput: initialGatewayInput,
         modelCallTrace,
+        lifecycle,
       });
 
     const toolDefinitions = initialGatewayInput.tools ?? [];
@@ -2551,12 +363,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       toolDefinitions,
       activeToolLoop,
     });
+    const toolArgumentValidator = createToolArgumentValidator(toolDefinitions);
 
-    const ctx: RoleToolContext = { activation, packet, repairMarkers: [], ...(signal ? { signal } : {}) };
+    const ctx: RoleToolContext = {
+      activation,
+      packet,
+      repairMarkers: restoredJournal?.repairMarkers ?? [],
+      ...(signal ? { signal } : {}),
+      ...(initialGatewayInput.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: initialGatewayInput.deadlineAt }),
+    };
     const taskFacts = buildTaskFacts({
       taskPrompt: packet.taskPrompt,
       activation,
-      messages: initialGatewayInput.messages,
+      messages: engineInitialMessages,
     });
     const permissionPolicy = createPermissionPolicy();
     const executionBudget = createExecutionBudgetController();
@@ -2565,21 +386,33 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const repairPolicy = createRepairPolicyRegistry();
     const completedCloseout = createCompletedCloseoutController();
     const terminalCloseout = createTerminalCloseoutController();
+    const taskPlanController = createTaskPlanController();
     const evidenceLedger = createEvidenceLedger();
-    const toolLoopStartedAtMs = this.clock.now();
+    const toolLoopStartedAtMs = runNow();
     const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
     // Per-run closeout state: hooks fire across different engine callbacks, so a
     // single EngineRunState instance owns what the inline loop keeps as locals
     // (toolLoopCloseout/result/reduction/memoryFlushes/completed signals).
     const runState = createRoleEngineRunState();
-    const toolTrace: NativeToolRoundTrace[] = [];
+    const toolTrace: NativeToolRoundTrace[] =
+      restoredJournal?.toolTrace ?? [];
+    let latestJournalState = {
+      messages: engineInitialMessages,
+      nextRound: initialRound,
+      repairMarkers: ctx.repairMarkers ?? [],
+      toolTrace,
+      planState: readTaskPlanState(
+        engineInitialMessages,
+        restoredJournal?.planState ?? [],
+      ),
+    };
     const runEvidence = evidenceLedger.forRun({
       taskPrompt: packet.taskPrompt,
       toolTrace,
     });
     const buildEngineFinalResponse = createEngineFinalResponseBuilder({
       taskPrompt: packet.taskPrompt,
-      initialMessages: initialGatewayInput.messages,
+      initialMessages: engineInitialMessages,
       readToolTraceResultContent: (messages) =>
         runEvidence.snapshot(messages).toolTraceResultContent,
       policyTrace,
@@ -2591,37 +424,114 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       runtimeProgressRecorder: this.runtimeProgressRecorder,
       nativeToolMessageStore: this.nativeToolMessageStore,
       deferToolObservability: this.deferToolObservability,
-      now: () => this.clock.now(),
+      now: runNow,
       activation,
     });
+    const mapToolResultsForHistory = (results: RoleToolExecutionResult[]) =>
+      this.toolResultHistoryExternalizer
+        ? this.toolResultHistoryExternalizer.externalize(results, {
+            threadId: activation.thread.threadId,
+            runKey: activation.runState.runKey,
+            onExternalized: (artifact) => {
+              externalizationTrace.push({
+                round: toolTrace.at(-1)?.round ?? 0,
+                toolCallId: artifact.toolCallId,
+                toolName: artifact.toolName,
+                bytes: artifact.sizeBytes,
+                artifactId: artifact.artifactId,
+                sha256: artifact.sha256,
+              });
+            },
+          })
+        : Promise.resolve(results);
     const executeForcedRuntimeToolRound =
       createRoleEngineRuntimeForcedToolRoundRunner({
         toolLoop: this.toolLoop,
         runtimeProgressRecorder: this.runtimeProgressRecorder,
         nativeToolMessageStore: this.nativeToolMessageStore,
         deferToolObservability: this.deferToolObservability,
-        now: () => this.clock.now(),
+        now: runNow,
         activation,
         packet,
         toolTrace,
         observer,
         toolLoopStartedAtMs,
+        mapToolResultsForHistory,
         ...(signal ? { signal } : {}),
       });
+    let compactionController: ReturnType<typeof createCompactionController>;
     const engineModel = createRoleEngineModelClient({
       gateway: this.gateway,
-      now: () => this.clock.now(),
+      now: runNow,
       preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
       activation,
       packet,
       selection,
       baseGatewayInput: initialGatewayInput,
       modelCallTrace,
+      lifecycle,
       maxRounds,
       activeToolLoop: Boolean(activeToolLoop),
       runtimeProgressRecorder: this.runtimeProgressRecorder,
+      onPruning: (snapshot, round) => {
+        if (!snapshot) return;
+        pruningTrace.push({
+          round,
+          prunedToolResults: snapshot.prunedToolResults,
+          toolResultBytesBefore: snapshot.toolResultBytesBefore,
+          toolResultBytesAfter: snapshot.toolResultBytesAfter,
+          messageCountBefore: snapshot.messageCountBefore,
+          messageCountAfter: snapshot.messageCountAfter,
+          reasons: snapshot.reasons,
+        });
+      },
       executionBudget,
       runState,
+      forceCompact: ({ messages, round }) =>
+        compactionController.forceRoundMessages(messages, round, signal),
+    });
+    compactionController = createCompactionController({
+      taskPrompt: packet.taskPrompt,
+      estimateTokenBudget: (estimateInput) =>
+        engineModel.estimateTokenBudget(estimateInput),
+      summarize: createRuntimeCheckpointSummarizer({
+        gateway: this.gateway,
+        selection,
+        modelCallTrace,
+        lifecycle,
+        now: runNow,
+        metadata: {
+          roleId: activation.runState.roleId,
+          threadId: activation.thread.threadId,
+          flowId: activation.flow.flowId,
+        },
+      }),
+      readPlanState: (messages, previousPlanState) =>
+        readTaskPlanState(messages, previousPlanState),
+      ...(initialGatewayInput.tools === undefined
+        ? {}
+        : { tools: initialGatewayInput.tools }),
+      enabled: process.env["TURNKEYAI_LOOP_COMPACTION"] !== "0",
+      onCompaction: (event) => compactionTrace.push(event),
+      onCompactionLifecycle: (event) => {
+        void lifecycle.record({
+          kind: `compaction_${event.kind}`,
+          at: runNow(),
+          round: event.round,
+          forced: event.forced,
+          consecutiveFailures: event.consecutiveFailures,
+          microcompactedToolResults: event.microcompactedToolResults,
+          ...(event.reason ? { reason: event.reason } : {}),
+        });
+      },
+      onError: (error) => {
+        console.error("runtime checkpoint compaction failed", {
+          threadId: activation.thread.threadId,
+          flowId: activation.flow.flowId,
+          taskId: activation.handoff.taskId,
+          error,
+        });
+      },
     });
     const runAgent = createRoleEngineAgentRunner<RoleToolContext>({
       model: engineModel.model,
@@ -2635,6 +545,40 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       // controllers/registries, which record their own fine-grained policy ids into
       // the same trace at their own call sites.
       hooks: traceEngineHooks({
+        onRoundMessages: async (messages, round, hookCtx) => {
+          const compacted = await compactionController.applyRoundMessagesHook(
+            messages,
+            round,
+            signal,
+          );
+          const planState = readTaskPlanState(
+            compacted.messages,
+            latestJournalState.planState,
+          );
+          const planned = taskPlanController.applyRoundMessagesHook({
+            messages: compacted.messages,
+            round,
+            tools: toolDefinitions,
+            toolTrace,
+            planState,
+            repairMarkers: (hookCtx.repairMarkers ??= []),
+          });
+          latestJournalState = {
+            messages: planned.messages,
+            nextRound: round,
+            repairMarkers: hookCtx.repairMarkers ?? [],
+            toolTrace,
+            planState,
+          };
+          if (runJournal) {
+            await checkpointRunJournalSafely(
+              runJournal,
+              latestJournalState,
+              activation,
+            );
+          }
+          return planned;
+        },
         // Tool-call normalization — the engine's full port of the inline pipeline
         // (Stage 8B Batch B). Runs every active-loop round before execution and
         // before the current round is recorded in toolTrace, so each step's trace
@@ -2643,6 +587,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // ordered pipeline, and applies final-recovery budget truncation after
         // normalization. Side-effect permission gating is unchanged.
         onToolCalls: (calls, state, hookCtx) => {
+          if (!activeToolLoop) {
+            return [];
+          }
           return applyEngineToolCallsHook({
             calls,
             active: Boolean(activeToolLoop),
@@ -2660,37 +607,35 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               : { capabilityInspection: packet.capabilityInspection }),
           });
         },
-        // Stage 8B (Batch E — T7 execution budget plane): the per-turn tool-call
-        // execution cap (inline executeToolCalls :5343-5350) is applied HERE, in
-        // onBeforeExecute, NOT inside runToolBatch — so agent-core emits tool_started
-        // only for the executable calls. The over-cap calls become skipped-only
-        // `tool_call_limit_exceeded` results (via the shared
-        // buildToolCallLimitExceededResult helper) with NO "started" progress,
-        // matching inline (whose over-cap calls are skipped-only). agent-core orders
-        // them AFTER the executed results (executed-then-rejected), the inline order.
-        // Runs after onToolCalls (whose final-recovery-budget truncation already
-        // shaped `calls`), so `calls.length` is the requested count the inline
-        // executor sees (its `input.toolCalls.length`).
+        // Validate against the exact schemas offered to this run before applying
+        // the per-round execution cap. Invalid calls become synthetic tool errors,
+        // never emit tool_started, and do not consume execution budget.
         onBeforeExecute: (calls) =>
-          executionBudget.applyEngineBeforeExecuteHook({
+          applyToolArgumentValidationBeforeAdmission({
             calls,
-            ...(activeToolLoop ? { activeToolLoop } : {}),
+            validator: toolArgumentValidator,
+            admit: (validatedCalls) =>
+              executionBudget.applyEngineBeforeExecuteHook({
+                calls: validatedCalls,
+                ...(activeToolLoop ? { activeToolLoop } : {}),
+              }),
           }),
         // Honor the remaining execution limits the per-call default bypasses:
         // order-dependent serialization, bounded concurrency, and per-chunk
-        // wall-clock aborts — reusing the same helpers the inline executeToolCalls
-        // uses, rather than refactoring that heavily-tested method. `calls` here is
-        // already the executable subset (onBeforeExecute applied the per-turn cap).
+        // wall-clock aborts. `calls` here is already the executable subset (schema
+        // validation and the per-turn cap ran in onBeforeExecute).
         runToolBatch: async (calls, _runOne, hookCtx) =>
-          // The over-cap skipped results are produced by onBeforeExecute (above) and
-          // ordered by agent-core AFTER these executed results, matching inline.
+          // The over-cap skipped results are produced by onBeforeExecute (above)
+          // and ordered by agent-core after these executed results.
           executionBudget.runEngineToolBatchHook({
             calls,
             ctx: hookCtx,
-            now: () => this.clock.now(),
+            now: runNow,
             toolLoopStartedAtMs,
             ...(activeToolLoop ? { activeToolLoop } : {}),
           }),
+        onToolResultsForHistory: (results) =>
+          mapToolResultsForHistory(results as RoleToolExecutionResult[]),
         // Stage 7 S1: pre-execute tool suppression. When the model returns tool
         // calls on a setup-only "awaiting context" turn, the inline loop drops
         // them and forces a tool-free round (inline :1010-1034). Mirror that via
@@ -2733,7 +678,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               continuation,
               executionBudget,
               evidence: runEvidence,
-              now: () => this.clock.now(),
+              now: runNow,
               toolLoopStartedAtMs,
               ...(activeToolLoop?.maxWallClockMs === undefined
                 ? {}
@@ -2943,13 +888,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
                 synthesizeRepair: async ({ gatewayInput }) =>
                   generateWithEnvelopeRetry({
                     gateway: this.gateway,
-                    now: () => this.clock.now(),
+                    now: runNow,
                     preCompactionMemoryFlusher: this.preCompactionMemoryFlusher,
                     activation,
                     packet,
                     selection,
                     gatewayInput,
                     modelCallTrace,
+                    lifecycle,
                     tracePhase: "final_synthesis_repair",
                   }),
                 synthesizeToolCallArtifactCleanup:
@@ -3030,12 +976,65 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }, policyTrace),
     });
 
-    const finalText = await runAgent({
-      messages: initialGatewayInput.messages,
-      ctx,
-      ...(signal ? { signal } : {}),
-      observer,
-    });
+    let finalText: string;
+    try {
+      finalText = await runAgent({
+        messages: engineInitialMessages,
+        ...(initialRound > 0 ? { initialRound } : {}),
+        ctx,
+        ...(signal ? { signal } : {}),
+        observer,
+      });
+    } catch (error) {
+      const completedAt = runNow();
+      await lifecycle.record({
+        kind: "run_terminal",
+        at: completedAt,
+        status: isRunDeadlineExceeded(signal?.reason)
+          ? "deadline"
+          : signal?.aborted
+            ? "cancelled"
+            : "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      const closeoutReason = runState.toolLoopCloseout()?.reason;
+      throw attachEngineRunDiagnostics(error, {
+        runTrace: buildRunTrace({
+          startedAt: runStartedAt,
+          completedAt,
+          resumedAfterCrash: restoredJournal?.resumedAfterCrash === true,
+          modelCalls: modelCallTrace,
+          lifecycle: lifecycle.snapshot(),
+          toolRounds: toolTrace,
+          policyEntries: policyTrace.snapshot(),
+          compactions: compactionTrace,
+          pruning: pruningTrace,
+          externalizations: externalizationTrace,
+          ...(closeoutReason
+            ? { closeoutReason: closeoutReason as EngineCloseoutReason }
+            : {}),
+          finalText: "",
+          failureCategory: classifyRunFailure(error),
+        }),
+      });
+    }
+
+    throwIfAborted(signal);
+
+    if (runJournal) {
+      await completeRunJournalSafely(
+        runJournal,
+        {
+          ...latestJournalState,
+          messages: [
+            ...(runState.finalMessages() ?? latestJournalState.messages),
+          ],
+          repairMarkers: ctx.repairMarkers ?? [],
+          toolTrace,
+        },
+        activation,
+      );
+    }
 
     await recordEngineReductionBoundary({
       activation,
@@ -3045,7 +1044,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       reduction: runState.reductionSnapshot(),
     });
 
-    return buildEngineFinalResponse({
+    const completedAt = runNow();
+    const reply = buildEngineFinalResponse({
       finalText,
       closeoutResult: runState.closeoutResult(),
       lastModelResult: engineModel.lastResult(),
@@ -3055,9 +1055,118 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       reduction: runState.reduction(),
       memoryFlushes: runState.memoryFlushes(),
       toolLoopCloseout: runState.toolLoopCloseout(),
+      runTrace: {
+        startedAt: runStartedAt,
+        completedAt,
+        resumedAfterCrash: restoredJournal?.resumedAfterCrash === true,
+        modelCalls: modelCallTrace,
+        lifecycle: lifecycle.snapshot(),
+        toolRounds: toolTrace,
+        policyEntries: policyTrace.snapshot(),
+        compactions: compactionTrace,
+        pruning: pruningTrace,
+        externalizations: externalizationTrace,
+        ...(runState.toolLoopCloseout()?.reason
+          ? {
+              closeoutReason: runState.toolLoopCloseout()!
+                .reason as EngineCloseoutReason,
+            }
+          : {}),
+      },
+      runReplay: {
+        runtimeTopology: {
+          runtimeProgressRecorder: this.runtimeProgressRecorder !== undefined,
+          nativeToolMessageStore: this.nativeToolMessageStore !== undefined,
+          runJournalStore: this.runJournalStore !== undefined,
+          deferToolObservability: this.deferToolObservability,
+        },
+        toolDefinitions,
+        toolLoop: {
+          maxRounds,
+          ...(activeToolLoop?.maxWallClockMs === undefined
+            ? {}
+            : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
+          ...(activeToolLoop?.maxParallelToolCalls === undefined
+            ? {}
+            : {
+                maxParallelToolCalls:
+                  activeToolLoop.maxParallelToolCalls,
+              }),
+          ...(activeToolLoop?.maxToolCallsPerRound === undefined
+            ? {}
+            : {
+                maxToolCallsPerRound:
+                  activeToolLoop.maxToolCallsPerRound,
+              }),
+        },
+        artifactExternalizationEnabled:
+          this.toolResultHistoryExternalizer !== undefined,
+        ...(replayResumeState
+          ? { resumeState: replayResumeState }
+          : {}),
+        clockValues,
+        toolResults: observer.replayToolResultsSnapshot(),
+        modelCalls: modelCallTrace,
+        policyEntries: policyTrace.snapshot(),
+      },
     });
+    await lifecycle.record({
+      kind: "run_terminal",
+      at: completedAt,
+      status: "completed",
+    });
+    return reply;
   }
 
+}
+
+async function loadRunJournalSafely(
+  journal: RunJournal,
+  activation: RoleActivationInput,
+): Promise<RunJournalResumeState | null> {
+  try {
+    return await journal.load();
+  } catch (error) {
+    console.error("runtime run journal restore failed", {
+      threadId: activation.thread.threadId,
+      runKey: activation.runState.runKey,
+      error,
+    });
+    return null;
+  }
+}
+
+async function checkpointRunJournalSafely(
+  journal: RunJournal,
+  state: RunJournalState,
+  activation: RoleActivationInput,
+): Promise<void> {
+  try {
+    await journal.checkpoint(state);
+  } catch (error) {
+    console.error("runtime run journal checkpoint failed", {
+      threadId: activation.thread.threadId,
+      runKey: activation.runState.runKey,
+      nextRound: state.nextRound,
+      error,
+    });
+  }
+}
+
+async function completeRunJournalSafely(
+  journal: RunJournal,
+  state: RunJournalState,
+  activation: RoleActivationInput,
+): Promise<void> {
+  try {
+    await journal.complete(state);
+  } catch (error) {
+    console.error("runtime run journal completion failed", {
+      threadId: activation.thread.threadId,
+      runKey: activation.runState.runKey,
+      error,
+    });
+  }
 }
 
 // ORDER_DEPENDENT_TOOL_NAMES, shouldSerializeToolBatch, findRepeatedFailedToolCall

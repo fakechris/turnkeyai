@@ -85,10 +85,12 @@ export interface EngineObservedRuntimeForcedToolRound {
   executeToolCalls(
     handlers: EngineRuntimeForcedToolRoundHandlers,
   ): Promise<ToolResult[]>;
+  mapToolResultsForHistory?(results: ToolResult[]): Promise<ToolResult[]>;
 }
 
 export class EngineRunObserver {
   private currentRound: NativeToolRoundTrace | undefined;
+  private readonly replayToolResults: ToolResult[] = [];
 
   constructor(
     private readonly toolTrace: NativeToolRoundTrace[],
@@ -143,6 +145,7 @@ export class EngineRunObserver {
       return;
     }
     const roleToolResult = input.result;
+    this.replayToolResults.push(structuredClone(roleToolResult));
     round.results.push(toNativeToolResultTrace(roleToolResult));
 
     const progressCall: LLMToolCall = {
@@ -209,16 +212,20 @@ export class EngineRunObserver {
         });
       },
       onResult: async (toolResult) => {
+        this.replayToolResults.push(structuredClone(toolResult));
         roundTrace.results.push(toNativeToolResultTrace(toolResult));
         await this.deps.persistNativeToolTrace();
       },
     });
 
+    const historyResults = input.mapToolResultsForHistory
+      ? await input.mapToolResultsForHistory(toolResults)
+      : toolResults;
     let messages = appendAssistantToolCallMessage(input.messages, {
       text: input.assistantText,
       toolCalls: input.toolCalls,
     });
-    messages = appendToolResultMessages(messages, toolResults);
+    messages = appendToolResultMessages(messages, historyResults);
     await this.onProviderToolProtocolRound({
       round: input.round,
       toolCalls: input.toolCalls,
@@ -236,6 +243,10 @@ export class EngineRunObserver {
       toolTrace: this.toolTrace,
       currentRound: this.currentRound,
     };
+  }
+
+  replayToolResultsSnapshot(): ToolResult[] {
+    return structuredClone(this.replayToolResults);
   }
 
   private ensureRoundForToolStart(input: EngineObservedToolStart): void {

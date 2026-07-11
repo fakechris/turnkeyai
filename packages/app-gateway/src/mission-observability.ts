@@ -202,7 +202,13 @@ function buildQualityChecks(input: {
     missionRequestsResidualRisk(goalText) ||
     input.failureSummary.total > 0 ||
     input.browserFailureBuckets.length > 0;
-  const goalSlotCoverage = input.finalAnswer
+  const runtimeCoverageVerified = Boolean(
+    input.finalAnswer?.runtime?.missionReportStatus === "completed" &&
+      input.finalAnswer.runtime.missionReportSource === "runtime_derived" &&
+      input.finalAnswer.runtime.missionReportReason === "completed_sub_agent_final" &&
+      input.finalAnswer.runtime.missionReportCoverageVerified === "true"
+  );
+  const goalSlotCoverage = input.finalAnswer && !runtimeCoverageVerified
     ? evaluateMissionGoalSlotCoverage({
         goalText,
         finalText,
@@ -212,12 +218,15 @@ function buildQualityChecks(input: {
       })
     : null;
   const goalSlotCoverageIssues =
-    input.finalAnswer &&
-    goalSlotCoverage &&
-    (input.mission.closeout === "bounded_failure" || missionAllowsBrowserBoundedFailureCloseout(goalText)) &&
-    isAuthorizedBoundedBrowserFailureCloseout(goalSlotCoverage.issues, finalText)
+    runtimeCoverageVerified
       ? []
-      : goalSlotCoverage?.issues ?? [];
+      : input.finalAnswer &&
+          goalSlotCoverage &&
+          (input.mission.closeout === "bounded_failure" ||
+            missionAllowsBrowserBoundedFailureCloseout(goalText)) &&
+          isAuthorizedBoundedBrowserFailureCloseout(goalSlotCoverage.issues, finalText)
+        ? []
+        : goalSlotCoverage?.issues ?? [];
   const valueConsistency = input.finalAnswer
     ? finalAnswerValueConsistency(finalText, input.evidenceText)
     : { mismatches: [] as EvidenceValueMismatch[] };
@@ -243,6 +252,8 @@ function buildQualityChecks(input: {
           : "pass",
       detail: !input.finalAnswer
         ? "Waiting for the final answer."
+        : runtimeCoverageVerified
+          ? "Goal coverage was runtime-verified by the engine completion pipeline."
         : goalSlotCoverage && goalSlotCoverage.required.length === 0
           ? "No goal-critical research slots were inferred from the user request."
           : goalSlotCoverageIssues.length === 0 && (goalSlotCoverage?.issues.length ?? 0) > 0
@@ -866,10 +877,13 @@ function collectEvidenceSourceLabels(events: ActivityEvent[]): string[] {
     for (const evidence of event.evidence ?? []) {
       addSourceLabel(labels, evidence.label);
     }
-    addSourceLabel(labels, event.runtime?.sourceLabel);
+    const toolEvidenceLabels = readToolEvidenceSourceLabels(event);
+    if (toolEvidenceLabels.length === 0) {
+      addSourceLabel(labels, event.runtime?.sourceLabel);
+    }
     addSourceLabel(labels, event.runtime?.sourceName);
     addSourceLabel(labels, event.runtime?.sourceTitle);
-    for (const label of readToolEvidenceSourceLabels(event)) {
+    for (const label of toolEvidenceLabels) {
       addSourceLabel(labels, label);
     }
   }
@@ -877,7 +891,7 @@ function collectEvidenceSourceLabels(events: ActivityEvent[]): string[] {
 }
 
 function countToolEvidenceUnits(event: ActivityEvent): number {
-  const parsed = parseToolResultText(event.text);
+  const parsed = parseToolResultEvent(event);
   if (!parsed) return 1;
   const pages = readToolPayloadPages(parsed.payload);
   const sourceResults = readToolPayloadSourceResults(parsed.payload);
@@ -889,7 +903,7 @@ function readToolEvidenceSourceLabels(event: ActivityEvent): string[] {
   if (event.kind !== "tool" || event.runtime?.toolPhase !== "result" || event.runtime.admission === "skipped") {
     return [];
   }
-  const parsed = parseToolResultText(event.text);
+  const parsed = parseToolResultEvent(event);
   if (!parsed) return [];
   const labels: string[] = [];
   labels.push(...readEvidenceSummarySourceLabels(parsed.evidence_summary));
@@ -901,6 +915,13 @@ function readToolEvidenceSourceLabels(event: ActivityEvent): string[] {
     if (page.title) labels.push(page.title);
   }
   return labels;
+}
+
+function parseToolResultEvent(event: ActivityEvent): {
+  payload?: unknown;
+  evidence_summary?: unknown;
+} | null {
+  return parseToolResultText(event.runtime?.resultContent ?? event.text);
 }
 
 function looksLikeUrl(value: string): boolean {
@@ -1141,7 +1162,6 @@ function hasOpsDashboardEvidence(text: string): boolean {
   return (
     /\bqueue depth\b[\s\S]{0,80}\b\d+\b/i.test(text) ||
     /\bSLA breaches?\b[\s\S]{0,80}\b\d+\b/i.test(text) ||
-    /\bIncident Commander\b/i.test(text) ||
     /\bescalation\b[\s\S]{0,80}\b(?:active|triggered|fires?|threshold|policy)\b/i.test(text)
   );
 }
@@ -1179,6 +1199,7 @@ const GENERIC_SOURCE_LABEL_TOKENS = new Set([
   "live",
   "local",
   "note",
+  "of",
   "open",
   "opened",
   "page",

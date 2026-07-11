@@ -24,7 +24,6 @@ import {
   createRepairPolicyRegistry,
   type RepairPolicyRegistry,
 } from "./repair-policy-registry";
-import { buildEvidenceSnapshot } from "./evidence-ledger";
 
 // Stage 8 engine cleanup — CompletedCloseoutController.
 //
@@ -320,14 +319,7 @@ export class CompletedCloseoutController {
         }
       }
 
-      const synthesisEvidenceText =
-        repairRound === 0
-          ? input.completedEvidenceText
-          : buildEvidenceSnapshot({
-              taskPrompt: input.taskPrompt,
-              messages: repairMessages,
-              toolTrace: input.toolTrace,
-            }).synthesisEvidenceText;
+      const synthesisEvidenceText = input.completedEvidenceText;
 
       let repairPrompt = evaluateTableOrSchemaRepair({
         input,
@@ -403,12 +395,15 @@ export class CompletedCloseoutController {
       ];
 
       const repaired = await input.synthesizeRepair({ messages: repairMessages });
-      synthesisResult = repaired.result;
       if (repaired.reduction !== undefined) {
         synthesisReduction = repaired.reduction;
         synthesisReductionSnapshot = repaired.reductionSnapshot;
       }
       appendMemoryFlush(memoryFlushes, repaired.memoryFlush);
+      if (isInterruptedRepairResult(repaired.result)) {
+        break;
+      }
+      synthesisResult = repaired.result;
     }
 
     if (synthesisResult.toolCalls?.length) {
@@ -538,6 +533,22 @@ function buildReArmIfNeeded(input: {
       forceToolChoice: repair.forceToolChoice,
     },
   };
+}
+
+const INTERRUPTED_REPAIR_STOP_REASONS = new Set([
+  "abort",
+  "aborted",
+  "cancelled",
+  "canceled",
+  "timeout",
+  "timed_out",
+]);
+
+function isInterruptedRepairResult(result: GenerateTextResult): boolean {
+  const stopReason = result.stopReason?.trim().toLowerCase();
+  return Boolean(
+    stopReason && INTERRUPTED_REPAIR_STOP_REASONS.has(stopReason),
+  );
 }
 
 function appendMemoryFlush<T>(memoryFlushes: T[], memoryFlush: T | undefined): void {

@@ -6,18 +6,20 @@ export const PERMISSION_TOOL_NAMES = ["permission_query", "permission_result", "
 export const MEMORY_TOOL_NAMES = ["memory_search", "memory_get"] as const;
 export const TASK_TOOL_NAMES = ["tasks_list", "tasks_create", "tasks_update"] as const;
 export const WEB_TOOL_NAMES = ["web_fetch"] as const;
+export const ARTIFACT_TOOL_NAMES = ["artifacts_read"] as const;
 export type SessionToolName = (typeof SESSION_TOOL_NAMES)[number];
 export type PermissionToolName = (typeof PERMISSION_TOOL_NAMES)[number];
 export type MemoryToolName = (typeof MEMORY_TOOL_NAMES)[number];
 export type TaskToolName = (typeof TASK_TOOL_NAMES)[number];
 export type WebToolName = (typeof WEB_TOOL_NAMES)[number];
-export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName | TaskToolName | WebToolName;
+export type ArtifactToolName = (typeof ARTIFACT_TOOL_NAMES)[number];
+export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName | TaskToolName | WebToolName | ArtifactToolName;
 
 export interface ToolCapabilityRecord {
   name: NativeToolName;
   definition: LLMToolDefinition;
-  executorKind: "worker-session" | "permission" | "memory" | "task" | "web";
-  promptGroup: "sessions" | "permissions" | "memory" | "tasks" | "web";
+  executorKind: "worker-session" | "permission" | "memory" | "task" | "web" | "artifact";
+  promptGroup: "sessions" | "permissions" | "memory" | "tasks" | "web" | "artifacts";
 }
 
 export interface ToolPromptHarnessInput {
@@ -75,6 +77,7 @@ export function createNativeToolCapabilityRegistry(input: {
   memoryEnabled?: boolean;
   tasksEnabled?: boolean;
   webFetchEnabled?: boolean;
+  artifactsEnabled?: boolean;
   maxSessionToolTimeoutSeconds?: number;
 } = {}): ToolCapabilityRegistry {
   const workerKinds = normalizeWorkerKinds(input.availableWorkerKinds);
@@ -87,6 +90,16 @@ export function createNativeToolCapabilityRegistry(input: {
         executorKind: "web" as const,
         promptGroup: "web" as const,
       }))
+    );
+  }
+  if (input.artifactsEnabled) {
+    records.push(
+      ...buildArtifactToolDefinitions().map((definition) => ({
+        name: definition.name as NativeToolName,
+        definition,
+        executorKind: "artifact" as const,
+        promptGroup: "artifacts" as const,
+      })),
     );
   }
   if (workerKinds.length > 0) {
@@ -158,6 +171,35 @@ export function buildWebToolDefinitions(): LLMToolDefinition[] {
           },
         },
         required: ["url"],
+      },
+    },
+  ];
+}
+
+export function buildArtifactToolDefinitions(): LLMToolDefinition[] {
+  return [
+    {
+      name: "artifacts_read",
+      description:
+        "Read a bounded byte range from an oversized tool result referenced by artifact_id. Continue from next_offset_bytes until eof when more source content is needed.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          artifact_id: { type: "string" },
+          offset_bytes: {
+            type: "number",
+            minimum: 0,
+            description: "UTF-8 byte offset. Defaults to 0.",
+          },
+          limit_bytes: {
+            type: "number",
+            minimum: 256,
+            maximum: 32 * 1024,
+            description: "Maximum bytes to return. Defaults to 8192.",
+          },
+        },
+        required: ["artifact_id"],
       },
     },
   ];
@@ -279,6 +321,11 @@ export function buildSessionToolDefinitions(
             description: "Sub-agent kind backed by an executable worker handler.",
           },
           label: { type: "string", description: "Short user-visible label." },
+          run_in_background: {
+            type: "boolean",
+            description:
+              "Return a running session handle immediately while the independent sub-agent continues in the background.",
+          },
           timeout_seconds: {
             type: "number",
             minimum: 0.001,
@@ -293,13 +340,19 @@ export function buildSessionToolDefinitions(
     {
       name: "sessions_send",
       description:
-        "Send a follow-up message to an existing sub-agent session. Prefer this over sessions_spawn when continuing, refining, or adding evidence to prior delegated work.",
+        "Address an existing sub-agent session. Set mode=continue to execute new follow-up work through the worker and its permission gates. Set mode=read_result to read an already completed durable result without executing or resuming the worker; the parent agent must perform any requested formatting or synthesis itself.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
           session_key: { type: "string", description: "Worker session key returned by sessions_spawn/list." },
           message: { type: "string", description: "Follow-up instruction." },
+          mode: {
+            type: "string",
+            enum: ["continue", "read_result"],
+            description:
+              "continue executes new worker work; read_result only reads an already completed result and cannot perform actions.",
+          },
           label: { type: "string" },
           timeout_seconds: {
             type: "number",
@@ -309,7 +362,7 @@ export function buildSessionToolDefinitions(
               "Optional wall-clock timeout for this follow-up. On timeout the session is interrupted and remains available for another sessions_send.",
           },
         },
-        required: ["session_key", "message"],
+        required: ["session_key", "message", "mode"],
       },
     },
     {
@@ -427,6 +480,10 @@ function renderToolPromptHarness(input: {
     sections.push(renderWebFetchSection());
   }
 
+  if (ARTIFACT_TOOL_NAMES.some((name) => enabled.has(name))) {
+    sections.push(renderArtifactSection());
+  }
+
   if (PERMISSION_TOOL_NAMES.some((name) => enabled.has(name))) {
     sections.push(renderPermissionSection());
   }
@@ -453,6 +510,14 @@ function renderWebFetchSection(): string {
     "- web_fetch is source evidence, not browser evidence. If the task asks what a user sees, requires screenshots, or depends on JavaScript-rendered content, use the browser worker instead.",
     "- Cite the returned final_url/requested_url and treat blocked, non-200, or low-content results as incomplete evidence that needs another tool path.",
     "- When a fetched root/docs page exposes navigation text, prefer following the visible nav/link target or searching that exact site+label over guessing URL paths. After two 404/401 guesses on one host, stop guessing paths and switch to site search, provider search, or browser.",
+  ].join("\n");
+}
+
+function renderArtifactSection(): string {
+  return [
+    "## Tool Result Artifacts",
+    "- When a tool result contains a turnkeyai.tool_result_artifact.v1 reference, use artifacts_read only if the inline preview and checkpoint do not contain enough evidence.",
+    "- Read bounded pages using next_offset_bytes. Stop once the needed fact is found or eof is true; do not reload the same byte range.",
   ].join("\n");
 }
 
@@ -530,9 +595,11 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "In one assistant turn, emit at most five session tool calls total. For two independent subtasks, emit exactly two focused calls, then wait for results before any follow-up wave.",
     "Leave timeout_seconds unset for ordinary delegated work so the runtime applies product budgets. Set it only when the user gives an explicit wait bound or the task has a known external latency.",
     "If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable. Do not increase timeout_seconds on a timeout follow-up unless the user explicitly asks to wait longer. Do not treat a timeout as final evidence.",
-    "When the user asks to continue, refine, revisit, add a source to, or follow up on prior delegated work, route that request back to the relevant existing session with sessions_send instead of answering only from parent context or spawning a duplicate. Synthesize directly only when the user asks for pure formatting and no session-owned evidence needs to be revisited.",
+    "Route follow-up work to the relevant existing session with sessions_send instead of spawning a duplicate.",
+    "If the completed result already contains all required evidence and the remaining work is only summarization, reformatting, or synthesis, use sessions_send mode=read_result. It never resumes the worker or performs an action; after reading it, the parent owns the transformation and final synthesis.",
+    "Use sessions_send mode=continue only when the worker must perform new work, such as collecting more evidence, rechecking a source, or executing an additional task.",
     "There is no sessions_update tool. Use sessions_send for any update, resume, revisit, or continuation of existing session-owned work.",
-    "For sessions_send follow-ups, preserve the original task's decision criteria, required dimensions, entity names, source labels, and user terminology unless the latest user message explicitly changes scope.",
+    "For sessions_send mode=continue follow-ups, preserve the original task's decision criteria, required dimensions, entity names, source labels, and user terminology unless the latest user message explicitly changes scope.",
     "If you need a session key for prior delegated work, use sessions_list or the previous sessions_spawn result before deciding to spawn again.",
     "After a sub-agent returns, first read the sessions_spawn/sessions_send result and final_content. Do not page through session history when that result already contains the evidence you need.",
     "If history is needed, prefer one sessions_history call with tail=true and a small limit. Avoid repeated pagination unless the user explicitly asks for the transcript.",

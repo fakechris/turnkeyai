@@ -56,7 +56,7 @@ export function classifyRuntimeError(input: {
 
 export function classifyFailureFromStatus(input: {
   layer: ReplayLayer;
-  status: "completed" | "partial" | "failed";
+  status: "completed" | "partial" | "failed" | "timeout";
   summary: string;
   payload?: Record<string, unknown>;
 }): FailureSummary | undefined {
@@ -77,6 +77,15 @@ export function classifyFailureFromStatus(input: {
       ...derived,
       retryable: true,
       recommendedAction: derived.recommendedAction === "request_approval" ? "request_approval" : "resume",
+    };
+  }
+
+  if (input.status === "timeout") {
+    return {
+      ...derived,
+      category: "timeout",
+      retryable: true,
+      recommendedAction: "resume",
     };
   }
 

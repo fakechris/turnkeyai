@@ -1439,11 +1439,11 @@ test("RepairPolicyRegistry returns missing browser evidence dimensions completed
 
   const decision = registry.evaluateCompletedSynthesis({
     completedEvidenceText:
-      "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
+      "Embedded source frame: Frame panel shows backlog count: 11 and owner: Release Lead. Shadow review component says approval required from risk desk. Details popup opened for record R-17 with manager acknowledgement.",
     delegatedEvidenceText:
-      "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
+      "Embedded source frame: Frame panel shows backlog count: 11 and owner: Release Lead. Shadow review component says approval required from risk desk. Details popup opened for record R-17 with manager acknowledgement.",
     completedSessionFinalContents: [
-      "Embedded source frame: Frame panel shows backlog 7 and owner Frame Captain. Shadow review component says approval required from risk desk. Details popup opened with P-42 manager acknowledgement.",
+      "Embedded source frame: Frame panel shows backlog count: 11 and owner: Release Lead. Shadow review component says approval required from risk desk. Details popup opened for record R-17 with manager acknowledgement.",
     ],
     enabledPolicies: ["missing_browser_evidence_dimensions"],
     messages: [],

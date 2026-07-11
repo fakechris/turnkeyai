@@ -120,6 +120,7 @@ test("createEngineFinalResponseBuilder assembles engine final metadata from sele
     source: "turnkeyai-role-runtime",
     totalInputTokens: 3,
     totalOutputTokens: 5,
+    cacheHitCalls: 0,
   });
   assert.deepEqual(reply.metadata?.toolUse, {
     rounds: [{ round: 1, calls: [], results: [] }],

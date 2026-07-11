@@ -68,6 +68,165 @@ test("in-memory worker runtime marks null worker results as done", async () => {
   assert.equal(state?.status, "done");
 });
 
+test("in-memory worker runtime persists timeout results as resumable", async () => {
+  const timeoutResult = {
+    workerType: "explore",
+    status: "timeout",
+    summary: "Sub-agent timed out at the absolute run deadline.",
+    payload: { resumableReason: "run_deadline_exceeded" },
+  } as unknown as WorkerExecutionResult;
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return {
+          kind: "explore",
+          async canHandle() {
+            return true;
+          },
+          async run() {
+            return timeoutResult;
+          },
+        };
+      },
+    },
+    now: () => 123,
+  });
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+
+  const result = await runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+  const state = await runtime.getState(spawned.workerRunKey);
+
+  assert.equal(result, timeoutResult);
+  assert.equal(state?.status, "resumable");
+  assert.equal(state?.lastResult?.status, "timeout");
+});
+
+test("in-memory worker runtime persists background ownership and absolute deadline", async () => {
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return {
+          kind: "explore",
+          canHandle: () => true,
+          async run() {
+            return null;
+          },
+        };
+      },
+    },
+    now: () => 1_000,
+  });
+  const base = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn({
+    ...base,
+    packet: {
+      ...base.packet,
+      workerSession: {
+        background: true,
+        deadlineAt: 61_000,
+        parentSessionKey: "role:lead:run:1",
+        toolCallId: "call-background",
+        label: "source research",
+      },
+    },
+  });
+
+  assert.ok(spawned);
+  const [record] = await runtime.listSessions();
+  assert.equal(record?.context?.background, true);
+  assert.equal(record?.context?.deadlineAt, 61_000);
+});
+
+test("in-memory worker runtime bounds an ignored background deadline as resumable timeout", async () => {
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return {
+          kind: "explore",
+          canHandle: () => true,
+          async run() {
+            return await new Promise<WorkerExecutionResult>(() => undefined);
+          },
+        };
+      },
+    },
+    now: () => Date.now(),
+  });
+  const base = buildWorkerInvocationInput();
+  const input = {
+    ...base,
+    packet: {
+      ...base.packet,
+      workerSession: {
+        background: true,
+        deadlineAt: Date.now() + 20,
+        toolCallId: "call-deadline",
+      },
+    },
+  };
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  const send = runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+
+  const bounded = await Promise.race([
+    send.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+  ]);
+
+  assert.equal(bounded, true);
+  const state = await runtime.getState(spawned.workerRunKey);
+  assert.equal(state?.status, "resumable");
+  assert.equal(state?.lastError?.code, "WORKER_TIMEOUT");
+  assert.equal(state?.lastError?.retryable, true);
+  assert.equal(state?.lastResult?.status, "timeout");
+  assert.equal(state?.continuationDigest?.reason, "timeout_summary");
+});
+
+test("in-memory worker runtime cascades parent cancellation to a background handler", async () => {
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return {
+          kind: "explore",
+          canHandle: () => true,
+          async run() {
+            return await new Promise<WorkerExecutionResult>(() => undefined);
+          },
+        };
+      },
+    },
+    now: () => Date.now(),
+  });
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  const controller = new AbortController();
+  const send = runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+    signal: controller.signal,
+  });
+
+  controller.abort(new Error("operator cancelled parent run"));
+  assert.equal(await send, null);
+  assert.equal((await runtime.getState(spawned.workerRunKey))?.status, "cancelled");
+  assert.match(
+    (await runtime.getState(spawned.workerRunKey))?.lastError?.message ?? "",
+    /operator cancelled parent run/,
+  );
+});
+
 test("in-memory worker runtime keeps durable per-session message history", async () => {
   let now = 1000;
   const handler: WorkerHandler = {
@@ -1494,6 +1653,218 @@ test("in-memory worker runtime exposes startup reconcile summary after hydration
   assert.equal(stored.get("worker:browser:task:task-running")?.state.status, "resumable");
 });
 
+test("in-memory worker runtime expires a persisted background session past its deadline", async () => {
+  const workerRunKey = "worker:explore:task:expired-background";
+  const stored = new Map<string, WorkerSessionRecord>([
+    [
+      workerRunKey,
+      {
+        workerRunKey,
+        executionToken: 2,
+        state: {
+          workerRunKey,
+          workerType: "explore",
+          status: "running",
+          createdAt: 100,
+          updatedAt: 200,
+        },
+        context: {
+          threadId: "thread-1",
+          flowId: "flow-1",
+          taskId: "expired-background",
+          roleId: "role-lead",
+          parentSpanId: "role:lead:run:1",
+          background: true,
+          deadlineAt: 500,
+        },
+      },
+    ],
+  ]);
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return null;
+      },
+      async getHandler() {
+        return null;
+      },
+    },
+    sessionStore: {
+      async get(key) {
+        return stored.get(key) ?? null;
+      },
+      async put(record) {
+        stored.set(record.workerRunKey, record);
+      },
+      async list() {
+        return [...stored.values()];
+      },
+    },
+    now: () => 1_000,
+  });
+
+  await runtime.reconcileStartup();
+
+  assert.equal((await runtime.getState(workerRunKey))?.status, "cancelled");
+  assert.equal((await runtime.getState(workerRunKey))?.lastError?.code, "WORKER_TIMEOUT");
+});
+
+test("in-memory worker runtime restarts an unexpired background invocation", async () => {
+  const workerRunKey = "worker:explore:task:restart-background";
+  const invocation = buildWorkerInvocationInput();
+  let started = 0;
+  let release!: () => void;
+  const completion = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const handler: WorkerHandler = {
+    kind: "explore",
+    canHandle: () => true,
+    async run() {
+      started += 1;
+      await completion;
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Restored background evidence.",
+        payload: { content: "Restored background evidence." },
+      };
+    },
+  };
+  const stored = new Map<string, WorkerSessionRecord>([
+    [
+      workerRunKey,
+      {
+        workerRunKey,
+        executionToken: 2,
+        state: {
+          workerRunKey,
+          workerType: "explore",
+          status: "running",
+          createdAt: 100,
+          updatedAt: 200,
+        },
+        context: {
+          threadId: "thread-1",
+          flowId: "flow-1",
+          taskId: "restart-background",
+          roleId: "role-lead",
+          parentSpanId: "role:lead:run:1",
+          background: true,
+          deadlineAt: Date.now() + 60_000,
+        },
+        pendingInvocation: {
+          activation: invocation.activation,
+          packet: invocation.packet,
+          toolCallId: "call-restart-background",
+        },
+      },
+    ],
+  ]);
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+      async getHandler() {
+        return handler;
+      },
+    },
+    sessionStore: {
+      async get(key) {
+        return stored.get(key) ?? null;
+      },
+      async put(record) {
+        stored.set(record.workerRunKey, record);
+      },
+      async list() {
+        return [...stored.values()];
+      },
+    },
+    now: () => Date.now(),
+  });
+
+  await runtime.reconcileStartup();
+  await waitFor(() => started === 1);
+  assert.equal((await runtime.getState(workerRunKey))?.status, "running");
+  release();
+  await waitFor(async () => (await runtime.getState(workerRunKey))?.status === "done");
+
+  assert.equal((await runtime.getState(workerRunKey))?.lastResult?.summary, "Restored background evidence.");
+});
+
+test("in-memory worker runtime completes three independent sessions near the slowest duration", async () => {
+  const delays = new Map([
+    ["source-one", 20],
+    ["source-two", 30],
+    ["source-three", 40],
+  ]);
+  const handler: WorkerHandler = {
+    kind: "explore",
+    canHandle: () => true,
+    async run(input) {
+      const label = input.packet.taskPrompt;
+      await new Promise((resolve) => setTimeout(resolve, delays.get(label) ?? 0));
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: `${label} evidence`,
+        payload: { content: `${label} evidence` },
+      };
+    },
+  };
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => Date.now(),
+  });
+  const invocations = [...delays.keys()].map((label, index) => {
+    const base = buildWorkerInvocationInput();
+    return {
+      ...base,
+      activation: {
+        ...base.activation,
+        handoff: {
+          ...base.activation.handoff,
+          taskId: `task-parallel-${index + 1}`,
+        },
+      },
+      packet: {
+        ...base.packet,
+        taskPrompt: label,
+      },
+    };
+  });
+  const spawned = await Promise.all(invocations.map((input) => runtime.spawn(input)));
+  assert.equal(spawned.every(Boolean), true);
+  const startedAt = Date.now();
+
+  await Promise.all(
+    spawned.map((worker, index) =>
+      runtime.send({
+        workerRunKey: worker!.workerRunKey,
+        activation: invocations[index]!.activation,
+        packet: invocations[index]!.packet,
+      }),
+    ),
+  );
+
+  assert.ok(Date.now() - startedAt < 75, "parallel work should be bounded near the slowest child");
+  const records = await runtime.listSessions();
+  assert.equal(records.length, 3);
+  assert.deepEqual(
+    records.map((record) => record.state.lastResult?.summary).sort(),
+    ["source-one evidence", "source-three evidence", "source-two evidence"],
+  );
+  assert.equal(
+    records.every((record) => record.state.history?.some((entry) => entry.role === "tool")),
+    true,
+  );
+});
+
 test("in-memory worker runtime marks persisted sessions without context as unrecoverable on startup", async () => {
   const stored = new Map<string, WorkerSessionRecord>([
     [
@@ -1615,6 +1986,14 @@ test("in-memory worker runtime marks persisted sessions with unavailable handler
 
 function workerRunKeyOf(record: WorkerSessionRecord): string {
   return record.workerRunKey;
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error("condition was not met");
 }
 
 function buildWorkerInvocationInput(): WorkerInvocationInput {

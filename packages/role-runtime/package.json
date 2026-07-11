@@ -16,6 +16,7 @@
     "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
     "./prompt-policy": "./src/prompt-policy.ts",
     "./react-model-client": "./src/react-model-client.ts",
+    "./run-trace-replay": "./src/run-trace-replay.ts",
     "./react/predicates": "./src/react/predicates.ts",
     "./role-profile": "./src/role-profile.ts",
     "./sub-agent-worker-handler": "./src/sub-agent-worker-handler.ts",
@@ -23,6 +24,12 @@
     "./tool-capability-registry": "./src/tool-capability-registry.ts",
     "./tool-cancellation-registry": "./src/tool-cancellation-registry.ts",
     "./tool-permission-service": "./src/tool-permission-service.ts",
-    "./tool-use": "./src/tool-use.ts"
+    "./tool-result-artifact-store": "./src/tool-result-artifact-store.ts",
+    "./tool-use": "./src/tool-use.ts",
+    "./worker-session-hygiene": "./src/worker-session-hygiene.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
   }
 }

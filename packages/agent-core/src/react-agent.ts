@@ -58,8 +58,12 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
   const onToolCalls = hooks.onToolCalls ?? options.onToolCalls;
 
   return {
-    async *run({ messages, ctx, signal }: ReActRunInput<Ctx>): AsyncIterable<ReActEvent> {
-      const state: ReActState = { messages, results: [], round: 0, lastText: "" };
+    async *run({ messages, ctx, signal, initialRound }: ReActRunInput<Ctx>): AsyncIterable<ReActEvent> {
+      const resumedRound =
+        typeof initialRound === "number" && Number.isFinite(initialRound)
+          ? Math.max(0, Math.floor(initialRound))
+          : 0;
+      const state: ReActState = { messages, results: [], round: resumedRound, lastText: "" };
       const emit = (event: ReActEvent): ReActEvent => {
         hooks.onProgress?.(event);
         return event;
@@ -125,7 +129,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
       // so a separate counter caps them as a safety backstop in case host
       // idempotency fails to converge. Well above any real repair cascade.
       let repairRounds = 0;
-      for (let round = 0; round < maxRounds; round++) {
+      for (let round = resumedRound; round < maxRounds; round++) {
         state.round = round;
         throwIfAborted(signal);
 
@@ -144,7 +148,12 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
 
         let forceToolChoice: ReActToolChoice | undefined;
         if (hooks.onRoundMessages) {
-          const rewritten = hooks.onRoundMessages(state.messages, round, ctx);
+          const rewritten = await hooks.onRoundMessages(
+            state.messages,
+            round,
+            ctx,
+          );
+          throwIfAborted(signal);
           state.messages = rewritten?.messages ?? state.messages;
           forceToolChoice = rewritten?.forceToolChoice;
         }
@@ -167,6 +176,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             ...(forceToolChoice ? { toolChoice: forceToolChoice } : {}),
             ...(signal ? { signal } : {}),
           });
+          throwIfAborted(signal);
           state.lastText = generated.text;
           let toolCalls = generated.toolCalls ?? [];
           if (onToolCalls) toolCalls = onToolCalls(toolCalls, state, ctx) ?? [];
@@ -258,6 +268,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
                 // tools stay attached and the next round executes a real tool call.
                 continue;
               }
+              throwIfAborted(signal);
               yield finalEvent(
                 { text: generated.text, ...(generated.stopReason ? { stopReason: generated.stopReason } : {}) },
                 round + 1
@@ -279,6 +290,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             text: generated.text,
             toolCalls,
           });
+          throwIfAborted(signal);
           for (const call of executable) {
             yield emit({ type: "tool_started", round, call });
           }
@@ -287,6 +299,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             try {
               return await options.toolkit.execute(call, toolCtx);
             } catch (error) {
+              throwIfAborted(signal);
               // Isolate a throwing tool as an error result instead of rejecting
               // the batch and crashing the whole loop.
               return {
@@ -300,6 +313,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           const executed: ToolResult[] = hooks.runToolBatch
             ? await hooks.runToolBatch(executable, runOne, toolCtx)
             : await Promise.all(executable.map(runOne));
+          throwIfAborted(signal);
           // Executed results first, then onBeforeExecute's rejected results. A host
           // that rejects over-cap calls (e.g. an execution-cap that keeps the first N
           // and skips the rest) appends the skipped results AFTER the executed ones;
@@ -308,7 +322,14 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           for (const result of results) {
             yield emit({ type: "tool_result", round, result });
           }
-          state.messages = appendToolResultMessages(state.messages, results);
+          const historyResults = hooks.onToolResultsForHistory
+            ? await hooks.onToolResultsForHistory(results, state, ctx)
+            : results;
+          throwIfAborted(signal);
+          state.messages = appendToolResultMessages(
+            state.messages,
+            historyResults,
+          );
           state.results.push(...results);
 
           // Post-execute continuation: the host may run a forced tool round itself

@@ -96,7 +96,12 @@ export interface ReActHooks<Ctx extends ToolContext> {
     messages: LLMMessage[],
     round: number,
     ctx: Ctx
-  ): { messages: LLMMessage[]; forceToolChoice?: ReActToolChoice };
+  ):
+    | { messages: LLMMessage[]; forceToolChoice?: ReActToolChoice }
+    | Promise<{
+        messages: LLMMessage[];
+        forceToolChoice?: ReActToolChoice;
+      }>;
   /** Recover from a model-call error. Return a terminal synthesis (finalize with
    *  `closeoutReason: "model_call_error"`), `"rethrow"` to propagate, or a
    *  `{ messages }` continuation to adopt rewritten messages and run another round
@@ -196,6 +201,14 @@ export interface ReActHooks<Ctx extends ToolContext> {
     | Promise<{ messages: LLMMessage[]; forceToolChoice?: ReActToolChoice } | null>
     | { messages: LLMMessage[]; forceToolChoice?: ReActToolChoice }
     | null;
+  /** Rewrite only the tool-result messages persisted into model history.
+   *  Events, state.results, and post-execute evidence hooks keep the original
+   *  results so artifact externalization cannot erase producer evidence. */
+  onToolResultsForHistory?(
+    results: ToolResult[],
+    state: ReActState,
+    ctx: Ctx,
+  ): ToolResult[] | Promise<ToolResult[]>;
   /** Inspect results after a round; return a closeout reason to stop, or null. */
   onAfterExecute?(results: ToolResult[], state: ReActState, ctx: Ctx): string | null;
   /** Ordered closeout predicates checked each round (round/budget/cap closeouts). */
@@ -234,6 +247,8 @@ export interface ReActRunInput<Ctx extends ToolContext> {
   messages: LLMMessage[];
   ctx: Ctx;
   signal?: AbortSignal;
+  /** Zero-based round to resume from. The maxRounds budget remains total, not reset. */
+  initialRound?: number;
 }
 
 export interface ReActLoop<Ctx extends ToolContext> {

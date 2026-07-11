@@ -122,3 +122,53 @@ test("file worker session store backfills thread index for legacy records", asyn
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("file worker session store discovers a record left unindexed by an interrupted put", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-worker-session-store-"));
+  try {
+    const store = new FileWorkerSessionStore({ rootDir });
+    const record = (workerRunKey: string, updatedAt: number) => ({
+      workerRunKey,
+      executionToken: 1,
+      state: {
+        workerRunKey,
+        workerType: "explore" as const,
+        status: "done" as const,
+        createdAt: 10,
+        updatedAt,
+      },
+      context: {
+        threadId: "thread-interrupted",
+        flowId: "flow-1",
+        taskId: `task-${updatedAt}`,
+        roleId: "role-operator",
+        parentSpanId: "role:role-operator:thread:thread-interrupted",
+      },
+    });
+
+    await store.put(record("worker:explore:indexed", 20));
+    await store.put(record("worker:explore:unindexed", 30));
+    await rm(
+      path.join(
+        rootDir,
+        "by-thread",
+        encodeURIComponent("thread-interrupted"),
+        `${encodeURIComponent("worker:explore:unindexed")}.json`,
+      ),
+    );
+
+    const records = await store.listByThread("thread-interrupted");
+    assert.deepEqual(
+      records.map((entry) => entry.workerRunKey),
+      ["worker:explore:unindexed", "worker:explore:indexed"],
+    );
+
+    const recordsAfterBackfill = await store.listByThread("thread-interrupted");
+    assert.deepEqual(
+      recordsAfterBackfill.map((entry) => entry.workerRunKey),
+      ["worker:explore:unindexed", "worker:explore:indexed"],
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

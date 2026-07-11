@@ -7,6 +7,7 @@ import type {
   WorkerHandler,
   WorkerInterruptInput,
   WorkerInvocationInput,
+  WorkerKind,
   WorkerMessageInput,
   WorkerResumeInput,
   WorkerRegistry,
@@ -36,8 +37,19 @@ type WorkerSessionEntry = {
   state: WorkerSessionState;
   executionToken: number;
   activeAbortController?: AbortController;
+  preserveLateResultOnAbort?: boolean;
   context?: WorkerSessionContextRecord;
+  pendingInvocation?: WorkerSessionRecord["pendingInvocation"];
 };
+
+class WorkerDeadlineExceededError extends Error {
+  readonly code = "worker_deadline_exceeded" as const;
+
+  constructor(readonly deadlineAt: number) {
+    super(`background worker deadline exceeded at ${deadlineAt}`);
+    this.name = "AbortError";
+  }
+}
 
 export class InMemoryWorkerRuntime implements WorkerRuntime {
   private readonly workerRegistry: WorkerRegistry;
@@ -54,6 +66,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     unrecoverableMissingContextSessions: 0,
     unrecoverableUnavailableHandlerSessions: 0,
   };
+  private backgroundStartupReconciled = false;
 
   constructor(options: InMemoryWorkerRuntimeOptions) {
     this.workerRegistry = options.workerRegistry;
@@ -85,11 +98,18 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     for (const record of records) {
       let nextRecord = record;
       const recoverableStatus = requiresRestartRecovery(record.state.status);
+      const expiredBackground =
+        recoverableStatus &&
+        record.context?.background === true &&
+        record.context.deadlineAt !== undefined &&
+        record.context.deadlineAt <= now;
       const missingContext = recoverableStatus && !hasRecoverableContext(record.context);
       const handlerUnavailable =
         recoverableStatus && !missingContext && (await this.isHandlerUnavailableForRestart(record.state.workerType));
 
-      if (missingContext) {
+      if (expiredBackground) {
+        nextRecord = buildExpiredBackgroundRecord(record, now);
+      } else if (missingContext) {
         unrecoverableMissingContextSessions += 1;
         nextRecord = buildUnrecoverableHydratedRecord(record, now, {
           message: "Worker runtime restarted but the persisted session context was missing, so the session cannot resume.",
@@ -129,6 +149,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         state: nextRecord.state,
         executionToken: nextRecord.executionToken,
         ...(nextRecord.context ? { context: nextRecord.context } : {}),
+        ...(nextRecord.pendingInvocation
+          ? { pendingInvocation: nextRecord.pendingInvocation }
+          : {}),
       });
       if (nextRecord !== record) {
         await this.sessionStore.put(nextRecord);
@@ -163,6 +186,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       state: entry.state,
       executionToken: entry.executionToken,
       ...(entry.context ? { context: entry.context } : {}),
+      ...(entry.pendingInvocation
+        ? { pendingInvocation: entry.pendingInvocation }
+        : {}),
     };
     await this.sessionStore.put(record);
   }
@@ -218,6 +244,12 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
           : {}),
         ...(input.packet.workerSession?.toolCallId ? { toolCallId: input.packet.workerSession.toolCallId } : {}),
         ...(input.packet.workerSession?.label ? { label: input.packet.workerSession.label } : {}),
+        ...(input.packet.workerSession?.background === true
+          ? { background: true }
+          : {}),
+        ...(input.packet.workerSession?.deadlineAt === undefined
+          ? {}
+          : { deadlineAt: input.packet.workerSession.deadlineAt }),
       },
     });
     await this.persistSession(workerRunKey);
@@ -263,6 +295,8 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     session.executionToken = executionToken;
     const abortController = new AbortController();
     session.activeAbortController = abortController;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let onExternalAbort: (() => void) | undefined;
     const preExecutionState = session.state;
     session.context = {
       ...(session.context ?? {}),
@@ -272,8 +306,30 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       roleId: input.activation.runState.roleId,
       parentSpanId: `role:${input.activation.runState.runKey}`,
     };
+    if (session.context.background === true) {
+      session.pendingInvocation = {
+        activation: input.activation,
+        packet: input.packet,
+        ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+      };
+    }
 
     const startedAt = this.now();
+    if (input.signal?.aborted) {
+      abortController.abort(input.signal.reason ?? new Error("worker execution cancelled"));
+    } else if (input.signal) {
+      onExternalAbort = () => {
+        abortController.abort(input.signal?.reason ?? new Error("worker execution cancelled"));
+      };
+      input.signal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+    const deadlineAt = session.context?.deadlineAt;
+    if (deadlineAt !== undefined) {
+      const remainingMs = Math.max(0, deadlineAt - startedAt);
+      deadlineTimer = setTimeout(() => {
+        abortController.abort(new WorkerDeadlineExceededError(deadlineAt));
+      }, remainingMs);
+    }
     session.state = appendWorkerHistory(
       {
         ...session.state,
@@ -292,12 +348,16 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
 
     const stopHeartbeat = this.startWorkerHeartbeat(input.workerRunKey, session, executionToken);
     try {
-      const result = await handler.run({
-        activation: input.activation,
-        packet: input.packet,
-        sessionState: preExecutionState,
-        signal: abortController.signal,
-      });
+      const result = await raceWorkerExecutionWithAbort(
+        handler.run({
+          activation: input.activation,
+          packet: input.packet,
+          sessionState: preExecutionState,
+          signal: abortController.signal,
+        }),
+        abortController.signal,
+        () => session.preserveLateResultOnAbort === true,
+      );
 
       if (!this.shouldCommitCompletion(input.workerRunKey, executionToken)) {
         return session.state.lastResult ?? null;
@@ -311,10 +371,22 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         updatedAt: completedAt,
         currentTaskId: input.activation.handoff.taskId,
         ...(result ? { lastResult: result } : {}),
-        ...(result?.status === "partial"
+        ...(result?.status === "timeout"
+          ? {
+              lastError: {
+                code: "WORKER_TIMEOUT" as const,
+                message: result.summary,
+                retryable: true,
+              },
+            }
+          : {}),
+        ...(result?.status === "partial" || result?.status === "timeout"
           ? {
               continuationDigest: {
-                reason: "follow_up" as const,
+                reason:
+                  result.status === "timeout"
+                    ? ("timeout_summary" as const)
+                    : ("follow_up" as const),
                 summary: result.summary,
                 createdAt: completedAt,
               },
@@ -328,6 +400,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         session.state,
         buildWorkerResultHistoryEntry(session.state, input.activation.handoff.taskId, result, completedAt, input.toolCallId)
       );
+      delete session.pendingInvocation;
       await this.persistSession(input.workerRunKey);
       await this.recordProgress(input.workerRunKey, session, {
         phase: mapWorkerResultPhase(result),
@@ -351,6 +424,82 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       if (isPreservedTimeoutAbort(session.state, errorMessage)) {
         return session.state.lastResult ?? null;
       }
+      if (abortController.signal.aborted) {
+        const cancelledAt = this.now();
+        const deadlineExpired = isWorkerDeadlineReason(abortController.signal.reason);
+        if (deadlineExpired) {
+          const timeoutResult = buildWorkerDeadlineTimeoutResult(
+            session.state.workerType,
+            errorMessage,
+            abortController.signal.reason,
+          );
+          session.state = appendWorkerHistory(
+            {
+              ...session.state,
+              status: "resumable",
+              updatedAt: cancelledAt,
+              currentTaskId: input.activation.handoff.taskId,
+              lastResult: timeoutResult,
+              lastError: {
+                code: "WORKER_TIMEOUT",
+                message: errorMessage,
+                retryable: true,
+              },
+              continuationDigest: {
+                reason: "timeout_summary",
+                summary: timeoutResult.summary,
+                createdAt: cancelledAt,
+              },
+            },
+            buildWorkerResultHistoryEntry(
+              session.state,
+              input.activation.handoff.taskId,
+              timeoutResult,
+              cancelledAt,
+              input.toolCallId,
+            ),
+          );
+          delete session.pendingInvocation;
+          await this.persistSession(input.workerRunKey);
+          await this.recordProgress(input.workerRunKey, session, {
+            phase: "waiting",
+            summary: timeoutResult.summary,
+            continuityState: "waiting",
+            statusReason: errorMessage,
+            closeKind: "timeout",
+          });
+          return timeoutResult;
+        }
+        session.state = appendWorkerHistory(
+          {
+            ...session.state,
+            status: "cancelled",
+            updatedAt: cancelledAt,
+            currentTaskId: input.activation.handoff.taskId,
+            lastError: {
+              code: deadlineExpired ? "WORKER_TIMEOUT" : "WORKER_FAILED",
+              message: errorMessage,
+              retryable: false,
+            },
+          },
+          buildWorkerControlHistoryEntry(
+            session.state,
+            "cancelled",
+            errorMessage,
+            cancelledAt,
+          ),
+        );
+        delete session.pendingInvocation;
+        await this.persistSession(input.workerRunKey);
+        await this.recordProgress(input.workerRunKey, session, {
+          phase: "cancelled",
+          summary: errorMessage,
+          continuityState: "terminal",
+          statusReason: errorMessage,
+          closeKind: deadlineExpired ? "timeout" : "cancelled",
+        });
+        return null;
+      }
       const failedAt = this.now();
       session.state = {
         ...session.state,
@@ -373,6 +522,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
           input.toolCallId
         )
       );
+      delete session.pendingInvocation;
       await this.persistSession(input.workerRunKey);
       await this.recordProgress(input.workerRunKey, session, {
         phase: "failed",
@@ -384,6 +534,11 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     } finally {
       if (session.activeAbortController === abortController) {
         delete session.activeAbortController;
+      }
+      delete session.preserveLateResultOnAbort;
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      if (onExternalAbort && input.signal) {
+        input.signal.removeEventListener("abort", onExternalAbort);
       }
       stopHeartbeat();
     }
@@ -409,6 +564,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         activation: input.activation,
         packet: buildResumePacket(input.packet, session.state),
         ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
       });
     }
 
@@ -427,6 +583,8 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     }
     if (!input.preserveLateResult) {
       session.executionToken += 1;
+    } else {
+      session.preserveLateResultOnAbort = true;
     }
     session.activeAbortController?.abort(input.reason ?? "Worker interrupted.");
     delete session.activeAbortController;
@@ -508,6 +666,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       session.state,
       buildWorkerControlHistoryEntry(session.state, "cancelled", input.reason ?? "Worker cancelled.", now)
     );
+    delete session.pendingInvocation;
     await this.persistSession(input.workerRunKey);
     await this.recordProgress(input.workerRunKey, session, {
       phase: "cancelled",
@@ -540,6 +699,10 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
 
   async reconcileStartup(): Promise<WorkerStartupReconcileResult> {
     await this.ensureHydrated();
+    if (!this.backgroundStartupReconciled) {
+      this.backgroundStartupReconciled = true;
+      this.restartBackgroundInvocations();
+    }
     return this.startupReconcileResult;
   }
 
@@ -551,6 +714,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         state: entry.state,
         executionToken: entry.executionToken,
         ...(entry.context ? { context: entry.context } : {}),
+        ...(entry.pendingInvocation
+          ? { pendingInvocation: entry.pendingInvocation }
+          : {}),
       }))
       .sort((left, right) => right.state.updatedAt - left.state.updatedAt);
   }
@@ -558,6 +724,32 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
   private shouldCommitCompletion(workerRunKey: string, executionToken: number): boolean {
     const current = this.sessions.get(workerRunKey);
     return Boolean(current && current.executionToken === executionToken);
+  }
+
+  private restartBackgroundInvocations(): void {
+    for (const [workerRunKey, entry] of this.sessions) {
+      if (
+        entry.context?.background !== true ||
+        entry.state.status !== "resumable" ||
+        !entry.pendingInvocation ||
+        (entry.context.deadlineAt !== undefined &&
+          entry.context.deadlineAt <= this.now())
+      ) {
+        continue;
+      }
+      const pending = entry.pendingInvocation;
+      void this.send({
+        workerRunKey,
+        activation: pending.activation,
+        packet: pending.packet,
+        ...(pending.toolCallId ? { toolCallId: pending.toolCallId } : {}),
+      }).catch((error) => {
+        console.error("background worker restart failed", {
+          workerRunKey,
+          error,
+        });
+      });
+    }
   }
 
   private async recordProgress(
@@ -766,7 +958,7 @@ function resolveStatus(result: WorkerExecutionResult | null): WorkerSessionState
     return "done";
   }
 
-  if (result.status === "partial") {
+  if (result.status === "partial" || result.status === "timeout") {
     return "resumable";
   }
 
@@ -784,7 +976,8 @@ function resolveStatusAfterResult(
   if (
     currentState.status === "resumable" &&
     currentState.lastError?.code === "WORKER_TIMEOUT" &&
-    result?.status !== "partial"
+    result?.status !== "partial" &&
+    result?.status !== "timeout"
   ) {
     return "resumable";
   }
@@ -799,19 +992,81 @@ function isPreservedTimeoutAbort(state: WorkerSessionState, errorMessage: string
   return timeoutMessage.length > 0 && (errorMessage === timeoutMessage || errorMessage.includes(timeoutMessage));
 }
 
+async function raceWorkerExecutionWithAbort<T>(
+  execution: Promise<T>,
+  signal: AbortSignal,
+  preserveLateResult: () => boolean,
+): Promise<T> {
+  if (signal.aborted) throw normalizeAbortReason(signal.reason);
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      if (!preserveLateResult()) reject(normalizeAbortReason(signal.reason));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([execution, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function normalizeAbortReason(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  const error = new Error(typeof reason === "string" ? reason : "worker execution cancelled");
+  error.name = "AbortError";
+  return error;
+}
+
+function isWorkerDeadlineReason(reason: unknown): boolean {
+  return reason instanceof WorkerDeadlineExceededError || (
+    typeof reason === "object" &&
+    reason !== null &&
+    "code" in reason &&
+    (reason.code === "worker_deadline_exceeded" ||
+      reason.code === "run_deadline_exceeded")
+  );
+}
+
 function mapWorkerResultPhase(
   result: WorkerExecutionResult | null
 ): "completed" | "waiting" | "failed" {
   if (!result) {
     return "completed";
   }
-  if (result.status === "partial") {
+  if (result.status === "partial" || result.status === "timeout") {
     return "waiting";
   }
   if (result.status === "failed") {
     return "failed";
   }
   return "completed";
+}
+
+function buildWorkerDeadlineTimeoutResult(
+  workerType: WorkerKind,
+  message: string,
+  reason: unknown,
+): WorkerExecutionResult {
+  const deadlineAt =
+    reason instanceof Error &&
+    "deadlineAt" in reason &&
+    typeof reason.deadlineAt === "number" &&
+    Number.isFinite(reason.deadlineAt)
+      ? reason.deadlineAt
+      : null;
+  return {
+    workerType,
+    status: "timeout",
+    summary: `Worker timed out: ${message}`,
+    payload: {
+      mode: "worker_runtime",
+      workerType,
+      resumableReason: "worker_deadline_exceeded",
+      ...(deadlineAt === null ? {} : { deadlineAt }),
+    },
+  };
 }
 
 function mapWorkerStatusToContinuity(
@@ -931,6 +1186,32 @@ function buildUnrecoverableHydratedRecord(
     state: appendWorkerHistory(
       nextState,
       buildWorkerControlHistoryEntry(nextState, "failed", input.message, now)
+    ),
+  };
+}
+
+function buildExpiredBackgroundRecord(
+  record: WorkerSessionRecord,
+  now: number,
+): WorkerSessionRecord {
+  const { pendingInvocation: _pendingInvocation, ...rest } = record;
+  const message = "Background worker deadline expired before runtime recovery.";
+  const nextState = {
+    ...record.state,
+    status: "cancelled" as const,
+    updatedAt: now,
+    lastError: {
+      code: "WORKER_TIMEOUT" as const,
+      message,
+      retryable: false,
+    },
+  };
+  return {
+    ...rest,
+    executionToken: record.executionToken + 1,
+    state: appendWorkerHistory(
+      nextState,
+      buildWorkerControlHistoryEntry(nextState, "cancelled", message, now),
     ),
   };
 }

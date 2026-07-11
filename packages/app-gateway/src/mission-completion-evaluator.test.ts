@@ -3655,7 +3655,11 @@ describe("mission-authorized partial/blocked closeout", () => {
           // goal-slot guard, so the typed branch yields to the legacy path.
           content: "Acme offers several plans for teams of various sizes.",
           metadata: {
-            missionReport: { status: "completed", source: "model_report" },
+            missionReport: {
+              status: "completed",
+              coverageVerified: true,
+              source: "model_report",
+            },
           },
         },
       ],
@@ -3697,6 +3701,50 @@ describe("mission-authorized partial/blocked closeout", () => {
       assert.equal(decision.patch.status, "done");
       assert.equal(decision.patch.progress, 1);
       assert.deepEqual(decision.completion, { source: "self_report", verified: true });
+    }
+  });
+
+  it("trusts runtime-verified coverage instead of rerunning prose slot detection", () => {
+    const browserMission: Mission = {
+      ...mission,
+      status: "working",
+      desc: [
+        "Review this dashboard as a user would see it in the browser.",
+        "Report the rendered state and residual risk or unverified scope.",
+      ].join(" "),
+    };
+    const decision = evaluateMissionCompletion({
+      mission: browserMission,
+      messages: [
+        { ...message("u-1", "user", 50), content: browserMission.desc },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: [
+            "Rendered browser evidence: the DOM shows queue depth 11 and owner Incident Commander.",
+            "| Residual risk / unverified scope | The page is local; verified to be missing from the rendered DOM: runbook and acknowledge controls. |",
+          ].join("\n"),
+          metadata: {
+            missionReport: {
+              status: "completed",
+              reason: "completed_sub_agent_final",
+              coverageVerified: true,
+              source: "runtime_derived",
+            },
+          },
+        },
+      ],
+      roleRuns: [idleRun],
+      workerSessions: [],
+    });
+
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "final_answer");
+      assert.equal(decision.patch.status, "done");
+      assert.equal(decision.patch.progress, 1);
+      assert.deepEqual(decision.completion, { source: "verifier", verified: true });
     }
   });
 

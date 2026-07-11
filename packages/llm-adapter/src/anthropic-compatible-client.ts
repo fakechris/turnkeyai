@@ -9,7 +9,15 @@ import type {
   ProtocolClient,
   ResolvedModelConfig,
 } from "./types";
+import { ProviderRequestError } from "./types";
+import { consumeAnthropicMessageStream } from "./anthropic-sse-parser";
+import { normalizeAnthropicTokenUsage } from "./model-cache-usage";
+import { sanitizeContentBlocks } from "./provider-output-sanitizer";
 import { buildProviderRequestEnvelopeOverflowError, isProviderSizeLikeFailure } from "./request-envelope-guard";
+import {
+  buildProviderRequestError,
+  normalizeProviderNetworkError,
+} from "./retry-policy";
 
 const DEFAULT_ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS = 4096;
 
@@ -26,11 +34,8 @@ export class AnthropicCompatibleClient implements ProtocolClient {
       .filter((item) => item.role !== "system")
       .map(toAnthropicMessage);
 
-    const tools = input.tools?.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      input_schema: tool.inputSchema,
-    }));
+    const activePromptCache = model.promptCacheMode === "active";
+    const tools = toAnthropicTools(input.tools, activePromptCache);
 
     // Relative pathname (no leading slash) so providers whose baseURL
     // carries a routing prefix (e.g. MiniMax's
@@ -38,31 +43,38 @@ export class AnthropicCompatibleClient implements ProtocolClient {
     // stripped by URL resolution. For canonical Anthropic
     // (`https://api.anthropic.com/v1/`) the result is identical:
     // .../v1/messages.
-    const response = await fetch(buildURL(model.baseURL, "messages", model.query), {
-      method: "POST",
-      ...(input.signal ? { signal: input.signal } : {}),
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": model.apiKey,
-        "anthropic-version": "2023-06-01",
-        ...model.headers,
-      },
-      body: JSON.stringify({
-        model: model.model,
-        system: systemMessages.join("\n\n"),
-        messages: chatMessages,
-        temperature: input.temperature ?? model.temperature,
-        max_tokens:
-          input.maxOutputTokens ??
-          model.maxOutputTokens ??
-          DEFAULT_ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS,
-        ...(tools?.length ? { tools } : {}),
-        ...(input.toolChoice ? { tool_choice: toAnthropicToolChoice(input.toolChoice) } : {}),
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(buildURL(model.baseURL, "messages", model.query), {
+        method: "POST",
+        ...(input.signal ? { signal: input.signal } : {}),
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": model.apiKey,
+          "anthropic-version": "2023-06-01",
+          ...model.headers,
+        },
+        body: JSON.stringify({
+          model: model.model,
+          system: toAnthropicSystem(systemMessages, activePromptCache),
+          messages: chatMessages,
+          temperature: input.temperature ?? model.temperature,
+          max_tokens:
+            input.maxOutputTokens ??
+            model.maxOutputTokens ??
+            DEFAULT_ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS,
+          ...(tools?.length ? { tools } : {}),
+          ...(input.toolChoice ? { tool_choice: toAnthropicToolChoice(input.toolChoice) } : {}),
+          stream: true,
+        }),
+      });
+    } catch (error) {
+      throw normalizeProviderNetworkError(error, input.signal);
+    }
 
-    const raw = await response.json();
+    input.onProviderActivity?.("headers");
     if (!response.ok) {
+      const raw = await readJsonResponse(response);
       const message = raw?.error?.message ?? `anthropic-compatible request failed: ${response.status}`;
       if (isProviderSizeLikeFailure({ status: response.status, message })) {
         throw buildProviderRequestEnvelopeOverflowError({
@@ -72,11 +84,54 @@ export class AnthropicCompatibleClient implements ProtocolClient {
           message,
         });
       }
-      throw new Error(message);
+      throw buildProviderRequestError({
+        status: response.status,
+        message,
+        retryAfter: response.headers?.get("retry-after"),
+      });
     }
 
-    const contentBlocks = extractAnthropicContentBlocks(raw?.content);
+    if (isEventStreamResponse(response)) {
+      try {
+        const stream = await consumeAnthropicMessageStream(response, {
+          ...(input.signal ? { signal: input.signal } : {}),
+          ...(input.onProviderActivity
+            ? { onActivity: input.onProviderActivity }
+            : {}),
+        });
+        assertCompleteAnthropicResponse(stream.stopReason);
+        const contentBlocks = sanitizeContentBlocks(stream.contentBlocks);
+        const toolCalls = extractToolCalls(contentBlocks);
+        return {
+          text: contentBlocks
+            .filter((block): block is Extract<LLMContentBlock, { type: "text" }> => block.type === "text")
+            .map((block) => block.text)
+            .join(""),
+          contentBlocks,
+          ...(toolCalls.length ? { toolCalls } : {}),
+          modelId: input.modelId ?? model.id,
+          providerId: model.providerId,
+          protocol: model.protocol,
+          adapterName: "anthropic-compatible",
+          ...(stream.stopReason ? { stopReason: stream.stopReason } : {}),
+          ...(stream.usage ? { usage: stream.usage } : {}),
+          raw: {
+            stream: true,
+            eventCount: stream.eventCount,
+            completed: true,
+          },
+        };
+      } catch (error) {
+        throw normalizeProviderNetworkError(error, input.signal);
+      }
+    }
+
+    const raw = await readJsonResponse(response);
+    assertCompleteAnthropicResponse(raw?.stop_reason);
+
+    const contentBlocks = sanitizeContentBlocks(extractAnthropicContentBlocks(raw?.content));
     const toolCalls = extractToolCalls(contentBlocks);
+    const usage = normalizeAnthropicTokenUsage(raw?.usage);
     return {
       text: contentBlocks
         .filter((block): block is Extract<LLMContentBlock, { type: "text" }> => block.type === "text")
@@ -89,12 +144,68 @@ export class AnthropicCompatibleClient implements ProtocolClient {
       protocol: model.protocol,
       adapterName: "anthropic-compatible",
       stopReason: raw?.stop_reason,
-      usage: {
-        inputTokens: raw?.usage?.input_tokens,
-        outputTokens: raw?.usage?.output_tokens,
-      },
+      ...(usage ? { usage } : {}),
       raw,
     };
+  }
+}
+
+const INTERRUPTED_ANTHROPIC_STOP_REASONS = new Set([
+  "abort",
+  "aborted",
+  "cancelled",
+  "canceled",
+  "timeout",
+  "timed_out",
+]);
+
+function assertCompleteAnthropicResponse(stopReason: unknown): void {
+  if (typeof stopReason !== "string") return;
+  const normalized = stopReason.trim().toLowerCase();
+  if (!INTERRUPTED_ANTHROPIC_STOP_REASONS.has(normalized)) return;
+  throw new ProviderRequestError(
+    `anthropic-compatible provider stopped before completion: ${normalized}`,
+    { code: "incomplete_response", retryable: true },
+  );
+}
+
+function isEventStreamResponse(response: Response): boolean {
+  return response.headers
+    ?.get("content-type")
+    ?.toLowerCase()
+    .includes("text/event-stream") ?? false;
+}
+
+function toAnthropicSystem(systemMessages: string[], activePromptCache: boolean): unknown {
+  if (!activePromptCache) return systemMessages.join("\n\n");
+  return systemMessages.map((text, index) => ({
+    type: "text",
+    text,
+    ...(index === systemMessages.length - 1
+      ? { cache_control: { type: "ephemeral" } }
+      : {}),
+  }));
+}
+
+function toAnthropicTools(
+  tools: GenerateTextInput["tools"],
+  activePromptCache: boolean,
+): Array<Record<string, unknown>> | undefined {
+  return tools?.map((tool, index) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema,
+    ...(activePromptCache && index === tools.length - 1
+      ? { cache_control: { type: "ephemeral" } }
+      : {}),
+  }));
+}
+
+async function readJsonResponse(response: Response): Promise<any> {
+  try {
+    return await response.json();
+  } catch {
+    return {};
   }
 }
 

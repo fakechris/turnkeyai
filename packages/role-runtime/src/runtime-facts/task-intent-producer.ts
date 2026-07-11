@@ -464,10 +464,21 @@ function isTaskFactTwoSourceComparisonTask(taskPrompt: string): boolean {
 }
 
 function uniqueTaskFactHttpUrlCount(text: string): number {
+  const candidates = Array.from(
+    text.matchAll(/\bhttps?:\/\/[^\s"'`<>]+/gi),
+    (match) => match[0].replace(/[),.;，。；]+$/, ""),
+  );
+  const completeUrls = candidates.filter((url) => !url.endsWith("…"));
   return new Set(
-    Array.from(text.matchAll(/\bhttps?:\/\/[^\s"'`<>]+/gi), (match) =>
-      match[0].replace(/[),.;，。；]+$/, ""),
-    ),
+    candidates.filter((url) => {
+      if (!url.endsWith("…")) {
+        return true;
+      }
+      const visiblePrefix = url.slice(0, -1);
+      return !completeUrls.some((completeUrl) =>
+        completeUrl.startsWith(visiblePrefix),
+      );
+    }),
   ).size;
 }
 

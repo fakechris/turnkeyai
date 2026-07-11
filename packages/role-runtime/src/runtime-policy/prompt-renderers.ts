@@ -339,9 +339,9 @@ function findMissingBrowserEvidenceDimensions(input: {
       label: "embedded frame source state",
       requested: /\b(?:iframe|frame|embedded source)\b/i,
       evidence:
-        /\b(?:Frame panel|embedded source frame|embedded backlog source)\b[\s\S]{0,180}\b(?:backlog\s*7|Frame Captain)\b|\b(?:backlog\s*7|Frame Captain)\b[\s\S]{0,180}\b(?:Frame panel|embedded source frame|embedded backlog source)\b/i,
+        /\b(?:Frame panel|embedded source frame|embedded backlog source)\b[\s\S]{0,180}\b(?:backlog(?:\s*(?:count|data))?\s*[:=]?\s*\d+|owner\s*[:=]\s*[^\n,;]+)\b|\b(?:backlog(?:\s*(?:count|data))?\s*[:=]?\s*\d+|owner\s*[:=]\s*[^\n,;]+)\b[\s\S]{0,180}\b(?:Frame panel|embedded source frame|embedded backlog source)\b/i,
       result:
-        /\b(?:frame|iframe|embedded source)\b[\s\S]{0,220}\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b|\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b7\b|Frame Captain)\b[\s\S]{0,220}\b(?:frame|iframe|embedded source)\b/i,
+        /\b(?:frame|iframe|embedded source)\b[\s\S]{0,220}\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b\d+\b|owner\s*[:=]\s*[^\n,;]+)\b|\b(?:backlog(?:\s*(?:count|data))?[\s\S]{0,30}\b\d+\b|owner\s*[:=]\s*[^\n,;]+)\b[\s\S]{0,220}\b(?:frame|iframe|embedded source)\b/i,
       negated:
         /\bnot verified\b[\s\S]{0,120}\b(?:frame|iframe|embedded source)\b|\b(?:frame|iframe|embedded source)\b[\s\S]{0,120}\bnot verified\b/i,
     },
@@ -359,9 +359,11 @@ function findMissingBrowserEvidenceDimensions(input: {
       label: "details popup state",
       requested: /\bpopup\b/i,
       evidence:
-        /\bpopup\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\bpopup\b/i,
+        /\bpopup\b[\s\S]{0,180}\b(?:manager acknowledgement|opened|details?|record|ticket)\b|\b(?:manager acknowledgement|details?|record|ticket)\b[\s\S]{0,180}\bpopup\b/i,
       result:
-        /\bpopup\b[\s\S]{0,180}\b(?:P-42|manager acknowledgement|opened)\b|\b(?:P-42|manager acknowledgement)\b[\s\S]{0,180}\bpopup\b/i,
+        /\bpopup\b[\s\S]{0,180}\b(?:manager acknowledgement|opened|details?|record|ticket)\b|\b(?:manager acknowledgement|details?|record|ticket)\b[\s\S]{0,180}\bpopup\b/i,
+      negated:
+        /\bnot verified\b[\s\S]{0,120}\b(?:popup|popup details?)\b|\b(?:popup|popup details?)\b[\s\S]{0,120}\bnot verified\b/i,
     },
     {
       label: "product signal dashboard counters",
@@ -1139,6 +1141,7 @@ export function applySessionContinuationDirective(
       name: "sessions_send",
       input: {
         session_key: directive.sessionKey,
+        mode: "continue",
         message: mergeSessionContinuationMessage(
           directive,
           proposedMessage,
@@ -1193,9 +1196,11 @@ export function applySessionContinuationLookupDirective(
   );
   if (sendIndex >= 0) {
     const sent = toolCalls[sendIndex]!;
-    const agentId = readPolicyWorkerKindFromSessionKey(
-      readStringInput(sent.input, "session_key"),
-    );
+    const agentId =
+      directive.workerKind ??
+      readPolicyWorkerKindFromSessionKey(
+        readStringInput(sent.input, "session_key"),
+      );
     return [
       ...toolCalls
         .slice(0, sendIndex)
@@ -1209,7 +1214,6 @@ export function applySessionContinuationLookupDirective(
         input: {
           limit: 5,
           ...(agentId ? { agent_id: agentId, kinds: [agentId] } : {}),
-          reason: `continuation lookup: ${directive.messageHint}`,
         },
       },
       ...toolCalls
@@ -1230,7 +1234,8 @@ export function applySessionContinuationLookupDirective(
     return toolCalls;
   }
   const spawned = toolCalls[spawnIndex]!;
-  const agentId = readStringInput(spawned.input, "agent_id");
+  const agentId =
+    directive.workerKind ?? readStringInput(spawned.input, "agent_id");
   return [
     ...toolCalls.slice(0, spawnIndex),
     {
@@ -1239,7 +1244,6 @@ export function applySessionContinuationLookupDirective(
       input: {
         limit: 5,
         ...(agentId ? { agent_id: agentId, kinds: [agentId] } : {}),
-        reason: `continuation lookup: ${directive.messageHint}`,
       },
     },
     ...toolCalls

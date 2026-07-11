@@ -9,8 +9,15 @@ import type {
 import type {
   GenerateTextInput,
   GenerateTextResult,
+  LLMMessage,
+  RequestEnvelopeDiagnostics,
 } from "@turnkeyai/llm-adapter/index";
 import type { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
+import {
+  createInputTokenEstimateTracker,
+  estimateGenerateTextInputTokens,
+  type InputTokenEstimate,
+} from "@turnkeyai/llm-adapter/token-estimator";
 
 import {
   generateWithEnvelopeRetry,
@@ -26,6 +33,7 @@ import {
   type ToolResultPruningSnapshot,
 } from "../tool-history-pruning";
 import type { FinalToolRoundWarningInput } from "./execution-budget-controller";
+import type { RunLifecycleRecorder } from "./run-lifecycle";
 
 type EngineModelReduction = NonNullable<GenerateWithEnvelopeRetryResult["reduction"]>;
 type EngineModelReductionSnapshot =
@@ -55,27 +63,52 @@ export interface CreateEngineModelClientInput {
   selection: GenerateWithEnvelopeRetryInput["selection"];
   baseGatewayInput: GenerateTextInput;
   modelCallTrace: ModelCallBoundaryTrace[];
+  lifecycle?: RunLifecycleRecorder | undefined;
   maxRounds: number;
   activeToolLoop: boolean;
   executionBudget: EngineModelExecutionBudget;
   runState: EngineModelRunState;
-  recordPruning(snapshot: ToolResultPruningSnapshot | undefined): Promise<void> | void;
+  recordPruning(
+    snapshot: ToolResultPruningSnapshot | undefined,
+    round: number,
+  ): Promise<void> | void;
+  forceCompact?:
+    | ((input: {
+        messages: LLMMessage[];
+        round: number;
+        diagnostics: RequestEnvelopeDiagnostics;
+      }) => Promise<{ messages: LLMMessage[] }>)
+    | undefined;
 }
 
 export interface CreateRoleEngineModelClientInput
   extends Omit<CreateEngineModelClientInput, "recordPruning"> {
   runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
+  onPruning?: (
+    snapshot: ToolResultPruningSnapshot | undefined,
+    round: number,
+  ) => void;
 }
 
 export interface EngineModelClient {
   model: ModelClient;
   lastResult(): GenerateTextResult | undefined;
+  estimateTokenBudget(
+    input: Pick<GenerateTextInput, "messages" | "tools" | "toolChoice">,
+  ): EngineModelTokenBudgetEstimate;
+}
+
+export interface EngineModelTokenBudgetEstimate extends InputTokenEstimate {
+  inputTokenLimit?: number;
+  utilization?: number;
 }
 
 export function createEngineModelClient(
   input: CreateEngineModelClientInput,
 ): EngineModelClient {
   let lastResult: GenerateTextResult | undefined;
+  let inputTokenLimit: number | undefined;
+  const inputTokenEstimateTracker = createInputTokenEstimateTracker();
   let traceRound = 0;
   const model: ModelClient = {
     generate: async ({ messages: roundMessages, tools, toolChoice }) => {
@@ -92,22 +125,44 @@ export function createEngineModelClient(
         baseGatewayInput: input.baseGatewayInput,
         messages: warningMessages,
         noToolRound,
+        ...(inputTokenLimit === undefined ? {} : { inputTokenLimit }),
         ...(mappedToolChoice ? { toolChoice: mappedToolChoice } : {}),
       });
-      await input.recordPruning(gatewayRequest.pruning);
+      await input.recordPruning(gatewayRequest.pruning, modelCallRound);
       const generated = await generateWithEnvelopeRetry({
         gateway: input.gateway,
         now: input.now,
         preCompactionMemoryFlusher: input.preCompactionMemoryFlusher,
+        ...(input.forceCompact
+          ? {
+              forceCompact: ({ messages, diagnostics }) =>
+                input.forceCompact!({
+                  messages,
+                  diagnostics,
+                  round: modelCallRound,
+                }),
+            }
+          : {}),
         activation: input.activation,
         packet: input.packet,
         selection: input.selection,
         gatewayInput: gatewayRequest.gatewayInput,
         modelCallTrace: input.modelCallTrace,
+        lifecycle: input.lifecycle,
         tracePhase: "tool_round",
         traceRound: traceRound++,
       });
       lastResult = generated.result;
+      const observedRawInputTokens =
+        generated.result.requestEnvelope?.estimatedInputTokens ??
+        estimateGenerateTextInputTokens(gatewayRequest.gatewayInput);
+      inputTokenEstimateTracker.observe({
+        rawInputTokens: observedRawInputTokens,
+        ...(generated.result.usage?.inputTokens === undefined
+          ? {}
+          : { actualInputTokens: generated.result.usage.inputTokens }),
+      });
+      inputTokenLimit = generated.result.requestEnvelope?.inputTokenLimit;
       if (generated.reduction) {
         input.runState.recordReduction({
           reduction: generated.reduction,
@@ -131,22 +186,39 @@ export function createEngineModelClient(
   return {
     model,
     lastResult: () => lastResult,
+    estimateTokenBudget(estimateInput) {
+      const estimate = inputTokenEstimateTracker.estimate(
+        estimateGenerateTextInputTokens(estimateInput),
+      );
+      return {
+        ...estimate,
+        ...(inputTokenLimit === undefined ? {} : { inputTokenLimit }),
+        ...(inputTokenLimit === undefined || inputTokenLimit <= 0
+          ? {}
+          : {
+              utilization:
+                estimate.estimatedInputTokens / inputTokenLimit,
+            }),
+      };
+    },
   };
 }
 
 export function createRoleEngineModelClient(
   input: CreateRoleEngineModelClientInput,
 ): EngineModelClient {
-  const { runtimeProgressRecorder, ...engineInput } = input;
+  const { runtimeProgressRecorder, onPruning, ...engineInput } = input;
   return createEngineModelClient({
     ...engineInput,
-    recordPruning: (snapshot) =>
-      recordToolResultPruningBoundarySafely({
+    recordPruning: async (snapshot, round) => {
+      onPruning?.(snapshot, round);
+      await recordToolResultPruningBoundarySafely({
         activation: input.activation,
         runtimeProgressRecorder,
         selection: input.selection,
         snapshot,
-      }),
+      });
+    },
   });
 }
 

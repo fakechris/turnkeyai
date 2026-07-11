@@ -25,6 +25,7 @@ export interface MissionTerminalReport {
   unverifiedSlots?: string[];
   evidenceRefs?: string[];
   authorizedPartial?: boolean;
+  coverageVerified?: boolean;
   source?: MissionTerminalReportSource;
 }
 
@@ -541,6 +542,14 @@ export interface SendTeamMessageInput {
   content: string;
   userId?: string;
   metadata?: Record<string, unknown>;
+  idempotencyKey?: string;
+}
+
+export interface WorkerCompletionIngressInput {
+  threadId: ThreadId;
+  content: string;
+  /** Required because bridge retries may replay an already accepted batch. */
+  idempotencyKey: string;
 }
 
 export interface ValidateMentionInput {

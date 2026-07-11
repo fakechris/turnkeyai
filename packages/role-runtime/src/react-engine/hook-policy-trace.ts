@@ -1,7 +1,7 @@
 // Stage 8 engine cleanup — behavior-neutral hook-boundary policy trace.
 //
 // Batch 0.5 characterization: capture the current per-hook decision sequence of
-// runViaReActEngine WITHOUT touching any hook body. `traceEngineHooks` wraps a
+// runEngine WITHOUT touching any hook body. `traceEngineHooks` wraps a
 // ReActHooks object so each installed hook, when invoked by agent-core, records
 // one EnginePolicyTraceEntry describing the phase it fired in and the outcome it
 // produced (derived from its return value), then returns the hook's real result
@@ -160,6 +160,24 @@ export function traceEngineHooks<Ctx extends ToolContext>(
 ): ReActHooks<Ctx> {
   const wrapped: ReActHooks<Ctx> = { ...hooks };
 
+  const { onRoundMessages } = hooks;
+  if (onRoundMessages) {
+    wrapped.onRoundMessages = async (messages, round, ctx) => {
+      const result = await onRoundMessages(messages, round, ctx);
+      const compacted = result.messages !== messages;
+      record(trace, "onRoundMessages", {
+        policyId: compacted
+          ? "onRoundMessages:compacted"
+          : "onRoundMessages:unchanged",
+        outcome: compacted ? "applied" : "skipped",
+        reason: compacted
+          ? `compacted ${messages.length} message(s) to ${result.messages.length}`
+          : "below compaction threshold",
+      });
+      return result;
+    };
+  }
+
   const { onToolCalls } = hooks;
   if (onToolCalls) {
     wrapped.onToolCalls = (calls, state, ctx) => {
@@ -222,6 +240,29 @@ export function traceEngineHooks<Ctx extends ToolContext>(
         classifyNullableDirective("onAfterExecuteContinue", result),
       );
       return result;
+    };
+  }
+
+  const { onToolResultsForHistory } = hooks;
+  if (onToolResultsForHistory) {
+    wrapped.onToolResultsForHistory = async (results, state, ctx) => {
+      const historyResults = await onToolResultsForHistory(results, state, ctx);
+      const externalized = historyResults.reduce(
+        (count, result, index) => count + (result === results[index] ? 0 : 1),
+        0,
+      );
+      record(trace, "onToolResultsForHistory", {
+        policyId:
+          externalized > 0
+            ? "onToolResultsForHistory:externalized"
+            : "onToolResultsForHistory:unchanged",
+        outcome: externalized > 0 ? "applied" : "skipped",
+        reason:
+          externalized > 0
+            ? `externalized ${externalized} tool result(s)`
+            : "tool results remain inline",
+      });
+      return historyResults;
     };
   }
 

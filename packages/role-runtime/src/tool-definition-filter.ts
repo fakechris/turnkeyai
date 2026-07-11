@@ -15,6 +15,7 @@ import {
 const FOCUSED_MEMORY_RECALL_TOOL_NAMES = new Set([
   "memory_search",
   "memory_get",
+  "artifacts_read",
 ]);
 const PERMISSION_TOOL_NAMES = new Set([
   "permission_query",
@@ -70,12 +71,13 @@ export function buildToolDefinitionFilterTaskContext(
   const intent = activation.handoff.payload.intent;
   return [
     taskPrompt,
-    intent?.relayBrief ?? "",
-    ...(intent?.recentMessages ?? []).map((message) =>
-      typeof message.content === "string"
-        ? message.content
-        : JSON.stringify(message.content ?? ""),
-    ),
+    ...(intent?.recentMessages ?? [])
+      .filter((message) => message.role === "user")
+      .map((message) =>
+        typeof message.content === "string"
+          ? message.content
+          : JSON.stringify(message.content ?? ""),
+      ),
   ].join("\n");
 }
 
