@@ -256,7 +256,7 @@ export class CoordinationEngine {
   }
 
   private async handleMessageIngress(
-    input: Pick<SendTeamMessageInput, "threadId" | "content" | "idempotencyKey" | "deadlineAt">,
+    input: Pick<SendTeamMessageInput, "threadId" | "content" | "idempotencyKey">,
     kind: Extract<FlowStartIntent["kind"], "user-post" | "worker-completion">,
   ): Promise<void> {
     const thread = await this.deps.teamThreadStore.get(input.threadId);
