@@ -174,6 +174,37 @@ test("cancellation reaches attached descendants but not detached work", () => {
   );
 });
 
+test("late effect receipts update audit state without reopening terminal scopes", () => {
+  for (const outcome of ["committed", "failed"] as const) {
+    const runtime = new ReferenceRuntime();
+    runtime.admitEffect({
+      effectId: `effect-${outcome}`,
+      signature: "tool:a",
+      scopeId: `scope-${outcome}`,
+    });
+    runtime.startEffect(`effect-${outcome}`);
+    runtime.cancelQuery("operator_cancelled");
+    const lateEvent = outcome === "committed"
+      ? {
+          type: "effect_committed" as const,
+          at: 1,
+          effectId: `effect-${outcome}`,
+          resultRef: "late-receipt",
+        }
+      : {
+          type: "effect_failed" as const,
+          at: 1,
+          effectId: `effect-${outcome}`,
+          errorCode: "late-failure",
+        };
+
+    const replayed = reduceRuntime([...runtime.journal, lateEvent]);
+
+    assert.equal(replayed.scopes[`scope-${outcome}`]?.state.kind, "cancelled");
+    assert.equal(replayed.effects[`effect-${outcome}`]?.status, outcome);
+  }
+});
+
 test("join expiry abandons the waiter without cancelling detached work", () => {
   const runtime = new ReferenceRuntime({ rootExpiresAt: 100 });
   runtime.admitEffect({ effectId: "effect-1", signature: "tool:a", scopeId: "worker-1" });
@@ -243,6 +274,8 @@ test("compaction preserves complete tool protocol units and every open call", ()
     compacted[0]?.kind === "summary" ? compacted[0].sourceItemIds : [],
     ["m1", "c1", "r1"],
   );
+  assert.equal(compacted[0]?.id.length, "summary:".length + 64);
+  assert.equal(compactTranscript(transcript, 1)[0]?.id, compacted[0]?.id);
 
   assert.throws(
     () => validateTranscript([

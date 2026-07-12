@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 export type Ownership = "attached" | "detached";
 
@@ -238,9 +239,12 @@ export function compactTranscript(
   if (compactCount === 0) return items.map((item) => structuredClone(item));
 
   const compacted = units.slice(0, compactCount).flat();
+  const summaryDigest = createHash("sha256")
+    .update(JSON.stringify(compacted.map((item) => item.id)))
+    .digest("hex");
   const summary: TranscriptItem = {
     kind: "summary",
-    id: `summary:${compacted.map((item) => item.id).join(",")}`,
+    id: `summary:${summaryDigest}`,
     sourceItemIds: compacted.map((item) => item.id),
   };
   const result = [summary, ...units.slice(compactCount).flat()];
@@ -286,14 +290,30 @@ export function reduceRuntime(events: readonly RuntimeEvent[]): RuntimeState {
         const effect = requiredEffect(state, event.effectId);
         effect.status = "committed";
         effect.resultRef = event.resultRef;
-        finishScopeAndAttempt(state, effect.scopeId, { kind: "succeeded", resultRef: event.resultRef }, "succeeded");
+        const scope = requiredScope(state, effect.scopeId);
+        if (!isTerminal(scope.state)) {
+          finishScopeAndAttempt(
+            state,
+            effect.scopeId,
+            { kind: "succeeded", resultRef: event.resultRef },
+            "succeeded",
+          );
+        }
         break;
       }
       case "effect_failed": {
         const effect = requiredEffect(state, event.effectId);
         effect.status = "failed";
         effect.errorCode = event.errorCode;
-        finishScopeAndAttempt(state, effect.scopeId, { kind: "failed", errorCode: event.errorCode }, "failed");
+        const scope = requiredScope(state, effect.scopeId);
+        if (!isTerminal(scope.state)) {
+          finishScopeAndAttempt(
+            state,
+            effect.scopeId,
+            { kind: "failed", errorCode: event.errorCode },
+            "failed",
+          );
+        }
         break;
       }
       case "effect_indeterminate": {
