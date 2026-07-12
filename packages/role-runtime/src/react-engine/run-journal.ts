@@ -46,7 +46,10 @@ export interface RunJournal {
   checkpoint(state: RunJournalState): Promise<void>;
   complete(state: RunJournalState): Promise<void>;
   effectLedger: {
-    admit(input: { round: number; call: LLMToolCall }): Promise<void>;
+    admit(input: {
+      round: number;
+      call: LLMToolCall;
+    }): Promise<ToolResult | null>;
     start(effectId: string): Promise<void>;
     recordResult(result: ToolResult): Promise<void>;
   };
@@ -146,12 +149,33 @@ export function createRunJournal(input: {
     await write("in_flight", latestState);
   };
 
-  const enqueueEffectTransition = (
-    transition: () => Promise<void>,
-  ): Promise<void> => {
+  const enqueueEffectTransition = <T>(
+    transition: () => Promise<T>,
+  ): Promise<T> => {
     const queued = effectTransitionQueue.then(transition);
-    effectTransitionQueue = queued;
+    effectTransitionQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
     return queued;
+  };
+
+  const persistLedgerTransition = async <T>(
+    transition: () => T,
+  ): Promise<T> => {
+    const before = effectLedger.snapshot();
+    try {
+      const value = transition();
+      await persistEffectLedger();
+      return value;
+    } catch (error) {
+      const restored = restoreRunEffectLedger(before);
+      if (!restored) {
+        throw new Error("internal effect-ledger rollback failed");
+      }
+      effectLedger = restored;
+      throw error;
+    }
   };
 
   return {
@@ -212,20 +236,92 @@ export function createRunJournal(input: {
     effectLedger: {
       admit: (effect) =>
         enqueueEffectTransition(async () => {
-          effectLedger.admit(effect);
-          await persistEffectLedger();
+          const existing = effectLedger.get(effect.call.id);
+          if (existing) {
+            const record = effectLedger.admit(effect);
+            if (
+              record.status === "committed" ||
+              record.status === "failed" ||
+              record.status === "indeterminate"
+            ) {
+              return readDurableEffectReceipt(record, latestState);
+            }
+            throw new Error(
+              `effect already has an active admission: ${record.effectId}:${record.status}`,
+            );
+          }
+          return persistLedgerTransition(() => {
+            effectLedger.admit(effect);
+            return null;
+          });
         }),
       start: (effectId) =>
-        enqueueEffectTransition(async () => {
-          effectLedger.start(effectId);
-          await persistEffectLedger();
-        }),
+        enqueueEffectTransition(() =>
+          persistLedgerTransition(() => {
+            effectLedger.start(effectId);
+          }),
+        ),
       recordResult: (result) =>
         enqueueEffectTransition(async () => {
-          const recorded = effectLedger.recordResult(result);
-          if (recorded) await persistEffectLedger();
+          const existing = effectLedger.get(result.toolCallId);
+          if (!existing) return;
+          if (
+            existing.status === "committed" ||
+            existing.status === "failed" ||
+            existing.status === "indeterminate"
+          ) {
+            effectLedger.recordResult(result);
+            return;
+          }
+          await persistLedgerTransition(() => {
+            effectLedger.recordResult(result);
+          });
         }),
     },
+  };
+}
+
+function readDurableEffectReceipt(
+  record: RunEffectRecord,
+  state: RunJournalState | null,
+): ToolResult {
+  if (record.result) return structuredClone(record.result);
+  const message = [...(state?.messages ?? [])]
+    .reverse()
+    .find(
+      (candidate) =>
+        candidate.role === "tool" &&
+        candidate.toolCallId === record.effectId,
+    );
+  if (!message) {
+    throw new Error(`durable effect receipt is missing: ${record.effectId}`);
+  }
+  const resultBlock = Array.isArray(message.content)
+    ? message.content.find(
+        (block) =>
+          block.type === "tool_result" && block.toolUseId === record.effectId,
+      )
+    : undefined;
+  const content = typeof message.content === "string"
+    ? message.content
+    : resultBlock?.type === "tool_result"
+      ? resultBlock.content
+      : null;
+  if (content === null) {
+    throw new Error(`durable effect receipt content is missing: ${record.effectId}`);
+  }
+  const traceResult = [...(state?.toolTrace ?? [])]
+    .reverse()
+    .flatMap((round) => [...round.results].reverse())
+    .find((result) => result.toolCallId === record.effectId);
+  return {
+    toolCallId: record.effectId,
+    toolName: record.call.name,
+    content,
+    ...(record.status === "committed" && traceResult?.isError !== true
+      ? {}
+      : { isError: true }),
+    ...(traceResult?.cancelled ? { cancelled: true } : {}),
   };
 }
 

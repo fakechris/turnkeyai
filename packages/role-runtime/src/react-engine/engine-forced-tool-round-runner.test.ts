@@ -57,6 +57,7 @@ test("createEngineRuntimeForcedToolRoundRunner wires forced-round persistence an
     effectLifecycle: {
       async onAdmitted({ call: admittedCall }) {
         lifecycle.push(`admitted:${admittedCall.id}`);
+        return null;
       },
       async onStarted({ call: startedCall }) {
         lifecycle.push(`started:${startedCall.id}`);
@@ -155,6 +156,114 @@ test("createRoleEngineRuntimeForcedToolRoundRunner selects tool-loop recorder fo
   );
 });
 
+test("forced tool execution returns a prior receipt without dispatch", async () => {
+  let dispatches = 0;
+  let starts = 0;
+  let results = 0;
+  const call: LLMToolCall = {
+    id: "committed-effect",
+    name: "permission_result",
+    input: {},
+  };
+  const runner = createEngineRuntimeForcedToolRoundRunner({
+    toolLoop: {
+      executor: {
+        definitions: () => [],
+        async execute({ call: dispatchedCall }) {
+          dispatches += 1;
+          return {
+            toolCallId: dispatchedCall.id,
+            toolName: dispatchedCall.name,
+            content: "must not dispatch",
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    now: () => 1234,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    toolTrace: [],
+    toolLoopStartedAtMs: 1200,
+    effectLifecycle: {
+      async onAdmitted() {
+        return {
+          toolCallId: call.id,
+          toolName: call.name,
+          content: "prior durable receipt",
+        };
+      },
+      async onStarted() {
+        starts += 1;
+      },
+      async onResult() {
+        results += 1;
+      },
+    },
+  });
+
+  const output = await runner({
+    messages: [{ role: "user", content: "continue" }],
+    toolCalls: [call],
+    assistantText: "continue",
+  });
+
+  assert.equal(dispatches, 0);
+  assert.equal(starts, 0);
+  assert.equal(results, 1);
+  assert.equal(output.toolResults[0]?.content, "prior durable receipt");
+});
+
+test("forced tool execution rejects duplicate ids before admission or dispatch", async () => {
+  let admissions = 0;
+  let dispatches = 0;
+  const duplicate: LLMToolCall = {
+    id: "same-id",
+    name: "permission_result",
+    input: {},
+  };
+  const runner = createEngineRuntimeForcedToolRoundRunner({
+    toolLoop: {
+      executor: {
+        definitions: () => [],
+        async execute({ call }) {
+          dispatches += 1;
+          return {
+            toolCallId: call.id,
+            toolName: call.name,
+            content: "must not dispatch",
+          };
+        },
+      },
+    },
+    runtimeProgressRecorder: undefined,
+    now: () => 1234,
+    activation: buildActivation(),
+    packet: buildPacket(),
+    toolTrace: [],
+    toolLoopStartedAtMs: 1200,
+    effectLifecycle: {
+      async onAdmitted() {
+        admissions += 1;
+        return null;
+      },
+      async onStarted() {},
+      async onResult() {},
+    },
+  });
+
+  await assert.rejects(
+    runner({
+      messages: [{ role: "user", content: "continue" }],
+      toolCalls: [duplicate, duplicate],
+      assistantText: "continue",
+    }),
+    /duplicate tool call id/,
+  );
+  assert.equal(admissions, 0);
+  assert.equal(dispatches, 0);
+});
+
 test("forced tool execution fails closed when authoritative effect persistence fails", async (t) => {
   for (const failurePoint of ["admitted", "started"] as const) {
     await t.test(failurePoint, async () => {
@@ -182,6 +291,7 @@ test("forced tool execution fails closed when authoritative effect persistence f
         effectLifecycle: {
           async onAdmitted() {
             if (failurePoint === "admitted") throw new Error("admit failed");
+            return null;
           },
           async onStarted() {
             if (failurePoint === "started") throw new Error("start failed");

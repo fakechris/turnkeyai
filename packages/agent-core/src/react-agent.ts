@@ -287,6 +287,7 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
 
           let executable = toolCalls;
           let rejected: ToolResult[] = [];
+          assertUniqueToolCallIds(toolCalls);
           if (hooks.onBeforeExecute) {
             const gated = hooks.onBeforeExecute(toolCalls, ctx);
             executable = gated?.executable ?? toolCalls;
@@ -314,7 +315,8 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
             const executionCtx = executionSignal
               ? ({ ...ctx, signal: executionSignal } as Ctx)
               : toolCtx;
-            await onToolExecutionStart?.({ round, call });
+            const priorResult = await onToolExecutionStart?.({ round, call });
+            if (priorResult) return priorResult;
             throwIfAborted(activeSignal);
             let result: ToolResult;
             try {
@@ -417,6 +419,16 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
       yield* terminate("round_limit");
     },
   };
+}
+
+function assertUniqueToolCallIds(calls: readonly LLMToolCall[]): void {
+  const seen = new Set<string>();
+  for (const call of calls) {
+    if (seen.has(call.id)) {
+      throw new Error(`duplicate tool call id in one execution batch: ${call.id}`);
+    }
+    seen.add(call.id);
+  }
 }
 
 /** Drain a run to its terminal answer for non-streaming callers. */

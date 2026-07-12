@@ -213,6 +213,45 @@ test("a consumer that cannot persist a receipt stops before result publication",
   assert.equal(observed.some((event) => event.type === "tool_result"), false);
 });
 
+test("duplicate tool-call ids fail before admission or dispatch", async () => {
+  let admissions = 0;
+  let executions = 0;
+  const duplicate = call("same-id", "search");
+  const model = scriptedModel([
+    { text: "duplicate", toolCalls: [duplicate, duplicate] },
+  ]);
+  const tool: Tool<Ctx> = {
+    definition: { name: "search", description: "search", inputSchema: {} },
+    async execute(toolCall) {
+      executions += 1;
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "must not run",
+      };
+    },
+  };
+  const agent = createReActAgent({
+    model,
+    toolkit: createToolkit([tool]),
+    hooks: {
+      onProgress(event) {
+        if (event.type === "tool_admitted") admissions += 1;
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => drain(agent.run({
+      messages: [{ role: "user", content: "hi" }],
+      ctx: {},
+    })),
+    /duplicate tool call id/,
+  );
+  assert.equal(admissions, 0);
+  assert.equal(executions, 0);
+});
+
 test("filterTools restricts the tool definitions offered to the model", async () => {
   const model = scriptedModel([{ text: "answer" }]);
   let offered: string[] = [];

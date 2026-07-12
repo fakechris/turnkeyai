@@ -258,7 +258,7 @@ export interface ReActRunInput<Ctx extends ToolContext> {
   onToolExecutionStart?: (input: {
     round: number;
     call: LLMToolCall;
-  }) => Promise<void>;
+  }) => Promise<ToolResult | void>;
   /** Authoritative receipt callback. It is awaited immediately after a
    * dispatched call returns, before batch completion or result events. */
   onToolExecutionResult?: (input: {

@@ -526,6 +526,11 @@ test("authoritative effect lifecycle is fail-closed and stays outside observers"
     "engine batch scheduling must not discard the authoritative runOne executor",
   );
   assert.ok(
+    runnerSource.indexOf("priorResults.get(call.id)") <
+      runnerSource.indexOf("effectLifecycle?.onStarted"),
+    "normal execution must return a prior receipt before start or dispatch",
+  );
+  assert.ok(
     runnerSource.indexOf("effectLifecycle?.onResult") <
       runnerSource.indexOf("observer.onToolResult"),
     "normal tool receipt must reach the authoritative ledger before observers",
@@ -544,6 +549,16 @@ test("authoritative effect lifecycle is fail-closed and stays outside observers"
     executeSource.indexOf("await input.onStarted?.(call)") <
       executeSource.indexOf("activeToolLoop.executor.execute"),
     "forced tool start must persist before external dispatch",
+  );
+  assert.ok(
+    executeSource.indexOf("const priorResult = await input.onAdmitted?.(call)") <
+      executeSource.indexOf("await input.onStarted?.(call)"),
+    "forced execution must return a prior receipt before start or dispatch",
+  );
+  assert.ok(
+    executeSource.indexOf("assertUniqueRoleToolCallIds(input.toolCalls)") <
+      executeSource.indexOf("await input.onAdmitted?.(call)"),
+    "forced execution must reject duplicate ids before any admission or dispatch",
   );
 });
 

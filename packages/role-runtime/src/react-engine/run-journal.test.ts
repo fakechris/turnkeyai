@@ -438,6 +438,102 @@ test("RunJournal rejects effect-id reuse with a different proposal", async () =>
   );
 });
 
+test("RunJournal returns the prior receipt for a re-proposed terminal effect", async () => {
+  const journal = createRunJournal({
+    store: new MemoryTeamMessageStore(),
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 100,
+  });
+  await journal.checkpoint(emptyRunState());
+  const call = { id: "stable-id", name: "publish", input: { value: 1 } };
+  await journal.effectLedger.admit({ round: 1, call });
+  await journal.effectLedger.start(call.id);
+  await journal.effectLedger.recordResult({
+    toolCallId: call.id,
+    toolName: call.name,
+    content: "prior receipt",
+  });
+  await journal.checkpoint({
+    ...emptyRunState(),
+    messages: [
+      ...emptyRunState().messages,
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: call.id,
+            name: call.name,
+            input: call.input,
+          },
+        ],
+      },
+      {
+        role: "tool",
+        name: call.name,
+        toolCallId: call.id,
+        content: [
+          {
+            type: "tool_result",
+            toolUseId: call.id,
+            content: "prior receipt",
+          },
+        ],
+      },
+    ],
+  });
+
+  const prior = await journal.effectLedger.admit({ round: 2, call });
+
+  assert.deepEqual(prior, {
+    toolCallId: call.id,
+    toolName: call.name,
+    content: "prior receipt",
+  });
+});
+
+test("a rejected ledger transition does not poison later transitions", async () => {
+  const store = new MemoryTeamMessageStore();
+  const journal = createRunJournal({
+    store,
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 100,
+  });
+  await journal.checkpoint(emptyRunState());
+  const failedCall = { id: "failed-write", name: "publish", input: {} };
+  await journal.effectLedger.admit({ round: 1, call: failedCall });
+  store.failNextAppend();
+
+  await assert.rejects(
+    journal.effectLedger.start(failedCall.id),
+    /injected append failure/,
+  );
+
+  const nextCall = { id: "next-effect", name: "publish", input: {} };
+  assert.equal(
+    await journal.effectLedger.admit({ round: 2, call: nextCall }),
+    null,
+  );
+  await journal.effectLedger.start(nextCall.id);
+  await journal.effectLedger.recordResult({
+    toolCallId: nextCall.id,
+    toolName: nextCall.name,
+    content: "succeeded after isolated failure",
+  });
+
+  const restored = await journal.load();
+  const failedReceipt = restored?.toolTrace
+    .flatMap((round) => round.results)
+    .find((result) => result.toolCallId === failedCall.id);
+  assert.match(
+    failedReceipt?.content ?? "",
+    /turnkeyai\.effect_not_dispatched\.v1/,
+  );
+  assert.doesNotMatch(failedReceipt?.content ?? "", /indeterminate/);
+});
+
 test("RunJournal ignores an in-flight snapshot for a different task fingerprint", async () => {
   const store = new MemoryTeamMessageStore();
   await createRunJournal({
@@ -465,8 +561,17 @@ test("RunJournal ignores an in-flight snapshot for a different task fingerprint"
 
 class MemoryTeamMessageStore implements TeamMessageStore {
   private readonly messages = new Map<string, TeamMessage>();
+  private rejectNextAppend = false;
+
+  failNextAppend(): void {
+    this.rejectNextAppend = true;
+  }
 
   async append(message: TeamMessage): Promise<void> {
+    if (this.rejectNextAppend) {
+      this.rejectNextAppend = false;
+      throw new Error("injected append failure");
+    }
     const previous = this.messages.get(message.id);
     this.messages.set(message.id, {
       ...message,

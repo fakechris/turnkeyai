@@ -44,6 +44,11 @@ export class RunEffectLedger {
     }
   }
 
+  get(effectId: string): RunEffectRecord | null {
+    const record = this.records.get(effectId);
+    return record ? structuredClone(record) : null;
+  }
+
   admit(input: { round: number; call: LLMToolCall }): RunEffectRecord {
     const signature = effectSignature(input.call);
     const existing = this.records.get(input.call.id);
@@ -86,7 +91,11 @@ export class RunEffectLedger {
         `effect receipt tool does not match proposal: ${record.effectId}`,
       );
     }
-    if (record.status === "committed" || record.status === "failed") {
+    if (
+      record.status === "committed" ||
+      record.status === "failed" ||
+      record.status === "indeterminate"
+    ) {
       if (
         record.result !== undefined &&
         JSON.stringify(record.result) !== JSON.stringify(result)

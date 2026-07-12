@@ -24,7 +24,10 @@ export interface EngineAgentRunnerInput<Ctx extends ToolContext> {
 }
 
 export interface EngineEffectLifecycle {
-  onAdmitted(input: { round: number; call: LLMToolCall }): Promise<void>;
+  onAdmitted(input: {
+    round: number;
+    call: LLMToolCall;
+  }): Promise<ToolResult | null>;
   onStarted(input: { round: number; call: LLMToolCall }): Promise<void>;
   onResult(input: { round: number; result: ToolResult }): Promise<void>;
 }
@@ -62,6 +65,7 @@ export async function runEngineAgent<Ctx extends ToolContext>(
   input: EngineAgentRunnerInput<Ctx>,
 ): Promise<string> {
   let finalText = "";
+  const priorResults = new Map<string, ToolResult>();
   for await (const event of input.agent.run({
     messages: input.messages,
     ctx: input.ctx,
@@ -70,6 +74,8 @@ export async function runEngineAgent<Ctx extends ToolContext>(
       : { initialRound: input.initialRound }),
     ...(input.signal ? { signal: input.signal } : {}),
     onToolExecutionStart: async ({ round, call }) => {
+      const priorResult = priorResults.get(call.id);
+      if (priorResult) return structuredClone(priorResult);
       await input.effectLifecycle?.onStarted({ round, call });
       await input.observer.onToolStarted({ round, call });
     },
@@ -83,10 +89,11 @@ export async function runEngineAgent<Ctx extends ToolContext>(
         toolCalls: event.toolCalls,
       });
     } else if (event.type === "tool_admitted") {
-      await input.effectLifecycle?.onAdmitted({
+      const priorResult = await input.effectLifecycle?.onAdmitted({
         round: event.round,
         call: event.call,
       });
+      if (priorResult) priorResults.set(event.call.id, priorResult);
     } else if (event.type === "tool_result") {
       await input.observer.onToolResult({ result: event.result });
     } else if (event.type === "final") {

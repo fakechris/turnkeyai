@@ -35,6 +35,13 @@ executor returns; it does not wait for the rest of the batch to finish.
 Ledger persistence is fail-closed: an admitted/started write failure prevents
 external dispatch. Observability remains non-authoritative.
 
+Re-proposing the same terminal effect id and proposal returns its durable prior
+receipt through either execution path without emitting a new start or calling
+the executor. Reusing an active admitted/started id fails closed. A rejected
+ledger write is returned to that caller, but the serialized transition queue is
+re-armed and the in-memory ledger rolls back to its last durable snapshot so
+later independent effects are not poisoned.
+
 ## Restart Outcomes
 
 | Durable state at crash | Resume outcome |
@@ -72,17 +79,18 @@ Architecture guards require:
 - authoritative lifecycle persistence before observer callbacks;
 - observer modules to remain free of effect-ledger authority;
 - normal and forced execution to persist admission/start before dispatch.
+- terminal duplicate effects to return their prior receipt before dispatch.
 
 ## Deterministic Validation
 
 Validated with the repository-supported Node.js `v24.14.0` runtime:
 
 - `npm run typecheck`: pass;
-- agent-core: 63/63;
+- agent-core: 64/64;
 - llm-adapter: 58/58;
-- react-engine, including architecture guards: 383/383;
+- react-engine, including architecture guards: 388/388;
 - response-generator, tool-use, and RunTrace replay: 317/317;
-- execution-semantics simulator: 16/16;
+- execution-semantics simulator: 17/17;
 - runtime-policy inventory: 2/2;
 - `git diff --check`: pass.
 
