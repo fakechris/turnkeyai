@@ -25,6 +25,7 @@
     "./recovery/file-recovery-run-store": "./src/recovery/file-recovery-run-store.ts",
     "./scheduled/file-scheduled-task-store": "./src/scheduled/file-scheduled-task-store.ts",
     "./worker/file-worker-session-store": "./src/worker/file-worker-session-store.ts",
+    "./worker/file-worker-result-inbox-store": "./src/worker/file-worker-result-inbox-store.ts",
     "./mission/file-mission-store": "./src/mission/file-mission-store.ts",
     "./mission/file-work-item-store": "./src/mission/file-work-item-store.ts",
     "./mission/file-activity-event-store": "./src/mission/file-activity-event-store.ts",

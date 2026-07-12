@@ -9,6 +9,7 @@ export * from "./team-recovery-types";
 export * from "./team-replay-recovery";
 export * from "./team-runtime-governance";
 export * from "./team-worker-runtime";
+export * from "./team-worker-inbox";
 export * from "./team-browser-runtime";
 export * from "./team-runtime-support";
 export * from "./team-truth";

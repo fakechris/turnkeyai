@@ -93,7 +93,11 @@ export interface MissionOrchestratorDeps {
   }): Promise<{ threadId: string; leadRoleId: string; roleIds: string[] }>;
   /** Posts a user message onto the linked thread (delegates to the
    *  coordination engine which wakes the role loop). */
-  postUserMessage(input: { threadId: string; content: string }): Promise<void>;
+  postUserMessage(input: {
+    threadId: string;
+    content: string;
+    idempotencyKey?: string;
+  }): Promise<void>;
   /** Mirrors the linked thread's messages onto the mission activity
    *  log immediately. Routes call this after each post so the new row
    *  appears without waiting for the next interval tick. */
@@ -1408,9 +1412,16 @@ function startMissionFollowUpInBackground(input: {
 }): void {
   void (async () => {
     try {
+      const prepared = input.orchestrator.threadBridge.prepareUserMessage
+        ? await input.orchestrator.threadBridge.prepareUserMessage(
+            input.mission.id,
+            input.content,
+          )
+        : { content: input.content, notificationIds: [] };
       const postPromise = input.orchestrator.postUserMessage({
         threadId: input.threadId,
-        content: input.content,
+        content: prepared.content,
+        ...(prepared.deliveryId ? { idempotencyKey: prepared.deliveryId } : {}),
       });
       const mirrorLoop = mirrorMissionWhilePostRuns({
         orchestrator: input.orchestrator,
@@ -1418,6 +1429,24 @@ function startMissionFollowUpInBackground(input: {
         label: "follow-up",
       });
       await postPromise;
+      if (
+        prepared.deliveryId &&
+        input.orchestrator.threadBridge.acknowledgePreparedUserMessage
+      ) {
+        try {
+          await input.orchestrator.threadBridge.acknowledgePreparedUserMessage({
+            missionId: input.mission.id,
+            deliveryId: prepared.deliveryId,
+            notificationIds: prepared.notificationIds,
+          });
+        } catch (error) {
+          console.error("mission worker result acknowledgement failed", {
+            missionId: input.mission.id,
+            deliveryId: prepared.deliveryId,
+            error,
+          });
+        }
+      }
       await mirrorLoop.stopAndFlush();
       await input.orchestrator.threadBridge.tickMission(input.mission.id);
     } catch (error) {

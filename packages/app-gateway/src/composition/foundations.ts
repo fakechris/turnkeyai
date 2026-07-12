@@ -78,6 +78,7 @@ import { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/file-r
 import { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
 import { FileScheduledTaskStore } from "@turnkeyai/team-store/scheduled/file-scheduled-task-store";
 import { FileWorkerSessionStore } from "@turnkeyai/team-store/worker/file-worker-session-store";
+import { FileWorkerResultInboxStore } from "@turnkeyai/team-store/worker/file-worker-result-inbox-store";
 import { BrowserWorkerHandler } from "@turnkeyai/worker-runtime/browser-worker-handler";
 import { DefaultCapabilityDiscoveryService } from "@turnkeyai/worker-runtime/capability-discovery-service";
 import { ExploreWorkerHandler } from "@turnkeyai/worker-runtime/explore-worker-handler";
@@ -142,6 +143,7 @@ export interface DaemonFoundations {
   scheduledTaskStore: FileScheduledTaskStore;
   validationOpsRunStore: FileValidationOpsRunStore;
   workerSessionStore: FileWorkerSessionStore;
+  workerResultInboxStore: FileWorkerResultInboxStore;
 
   // Builders and policies
   summaryBuilder: SummaryBuilder;
@@ -259,6 +261,9 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
   });
   const workerSessionStore = new FileWorkerSessionStore({
     rootDir: path.join(dataDir, "worker-sessions"),
+  });
+  const workerResultInboxStore = new FileWorkerResultInboxStore({
+    rootDir: path.join(dataDir, "worker-result-inbox"),
   });
 
   // --- Builders ----------------------------------------------------------
@@ -477,6 +482,7 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     scheduledTaskStore,
     validationOpsRunStore,
     workerSessionStore,
+    workerResultInboxStore,
     summaryBuilder,
     relayBriefBuilder,
     recoveryDirector,

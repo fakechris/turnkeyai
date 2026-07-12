@@ -10,6 +10,8 @@ import type {
   BrowserArtifactRecord,
   RoleRunState,
   TeamMessage,
+  WorkerJoinRecord,
+  WorkerResultNotification,
   WorkerSessionRecord,
 } from "@turnkeyai/core-types/team";
 
@@ -90,6 +92,9 @@ function memWorkerSessionStore(
   counters?: { list?: number; listByThread?: number }
 ) {
   return {
+    async get(workerRunKey: string): Promise<WorkerSessionRecord | null> {
+      return sessions.find((session) => session.workerRunKey === workerRunKey) ?? null;
+    },
     async list(): Promise<WorkerSessionRecord[]> {
       if (counters) counters.list = (counters.list ?? 0) + 1;
       return sessions;
@@ -97,6 +102,74 @@ function memWorkerSessionStore(
     async listByThread(threadId: string): Promise<WorkerSessionRecord[]> {
       if (counters) counters.listByThread = (counters.listByThread ?? 0) + 1;
       return sessions.filter((session) => session.context?.threadId === threadId);
+    },
+  };
+}
+
+function memWorkerResultInboxStore() {
+  const notifications: WorkerResultNotification[] = [];
+  const joins: WorkerJoinRecord[] = [];
+  return {
+    notifications,
+    joins,
+    async putNotification(record: WorkerResultNotification) {
+      const existing = notifications.find(
+        (notification) => notification.notificationId === record.notificationId,
+      );
+      if (existing) return existing;
+      notifications.push(record);
+      return record;
+    },
+    async listNotifications(input: {
+      ownerScopeId: string;
+      state?: WorkerResultNotification["state"];
+    }) {
+      return notifications.filter(
+        (notification) =>
+          notification.ownerScopeId === input.ownerScopeId &&
+          (input.state === undefined || notification.state === input.state),
+      );
+    },
+    async consumeNotification(input: {
+      notificationId: string;
+      consumedAt: number;
+      consumedByMessageId: string;
+    }) {
+      const notification = notifications.find(
+        (candidate) => candidate.notificationId === input.notificationId,
+      );
+      if (!notification) throw new Error("missing notification");
+      notification.state = "consumed";
+      notification.consumedAt = input.consumedAt;
+      notification.consumedByMessageId = input.consumedByMessageId;
+      return notification;
+    },
+    async satisfyWaitingJoins(input: {
+      sourceScopeId: string;
+      notificationId: string;
+      resolvedAt: number;
+    }) {
+      const satisfied: WorkerJoinRecord[] = [];
+      for (const join of joins) {
+        if (join.sourceScopeId !== input.sourceScopeId || join.state !== "waiting") continue;
+        join.state = "satisfied";
+        join.notificationId = input.notificationId;
+        join.resolvedAt = input.resolvedAt;
+        satisfied.push(join);
+      }
+      return satisfied;
+    },
+    async abandonExpiredJoins(input: { now: number; ownerScopeId?: string }) {
+      const abandoned: WorkerJoinRecord[] = [];
+      for (const join of joins) {
+        if (join.state !== "waiting") continue;
+        if (input.ownerScopeId !== undefined && join.ownerScopeId !== input.ownerScopeId) continue;
+        if (join.expiresAt === undefined || join.expiresAt > input.now) continue;
+        join.state = "abandoned";
+        join.resolvedAt = input.now;
+        abandoned.push(join);
+      }
+      return abandoned;
     },
   };
 }
@@ -1467,6 +1540,119 @@ describe("MissionThreadBridge", () => {
     assert.equal(updated?.status, "working");
     assert.equal(updated?.blockers, 0);
     assert.equal(updated?.progress, 0.95);
+  });
+
+  it("enqueues detached completion without compute and reconciles message acknowledgement", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      status: "done",
+      progress: 1,
+      blockers: 0,
+    };
+    const missionStore = memMissionStore([mission]);
+    const activityBase = memActivityStore([
+      {
+        id: "background-call",
+        missionId: mission.id,
+        tMs: 100,
+        kind: "tool",
+        actor: "Lead",
+        text: "Started background session.",
+        tags: ["thread", "tool-call", "sessions_spawn"],
+        runtime: {
+          threadId: "thread-1",
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-background",
+        },
+      },
+    ]);
+    let auditAppendFailures = 1;
+    const activity = {
+      ...activityBase,
+      async append(event: ActivityEvent): Promise<void> {
+        if (
+          event.runtime?.eventType === "mission.worker_late_completion" &&
+          auditAppendFailures > 0
+        ) {
+          auditAppendFailures -= 1;
+          throw new Error("simulated crash before audit append");
+        }
+        await activityBase.append(event);
+      },
+    };
+    const sessions = [
+      backgroundWorkerSession({
+        workerRunKey: "worker:explore:detached-result",
+        updatedAt: 300,
+        summary: "Durable detached evidence.",
+      }),
+    ];
+    const inbox = memWorkerResultInboxStore();
+    inbox.joins.push({
+      joinId: "join:expired-parent",
+      ownerScopeId: `mission:${mission.id}`,
+      sourceScopeId: "worker:explore:never-returned",
+      state: "waiting",
+      createdAt: 100,
+      expiresAt: 200,
+    });
+    const messages = [baseMessage("m1", "user", 50)];
+    let automaticFollowUps = 0;
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      workerSessionStore: memWorkerSessionStore(sessions),
+      workerResultInboxStore: inbox,
+      teamMessageStore: memTeamMessageStore(messages),
+      activityStore: activity,
+      newEventId,
+      clock,
+      async postLateWorkerCompletionFollowUp() {
+        automaticFollowUps += 1;
+      },
+    });
+
+    await bridge.tickMission(mission.id);
+    await bridge.tickMission(mission.id);
+
+    assert.equal(automaticFollowUps, 0);
+    assert.equal(inbox.notifications.length, 1);
+    assert.equal(inbox.notifications[0]?.state, "pending");
+    assert.equal(inbox.joins[0]?.state, "abandoned");
+    assert.equal(
+      activity.events.filter(
+        (event) => event.runtime?.eventType === "mission.worker_late_completion",
+      ).length,
+      1,
+    );
+    assert.equal((await missionStore.get(mission.id))?.status, "done");
+
+    const prepared = await bridge.prepareUserMessage!(
+      mission.id,
+      "Use any completed background evidence.",
+    );
+    assert.equal(prepared.notificationIds.length, 1);
+    assert.match(prepared.content, /Durable detached evidence/);
+    assert.ok(prepared.deliveryId);
+
+    messages.push({
+      ...baseMessage("assistant-echo", "assistant", 350),
+      content: prepared.content,
+    });
+    await bridge.tickMission(mission.id);
+    assert.equal(inbox.notifications[0]?.state, "pending");
+
+    messages.push({
+      ...baseMessage(`message:idempotent:${prepared.deliveryId}`, "user", 400),
+      content: prepared.content,
+    });
+    await bridge.tickMission(mission.id);
+    assert.equal(inbox.notifications[0]?.state, "consumed");
+    assert.equal(
+      inbox.notifications[0]?.consumedByMessageId,
+      `message:idempotent:${prepared.deliveryId}`,
+    );
   });
 
   it("delivers a completed background worker exactly once without a prior timeout", async () => {

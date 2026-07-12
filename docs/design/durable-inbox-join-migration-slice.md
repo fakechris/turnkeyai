@@ -128,3 +128,41 @@ Forbidden in this slice:
 - deterministic package suites, simulator, policy inventory, typecheck, and
   `git diff --check` are green;
 - exact results are recorded before the workflow slice begins.
+
+## Implemented Result
+
+- `FileWorkerResultInboxStore` durably stores idempotent notifications and
+  serialized join transitions; join outcome is determined by completion and
+  expiry event times rather than asynchronous write order;
+- production late-worker reconciliation writes the inbox before its audit
+  event and never invokes `handleWorkerCompletion`, posts an automatic
+  follow-up, or reopens a terminal mission;
+- a failed audit append is replayable: the same source version produces the
+  same notification, then completes the missing audit on a later pass;
+- next-turn projection uses the coordination engine's idempotency key to
+  produce a deterministic durable `TeamMessage.id`; only that exact user
+  message may consume the projected notifications;
+- restart reconciliation closes the durable-message/consume-ack crash window,
+  while projection and acknowledgement failures remain non-interfering and
+  leave notifications pending;
+- owner expiry abandons only waiting joins. Detached worker state and eventual
+  result notifications remain durable and consumable.
+
+Final deterministic results on Node.js `v24.14.0`:
+
+- `npm run typecheck`: pass;
+- agent-core: 64/64;
+- llm-adapter: 60/60;
+- react-engine, including architecture guards: 386/386;
+- response-generator and tool-use: 315/315;
+- operation timeout, attempt deadline, session protocol, sub-agent runtime, and
+  browser timeout support suites: 98/98;
+- durable inbox store, mission bridge, mission route, and inbox architecture
+  suites: 112/112;
+- execution-semantics simulator: 17/17, including 10,000 generated budget
+  compositions and 5,000 generated effect crash windows;
+- runtime-policy inventory/disposition: 2/2;
+- `git diff --check`: pass.
+
+No real model, E2E fixture, prompt rule, policy detector, acceptance closeout,
+or threshold change participated in this slice.
