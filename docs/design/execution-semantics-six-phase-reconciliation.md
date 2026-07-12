@@ -39,9 +39,10 @@ The following earlier-plan ideas are no longer valid acceptance criteria:
    declared workflow transitions.
 5. **E2E/soak green as semantic proof.** Replaced by deterministic invariant
    tests; E2E reports model quality and reliability distributions.
-6. **Golden text/trace equality as the only post-inline oracle.** Retain traces
-   for review, but assert typed state/effect invariants rather than incidental
-   prompt wording.
+6. **Golden text/trace equality as the only post-inline oracle.** Add typed
+   state/effect invariants, but retain each policy's golden segment until that
+   disposition row migrates and is accepted. Retire golden coverage row by row,
+   not wholesale.
 
 ## One Remaining Migration Sequence
 
@@ -59,12 +60,22 @@ than rebuilding them:
    and multi-layer retry multiplication. Add explicit suspend/resume grants.
 4. **Finish durable background return.** Persist inbox consumption and define
    join/parent-expiry behavior.
-5. **Validate transcript compaction.** Prove complete tool protocol units survive
+5. **Build the minimal workflow runtime.** Implement persisted step state,
+   trigger subscriptions, inbox wake, allowed-effect admission, join behavior,
+   attempt grants, and retry-allowance consumption. Validate one real approval
+   workflow end to end, including suspend, external approval, wake, resume, and
+   crash replay. This is a hard prerequisite for moving any policy to
+   `explicit workflow`.
+6. **Validate transcript compaction.** Prove complete tool protocol units survive
    compaction and torn journal frames are ignored.
-6. **Migrate current policies using the disposition table.** Move hard safety to
-   the kernel, mechanical recovery to transcript/adapters, product continuation
-   to explicit workflows, and answer quality to observers.
-7. **Measure fixed versions.** Run deterministic gates, simulations, then real
+7. **Migrate current policies using the disposition table.** This step is frozen
+   until the product owner signs
+   [Runtime Policy Migration Product Decision](./runtime-policy-migration-product-decision.md).
+   After signature, migrate one row per reviewed slice: hard safety to the
+   kernel, mechanical recovery to transcript/adapters, product continuation to
+   explicit workflows, and answer quality to observers. Retire the matching
+   golden trace segment only when that row lands.
+8. **Measure fixed versions.** Run deterministic gates, simulations, then real
    models without editing code inside a batch. Report distributions and failure
    buckets; create separate product or model-compatibility work when needed.
 
@@ -80,8 +91,9 @@ This sequence supersedes both a bake-first patch loop and a second independent
 | Compaction | Tool-call/result unit preservation; authoritative facts unchanged | Measure answer quality before/after |
 | Journal/resume | Crash at intent, dispatch, receipt, and commit-frame boundaries | Measure operational recovery rate |
 | Background work | Detached result survives terminal parent; join expiry does not cancel child | Measure useful completion latency |
+| Workflow runtime | Persisted approval flow survives suspend, wake, resume, and crash without hidden effects | Measure operator/model usability |
 | RunTrace | Observer on/off produces identical authoritative state | Diagnose failures only |
-| Policy migration | No policy creates effects; permission safety remains enforced | Measure model/workflow behavior |
+| Policy migration | Signed product decision; one-row slice; replacement mechanism green; matching golden segment retained until acceptance | Measure the signed quality contract |
 
 ## Scope Control
 

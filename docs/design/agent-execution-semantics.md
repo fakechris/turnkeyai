@@ -414,4 +414,6 @@ In particular:
 This V2 constitution is ready to constrain a single migration plan after
 [Runtime Policy Disposition](./runtime-policy-disposition.md) and
 [Execution Semantics And Six-Phase Reconciliation](./execution-semantics-six-phase-reconciliation.md)
-are reviewed. It does not authorize a parallel migration line.
+are reviewed. Policy-action migration additionally requires the signed
+[Runtime Policy Migration Product Decision](./runtime-policy-migration-product-decision.md).
+It does not authorize a parallel migration line.

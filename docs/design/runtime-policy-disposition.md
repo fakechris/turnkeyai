@@ -4,10 +4,13 @@ Status: design-review inventory. This table prevents the execution-semantics
 migration from silently deleting hard-won behavior or preserving business
 recovery inside the kernel.
 
-The inventory is derived from the current repair and continuation policy cores
-on `origin/main` at `a2dec0b0`: 20 repair ids and 4 continuation ids. A
-disposition describes the target owner, not an instruction to change production
-code in this branch.
+The inventory is derived from all active policy families on `origin/main` at
+`a2dec0b0`: 20 repair ids, 4 continuation ids, 12 closeout ids, 1 permission
+suppression id, and 15 tool-call normalization steps. The machine-readable
+source is [runtime-policy-inventory.json](./runtime-policy-inventory.json), and
+`npm run test:runtime-policy-disposition` verifies both source parity and a
+documented disposition for every entry. A disposition describes the target
+owner, not an instruction to change production code in this branch.
 
 ## Disposition Rules
 
@@ -80,6 +83,36 @@ It must be split rather than deleted as one unit.
 | `sub_agent_timeout` | Suspended or failed child result with durable handle |
 | `completed_sub_agent_final`, `tool_evidence_fallback` | Normal transcript projection; no special terminal policy |
 
+## Permission Suppression
+
+| Current policy | Current automatic action | Target owner | Required migration |
+| --- | --- | --- | --- |
+| `read_only_permission_query` | Suppress a model-proposed `permission_query` for text-derived read-only work | permission service + model guidance | Permission service returns typed `not_required` when mechanically true. Do not suppress a proposal based on task wording or spend a repair round. |
+
+## Tool-Call Normalization Pipeline
+
+"Normalizer" is not one authority. Pure protocol translation may remain in an
+adapter; safety must deny or constrain proposals; business-effect rewrites must
+move to model guidance or an explicit workflow.
+
+| Current step | Classification | Target disposition |
+| --- | --- | --- |
+| `sessionToolAlias` | Syntactic alias | Keep in adapter only if effect identity and semantics are unchanged. |
+| `enforceMissingApprovalGateRepair` | Business-effect rewrite | Replace with kernel admission denial/suspension. Do not manufacture `permission_query`. |
+| `sessionContinuationDirective` | Business-effect rewrite | Move declared continuation to workflow input; otherwise the model proposes it. |
+| `sessionContinuationLookupDirective` | Business-effect rewrite | Move lookup to explicit workflow; no hidden lookup injection. |
+| `explicitContinuationHistory` | Task-text routing | Replace with typed handle projection and model/workflow proposal. |
+| `sessionToolCalls` | Protocol/handle normalization | Keep only stable handle and schema translation that preserves requested effect semantics. |
+| `privateUrlResearchSpawn` | Network safety plus routing rewrite | Kernel denies unsafe network authority. A semantically different safe tool requires a new model/workflow proposal. |
+| `localUrlWebFetch` | Network safety plus routing rewrite | Same rule: deny/constrain mechanically; do not silently substitute business work. |
+| `boundedTimeoutSourceSpawn` | Task-text business rewrite | Delete automatic spawn rewrite; expose available tools and limits through guidance. |
+| `boundedSourceTimeoutBudget` | Budget mutation | Replace task-derived floors with monotone attempt/operation budget composition. |
+| `supplementalLocalTimeoutProbe` | Hidden effect injection | Move to explicit workflow or model proposal; delete forced probe. |
+| `boundedTimeoutDuplicateSourceSpawn` | Duplicate-work suppression | Kernel blocks only stable-id duplicates; broader semantic duplication remains guidance/evaluation. |
+| `sessionContinuationDirectiveRepeat` | Repeated business-effect rewrite | Retire with `sessionContinuationDirective`; workflow transition is applied once by id. |
+| `approvalGatedBrowserSpawn` | Safety rewrite from browser spawn to `permission_query` | Kernel suspends or rejects the unauthorized spawn with typed permission state; it must not replace the proposal. |
+| `limitIndependentEvidenceSpawn` | Product policy mixed with resource safety | Generic concurrency/tool-call caps remain kernel constraints; requested evidence topology belongs to workflow/model guidance. |
+
 ## Migration Safety
 
 The table deliberately distinguishes behavior from automatic authority:
@@ -93,3 +126,8 @@ The table deliberately distinguishes behavior from automatic authority:
 Each production migration must cite one row, add a deterministic mechanism
 test, and keep the old evaluator signal until fixed-version model measurements
 show the impact. No row authorizes fixture-specific replacements.
+
+Policy-action migration is frozen until
+[Runtime Policy Migration Product Decision](./runtime-policy-migration-product-decision.md)
+is signed. Golden trace coverage is retired row by row only after that row's
+replacement mechanism and measurement are accepted; it is not removed in bulk.
