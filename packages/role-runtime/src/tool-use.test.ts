@@ -792,7 +792,7 @@ test("sessions_spawn preserves a worker absolute-deadline result as resumable ti
         payload: {
           mode: "llm_sub_agent",
           workerType: "explore",
-          resumableReason: "run_deadline_exceeded",
+          resumableReason: "attempt_deadline_exceeded",
           deadlineAt: 12_345,
         },
       } as unknown as WorkerExecutionResult;
@@ -837,19 +837,15 @@ test("sessions_spawn preserves a worker absolute-deadline result as resumable ti
   assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
 });
 
-test("sessions_spawn floors model-short timeout for slow loopback browser tasks", async () => {
+test("sessions_spawn does not enlarge an explicit timeout for slow loopback browser tasks", async () => {
   const workerRuntime = {
     async spawn() {
       return { workerType: "browser", workerRunKey: "worker:browser:slow-loopback" };
     },
     async send() {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      return {
-        workerType: "browser",
-        status: "completed",
-        summary: "Slow loopback check completed.",
-      };
+      return new Promise<never>(() => undefined);
     },
+    async interrupt() {},
   } as unknown as WorkerRuntime;
   const executor = createWorkerSessionToolExecutor({
     workerRuntime,
@@ -881,12 +877,11 @@ test("sessions_spawn floors model-short timeout for slow loopback browser tasks"
   });
 
   const body = JSON.parse(result.content) as { status: string; result: string };
-  assert.equal(result.isError, undefined);
-  assert.equal(body.status, "completed");
-  assert.equal(body.result, "Slow loopback check completed.");
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
 });
 
-test("sessions_spawn floors model-short timeout for local approval browser tasks", async () => {
+test("sessions_spawn does not enlarge an explicit timeout for local approval browser tasks", async () => {
   const toolPermissionService: ToolPermissionService = {
     async request(input) {
       return {
@@ -935,6 +930,7 @@ test("sessions_spawn floors model-short timeout for local approval browser tasks
         summary: "Approval form submitted after permission.",
       };
     },
+    async interrupt() {},
   } as unknown as WorkerRuntime;
   const executor = createWorkerSessionToolExecutor({
     workerRuntime,
@@ -967,12 +963,11 @@ test("sessions_spawn floors model-short timeout for local approval browser tasks
   });
 
   const body = JSON.parse(result.content) as { status: string; result: string };
-  assert.equal(result.isError, undefined);
-  assert.equal(body.status, "completed");
-  assert.equal(body.result, "Approval form submitted after permission.");
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
 });
 
-test("sessions_spawn lets supplemental local timeout browser probe exceed foreground cap", async () => {
+test("sessions_spawn does not let supplemental probe text exceed the configured cap", async () => {
   const workerRuntime = {
     async spawn() {
       return { workerType: "browser", workerRunKey: "worker:browser:supplemental-timeout-probe" };
@@ -985,6 +980,7 @@ test("sessions_spawn lets supplemental local timeout browser probe exceed foregr
         summary: "Supplemental probe returned bounded negative evidence.",
       };
     },
+    async interrupt() {},
   } as unknown as WorkerRuntime;
   const executor = createWorkerSessionToolExecutor({
     workerRuntime,
@@ -1019,9 +1015,8 @@ test("sessions_spawn lets supplemental local timeout browser probe exceed foregr
   });
 
   const body = JSON.parse(result.content) as { status: string; result: string };
-  assert.equal(result.isError, undefined);
-  assert.equal(body.status, "completed");
-  assert.equal(body.result, "Supplemental probe returned bounded negative evidence.");
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
 });
 
 test("sessions_spawn exposes sub-agent final content at top level", async () => {
@@ -3552,7 +3547,7 @@ test("sessions_send maps null resumed output with timeout summary state to resum
   assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
 });
 
-test("sessions_send floors resumable continuation timeout for slow loopback browser tasks", async () => {
+test("sessions_send does not enlarge an explicit continuation timeout from task text", async () => {
   const workerRuntime = {
     async listSessions() {
       return [
@@ -3593,6 +3588,7 @@ test("sessions_send floors resumable continuation timeout for slow loopback brow
         summary: "Slow loopback follow-up completed.",
       };
     },
+    async interrupt() {},
     async send() {
       throw new Error("sessions_send should resume the existing session instead of starting a bare send");
     },
@@ -3627,9 +3623,8 @@ test("sessions_send floors resumable continuation timeout for slow loopback brow
   });
 
   const body = JSON.parse(result.content) as { status: string; result: string };
-  assert.equal(result.isError, undefined);
-  assert.equal(body.status, "completed");
-  assert.equal(body.result, "Slow loopback follow-up completed.");
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
 });
 
 test("sessions_send cancels the active resumed worker before the worker send unwinds", async () => {
@@ -4924,7 +4919,7 @@ test("sessions_send timeout does not treat worker errors as usable evidence", as
   assert.equal(body.evidence_summary, undefined);
 });
 
-test("sessions_send uses the worker default timeout floor when resuming a cancelled session", async () => {
+test("sessions_send does not enlarge an explicit timeout when resuming a cancelled session", async () => {
   const workerRuntime = {
     async listSessions() {
       return [
@@ -4973,6 +4968,7 @@ test("sessions_send uses the worker default timeout floor when resuming a cancel
         },
       };
     },
+    async interrupt() {},
   } as unknown as WorkerRuntime;
   const executor = createWorkerSessionToolExecutor({
     workerRuntime,
@@ -5003,9 +4999,8 @@ test("sessions_send uses the worker default timeout floor when resuming a cancel
   });
 
   const body = JSON.parse(result.content) as { status: string; result: string };
-  assert.equal(result.isError, undefined);
-  assert.equal(body.status, "completed");
-  assert.equal(body.result, "Cancelled source check resumed.");
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
 });
 
 test("sessions_send uses the current follow-up label in its session result envelope", async () => {

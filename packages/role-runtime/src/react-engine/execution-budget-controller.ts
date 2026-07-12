@@ -1,9 +1,7 @@
 import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
-import type { NativeToolRoundTrace } from "../native-tool-messages";
 import { shouldSerializeToolBatch } from "../react/predicates";
-import { shouldAllowRequiredTimeoutContinuationPastWallClock } from "../tool-result-evidence";
 import type { RoleToolContext, RoleToolLoopOptions } from "../tool-use";
 import { buildFinalRecoveryBudgetCloseoutReasonLines } from "../runtime-policy/prompt-renderers";
 import {
@@ -132,7 +130,6 @@ export interface WallClockBudgetCloseoutSnapshotInput {
 
 export interface WallClockBudgetCloseoutSignal {
   maxWallClockMs: number | undefined;
-  requiredTimeoutContinuationPastWallClock: boolean;
   readElapsedMs(): number;
   buildCloseoutSnapshot(maxWallClockMs: number): ExecutionBudgetCloseoutSnapshot;
 }
@@ -140,9 +137,6 @@ export interface WallClockBudgetCloseoutSignal {
 export interface WallClockBudgetCloseoutSignalInput {
   toolCalls: LLMToolCall[];
   pendingToolCallCount: number;
-  taskPrompt: string;
-  messages: LLMMessage[];
-  toolTrace: NativeToolRoundTrace[];
   maxRounds: number;
   usedToolCalls: number;
   roundCount: number;
@@ -294,18 +288,9 @@ export class ExecutionBudgetController {
       ...(input.maxWallClockMs === undefined
         ? {}
         : { maxWallClockMs: input.maxWallClockMs }),
-      toolCalls: input.toolCalls,
     });
-    const requiredTimeoutContinuationPastWallClock =
-      shouldAllowRequiredTimeoutContinuationPastWallClock({
-        taskPrompt: input.taskPrompt,
-        messages: input.messages,
-        toolCalls: input.toolCalls,
-        toolTrace: input.toolTrace,
-      });
     return {
       maxWallClockMs,
-      requiredTimeoutContinuationPastWallClock,
       readElapsedMs: () => input.now() - input.toolLoopStartedAtMs,
       buildCloseoutSnapshot: (activeMaxWallClockMs: number) =>
         this.buildWallClockBudgetCloseoutSnapshot({
@@ -387,7 +372,6 @@ export class ExecutionBudgetController {
         ...(input.maxWallClockMs === undefined
           ? {}
           : { maxWallClockMs: input.maxWallClockMs }),
-        toolCalls: chunk,
       });
       const execSignal = createToolExecutionSignal({
         elapsedMs: input.now() - input.toolLoopStartedAtMs,

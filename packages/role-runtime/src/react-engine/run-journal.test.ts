@@ -16,8 +16,10 @@ import type { NativeToolRoundTrace } from "../native-tool-messages";
 import {
   RUN_EFFECT_INDETERMINATE_PROTOCOL,
   RUN_EFFECT_NOT_DISPATCHED_PROTOCOL,
+  RUN_JOURNAL_PROTOCOL,
   createRunJournal,
   fingerprintRunJournalTask,
+  type RunJournalState,
 } from "./run-journal";
 
 test("run journal task fingerprint is stable across retry task ids", () => {
@@ -90,6 +92,83 @@ test("RunJournal persists and restores a safe round boundary", async () => {
     planState: ["task-a: working"],
     resumedAfterCrash: true,
   });
+});
+
+test("RunJournal rejects a checkpoint with an incomplete tool protocol unit", async () => {
+  const store = new MemoryTeamMessageStore();
+  const journal = createRunJournal({
+    store,
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 100,
+  });
+  const state: RunJournalState = emptyRunState();
+  state.messages.push({
+    role: "assistant",
+    content: [{
+      type: "tool_use",
+      id: "call-open",
+      name: "web_fetch",
+      input: { url: "https://example.com" },
+    }],
+  });
+
+  await assert.rejects(
+    () => journal.checkpoint(state),
+    /incomplete tool protocol unit/,
+  );
+  assert.equal(await journal.load(), null);
+});
+
+test("RunJournal ignores a stored snapshot with an incomplete tool protocol unit", async () => {
+  const store = new MemoryTeamMessageStore();
+  const activation = buildActivation();
+  await store.append({
+    id: `runtime-journal:${activation.runState.runKey}`,
+    threadId: activation.thread.threadId,
+    role: "system",
+    roleId: activation.runState.roleId,
+    name: "Lead",
+    content: "",
+    createdAt: 100,
+    updatedAt: 100,
+    metadata: {
+      runtimeRunJournal: true,
+      flowId: activation.flow.flowId,
+      runJournal: {
+        protocol: RUN_JOURNAL_PROTOCOL,
+        status: "in_flight",
+        runKey: activation.runState.runKey,
+        taskId: activation.handoff.taskId,
+        taskFingerprint: "task-fingerprint",
+        updatedAt: 100,
+        messages: [
+          ...emptyRunState().messages,
+          {
+            role: "assistant",
+            content: [{
+              type: "tool_use",
+              id: "call-open",
+              name: "web_fetch",
+              input: { url: "https://example.com" },
+            }],
+          },
+        ],
+        nextRound: 3,
+        repairMarkers: [],
+        toolTrace: [],
+        planState: [],
+      },
+    },
+  });
+  const journal = createRunJournal({
+    store,
+    activation,
+    taskFingerprint: "task-fingerprint",
+    now: () => 101,
+  });
+
+  assert.equal(await journal.load(), null);
 });
 
 test("RunJournal restores an in-flight boundary after recreating the file store", async () => {

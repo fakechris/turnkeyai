@@ -1,15 +1,16 @@
-export class RunDeadlineExceededError extends Error {
-  readonly code = "run_deadline_exceeded" as const;
+export class AttemptDeadlineExceededError extends Error {
+  readonly code = "attempt_deadline_exceeded" as const;
+  readonly clockKind = "attempt_active" as const;
   readonly deadlineAt: number;
 
   constructor(deadlineAt: number) {
-    super(`run deadline exceeded at ${deadlineAt}`);
+    super(`active attempt deadline exceeded at ${deadlineAt}`);
     this.name = "AbortError";
     this.deadlineAt = deadlineAt;
   }
 }
 
-export interface RunDeadline {
+export interface AttemptDeadline {
   readonly deadlineAt: number;
   readonly signal: AbortSignal;
   remainingMs(): number;
@@ -17,13 +18,13 @@ export interface RunDeadline {
   dispose(): void;
 }
 
-export function createRunDeadline<TTimer = ReturnType<typeof setTimeout>>(input: {
+export function createAttemptDeadline<TTimer = ReturnType<typeof setTimeout>>(input: {
   maxWallClockMs: number;
   parentSignal?: AbortSignal;
   now?: () => number;
   setTimeout?: (callback: () => void, delayMs: number) => TTimer;
   clearTimeout?: (timer: TTimer) => void;
-}): RunDeadline {
+}): AttemptDeadline {
   if (!Number.isFinite(input.maxWallClockMs) || input.maxWallClockMs <= 0) {
     throw new RangeError("maxWallClockMs must be a positive finite number");
   }
@@ -55,7 +56,7 @@ export function createRunDeadline<TTimer = ReturnType<typeof setTimeout>>(input:
   } else {
     input.parentSignal?.addEventListener("abort", onParentAbort, { once: true });
     timer = schedule(() => {
-      abortOnce(new RunDeadlineExceededError(deadlineAt));
+      abortOnce(new AttemptDeadlineExceededError(deadlineAt));
     }, input.maxWallClockMs);
   }
 
@@ -78,10 +79,17 @@ export function createRunDeadline<TTimer = ReturnType<typeof setTimeout>>(input:
   };
 }
 
-export function isRunDeadlineExceeded(error: unknown): error is RunDeadlineExceededError {
-  return error instanceof RunDeadlineExceededError || (
+export function isAttemptDeadlineExceeded(error: unknown): error is AttemptDeadlineExceededError {
+  return error instanceof AttemptDeadlineExceededError || (
     error instanceof Error &&
     "code" in error &&
-    error.code === "run_deadline_exceeded"
+    (error.code === "attempt_deadline_exceeded" ||
+      error.code === "run_deadline_exceeded")
   );
 }
+
+/** Compatibility aliases for persisted callers during the V2 migration. */
+export const RunDeadlineExceededError = AttemptDeadlineExceededError;
+export type RunDeadline = AttemptDeadline;
+export const createRunDeadline = createAttemptDeadline;
+export const isRunDeadlineExceeded = isAttemptDeadlineExceeded;

@@ -9,7 +9,6 @@ import {
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildIndependentEvidenceStreamContinuationPrompt,
   buildMissingApprovalGateRepairPrompt,
-  buildSupplementalLocalTimeoutProbePrompt,
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
 } from "../runtime-policy/prompt-renderers";
@@ -19,9 +18,7 @@ import {
   findSessionContinuationLookupDirective,
   findIncompleteApprovedBrowserSession,
   hasExecutedSessionsSend,
-  shouldRunSupplementalLocalTimeoutProbe,
 } from "../runtime-facts/text-fallback-readers";
-import { hasLatestSupplementalLocalTimeoutProbePrompt } from "../runtime-facts/repair-marker-facts";
 import type { SubAgentToolTimeoutSignal } from "../runtime-facts/text-fallback-readers";
 import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
 import {
@@ -53,6 +50,7 @@ import type { EngineContinueAction } from "./types";
 // normalizer order, or runtime progress recording. It returns actions; it does
 // not mutate ReAct state.
 export const CONTINUATION_CONTROLLER_MODULE = "continuation-controller" as const;
+export const ENGINE_ACTIVE_CONTINUATION_POLICY_IDS = [] as const;
 
 export interface ContinuationToolDefinition {
   name: string;
@@ -74,17 +72,6 @@ export interface TimeoutContinuationInput {
   toolTrace: NativeToolRoundTrace[];
   timeoutSignal: SubAgentToolTimeoutSignal | null;
   tools?: readonly ContinuationToolDefinition[];
-}
-
-export interface SupplementalLocalTimeoutProbeInput {
-  messages: LLMMessage[];
-  taskPrompt: string;
-  toolTrace: NativeToolRoundTrace[];
-  evidenceText: string;
-  completedSessionEvidence: boolean;
-  timeoutSignal: SubAgentToolTimeoutSignal | null;
-  tools?: readonly ContinuationToolDefinition[];
-  browserAvailable: boolean;
 }
 
 export interface IncompleteApprovedBrowserSessionInput {
@@ -124,11 +111,9 @@ export interface AfterExecuteContinuationInput {
   toolTrace: NativeToolRoundTrace[];
   timeoutSignal: SubAgentToolTimeoutSignal | null;
   completedSessionFinalContents: readonly string[] | null;
-  currentRoundEvidenceText: string;
   results: readonly { toolName: string; content: string }[];
   repairMarkers: LLMMessage[];
   tools?: readonly ContinuationToolDefinition[];
-  browserAvailable: boolean;
   taskFacts?: TaskFactsSnapshot;
 }
 
@@ -187,26 +172,21 @@ export type ForcedToolRoundExecutor = (
 }>;
 
 export class ContinuationController {
+  constructor(private readonly automaticActionsEnabled: boolean) {}
+
   previewEmptyRoundContinuation(
     input: EmptyRoundContinuationInput,
   ): LLMToolCall | null {
-    if (!input.active) {
+    if (!this.automaticActionsEnabled || !input.active) {
       return null;
     }
-    const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
-      input.messages,
-    );
     const continuationContext = buildContinuationDirectiveContext(
       input.taskPrompt,
       input.messages,
     );
-    const contextualDirective = !probePending
-      ? findSessionContinuationDirective(continuationContext)
-      : null;
-    const directive = probePending
-      ? null
-      : (contextualDirective ??
-        findSessionContinuationDirective(input.taskPrompt));
+    const directive =
+      findSessionContinuationDirective(continuationContext) ??
+      findSessionContinuationDirective(input.taskPrompt);
     if (
       directive &&
       !hasExecutedSessionsSend(input.toolTrace, directive.sessionKey) &&
@@ -224,7 +204,6 @@ export class ContinuationController {
     }
 
     const lookupDirective =
-      !probePending &&
       !directive &&
       !appliedApprovalBrowserContinuationRequested(input)
         ? findSessionContinuationLookupDirective(
@@ -305,6 +284,7 @@ export class ContinuationController {
   onAfterExecuteTimeoutContinuation(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const approvedBrowser = this.continueTimedOutApprovedBrowserSession(input);
     if (approvedBrowser.kind !== "none") {
       return approvedBrowser;
@@ -315,6 +295,7 @@ export class ContinuationController {
   continueTimedOutApprovedBrowserSession(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const facts = buildTimeoutContinuationPolicyFacts(input);
     const decision = selectTimeoutContinuationPolicy({ facts });
     if (
@@ -342,6 +323,7 @@ export class ContinuationController {
   continueTimedOutSiblingSession(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const facts = buildTimeoutContinuationPolicyFacts(input);
     const decision = selectTimeoutContinuationPolicy({ facts });
     if (
@@ -364,43 +346,10 @@ export class ContinuationController {
     };
   }
 
-  continueSupplementalLocalTimeoutProbe(
-    input: SupplementalLocalTimeoutProbeInput,
-  ): EngineContinueAction {
-    if (
-      !input.completedSessionEvidence &&
-      (!input.timeoutSignal || input.timeoutSignal.agentId === "browser")
-    ) {
-      return { kind: "none" };
-    }
-    const probe = shouldRunSupplementalLocalTimeoutProbe({
-      taskPrompt: input.taskPrompt,
-      messages: input.messages,
-      toolTrace: input.toolTrace,
-      evidenceText: input.evidenceText,
-      ...(input.tools === undefined ? {} : { tools: input.tools }),
-      browserAvailable: input.browserAvailable,
-    });
-    if (!probe) {
-      return { kind: "none" };
-    }
-    return {
-      kind: "continue",
-      messages: [
-        ...input.messages,
-        {
-          role: "user",
-          content: buildSupplementalLocalTimeoutProbePrompt(probe),
-        },
-      ],
-      forceToolChoice: { name: "sessions_spawn" },
-      reason: "supplemental_local_timeout_probe",
-    };
-  }
-
   continueIncompleteApprovedBrowserSession(
     input: IncompleteApprovedBrowserSessionInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const continuation = findIncompleteApprovedBrowserSession({
       results: input.results,
       taskPrompt: input.taskPrompt,
@@ -431,6 +380,7 @@ export class ContinuationController {
   continueIndependentEvidenceStreams(
     input: IndependentEvidenceStreamsInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const facts = buildIndependentEvidenceStreamsPolicyFacts(input);
     const decision = selectIndependentEvidenceStreamsPolicy({ facts });
     if (decision.kind !== "continue") {
@@ -456,6 +406,7 @@ export class ContinuationController {
   continueMissingApprovalGateRepair(
     input: MissingApprovalGateRepairInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const decision = selectMissingApprovalGateContinuationPolicy({
       facts: buildMissingApprovalGateContinuationFacts(input),
     });
@@ -478,6 +429,7 @@ export class ContinuationController {
   forcePendingApprovalWaitTimeoutPermissionResult(
     input: ForcedPermissionResultInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const call = buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
       taskPrompt: input.taskPrompt,
       toolTrace: input.toolTrace,
@@ -539,39 +491,10 @@ export class ContinuationController {
       return timeoutContinuationResult;
     }
 
-    if (!input.completedSessionFinalContents) {
-      const timeoutProbe = this.continueSupplementalLocalTimeoutProbe({
-        taskPrompt: input.taskPrompt,
-        messages: input.messages,
-        toolTrace: input.toolTrace,
-        evidenceText: input.currentRoundEvidenceText,
-        completedSessionEvidence: false,
-        timeoutSignal: input.timeoutSignal,
-        ...(input.tools === undefined ? {} : { tools: input.tools }),
-        browserAvailable: input.browserAvailable,
-      });
-      return this.applyContinueAction(timeoutProbe);
-    }
+    if (!input.completedSessionFinalContents) return null;
 
     const completedEvidenceText =
       input.completedSessionFinalContents.join("\n\n");
-    const supplementalLocalTimeoutProbe =
-      this.continueSupplementalLocalTimeoutProbe({
-        taskPrompt: input.taskPrompt,
-        messages: input.messages,
-        toolTrace: input.toolTrace,
-        evidenceText: completedEvidenceText,
-        completedSessionEvidence: true,
-        timeoutSignal: input.timeoutSignal,
-        ...(input.tools === undefined ? {} : { tools: input.tools }),
-        browserAvailable: input.browserAvailable,
-      });
-    const supplementalLocalTimeoutProbeResult =
-      this.applyContinueAction(supplementalLocalTimeoutProbe);
-    if (supplementalLocalTimeoutProbeResult) {
-      return supplementalLocalTimeoutProbeResult;
-    }
-
     const incompleteApprovedBrowserSession =
       this.continueIncompleteApprovedBrowserSession({
         results: input.results,
@@ -654,11 +577,9 @@ export class ContinuationController {
         timeoutSignal: roundEvidence.timeoutSignals[0] ?? null,
         completedSessionFinalContents:
           collectCompletedSessionFinalContents(roundEvidence.completedSessions),
-        currentRoundEvidenceText: roundEvidence.roundEvidenceText,
         results: input.results,
         repairMarkers: input.repairMarkers,
         ...(input.tools === undefined ? {} : { tools: input.tools }),
-        browserAvailable: input.browserAvailable,
         ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
       },
       executeForcedRound,
@@ -680,7 +601,12 @@ function appliedApprovalBrowserContinuationRequested(input: {
 }
 
 export function createContinuationController(): ContinuationController {
-  return new ContinuationController();
+  return new ContinuationController(false);
+}
+
+/** Test-only characterization of retired automatic continuation actions. */
+export function createContinuationCharacterizationController(): ContinuationController {
+  return new ContinuationController(true);
 }
 
 function hasToolDefinition(

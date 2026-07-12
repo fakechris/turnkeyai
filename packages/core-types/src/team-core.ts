@@ -543,6 +543,10 @@ export interface SendTeamMessageInput {
   userId?: string;
   metadata?: Record<string, unknown>;
   idempotencyKey?: string;
+  continuation?: {
+    mode: "resume-existing";
+    workerRunKey: RunKey;
+  };
 }
 
 export interface WorkerCompletionIngressInput {

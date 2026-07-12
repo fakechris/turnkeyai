@@ -25,9 +25,9 @@ import {
 } from "./prompt-policy";
 import { getRoleModelSelection } from "./role-model-selection";
 import {
-  createRunDeadline,
-  isRunDeadlineExceeded,
-  type RunDeadline,
+  createAttemptDeadline,
+  isAttemptDeadlineExceeded,
+  type AttemptDeadline,
 } from "./run-deadline";
 import type { ToolLoopCloseoutMetadata } from "./runtime-derived-mission-report";
 import {
@@ -64,9 +64,11 @@ import {
   attachEngineRunDiagnostics,
   buildRunTrace,
   classifyRunFailure,
+  createCloseoutPolicyCharacterizationRegistry,
   createCloseoutPolicyRegistry,
   createCompactionController,
   createCompletedCloseoutController,
+  createContinuationCharacterizationController,
   createContinuationController,
   createEngineFinalResponseBuilder,
   createEnginePolicyTrace,
@@ -74,6 +76,8 @@ import {
   createEvidenceLedger,
   createExecutionBudgetController,
   createPermissionPolicy,
+  createPermissionPolicyCharacterization,
+  createRepairPolicyCharacterizationRegistry,
   createRepairPolicyRegistry,
   createRoleEngineAgentRunner,
   createRoleEngineModelClient,
@@ -119,6 +123,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     | undefined;
   private readonly clock: Clock;
   private readonly deferToolObservability: boolean;
+  private readonly testOnlyCharacterizeRetiredPolicies: boolean;
 
   constructor(options: {
     gateway: LLMGateway;
@@ -130,6 +135,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     toolResultArtifactStore?: ToolResultArtifactStore;
     clock?: Clock;
     deferToolObservability?: boolean;
+    testOnlyCharacterizeRetiredPolicies?: true;
   }) {
     this.gateway = options.gateway;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
@@ -147,6 +153,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       : undefined;
     this.clock = options.clock ?? { now: () => Date.now() };
     this.deferToolObservability = options.deferToolObservability === true;
+    this.testOnlyCharacterizeRetiredPolicies =
+      options.testOnlyCharacterizeRetiredPolicies === true;
   }
 
   async generate(input: {
@@ -154,7 +162,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     packet: RolePromptPacket;
     signal?: AbortSignal;
   }): Promise<GeneratedRoleReply> {
-    const runDeadline = createRunDeadline({
+    const runDeadline = createAttemptDeadline({
       maxWallClockMs: this.toolLoop?.maxWallClockMs ?? 5 * 60_000,
       ...(input.signal ? { parentSignal: input.signal } : {}),
     });
@@ -171,7 +179,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       packet: RolePromptPacket;
       signal?: AbortSignal;
     },
-    runDeadline: RunDeadline,
+    runDeadline: AttemptDeadline,
   ): Promise<GeneratedRoleReply> {
     const role = input.activation.thread.roles.find(
       (item) => item.roleId === input.activation.runState.roleId,
@@ -201,6 +209,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         buildToolDefinitionFilterTaskContext(input.activation, input.packet.taskPrompt),
       )
       : undefined;
+    const declaredContinuationWorkerRunKey =
+      input.packet.continuityMode === "resume-existing" &&
+      input.packet.continuationContext?.source === "explicit_user_target"
+        ? input.packet.continuationContext.workerRunKey
+        : undefined;
+    if (
+      declaredContinuationWorkerRunKey &&
+      (!activeToolLoop || !toolDefinitions?.some((definition) => definition.name === "sessions_send"))
+    ) {
+      throw new Error("explicit worker continuation requires the sessions_send tool");
+    }
 
     let initialGatewayInput = buildGatewayInput({
       activation: input.activation,
@@ -305,6 +324,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       recoveryToolBudget,
       recoveryToolCallsBeforeActivation,
     } = args;
+    const declaredContinuationWorkerRunKey =
+      packet.continuityMode === "resume-existing" &&
+      packet.continuationContext?.source === "explicit_user_target"
+        ? packet.continuationContext.workerRunKey
+        : undefined;
     const lifecycle = createRunLifecycleRecorder({
       activation,
       recorder: this.runtimeProgressRecorder,
@@ -355,6 +379,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       restoredJournal?.messages ?? initialGatewayInput.messages;
     const initialRound = restoredJournal?.nextRound ?? 0;
 
+    const repairPolicy = this.testOnlyCharacterizeRetiredPolicies
+      ? createRepairPolicyCharacterizationRegistry()
+      : createRepairPolicyRegistry();
     const synthesizeFinalAfterToolRoundLimit =
       createTerminalFinalSynthesisRunner({
         gateway: this.gateway,
@@ -367,6 +394,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         baseGatewayInput: initialGatewayInput,
         modelCallTrace,
         lifecycle,
+        repairPolicy,
       });
 
     const toolDefinitions = initialGatewayInput.tools ?? [];
@@ -390,11 +418,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       activation,
       messages: engineInitialMessages,
     });
-    const permissionPolicy = createPermissionPolicy();
+    const permissionPolicy = this.testOnlyCharacterizeRetiredPolicies
+      ? createPermissionPolicyCharacterization()
+      : createPermissionPolicy();
     const executionBudget = createExecutionBudgetController();
-    const continuation = createContinuationController();
-    const closeoutPolicy = createCloseoutPolicyRegistry();
-    const repairPolicy = createRepairPolicyRegistry();
+    const continuation = this.testOnlyCharacterizeRetiredPolicies
+      ? createContinuationCharacterizationController()
+      : createContinuationController();
+    const closeoutPolicy = this.testOnlyCharacterizeRetiredPolicies
+      ? createCloseoutPolicyCharacterizationRegistry()
+      : createCloseoutPolicyRegistry();
     const completedCloseout = createCompletedCloseoutController();
     const terminalCloseout = createTerminalCloseoutController();
     const taskPlanController = createTaskPlanController();
@@ -600,7 +633,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               activation,
             );
           }
-          return planned;
+          return round === initialRound && declaredContinuationWorkerRunKey
+            ? { ...planned, forceToolChoice: { name: "sessions_send" } }
+            : planned;
         },
         // Tool-call normalization — the engine's full port of the inline pipeline
         // (Stage 8B Batch B). Runs every active-loop round before execution and
@@ -621,10 +656,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolTrace,
             repairMarkers: hookCtx.repairMarkers ?? [],
             permissionPolicy,
+            ...(declaredContinuationWorkerRunKey
+              ? { declaredContinuationWorkerRunKey }
+              : {}),
             taskFacts,
             executionBudget,
             recoveryToolBudget,
             recoveryToolCallsBeforeActivation,
+            ...(this.testOnlyCharacterizeRetiredPolicies
+              ? { testOnlyCharacterizeRetiredPolicies: true as const }
+              : {}),
             ...(packet.capabilityInspection === undefined
               ? {}
               : { capabilityInspection: packet.capabilityInspection }),
@@ -1026,7 +1067,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       await lifecycle.record({
         kind: "run_terminal",
         at: completedAt,
-        status: isRunDeadlineExceeded(signal?.reason)
+        status: isAttemptDeadlineExceeded(signal?.reason)
           ? "deadline"
           : signal?.aborted
             ? "cancelled"

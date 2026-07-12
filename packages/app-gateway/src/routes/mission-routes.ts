@@ -93,11 +93,21 @@ export interface MissionOrchestratorDeps {
   }): Promise<{ threadId: string; leadRoleId: string; roleIds: string[] }>;
   /** Posts a user message onto the linked thread (delegates to the
    *  coordination engine which wakes the role loop). */
-  postUserMessage(input: { threadId: string; content: string }): Promise<void>;
+  postUserMessage(input: {
+    threadId: string;
+    content: string;
+    idempotencyKey?: string;
+    continuation?: MissionFollowUpContinuation;
+  }): Promise<void>;
   /** Mirrors the linked thread's messages onto the mission activity
    *  log immediately. Routes call this after each post so the new row
    *  appears without waiting for the next interval tick. */
   threadBridge: MissionThreadBridge;
+}
+
+interface MissionFollowUpContinuation {
+  mode: "resume-existing";
+  workerRunKey: string;
 }
 
 export interface MissionRouteDeps {
@@ -327,16 +337,10 @@ export async function handleMissionRoutes(input: {
         decidedBy,
         ...(reason ? { reason } : {}),
       });
-      const permissionApplied = await applyApprovedPermissionDecision({
+      await applyApprovedPermissionDecision({
         approval: result.approval,
         decision: result.decision.decision,
         ...(deps.toolPermissionService ? { toolPermissionService: deps.toolPermissionService } : {}),
-      });
-      startApprovalDecisionContinuationInBackground({
-        deps,
-        approval: result.approval,
-        decision: result.decision.decision,
-        permissionApplied,
       });
       sendJson(res, 200, result);
       return true;
@@ -493,7 +497,7 @@ export async function handleMissionRoutes(input: {
       });
       return true;
     }
-    const bodyResult = await readJsonBodySafe<{ content?: unknown }>(req);
+    const bodyResult = await readJsonBodySafe<{ content?: unknown; continuation?: unknown }>(req);
     if (!bodyResult.ok) {
       sendJson(res, 400, { error: bodyResult.error });
       return true;
@@ -503,6 +507,12 @@ export async function handleMissionRoutes(input: {
       sendJson(res, 400, { error: "content is required" });
       return true;
     }
+    const continuationResult = parseMissionFollowUpContinuation(bodyResult.value.continuation);
+    if (!continuationResult.ok) {
+      sendJson(res, 400, { error: continuationResult.error });
+      return true;
+    }
+    const continuation = continuationResult.value;
     // codex K3.5: honor Idempotency-Key so a retried follow-up
     // doesn't double-post on the linked thread. Fingerprinting on
     // (missionId, content) — same key + same payload replays the
@@ -514,7 +524,7 @@ export async function handleMissionRoutes(input: {
       res,
       store: deps.idempotencyStore,
       scope: `missions:${mission.id}:messages`,
-      fingerprint: { missionId: mission.id, content },
+      fingerprint: { missionId: mission.id, content, ...(continuation ? { continuation } : {}) },
       execute: async () => {
         const followUpMission = await reopenDoneMissionForFollowUp(deps, mission);
         startMissionFollowUpInBackground({
@@ -523,6 +533,7 @@ export async function handleMissionRoutes(input: {
           mission: followUpMission,
           threadId: linkedThreadId,
           content,
+          ...(continuation ? { continuation } : {}),
         });
         return {
           statusCode: 202,
@@ -1405,12 +1416,21 @@ function startMissionFollowUpInBackground(input: {
   mission: Mission;
   threadId: string;
   content: string;
+  continuation?: MissionFollowUpContinuation;
 }): void {
   void (async () => {
     try {
+      const prepared = input.orchestrator.threadBridge.prepareUserMessage
+        ? await input.orchestrator.threadBridge.prepareUserMessage(
+            input.mission.id,
+            input.content,
+          )
+        : { content: input.content, notificationIds: [] };
       const postPromise = input.orchestrator.postUserMessage({
         threadId: input.threadId,
-        content: input.content,
+        content: prepared.content,
+        ...(prepared.deliveryId ? { idempotencyKey: prepared.deliveryId } : {}),
+        ...(input.continuation ? { continuation: input.continuation } : {}),
       });
       const mirrorLoop = mirrorMissionWhilePostRuns({
         orchestrator: input.orchestrator,
@@ -1418,6 +1438,24 @@ function startMissionFollowUpInBackground(input: {
         label: "follow-up",
       });
       await postPromise;
+      if (
+        prepared.deliveryId &&
+        input.orchestrator.threadBridge.acknowledgePreparedUserMessage
+      ) {
+        try {
+          await input.orchestrator.threadBridge.acknowledgePreparedUserMessage({
+            missionId: input.mission.id,
+            deliveryId: prepared.deliveryId,
+            notificationIds: prepared.notificationIds,
+          });
+        } catch (error) {
+          console.error("mission worker result acknowledgement failed", {
+            missionId: input.mission.id,
+            deliveryId: prepared.deliveryId,
+            error,
+          });
+        }
+      }
       await mirrorLoop.stopAndFlush();
       await input.orchestrator.threadBridge.tickMission(input.mission.id);
     } catch (error) {
@@ -1498,74 +1536,6 @@ function mirrorMissionWhilePostRuns(input: {
   };
 }
 
-function startApprovalDecisionContinuationInBackground(input: {
-  deps: MissionRouteDeps;
-  approval: { id: string; missionId: string; action: string };
-  decision: "approved" | "denied";
-  permissionApplied?: boolean;
-}): void {
-  const orchestrator = input.deps.orchestrator;
-  if (!orchestrator) return;
-  void (async () => {
-    const mission = await input.deps.missionStore.get(input.approval.missionId);
-    if (!mission?.threadId || mission.status === "archived") return;
-    if (mission.status !== "needs_approval" && mission.status !== "working") return;
-    const workingMission: Mission =
-      mission.status === "working"
-        ? mission
-        : {
-            ...mission,
-            status: "working",
-            progress: Math.min(mission.progress, 0.99),
-          };
-    if (workingMission !== mission) {
-      await input.deps.missionStore.putRaw(workingMission);
-    }
-    const content = buildApprovalDecisionContinuationMessage({
-      approvalId: input.approval.id,
-      action: input.approval.action,
-      decision: input.decision,
-      permissionApplied: input.permissionApplied === true,
-    });
-    startMissionFollowUpInBackground({
-      deps: input.deps,
-      orchestrator,
-      mission: workingMission,
-      threadId: mission.threadId,
-      content,
-    });
-  })().catch((error) => {
-    console.error("mission approval continuation failed", {
-      missionId: input.approval.missionId,
-      approvalId: input.approval.id,
-      error,
-    });
-  });
-}
-
-function buildApprovalDecisionContinuationMessage(input: {
-  approvalId: string;
-  action: string;
-  decision: "approved" | "denied";
-  permissionApplied?: boolean;
-}): string {
-  const outcome =
-    input.decision === "approved"
-      ? input.permissionApplied
-        ? "The operator approved it, and the runtime has already recorded permission.result and permission.applied; the runtime permission cache is already applied. Do not call permission tools again. Continue from the approved point: call sessions_spawn with agent_id=\"browser\" and a self-contained task to perform only the approved scoped action now. Verify the browser result before the final answer, and do not finalize with a pending-approval summary."
-        : "The operator approved it. Continue from the paused approval point: call permission_result for this approval_id, call permission_applied, then perform only the approved scoped action."
-      : [
-          "The operator denied it.",
-          "Continue from the paused approval point: call permission_result for this approval_id exactly once, do not call permission_applied, and do not perform the denied action.",
-          "Write the final safe closeout from permission_result evidence: name the requested action, state the denial, state that no browser submission or side effect ran, keep the unexecuted result unverified, and include a concrete safe fallback or next action for the operator.",
-        ].join(" ");
-  return [
-    `Operator decision recorded for approval ${input.approvalId}.`,
-    `Action: ${input.action}.`,
-    outcome,
-  ].join("\n");
-}
-
 async function applyApprovedPermissionDecision(input: {
   toolPermissionService?: Pick<ToolPermissionService, "apply">;
   approval: { id: string; payload?: Record<string, unknown> };
@@ -1600,6 +1570,26 @@ function readApprovalToolPermissionThreadId(payload: Record<string, unknown> | u
   }
   const threadId = toolPermission["threadId"];
   return typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
+}
+
+function parseMissionFollowUpContinuation(
+  value: unknown,
+): { ok: true; value?: MissionFollowUpContinuation } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true };
+  if (!isRecord(value)) {
+    return { ok: false, error: "continuation must be an object" };
+  }
+  if (value["mode"] !== "resume-existing") {
+    return { ok: false, error: "continuation.mode must be resume-existing" };
+  }
+  const workerRunKey = readNonEmptyString(value["workerRunKey"]);
+  if (!workerRunKey) {
+    return { ok: false, error: "continuation.workerRunKey is required" };
+  }
+  return {
+    ok: true,
+    value: { mode: "resume-existing", workerRunKey },
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

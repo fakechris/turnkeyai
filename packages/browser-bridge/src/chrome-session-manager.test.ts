@@ -1012,7 +1012,7 @@ test("chrome session manager releases a resumed session when openTarget fails", 
   assert.equal(released, 1);
 });
 
-test("chrome session manager extends openTarget timeout for slow loopback URLs", async () => {
+test("chrome session manager uses the neutral default timeout for slow loopback URLs", async () => {
   let observedGoto: { url: string; timeout?: number; waitUntil?: string } | null = null;
   let released = 0;
   const fakePage = {
@@ -1097,7 +1097,7 @@ test("chrome session manager extends openTarget timeout for slow loopback URLs",
   assert.deepEqual(observedGoto, {
     url: "http://127.0.0.1:61930/slow-fixture",
     waitUntil: "domcontentloaded",
-    timeout: 240_000,
+    timeout: 20_000,
   });
   assert.equal(released, 1);
 });

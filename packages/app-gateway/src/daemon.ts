@@ -210,6 +210,7 @@ const {
   scheduledTaskStore,
   validationOpsRunStore,
   workerSessionStore,
+  workerResultInboxStore,
   summaryBuilder,
   relayBriefBuilder,
   recoveryDirector,
@@ -408,6 +409,7 @@ const missionThreadBridge = createMissionThreadBridge({
   missionStore: missionDeps.missionStore,
   roleRunStore,
   workerSessionStore,
+  workerResultInboxStore,
   teamMessageStore,
   activityStore: missionDeps.activityStore,
   artifactStore: missionDeps.artifactStore,
@@ -417,20 +419,6 @@ const missionThreadBridge = createMissionThreadBridge({
   }),
   newEventId: () => idGenerator.messageId(),
   clock,
-  async postLateWorkerCompletionFollowUp(input) {
-    await coordinationEngine.handleWorkerCompletion({
-      threadId: input.threadId,
-      content: input.content,
-      idempotencyKey: input.deliveryId,
-    }).catch((error) => {
-      console.error("late worker completion follow-up failed", {
-        missionId: input.mission.id,
-        workerRunKeys: input.workerSessions.map((workerSession) => workerSession.workerRunKey),
-        error,
-      });
-      throw error;
-    });
-  },
   async postIncompleteFinalFollowUp(input) {
     void coordinationEngine
       .handleUserPost({
@@ -478,10 +466,20 @@ const missionOrchestrator = {
       roleIds: roles.map((r) => r.roleId),
     };
   },
-  async postUserMessage(input: { threadId: string; content: string }) {
+  async postUserMessage(input: {
+    threadId: string;
+    content: string;
+    idempotencyKey?: string;
+    continuation?: {
+      mode: "resume-existing";
+      workerRunKey: string;
+    };
+  }) {
     await coordinationEngine.handleUserPost({
       threadId: input.threadId,
       content: input.content,
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+      ...(input.continuation ? { continuation: input.continuation } : {}),
     });
   },
   threadBridge: missionThreadBridge,

@@ -4,10 +4,11 @@ import test from "node:test";
 import {
   buildPermissionSuppressInput,
   createPermissionPolicy,
+  createPermissionPolicyCharacterization,
 } from "./permission-policy";
 
 test("PermissionPolicy suppresses read-only permission_query with a consumed tool-free round", () => {
-  const policy = createPermissionPolicy();
+  const policy = createPermissionPolicyCharacterization();
   const input = {
     calls: [
       {
@@ -118,7 +119,7 @@ test("buildPermissionSuppressInput resolves live continuation context", () => {
 });
 
 test("PermissionPolicy owns suppress-tool-calls hook flow order", () => {
-  const policy = createPermissionPolicy();
+  const policy = createPermissionPolicyCharacterization();
   const readOnlyRepairMarkers: Array<{ role: "user"; content: string }> = [];
 
   assert.equal(
@@ -214,6 +215,37 @@ test("PermissionPolicy owns suppress-tool-calls hook flow order", () => {
       taskPrompt: "Research current provider pricing.",
       messages: [{ role: "user", content: "Research pricing." }],
       lastText: "Searching.",
+      repairMarkers: [],
+    }),
+    null,
+  );
+});
+
+test("production PermissionPolicy preserves model permission proposals", () => {
+  const policy = createPermissionPolicy();
+  const calls = [
+    {
+      id: "call-permission",
+      name: "permission_query",
+      input: { action: "browser.form.submit" },
+    },
+  ];
+
+  assert.deepEqual(
+    policy.suppressReadOnlyPermissionQuery({
+      calls,
+      taskPrompt: "Read-only browser inspection.",
+      sessionContext: "",
+    }),
+    { kind: "none" },
+  );
+  assert.equal(
+    policy.applySuppressToolCallsHook({
+      active: true,
+      calls,
+      taskPrompt: "Read-only browser inspection.",
+      messages: [],
+      lastText: "",
       repairMarkers: [],
     }),
     null,

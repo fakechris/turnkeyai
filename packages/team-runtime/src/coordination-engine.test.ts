@@ -2914,7 +2914,12 @@ test("coordination engine carries scheduled worker resume hints into the handoff
         sessionTarget?: "main" | "worker";
         instructions?: string;
         continuationContext?: {
-          source: "scheduled_reentry" | "timeout_summary" | "follow_up" | "recovery_dispatch";
+          source:
+            | "scheduled_reentry"
+            | "timeout_summary"
+            | "follow_up"
+            | "explicit_user_target"
+            | "recovery_dispatch";
           workerType?: "browser" | "coder" | "finance" | "explore" | "harness";
           workerRunKey?: string;
           summary?: string;
@@ -3284,6 +3289,50 @@ test("coordination engine carries a unique durable worker into an explicit user 
     "runtime worker completion ingress must not be treated as an explicit user continuation",
   );
 
+  workerSessions[0] = {
+    ...workerSessions[0]!,
+    state: {
+      ...workerSessions[0]!.state,
+      status: "done",
+      updatedAt: 3,
+      lastResult: {
+        workerType: "browser",
+        status: "completed",
+        summary: "The browser worker completed with reusable source evidence.",
+        payload: {
+          sessionId: "browser-session-completed",
+          targetId: "target-completed",
+          resumeMode: "warm",
+        },
+      },
+    },
+  };
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "Please continue the same browser research and revisit its notes.",
+    continuation: {
+      mode: "resume-existing",
+      workerRunKey,
+    },
+  });
+
+  assert.equal(enqueued.length, 3);
+  assert.equal(enqueued[2]?.payload.continuity?.mode, "resume-existing");
+  assert.deepEqual(enqueued[2]?.payload.continuity?.context, {
+    source: "explicit_user_target",
+    workerType: "browser",
+    workerRunKey,
+    summary: "The browser worker completed with reusable source evidence.",
+    browserSession: {
+      sessionId: "browser-session-completed",
+      targetId: "target-completed",
+      resumeMode: "warm",
+      ownerType: "thread",
+      ownerId: thread.threadId,
+      leaseHolderRunKey: workerRunKey,
+    },
+  });
+
   const secondWorkerRunKey = "worker:explore:task:task-other:call_other";
   workerSessions.push({
     ...workerSessions[0]!,
@@ -3300,8 +3349,8 @@ test("coordination engine carries a unique durable worker into an explicit user 
     content: "Please resume the previous work.",
   });
 
-  assert.equal(enqueued.length, 3);
-  assert.equal(enqueued[2]?.payload.continuity, undefined);
+  assert.equal(enqueued.length, 4);
+  assert.equal(enqueued[3]?.payload.continuity, undefined);
 });
 
 test("coordination engine treats scheduled continuation lookup as best effort", async () => {

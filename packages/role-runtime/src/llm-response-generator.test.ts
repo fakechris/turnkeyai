@@ -46,6 +46,7 @@ test("llm role response generator enforces one absolute run deadline", async () 
     });
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: {
       executor: {
@@ -64,7 +65,7 @@ test("llm role response generator enforces one absolute run deadline", async () 
       assert.equal(providerSignal?.aborted, true);
       assert.equal(
         (providerSignal?.reason as { code?: string } | undefined)?.code,
-        "run_deadline_exceeded",
+        "attempt_deadline_exceeded",
       );
       assert.equal(
         readEngineRunDiagnostics(error)?.runTrace.incidents.wall_clock_budget,
@@ -125,6 +126,7 @@ test("llm role response generator emits a bounded unified RunTrace", async () =>
   });
   let now = 1_000;
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     clock: { now: () => (now += 10) },
   });
@@ -182,7 +184,8 @@ test("llm role response generator attaches typed RunTrace diagnostics to termina
       retryable: true,
     });
   };
-  const generator = new LLMRoleResponseGenerator({ gateway });
+  const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true, gateway });
 
   await assert.rejects(
     () =>
@@ -266,6 +269,7 @@ test("llm role response generator retries with a smaller request envelope after 
     };
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     runtimeProgressRecorder: {
       async record(event) {
@@ -386,6 +390,7 @@ test("llm role response generator flushes memory once before request-envelope re
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     preCompactionMemoryFlusher,
   });
@@ -432,7 +437,8 @@ test("llm role response generator passes AbortSignal to gateway requests", async
     });
   };
   const controller = new AbortController();
-  const generator = new LLMRoleResponseGenerator({ gateway });
+  const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true, gateway });
   const reason = new Error("operator cancelled");
 
   const generated = generator.generate({
@@ -464,7 +470,8 @@ test("llm role response generator forwards model chain and model ref routing", a
       raw: {},
     };
   };
-  const generator = new LLMRoleResponseGenerator({ gateway });
+  const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true, gateway });
 
   await generator.generate({
     activation: buildActivation(
@@ -497,6 +504,7 @@ test("llm role response generator emits a boundary event when prompt assembly is
     raw: {},
   });
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     runtimeProgressRecorder: {
       async record(event) {
@@ -555,6 +563,7 @@ test("llm role response generator ignores boundary recorder failures", async () 
     raw: {},
   });
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     runtimeProgressRecorder: {
       async record() {
@@ -656,6 +665,7 @@ test("llm role response generator runs native tool-use loop and feeds tool resul
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 4 },
     runtimeProgressRecorder: {
@@ -785,6 +795,7 @@ test("llm role response generator returns invalid tool arguments to the model wi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 3 },
   });
@@ -858,6 +869,7 @@ test("llm role response generator can defer slow tool observability off the mode
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 4 },
     runtimeProgressRecorder: {
@@ -1052,6 +1064,7 @@ test("llm role response generator repairs approval-gated answers that skipped na
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1165,6 +1178,7 @@ test("llm role response generator gates premature approval browser spawns with p
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 2 },
   });
@@ -1260,6 +1274,7 @@ test("llm role response generator does not gate browser report wording that says
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1317,6 +1332,7 @@ test("llm role response generator does not repair read-only tasks that explicitl
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1390,6 +1406,7 @@ test("llm role response generator suppresses read-only permission queries that d
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1464,6 +1481,7 @@ test("llm role response generator suppresses AsiaWalk read-only planning permiss
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1546,6 +1564,7 @@ test("llm role response generator suppresses provider pricing read-only permissi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1611,6 +1630,7 @@ test("llm role response generator hides permission tools for non-mutating slow-s
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1673,6 +1693,7 @@ test("llm role response generator hides task tracking tools for timeout continua
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1748,6 +1769,7 @@ test("llm role response generator hides task tracking tools for slow-source reco
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -1892,6 +1914,7 @@ test("llm role response generator keeps tools enabled when approval-gated browse
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -2038,6 +2061,7 @@ test("llm role response generator continues timed-out approved browser action be
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -2243,6 +2267,7 @@ test("llm role response generator checks permission_result before approval wait-
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -2427,6 +2452,7 @@ test("llm role response generator repairs stale pending answers after approval i
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -2535,6 +2561,7 @@ test("llm role response generator repairs incomplete approved browser action whe
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -2644,6 +2671,7 @@ test("llm role response generator repairs stale pending answers after daemon-app
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -2737,6 +2765,7 @@ test("llm role response generator repairs pending answer from applied approval c
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -2883,6 +2912,7 @@ test("llm role response generator repairs stale pending answers after progress-a
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -2986,6 +3016,7 @@ test("llm role response generator repairs approval-applied delegation-only brows
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -3161,6 +3192,7 @@ test("llm role response generator repairs approved browser actions that claim to
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -3405,6 +3437,7 @@ test("llm role response generator continues the same browser session when an app
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -3553,6 +3586,7 @@ test("llm role response generator repairs stale pending answers after approval i
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -3625,6 +3659,7 @@ test("llm role response generator suppresses tools for setup-only awaiting-conte
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -3690,6 +3725,7 @@ test("llm role response generator does not suppress memory tools for follow-up r
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -3817,6 +3853,7 @@ test("llm role response generator only exposes memory tools for focused durable 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 1 },
   });
@@ -3898,6 +3935,7 @@ test("llm role response generator recognizes focused durable memory recall from 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 1 },
   });
@@ -4007,6 +4045,7 @@ test("llm role response generator serializes order-dependent tool batches", asyn
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 4, maxParallelToolCalls: 5 },
   });
@@ -4068,6 +4107,7 @@ test("llm role response generator disables native tools when packet requests no 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 4 },
   });
@@ -4163,6 +4203,7 @@ test("llm role response generator persists native tool progress while the tool i
   };
   let now = 1_000;
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 4 },
     nativeToolMessageStore: {
@@ -4280,6 +4321,7 @@ test("llm role response generator preserves tool history when envelope retry red
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 4 },
   });
@@ -4364,6 +4406,7 @@ test("llm role response generator prunes older oversized tool results before lat
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     runtimeProgressRecorder: {
       async record(event) {
@@ -4514,6 +4557,7 @@ test("llm role response generator does not finalize multi-stream delegation afte
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -4636,6 +4680,7 @@ test("llm role response generator does not collapse AsiaWalk separate streams in
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -4736,6 +4781,7 @@ test("llm role response generator does not finalize two-source comparison after 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -4848,6 +4894,7 @@ test("llm role response generator keeps correcting multi-stream delegation until
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -5010,6 +5057,7 @@ test("llm role response generator does not count a continued session as a new in
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -5114,6 +5162,7 @@ test("llm role response generator prunes aggregate tool result budget before fin
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 6 },
   });
@@ -5180,6 +5229,7 @@ test("llm role response generator prunes a newest tool result that alone exceeds
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 2 },
   });
@@ -5275,6 +5325,7 @@ test("llm role response generator creates typed checkpoints from calibrated toke
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 9 },
   });
@@ -5403,6 +5454,7 @@ test("llm role response generator preserves early evidence through a forty-round
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 41 },
   });
@@ -5483,6 +5535,7 @@ test("llm role response generator synthesizes instead of falling back when tool 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 2 },
   });
@@ -5589,6 +5642,7 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128, maxWallClockMs: 100 },
     clock: { now: () => now },
@@ -5745,6 +5799,7 @@ test("llm role response generator repairs final synthesis that omits an explicit
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 8 },
   });
@@ -5811,6 +5866,7 @@ test("llm role response generator accepts markdown-bold requested conclusion lab
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 8 },
   });
@@ -5828,7 +5884,7 @@ test("llm role response generator accepts markdown-bold requested conclusion lab
   assert.ok(gatewayInputs.length >= 2);
 });
 
-test("llm role response generator repairs required timeout continuation synthesis that omits completed browser evidence dimensions", async () => {
+test("llm role response generator does not bypass attempt budget for evidence repair", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let executedTools = 0;
   let now = 0;
@@ -5960,6 +6016,7 @@ test("llm role response generator repairs required timeout continuation synthesi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128, maxWallClockMs: 100 },
     clock: { now: () => now },
@@ -5979,32 +6036,24 @@ test("llm role response generator repairs required timeout continuation synthesi
     },
   });
 
-  assert.match(result.content, /Stuck missions: 6/);
-  assert.match(result.content, /Weak answer rate: 24%/);
-  assert.equal(executedTools, 3);
-  assert.equal(gatewayInputs.length, 4);
-  assert.equal(gatewayInputs[3]?.toolChoice, "none");
-  const repairPrompt = readToolContent(
-    gatewayInputs[3]?.messages.at(-1)?.content ?? "",
+  assert.equal(
+    result.content,
+    "The product signal dashboard closeout only has a high-level browser note and residual risk from the local fixture.",
   );
-  assert.match(
-    repairPrompt,
-    /final answer omitted requested browser evidence dimensions/,
-  );
-  assert.match(repairPrompt, /product signal dashboard counters/);
-  assert.match(repairPrompt, /Stuck missions: 6/);
-  assert.match(repairPrompt, /Weak answer rate: 24%/);
+  assert.equal(executedTools, 2);
+  assert.equal(gatewayInputs.length, 3);
+  assert.equal(gatewayInputs[2]?.toolChoice, "none");
   const closeout = result.metadata?.toolLoopCloseout as
     | Record<string, unknown>
     | undefined;
-  assert.equal(closeout?.reason, "completed_sub_agent_final");
-  assert.equal(closeout?.toolName, "sessions_send");
-  assert.equal(closeout?.toolCallCount, 3);
+  assert.equal(closeout?.reason, "wall_clock_budget");
+  assert.equal(closeout?.toolName, undefined);
+  assert.equal(closeout?.toolCallCount, 2);
   const missionReport = result.metadata?.missionReport as
     | Record<string, unknown>
     | undefined;
-  assert.equal(missionReport?.status, "completed");
-  assert.equal(missionReport?.reason, "completed_sub_agent_final");
+  assert.equal(missionReport?.status, "partial");
+  assert.equal(missionReport?.reason, "wall_clock_budget");
   assert.equal(missionReport?.source, "runtime_derived");
   // runtime-derived reports do not carry authorizedPartial (task-authorization
   // is decided by an explicit model report / the evaluator, not the runtime).
@@ -6064,6 +6113,7 @@ test("llm role response generator terminates foreground tool execution at the ab
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128, maxWallClockMs: 5 },
   });
@@ -6071,7 +6121,7 @@ test("llm role response generator terminates foreground tool execution at the ab
   await assert.rejects(
     () => generator.generate({ activation: buildActivation(), packet: buildPacket() }),
     (error) => {
-      assert.equal((error as { code?: string }).code, "run_deadline_exceeded");
+      assert.equal((error as { code?: string }).code, "attempt_deadline_exceeded");
       assert.equal(
         readEngineRunDiagnostics(error)?.runTrace.incidents.wall_clock_budget,
         1,
@@ -6081,7 +6131,7 @@ test("llm role response generator terminates foreground tool execution at the ab
   );
   assert.equal(
     (observedAbortReason as { code?: string } | undefined)?.code,
-    "run_deadline_exceeded",
+    "attempt_deadline_exceeded",
   );
   assert.equal(gatewayInputs.length, 1);
 });
@@ -6141,13 +6191,14 @@ test("llm role response generator does not extend the absolute deadline for loop
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128, maxWallClockMs: 5 },
   });
 
   await assert.rejects(
     () => generator.generate({ activation: buildActivation(), packet: buildPacket() }),
-    (error) => (error as { code?: string }).code === "run_deadline_exceeded",
+    (error) => (error as { code?: string }).code === "attempt_deadline_exceeded",
   );
   assert.equal(observedAbort, true);
   assert.equal(gatewayInputs.length, 1);
@@ -6208,13 +6259,14 @@ test("llm role response generator aborts foreground browser sessions at the pare
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128, maxWallClockMs: 5 },
   });
 
   await assert.rejects(
     () => generator.generate({ activation: buildActivation(), packet: buildPacket() }),
-    (error) => (error as { code?: string }).code === "run_deadline_exceeded",
+    (error) => (error as { code?: string }).code === "attempt_deadline_exceeded",
   );
   assert.equal(observedAbort, true);
   assert.equal(gatewayInputs.length, 1);
@@ -6263,6 +6315,7 @@ test("llm role response generator does not report closeout evidence for failed-o
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 1 },
   });
@@ -6333,6 +6386,7 @@ test("llm role response generator closes out repeated failing tool calls before 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -6428,6 +6482,7 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -6487,7 +6542,7 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
   assert.equal(closeout?.roundCount, 1);
 });
 
-test("llm role response generator continues provider search pricing timeout before final synthesis", async () => {
+test("llm role response generator does not continue or append policy after attempt budget expires", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   let now = 0;
@@ -6607,6 +6662,7 @@ test("llm role response generator continues provider search pricing timeout befo
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128, maxWallClockMs: 120_000 },
     clock: { now: () => now },
@@ -6621,23 +6677,15 @@ test("llm role response generator continues provider search pricing timeout befo
     },
   });
 
-  assert.equal(
-    result.content,
-    [
-      "Final answer from continued provider evidence.",
-      "",
-      "Timeout closeout: the resumed source produced source-backed evidence. Continue or retry the same source-check with a bounded timeout if future release-gated evidence is missing or if production-equivalent validation is required.",
-    ].join("\n"),
-  );
+  assert.equal(result.content, "Final answer from continued provider evidence.");
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_spawn", "sessions_send"],
+    ["sessions_spawn"],
   );
   const closeout = result.metadata?.toolLoopCloseout as
     | Record<string, unknown>
     | undefined;
-  assert.equal(closeout?.reason, "completed_sub_agent_final");
-  assert.equal(closeout?.toolName, "sessions_send");
+  assert.equal(closeout?.reason, "wall_clock_budget");
 });
 
 test("llm role response generator enforces final recovery total tool budget", async () => {
@@ -6682,6 +6730,7 @@ test("llm role response generator enforces final recovery total tool budget", as
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -6804,6 +6853,7 @@ test("llm role response generator reads final recovery budget from activation re
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -6906,6 +6956,7 @@ test("llm role response generator carries final recovery tool budget across acti
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -7014,6 +7065,7 @@ test("llm role response generator blocks delegation after final recovery budget 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -7122,6 +7174,7 @@ test("llm role response generator repairs final answers that transpose requested
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -7203,6 +7256,7 @@ test("llm role response generator expands truncated provider table columns befor
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 8 },
   });
@@ -7266,6 +7320,7 @@ test("llm role response generator repairs decorated requested table headers", as
     );
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: {
       executor: {
@@ -7362,6 +7417,7 @@ test("llm role response generator repairs completed session synthesis that renam
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -7444,6 +7500,7 @@ test("llm role response generator does not infer requested table columns from to
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -7548,6 +7605,7 @@ test("llm role response generator repairs unrequested provider table schema in v
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -7646,6 +7704,7 @@ test("llm role response generator repairs unrequested provider table schema desp
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -7761,6 +7820,7 @@ test("llm role response generator repairs product briefs that drop multi-agent a
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -7867,6 +7927,7 @@ test("llm role response generator repairs AsiaWalk briefs that drop completed mu
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8006,6 +8067,7 @@ test("llm role response generator does not replace AsiaWalk model finals with lo
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8119,6 +8181,7 @@ test("llm role response generator routes continuation follow-up to timed-out ses
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8225,6 +8288,7 @@ test("llm role response generator routes multi-line continuation follow-up when 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8328,6 +8392,7 @@ test("llm role response generator prefers resumable timeout session over later c
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8423,6 +8488,7 @@ test("llm role response generator prefers timeout source session over later resu
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8515,6 +8581,7 @@ test("llm role response generator does not append recovered timeout closeout wit
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8610,6 +8677,7 @@ test("llm role response generator preserves timeout closeout when resumed eviden
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8717,6 +8785,7 @@ test("llm role response generator restores timeout closeout when recovered final
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8810,6 +8879,7 @@ test("llm role response generator appends timeout closeout from explicit follow-
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8903,6 +8973,7 @@ test("llm role response generator forces sessions_send for explicit continuation
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -8938,6 +9009,101 @@ test("llm role response generator forces sessions_send for explicit continuation
   );
   assert.match(String(executedCalls[0]?.input.message), /release-risk note/);
   assert.match(String(executedCalls[0]?.input.message), /decision criteria/);
+});
+
+test("llm role response generator executes a typed explicit worker continuation first", async () => {
+  const workerRunKey = "worker:browser:task:prior:call-1";
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_send" });
+      return {
+        text: "Continuing the declared worker.",
+        toolCalls: [
+          {
+            id: "call-explicit-continuation",
+            name: "sessions_send",
+            input: {
+              session_key: "worker:browser:wrong",
+              mode: "read_result",
+              message: "Revisit the prior evidence and report what changed.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "auto");
+    return {
+      text: "Final answer after the declared continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              session_key: { type: "string" },
+              mode: { type: "string", enum: ["continue", "read_result"] },
+              message: { type: "string" },
+            },
+            required: ["session_key", "mode", "message"],
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.input.session_key, workerRunKey);
+      assert.equal(input.call.input.mode, "continue");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          session_key: workerRunKey,
+          final_content: "Updated worker evidence.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 8 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: "Revisit the prior worker evidence.",
+      continuityMode: "resume-existing",
+      continuationContext: {
+        source: "explicit_user_target",
+        workerType: "browser",
+        workerRunKey,
+      },
+    },
+  });
+
+  assert.equal(executedCalls.length, 1);
+  assert.equal(result.content, "Final answer after the declared continuation.");
 });
 
 test("llm role response generator forces session lookup when explicit continuation answers directly without a key", async () => {
@@ -9044,6 +9210,7 @@ test("llm role response generator forces session lookup when explicit continuati
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9154,6 +9321,7 @@ test("llm role response generator rewrites history lookup to sessions_send for r
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9260,6 +9428,7 @@ test("llm role response generator recognizes verbatim latest user direction as s
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9351,6 +9520,7 @@ test("llm role response generator prefers latest verbatim direction over origina
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9447,6 +9617,7 @@ test("llm role response generator rewrites explicit continuation history reads t
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9521,6 +9692,7 @@ test("llm role response generator preserves explicit transcript history reads", 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9612,6 +9784,7 @@ test("llm role response generator repairs recovered slow-source finals that omit
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9706,6 +9879,7 @@ test("llm role response generator deterministically appends timeout follow-up co
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9797,6 +9971,7 @@ test("llm role response generator routes continuation follow-up to cancelled ses
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -9912,6 +10087,7 @@ test("llm role response generator routes explicit follow-up to completed session
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10061,6 +10237,7 @@ test("llm role response generator lists sessions before spawning on explicit fol
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10190,6 +10367,7 @@ test("llm role response generator continues failed source-check sessions found b
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10301,6 +10479,7 @@ test("llm role response generator drops same-round duplicate spawn when sending 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10399,6 +10578,7 @@ test("llm role response generator allows a new spawn after an empty continuation
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10494,6 +10674,7 @@ test("llm role response generator drops same-round duplicate spawn when listing 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10616,6 +10797,7 @@ test("llm role response generator routes follow-up through sessions_list result 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10753,6 +10935,7 @@ test("llm role response generator routes listed follow-up local fetch through se
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10838,6 +11021,7 @@ test("llm role response generator normalizes session update aliases into session
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -10932,6 +11116,7 @@ test("llm role response generator prefers the subject-matched completed session 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -11041,6 +11226,7 @@ test("llm role response generator does not continue explore sessions for rendere
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -11151,6 +11337,7 @@ test("llm role response generator prefers earliest completed session for previou
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -11293,6 +11480,7 @@ test("llm role response generator lists sessions before trusting model-provided 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -11421,6 +11609,7 @@ test("llm role response generator does not continue completed sibling when timeo
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -11522,6 +11711,7 @@ test("llm role response generator prefers explicit timeout closeout session over
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -11577,7 +11767,7 @@ test("llm role response generator prefers explicit timeout closeout session over
   );
 });
 
-test("llm role response generator adds a browser probe after content-poor resumed loopback timeout evidence", async () => {
+test("llm role response generator does not inject a probe for content-poor resumed timeout evidence", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gatewayInputs: GenerateTextInput[] = [];
   const timeoutSessionKey =
@@ -11607,7 +11797,7 @@ test("llm role response generator adds a browser probe after content-poor resume
       });
     }
     return {
-      text: "Final release-risk note: browser probe verified TURNKEYAI_MISSION_FIXTURE_OK; earlier timeout no longer blocks the source-bounded conclusion.",
+      text: "Final release-risk note: the source remains unverified after the resumed timeout.",
       modelId: "claude-test",
       providerId: "anthropic",
       protocol: "anthropic-compatible",
@@ -11718,6 +11908,7 @@ test("llm role response generator adds a browser probe after content-poor resume
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -11735,7 +11926,7 @@ test("llm role response generator adds a browser probe after content-poor resume
     },
   });
 
-  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.doesNotMatch(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
   assert.deepEqual(
     executedCalls.map((call) => [
       call.name,
@@ -11743,10 +11934,9 @@ test("llm role response generator adds a browser probe after content-poor resume
     ]),
     [
       ["sessions_send", timeoutSessionKey],
-      ["sessions_spawn", "browser"],
     ],
   );
-  assert.ok(
+  assert.equal(
     gatewayInputs.some((input) =>
       readMessageContentTextForTest(
         input.messages.at(-1)?.content ?? "",
@@ -11754,10 +11944,11 @@ test("llm role response generator adds a browser probe after content-poor resume
         "Runtime correction: resumed timeout evidence is still content-poor.",
       ),
     ),
+    false,
   );
 });
 
-test("llm role response generator adds a browser probe when resumed loopback session times out again", async () => {
+test("llm role response generator does not manufacture a browser probe after resumed timeout", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const timeoutSessionKey =
     "worker:explore:task:TASK-slow-again:call_function_timeout_1";
@@ -11782,7 +11973,7 @@ test("llm role response generator adds a browser probe when resumed loopback ses
       });
     }
     return {
-      text: "Final release-risk note: supplemental browser probe verified visible marker TURNKEYAI_MISSION_FIXTURE_OK after the resumed timeout.",
+      text: "Final release-risk note: the source remains unverified after the resumed timeout.",
       modelId: "claude-test",
       providerId: "anthropic",
       protocol: "anthropic-compatible",
@@ -11882,6 +12073,7 @@ test("llm role response generator adds a browser probe when resumed loopback ses
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -11922,7 +12114,7 @@ test("llm role response generator adds a browser probe when resumed loopback ses
     },
   });
 
-  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.doesNotMatch(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
   assert.deepEqual(
     executedCalls.map((call) => [
       call.name,
@@ -11930,7 +12122,6 @@ test("llm role response generator adds a browser probe when resumed loopback ses
     ]),
     [
       ["sessions_send", timeoutSessionKey],
-      ["sessions_spawn", "browser"],
     ],
   );
 });
@@ -12012,6 +12203,7 @@ test("llm role response generator does not browser-probe content-poor timeout wh
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -12050,7 +12242,7 @@ test("llm role response generator does not browser-probe content-poor timeout wh
   );
 });
 
-test("llm role response generator probes browser after runtime-forced continuation times out", async () => {
+test("llm role response generator does not manufacture a browser probe after forced continuation timeout", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const timeoutSessionKey =
     "worker:explore:task:TASK-runtime-forced:call_function_timeout_1";
@@ -12087,7 +12279,7 @@ test("llm role response generator probes browser after runtime-forced continuati
       );
     }
     return {
-      text: "Final release-risk note: supplemental browser probe verified visible marker TURNKEYAI_MISSION_FIXTURE_OK after the runtime-forced continuation timeout.",
+      text: "Final release-risk note: the source remains unverified after the forced continuation timeout.",
       modelId: "claude-test",
       providerId: "anthropic",
       protocol: "anthropic-compatible",
@@ -12211,6 +12403,7 @@ test("llm role response generator probes browser after runtime-forced continuati
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -12238,7 +12431,7 @@ test("llm role response generator probes browser after runtime-forced continuati
     },
   });
 
-  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.doesNotMatch(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
   assert.deepEqual(
     executedCalls.map((call) => [
       call.name,
@@ -12247,7 +12440,6 @@ test("llm role response generator probes browser after runtime-forced continuati
     [
       ["sessions_list", "explore"],
       ["sessions_send", timeoutSessionKey],
-      ["sessions_spawn", "browser"],
     ],
   );
 });
@@ -12341,6 +12533,7 @@ test("llm role response generator refreshes stale session list when timeout foll
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -12503,6 +12696,7 @@ test("llm role response generator forces continuation after list resolves a trun
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -12619,6 +12813,7 @@ test("llm role response generator ignores nested completed status when session r
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -12701,6 +12896,7 @@ test("llm role response generator routes follow-up when completed session result
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -12797,6 +12993,7 @@ test("llm role response generator closes out cancelled sessions without a user f
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -12881,6 +13078,7 @@ test("llm role response generator normalizes noisy session_key inputs before exe
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -12953,6 +13151,7 @@ test("llm role response generator canonicalizes abbreviated continuation session
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13035,6 +13234,7 @@ test("llm role response generator canonicalizes ellipsized continuation session 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13140,6 +13340,7 @@ test("llm role response generator synthesizes immediately after completed sub-ag
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13262,6 +13463,7 @@ test("llm role response generator closes out repeated session history inspection
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13339,6 +13541,7 @@ test("llm role response generator closes out session history already present in 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13441,6 +13644,7 @@ test("llm role response generator synthesizes after completed multi-session hist
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13540,6 +13744,7 @@ test("llm role response generator closes out excessive same-session continuation
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13627,6 +13832,7 @@ test("llm role response generator does not synthesize from bounded partial sessi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13709,6 +13915,7 @@ test("llm role response generator does not treat resumable partial session outpu
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13812,6 +14019,7 @@ test("llm role response generator caps same-round spawns to required independent
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -13912,6 +14120,7 @@ test("llm role response generator caps same-round comparison spawns to two sourc
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14001,6 +14210,7 @@ test("llm role response generator synthesizes immediately after completed browse
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14109,6 +14319,7 @@ test("llm role response generator preserves browser evidence summary when child 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14197,6 +14408,7 @@ test("llm role response generator repairs completed session synthesis that omits
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14286,6 +14498,7 @@ test("llm role response generator repairs weak uncertainty in completed session 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14375,6 +14588,7 @@ test("llm role response generator repairs source-external extrapolation after di
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14463,6 +14677,7 @@ test("llm role response generator keeps session evidence without final_content s
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14528,6 +14743,7 @@ test("llm role response generator repairs source-external follow-up synthesis fr
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14685,6 +14901,7 @@ test("llm role response generator repairs completed session synthesis that false
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14855,6 +15072,7 @@ test("llm role response generator repairs shell-only product signal dashboard ev
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -14970,6 +15188,7 @@ test("llm role response generator repairs completed session synthesis that drops
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15046,6 +15265,7 @@ test("llm role response generator allows estimates when the user asks for estima
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15213,6 +15433,7 @@ test("llm role response generator executes one approval-gated browser spawn from
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15357,6 +15578,7 @@ test("llm role response generator preserves distinct approval-gated browser spaw
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15477,6 +15699,7 @@ test("llm role response generator treats runtime-gated browser permission progre
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15559,6 +15782,7 @@ test("llm role response generator keeps completed tool evidence when final synth
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15669,6 +15893,7 @@ test("llm role response generator uses completed browser evidence when final syn
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15770,6 +15995,7 @@ test("llm role response generator repairs approval browser finals that drop comp
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15833,6 +16059,7 @@ test("llm role response generator preserves generic tool evidence when follow-up
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -15951,6 +16178,7 @@ test("llm role response generator forces permission_result before approval wait-
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16048,6 +16276,7 @@ test("llm role response generator does not let stale provider table context poll
     ],
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16111,6 +16340,7 @@ test("llm role response generator preserves requested table columns in local evi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16179,6 +16409,7 @@ test("llm role response generator infers provider evidence table columns in loca
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16258,6 +16489,7 @@ test("llm role response generator does not use local evidence closeout for exact
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16312,6 +16544,7 @@ test("llm role response generator does not use skipped generic tool output as lo
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16387,6 +16620,7 @@ test("llm role response generator does not use sessions_list control output as l
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16442,6 +16676,7 @@ test("llm role response generator rethrows abort errors instead of local evidenc
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16526,6 +16761,7 @@ test("llm role response generator stores evidence-first trace content for oversi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16631,6 +16867,7 @@ test("llm role response generator accepts short completed sub-agent final conten
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16709,6 +16946,7 @@ test("llm role response generator redacts forbidden local URLs after completed s
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16805,6 +17043,7 @@ test("llm role response generator keeps browser recovery visible after completed
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16895,6 +17134,7 @@ test("llm role response generator keeps cold recreation visible from child final
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -16980,6 +17220,7 @@ test("llm role response generator does not treat generic recovery wording as col
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17062,6 +17303,7 @@ test("llm role response generator preserves Chinese exact three-line final shape
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17143,6 +17385,7 @@ test("llm role response generator normalizes markdown labels in Chinese exact th
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17226,6 +17469,7 @@ test("llm role response generator keeps browser timeout recovery visible after c
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17314,6 +17558,7 @@ test("llm role response generator appends bounded browser limitation when comple
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17420,6 +17665,7 @@ test("llm role response generator surfaces browser bucket visibility from raw se
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17506,6 +17752,7 @@ test("llm role response generator does not treat generic unverified browser word
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17591,6 +17838,7 @@ test("llm role response generator does not mark recovered browser evidence unver
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17702,6 +17950,7 @@ test("llm role response generator prefers completed sub-agent finals over siblin
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17807,6 +18056,7 @@ test("llm role response generator reroutes private URL research spawns to browse
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -17912,6 +18162,7 @@ test("llm role response generator reroutes loopback web_fetch calls to browser s
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18000,6 +18251,7 @@ test("llm role response generator keeps loopback read-only source extraction on 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18111,6 +18363,7 @@ test("llm role response generator collapses duplicate bounded timeout source spa
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18211,6 +18464,7 @@ test("llm role response generator reroutes non-browser bounded timeout source sp
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18337,6 +18591,7 @@ test("llm role response generator keeps browser duplicate for bounded browser-vi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18442,6 +18697,7 @@ test("llm role response generator keeps browser-visible loopback tasks on the br
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18544,6 +18800,7 @@ test("llm role response generator keeps live signal dashboard loopback tasks on 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18653,6 +18910,7 @@ test("llm role response generator keeps rendered-value recovery loopback tasks o
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18754,6 +19012,7 @@ test("llm role response generator does not reroute explicitly static loopback fi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -18878,6 +19137,7 @@ test("llm role response generator repairs browser-visible final answers that ski
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -19028,6 +19288,7 @@ test("llm role response generator bounds browser-evidence repair for slow loopba
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -19111,6 +19372,7 @@ test("llm role response generator does not repeat browser-evidence repair after 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -19288,6 +19550,7 @@ test("llm role response generator repairs browser final synthesis that drops req
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -19421,6 +19684,7 @@ test("llm role response generator repairs completed static fetch synthesis when 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -19507,6 +19771,7 @@ test("llm role response generator reroutes browser-visible public URL spawns to 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -19605,6 +19870,7 @@ test("llm role response generator keeps private non-loopback URLs on the browser
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -19741,6 +20007,7 @@ test("llm role response generator reroutes link-local and wildcard URL research 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -19851,6 +20118,7 @@ test("llm role response generator keeps public URL research spawns on explore", 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -20056,6 +20324,7 @@ test("llm role response generator continues timed-out sibling before final synth
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -20169,6 +20438,7 @@ test("llm role response generator rewrites slow-source recovery spawn to existin
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 16 },
   });
@@ -20343,6 +20613,7 @@ test("llm role response generator continues timed-out AsiaWalk stream before fin
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -20498,6 +20769,7 @@ test("llm role response generator repairs product signal final that negates comp
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -20643,6 +20915,7 @@ test("llm role response generator does not replace product brief model finals wi
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -20832,6 +21105,7 @@ test("llm role response generator continues a lone timed-out coverage-critical s
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -20929,6 +21203,7 @@ test("llm role response generator repairs textual tool-call markup during final 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -21014,6 +21289,7 @@ test("llm role response generator uses local evidence closeout when final repair
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -21101,6 +21377,7 @@ test("llm role response generator repairs textual tool-call markup after a norma
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 128 },
   });
@@ -21203,6 +21480,7 @@ test("llm role response generator caps parallel tool execution fan-out", async (
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 4, maxParallelToolCalls: 2 },
   });
@@ -21278,6 +21556,7 @@ test("llm role response generator skips per-turn tool calls above the execution 
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: {
       executor,
@@ -21369,6 +21648,7 @@ test("llm role response generator externalizes oversized tool history while pres
     },
   };
   const generator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 3 },
     toolResultArtifactStore: store,
@@ -21444,6 +21724,7 @@ test("llm role response generator resumes from the last durable round without re
     },
   };
   const firstGenerator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway: firstGateway,
     toolLoop: { executor, maxRounds: 6 },
     runJournalStore: store,
@@ -21465,6 +21746,7 @@ test("llm role response generator resumes from the last durable round without re
     return textResult("Resumed final answer.");
   };
   const resumedGenerator = new LLMRoleResponseGenerator({
+    testOnlyCharacterizeRetiredPolicies: true,
     gateway: resumedGateway,
     toolLoop: { executor, maxRounds: 6 },
     runJournalStore: store,

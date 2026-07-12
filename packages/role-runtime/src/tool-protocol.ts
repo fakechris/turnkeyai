@@ -244,11 +244,22 @@ export function normalizeSessionToolAliasCalls(
 export function normalizeSessionToolCalls(
   toolCalls: LLMToolCall[],
   sessionContext = "",
+  declaredContinuationWorkerRunKey?: string,
 ): LLMToolCall[] {
   const knownSessionKeys = extractKnownWorkerSessionKeys(sessionContext);
   return toolCalls.map((call) => {
     if (call.name !== "sessions_send" && call.name !== "sessions_history") {
       return call;
+    }
+    if (call.name === "sessions_send" && declaredContinuationWorkerRunKey) {
+      return {
+        ...call,
+        input: {
+          ...call.input,
+          session_key: declaredContinuationWorkerRunKey,
+          mode: "continue",
+        },
+      };
     }
     const sessionKey = readStringInput(call.input, "session_key");
     const extractedSessionKey = sessionKey
@@ -834,7 +845,6 @@ export function withFinalToolRoundWarning(
 
 export function resolveEffectiveToolLoopWallClockMs(input: {
   maxWallClockMs?: number;
-  toolCalls: LLMToolCall[];
 }): number | undefined {
   const maxWallClockMs = input.maxWallClockMs;
   const configured =
@@ -843,16 +853,7 @@ export function resolveEffectiveToolLoopWallClockMs(input: {
     maxWallClockMs > 0
       ? Math.floor(maxWallClockMs)
       : undefined;
-  if (input.toolCalls.some(isBrowserSessionToolCall)) {
-    return Math.max(
-      configured ?? 0,
-      DEFAULT_BROWSER_SESSION_TOOL_LOOP_WALL_CLOCK_MS,
-    );
-  }
-  if (!input.toolCalls.some(isSlowLoopbackBrowserSessionToolCall)) {
-    return configured;
-  }
-  return Math.max(configured ?? 0, MAX_BROWSER_OPEN_TIMEOUT_MS);
+  return configured;
 }
 
 export function createToolExecutionSignal(input: {
@@ -928,71 +929,6 @@ export function formatDurationMs(ms: number): string {
   }
   const hours = minutes / 60;
   return `${Number(hours.toFixed(2))}h`;
-}
-
-const DEFAULT_BROWSER_SESSION_TOOL_LOOP_WALL_CLOCK_MS = 18 * 60 * 1000;
-
-function isBrowserSessionToolCall(call: LLMToolCall): boolean {
-  if (call.name !== "sessions_spawn" && call.name !== "sessions_send") {
-    return false;
-  }
-  const record = readRecord(call.input);
-  if (!record) {
-    return false;
-  }
-  if (call.name === "sessions_spawn") {
-    return record.agent_id === "browser";
-  }
-  const sessionKey = readTrimmedString(record.session_key);
-  return Boolean(sessionKey && /\bworker:browser\b/i.test(sessionKey));
-}
-
-function isSlowLoopbackBrowserSessionToolCall(call: LLMToolCall): boolean {
-  if (call.name !== "sessions_spawn" && call.name !== "sessions_send") {
-    return false;
-  }
-  const record = readRecord(call.input);
-  if (!record) {
-    return false;
-  }
-  const agentId = typeof record.agent_id === "string" ? record.agent_id : null;
-  if (call.name === "sessions_spawn" && agentId !== "browser") {
-    return false;
-  }
-  const text =
-    call.name === "sessions_spawn"
-      ? readTrimmedString(record.task)
-      : readTrimmedString(record.message);
-  if (!text || !isSlowDiagnosticText(text)) {
-    return false;
-  }
-  const urls = text.match(/https?:\/\/[^\s)]+/gi) ?? [];
-  return urls.some(isLoopbackUrl);
-}
-
-function readRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function readTrimmedString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function isSlowDiagnosticText(value: string): boolean {
-  return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(
-    value,
-  );
-}
-
-function isLoopbackUrl(raw: string): boolean {
-  try {
-    const parsed = new URL(raw.replace(/["'`,;:.!?。，“”‘’！？：]+$/g, ""));
-    return isLoopbackHostname(parsed.hostname);
-  } catch {
-    return false;
-  }
 }
 
 export function readStringField(value: unknown): string | null {

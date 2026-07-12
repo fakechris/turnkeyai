@@ -417,6 +417,9 @@ export function compactOlderToolHistoryForGateway(
   }
   const prefix = messages.slice(0, 2);
   const units = buildHistoryProtocolUnits(messages.slice(2));
+  if (units.some((unit) => !unit.protocolSafe)) {
+    return messages;
+  }
   const maxMessages = Math.max(prefix.length + 1, limits.historyMaxMessages);
   const maxBytes = Math.max(512, limits.historyMaxBytes);
   const rawMessageCapacity = Math.max(0, maxMessages - prefix.length - 1);

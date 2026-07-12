@@ -13,6 +13,7 @@ import {
   type RequestEnvelopeLimits,
 } from "./request-envelope-guard";
 import {
+  createRetryAllowance,
   decideProviderRetry,
   DEFAULT_PROVIDER_RETRY_POLICY,
   providerErrorCode,
@@ -87,13 +88,23 @@ export class LLMGateway {
     const retryModels: ModelRetryDiagnostics[] = [];
     let totalAttempts = 0;
     let totalRetries = 0;
+    const maxTransportAttempts = Math.max(
+      this.retryPolicy.transientMaxAttempts,
+      this.retryPolicy.timeoutMaxAttempts,
+    );
+    const retryAllowance = createRetryAllowance({
+      allowanceId: `model-transport:${selection.chainId ?? selection.primaryModelId}`,
+      ownerScopeId: selection.chainId ?? selection.primaryModelId,
+      failureDomain: "model_transport",
+      maxAttempts: maxTransportAttempts,
+    });
     const deadline = Math.min(
       Date.now() + this.generateWallClockMs,
       input.deadlineAt ?? Number.POSITIVE_INFINITY,
     );
     let lastError: unknown;
 
-    for (const modelId of candidateModelIds) {
+    modelChain: for (const modelId of candidateModelIds) {
       attemptedModelIds.push(modelId);
       const modelDiagnostics: ModelRetryDiagnostics = {
         modelId,
@@ -104,6 +115,9 @@ export class LLMGateway {
       retryModels.push(modelDiagnostics);
 
       for (let attempt = 1; ; attempt += 1) {
+        if (!retryAllowance.claimAttempt()) {
+          break modelChain;
+        }
         if (input.signal?.aborted) {
           throw input.signal.reason ?? new Error("LLM request aborted");
         }
@@ -223,6 +237,9 @@ export class LLMGateway {
             random: this.retryRandom,
           });
           if (!decision.retry) {
+            break;
+          }
+          if (!retryAllowance.hasRemainingAttempts()) {
             break;
           }
           if (Date.now() + decision.delayMs >= deadline) {

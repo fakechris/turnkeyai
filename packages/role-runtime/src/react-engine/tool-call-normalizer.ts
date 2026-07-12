@@ -4,13 +4,13 @@ import {
   countNativeToolCalls,
   type NativeToolRoundTrace,
 } from "../native-tool-messages";
+import { buildContinuationDirectiveContext } from "../tool-protocol";
 import {
   applySessionContinuationDirective,
   applySessionContinuationLookupDirective,
 } from "../runtime-policy/prompt-renderers";
-import { buildContinuationDirectiveContext } from "../tool-protocol";
+import { normalizeSessionToolAliasCalls, normalizeSessionToolCalls } from "../tool-protocol";
 import {
-  enforceSupplementalLocalTimeoutProbeToolCall,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   limitIndependentEvidenceSpawnCalls,
@@ -19,29 +19,24 @@ import {
   normalizeExplicitContinuationHistoryCalls,
   normalizeLocalUrlWebFetchCalls,
   normalizePrivateUrlResearchSpawnCalls,
+  type SessionContinuationDirective,
+  type SessionContinuationLookupDirective,
 } from "../runtime-facts/text-fallback-readers";
 import { hasLatestSupplementalLocalTimeoutProbePrompt } from "../runtime-facts/repair-marker-facts";
-import { normalizeSessionToolAliasCalls, normalizeSessionToolCalls } from "../tool-protocol";
-import type { SessionContinuationDirective, SessionContinuationLookupDirective } from "../runtime-facts/text-fallback-readers";
 import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
-import {
-  createPermissionPolicy,
-  type PermissionPolicy,
-} from "./permission-policy";
+import type { PermissionPolicy } from "./permission-policy";
 import type { TaskFactsSnapshot } from "./task-facts";
 import type {
   ExecutionBudgetController,
   RecoveryToolBudget,
 } from "./execution-budget-controller";
-import { applyBoundedSourceCheckTimeoutBudget } from "./session-timeout-budget";
 
 // Stage 8 engine cleanup — ToolCallNormalizer.
 //
-// Authority: own syntactic and routing normalization before execution and
-// preserve the current ENGINE_TOOL_CALL_NORMALIZATION_ORDER. Shared helpers now
-// live in concrete fact/render/protocol modules so the inline reference loop and
-// this engine module call the same implementation without importing from each
-// other.
+// Authority: syntactic aliases and stable session-handle/schema translation.
+// Business routing, permission substitution, continuation injection, and
+// evidence-topology rewrites are proposals owned by the model or an explicit
+// workflow, not normalizer authority.
 export const TOOL_CALL_NORMALIZER_MODULE = "tool-call-normalizer" as const;
 
 /**
@@ -54,12 +49,14 @@ export interface ToolCallNormalizationContext {
   toolTrace: NativeToolRoundTrace[];
   repairMarkers: LLMMessage[];
   sessionContinuationContext: string;
+  declaredContinuationWorkerRunKey?: string;
   sessionContinuationDirective: SessionContinuationDirective | null;
   sessionContinuationLookupDirective: SessionContinuationLookupDirective | null;
   browserAvailable: boolean;
   exploreAvailable: boolean;
   taskFacts?: TaskFactsSnapshot;
   permissionPolicy?: PermissionPolicy;
+  testOnlyCharacterizeRetiredPolicies?: true;
 }
 
 export interface ToolCallNormalizationContextInput {
@@ -68,8 +65,10 @@ export interface ToolCallNormalizationContextInput {
   toolTrace: NativeToolRoundTrace[];
   repairMarkers: LLMMessage[];
   capabilityInspection?: { availableWorkers?: readonly string[] };
+  declaredContinuationWorkerRunKey?: string;
   taskFacts?: TaskFactsSnapshot;
   permissionPolicy?: PermissionPolicy;
+  testOnlyCharacterizeRetiredPolicies?: true;
 }
 
 export interface ToolCallNormalizationStep {
@@ -89,43 +88,44 @@ export interface EngineToolCallsHookInput {
   recoveryToolBudget: RecoveryToolBudget | null;
   recoveryToolCallsBeforeActivation: number;
   capabilityInspection?: { availableWorkers?: readonly string[] };
+  declaredContinuationWorkerRunKey?: string;
   taskFacts?: TaskFactsSnapshot;
+  testOnlyCharacterizeRetiredPolicies?: true;
 }
 
 /**
  * The engine's slice of the inline tool-call normalization pipeline, declared as
  * data so the order is explicit and table-test-assertable.
  *
- * Applies engine normalization in dependency order:
- *   1. normalizeSessionToolAliasCalls
- *   2. enforceMissingApprovalGateRepairToolCalls
- *   3. applySessionContinuationDirective
- *   4. applySessionContinuationLookupDirective
- *   5. normalizeExplicitContinuationHistoryCalls
- *   6. normalizeSessionToolCalls
- *   7. normalizePrivateUrlResearchSpawnCalls
- *   8. normalizeLocalUrlWebFetchCalls
- *   9. normalizeBoundedTimeoutSourceSpawnAgents
- *  10. applyBoundedSourceCheckTimeoutBudget
- *  11. enforceSupplementalLocalTimeoutProbeToolCall
- *  12. normalizeBoundedTimeoutDuplicateSourceSpawns
- *  13. applySessionContinuationDirective (repeat)
- *  14. normalizeApprovalGatedBrowserSpawnCalls
- *  15. limitIndependentEvidenceSpawnCalls
+ * Both steps preserve the model-proposed effect semantics. Semantic duplicate
+ * effects are handled by the effect ledger using stable ids.
  */
 const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
   { name: "sessionToolAlias", apply: (c) => normalizeSessionToolAliasCalls(c) },
   {
+    name: "sessionToolCalls",
+    apply: (calls, context) =>
+      normalizeSessionToolCalls(
+        calls,
+        context.sessionContinuationContext,
+        context.declaredContinuationWorkerRunKey,
+      ),
+  },
+];
+
+const RETIRED_TOOL_CALL_NORMALIZATION_CHARACTERIZATION: ToolCallNormalizationStep[] = [
+  ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE[0]!,
+  {
     name: "enforceMissingApprovalGateRepair",
     apply: (c, x) =>
-      resolvePermissionPolicy(x).normalizeMissingApprovalGateRepair({
+      x.permissionPolicy?.normalizeMissingApprovalGateRepair({
         calls: c,
         messages: x.messages,
         repairMarkers: x.repairMarkers,
         taskPrompt: x.taskPrompt,
         toolTrace: x.toolTrace,
         sessionContext: x.sessionContinuationContext,
-      }),
+      }) ?? c,
   },
   {
     name: "sessionContinuationDirective",
@@ -140,10 +140,7 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
     name: "explicitContinuationHistory",
     apply: (c, x) => normalizeExplicitContinuationHistoryCalls(c, x.taskPrompt),
   },
-  {
-    name: "sessionToolCalls",
-    apply: (c, x) => normalizeSessionToolCalls(c, x.sessionContinuationContext),
-  },
+  ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE[1]!,
   {
     name: "privateUrlResearchSpawn",
     apply: (c, x) =>
@@ -165,21 +162,8 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
       }),
   },
   {
-    name: "boundedSourceTimeoutBudget",
-    apply: (c, x) =>
-      applyBoundedSourceCheckTimeoutBudget(c, {
-        toolTrace: x.toolTrace,
-        ...(x.taskFacts === undefined ? {} : { taskFacts: x.taskFacts }),
-      }),
-  },
-  {
-    name: "supplementalLocalTimeoutProbe",
-    apply: (c, x) => enforceSupplementalLocalTimeoutProbeToolCall(c, x.messages),
-  },
-  {
     name: "boundedTimeoutDuplicateSourceSpawn",
-    apply: (c, x) =>
-      normalizeBoundedTimeoutDuplicateSourceSpawns(c, { taskPrompt: x.taskPrompt }),
+    apply: (c, x) => normalizeBoundedTimeoutDuplicateSourceSpawns(c, { taskPrompt: x.taskPrompt }),
   },
   {
     name: "sessionContinuationDirectiveRepeat",
@@ -188,39 +172,26 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
   {
     name: "approvalGatedBrowserSpawn",
     apply: (c, x) =>
-      resolvePermissionPolicy(x).normalizeApprovalGatedBrowserSpawn({
+      x.permissionPolicy?.normalizeApprovalGatedBrowserSpawn({
         calls: c,
         messages: x.messages,
         repairMarkers: x.repairMarkers,
         taskPrompt: x.taskPrompt,
         sessionContext: x.sessionContinuationContext,
         toolTrace: x.toolTrace,
-      }),
+      }) ?? c,
   },
   {
     name: "limitIndependentEvidenceSpawn",
-    apply: (c, x) => {
-      if (
-        x.taskFacts &&
-        x.taskFacts.requiredIndependentEvidenceStreams < 2
-      ) {
-        return c;
-      }
-      return limitIndependentEvidenceSpawnCalls(c, {
-        taskPrompt: x.taskPrompt,
-        toolTrace: x.toolTrace,
-      });
-    },
+    apply: (c, x) =>
+      x.taskFacts && x.taskFacts.requiredIndependentEvidenceStreams < 2
+        ? c
+        : limitIndependentEvidenceSpawnCalls(c, {
+            taskPrompt: x.taskPrompt,
+            toolTrace: x.toolTrace,
+          }),
   },
 ];
-
-const DEFAULT_PERMISSION_POLICY = createPermissionPolicy();
-
-function resolvePermissionPolicy(
-  ctx: ToolCallNormalizationContext,
-): PermissionPolicy {
-  return ctx.permissionPolicy ?? DEFAULT_PERMISSION_POLICY;
-}
 
 export const ENGINE_TOOL_CALL_NORMALIZATION_ORDER: readonly string[] =
   ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE.map((step) => step.name);
@@ -228,45 +199,49 @@ export const ENGINE_TOOL_CALL_NORMALIZATION_ORDER: readonly string[] =
 export function buildToolCallNormalizationContext(
   input: ToolCallNormalizationContextInput,
 ): ToolCallNormalizationContext {
-  const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
-    input.messages,
-  );
   const sessionContinuationContext = buildContinuationDirectiveContext(
     input.taskPrompt,
     input.messages,
   );
-  const contextualDirective = !probePending
-    ? findSessionContinuationDirective(sessionContinuationContext)
-    : null;
-  const sessionContinuationDirective = probePending
-    ? null
-    : (contextualDirective ??
-      findSessionContinuationDirective(input.taskPrompt));
-  const sessionContinuationLookupDirective =
-    !probePending &&
-    !sessionContinuationDirective &&
-    !hasSuccessfulSessionListResult(input.toolTrace) &&
-    !appliedApprovalBrowserContinuationRequested(input)
-      ? findSessionContinuationLookupDirective(
-          sessionContinuationContext,
-          sessionContinuationContext,
-        )
-      : null;
   const availableWorkers = input.capabilityInspection?.availableWorkers ?? [];
+  const probePending = input.testOnlyCharacterizeRetiredPolicies
+    ? hasLatestSupplementalLocalTimeoutProbePrompt(input.messages)
+    : false;
+  const continuationDirective =
+    input.testOnlyCharacterizeRetiredPolicies && !probePending
+      ? findSessionContinuationDirective(sessionContinuationContext) ??
+        findSessionContinuationDirective(input.taskPrompt)
+      : null;
   return {
     taskPrompt: input.taskPrompt,
     messages: input.messages,
     toolTrace: input.toolTrace,
     repairMarkers: input.repairMarkers,
+    ...(input.declaredContinuationWorkerRunKey
+      ? { declaredContinuationWorkerRunKey: input.declaredContinuationWorkerRunKey }
+      : {}),
     sessionContinuationContext,
-    sessionContinuationDirective,
-    sessionContinuationLookupDirective,
+    sessionContinuationDirective: continuationDirective,
+    sessionContinuationLookupDirective:
+      input.testOnlyCharacterizeRetiredPolicies &&
+      !probePending &&
+      !continuationDirective &&
+      !hasSuccessfulSessionListResult(input.toolTrace) &&
+      !appliedApprovalBrowserContinuationRequested(input)
+        ? findSessionContinuationLookupDirective(
+            sessionContinuationContext,
+            sessionContinuationContext,
+          )
+        : null,
     browserAvailable: availableWorkers.includes("browser"),
     exploreAvailable: availableWorkers.includes("explore"),
     ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
     ...(input.permissionPolicy === undefined
       ? {}
       : { permissionPolicy: input.permissionPolicy }),
+    ...(input.testOnlyCharacterizeRetiredPolicies
+      ? { testOnlyCharacterizeRetiredPolicies: true as const }
+      : {}),
   };
 }
 
@@ -301,7 +276,10 @@ export function normalizeEngineToolCalls(
   calls: LLMToolCall[],
   ctx: ToolCallNormalizationContext,
 ): LLMToolCall[] {
-  return ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE.reduce(
+  const pipeline = ctx.testOnlyCharacterizeRetiredPolicies
+    ? RETIRED_TOOL_CALL_NORMALIZATION_CHARACTERIZATION
+    : ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE;
+  return pipeline.reduce(
     (acc, step) => step.apply(acc, ctx),
     calls,
   );
@@ -321,10 +299,16 @@ export function applyEngineToolCallsHook(
       toolTrace: input.toolTrace,
       repairMarkers: input.repairMarkers,
       permissionPolicy: input.permissionPolicy,
+      ...(input.declaredContinuationWorkerRunKey
+        ? { declaredContinuationWorkerRunKey: input.declaredContinuationWorkerRunKey }
+        : {}),
       ...(input.capabilityInspection === undefined
         ? {}
         : { capabilityInspection: input.capabilityInspection }),
       ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
+      ...(input.testOnlyCharacterizeRetiredPolicies
+        ? { testOnlyCharacterizeRetiredPolicies: true as const }
+        : {}),
     }),
   );
   return input.executionBudget.truncateForRecoveryBudget({

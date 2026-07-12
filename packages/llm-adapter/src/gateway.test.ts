@@ -172,6 +172,33 @@ class RetryThenSuccessClient implements ProtocolClient {
   }
 }
 
+class RetryableFailureByModelClient implements ProtocolClient {
+  readonly attemptedModelIds: string[] = [];
+
+  supports(protocol: ModelProtocol): boolean {
+    return protocol === "openai-compatible";
+  }
+
+  async generate(model: ResolvedModelConfig): Promise<GenerateTextResult> {
+    this.attemptedModelIds.push(model.id);
+    if (model.id === "fallback-model") {
+      return {
+        text: "fallback should not run after allowance exhaustion",
+        modelId: model.id,
+        providerId: model.providerId,
+        protocol: model.protocol,
+        adapterName: "retry-allowance-stub",
+        raw: {},
+      };
+    }
+    throw new ProviderRequestError("primary unavailable", {
+      code: "server_error",
+      status: 503,
+      retryable: true,
+    });
+  }
+}
+
 test("llm gateway retries one model before falling back and reports diagnostics", async () => {
   const previousPrimaryKey = process.env.TEST_PRIMARY_KEY;
   process.env.TEST_PRIMARY_KEY = "primary-key";
@@ -313,6 +340,72 @@ test("llm gateway retries through configured model fallbacks", async () => {
     } else {
       process.env.TEST_FALLBACK_KEY = previousFallbackKey;
     }
+  }
+});
+
+test("llm gateway uses one retry allowance across primary and fallback models", async () => {
+  const previousPrimaryKey = process.env.TEST_PRIMARY_KEY;
+  const previousFallbackKey = process.env.TEST_FALLBACK_KEY;
+  process.env.TEST_PRIMARY_KEY = "primary-key";
+  process.env.TEST_FALLBACK_KEY = "fallback-key";
+  const client = new RetryableFailureByModelClient();
+
+  try {
+    const gateway = new LLMGateway({
+      registry: new ModelRegistry(
+        new InMemoryCatalogSource({
+          models: {
+            "primary-model": {
+              label: "Primary",
+              providerId: "openai",
+              protocol: "openai-compatible",
+              model: "primary-model",
+              baseURL: "https://primary.example/v1",
+              apiKeyEnv: "TEST_PRIMARY_KEY",
+            },
+            "fallback-model": {
+              label: "Fallback",
+              providerId: "openai",
+              protocol: "openai-compatible",
+              model: "fallback-model",
+              baseURL: "https://fallback.example/v1",
+              apiKeyEnv: "TEST_FALLBACK_KEY",
+            },
+          },
+          modelChains: {
+            bounded_chain: {
+              primary: "primary-model",
+              fallbacks: ["fallback-model"],
+            },
+          },
+        }),
+      ),
+      clients: [client],
+      retryPolicy: {
+        transientMaxAttempts: 2,
+        timeoutMaxAttempts: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+      },
+      retrySleep: async () => undefined,
+    });
+
+    await assert.rejects(
+      () => gateway.generate({
+        modelChainId: "bounded_chain",
+        messages: [{ role: "user", content: "Use one bounded allowance." }],
+      }),
+      /primary unavailable/,
+    );
+    assert.deepEqual(client.attemptedModelIds, [
+      "primary-model",
+      "primary-model",
+    ]);
+  } finally {
+    if (previousPrimaryKey == null) delete process.env.TEST_PRIMARY_KEY;
+    else process.env.TEST_PRIMARY_KEY = previousPrimaryKey;
+    if (previousFallbackKey == null) delete process.env.TEST_FALLBACK_KEY;
+    else process.env.TEST_FALLBACK_KEY = previousFallbackKey;
   }
 });
 

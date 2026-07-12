@@ -1,7 +1,10 @@
 import type { LLMMessage, LLMToolCall, LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import {
-  MAX_BROWSER_OPEN_TIMEOUT_MS,
+  resolveContinuationToolTimeoutMs,
+  resolveToolTimeoutMs,
+} from "./operation-timeout-budget";
+import {
   getInstructions,
   getRecentMessages,
   getRelayBrief,
@@ -121,13 +124,6 @@ export interface RoleToolLoopOptions {
 }
 
 export const DEFAULT_ROLE_TOOL_MAX_ROUNDS = 128;
-const MAX_SESSION_TOOL_TIMEOUT_SECONDS = 1800;
-const DEFAULT_BROWSER_SESSION_TOOL_TIMEOUT_MS = 18 * 60 * 1_000;
-const DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS = 8 * 60 * 1_000;
-const DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
-const DEFAULT_RESUMABLE_CONTINUATION_TOOL_TIMEOUT_MS = 45_000;
-const SUPPLEMENTAL_LOCAL_TIMEOUT_BROWSER_PROBE_TIMEOUT_MS = 90_000;
-const LOCAL_APPROVAL_BROWSER_TASK_TIMEOUT_MS = 120_000;
 const DEFAULT_TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
 const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
 const DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS = 60_000;
@@ -345,7 +341,6 @@ export async function executeRoleToolCalls(input: {
       ...(activeToolLoop.maxWallClockMs !== undefined
         ? { maxWallClockMs: activeToolLoop.maxWallClockMs }
         : {}),
-      toolCalls: chunk,
     });
     const toolExecutionSignal = createToolExecutionSignal({
       elapsedMs: input.now() - input.toolLoopStartedAtMs,
@@ -1907,13 +1902,11 @@ async function executeSessionsSpawn(
     input.packet.runtimeApprovalContext,
     gate?.approvedContext
   );
-  const timeoutMs = resolveToolTimeoutMsForTask({
-    value: input.call.input.timeout_seconds,
-    workerKind: effectiveAgentId,
-    ...(maxSessionToolTimeoutMs !== undefined ? { maxTimeoutMs: maxSessionToolTimeoutMs } : {}),
-    taskText: task,
-    parentTaskPrompt: input.packet.taskPrompt,
-  });
+  const timeoutMs = resolveToolTimeoutMs(
+    input.call.input.timeout_seconds,
+    effectiveAgentId,
+    maxSessionToolTimeoutMs,
+  );
   const acceptedAt = Date.now();
   const backgroundDeadlineAt = Math.min(
     acceptedAt + timeoutMs,
@@ -2428,14 +2421,12 @@ async function executeSessionsSend(
     continuityMode: "resume-existing" as const,
     ...(runtimeApprovalContext ? { runtimeApprovalContext } : {}),
   };
-  const timeoutMs = resolveContinuationToolTimeoutMsForTask({
-    value: input.call.input.timeout_seconds,
-    workerKind: state.workerType,
-    currentStatus: state.status,
-    ...(maxSessionToolTimeoutMs !== undefined ? { maxTimeoutMs: maxSessionToolTimeoutMs } : {}),
-    taskText: message,
-    parentTaskPrompt: input.packet.taskPrompt,
-  });
+  const timeoutMs = resolveContinuationToolTimeoutMs(
+    input.call.input.timeout_seconds,
+    state.workerType,
+    state.status,
+    maxSessionToolTimeoutMs,
+  );
   const registration = toolCancellationRegistry?.register({
     threadId: input.activation.thread.threadId,
     toolCallId: input.call.id,
@@ -3623,116 +3614,6 @@ function positiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
-function parseToolTimeoutMs(value: unknown, maxTimeoutMs?: number): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  const configuredMaxSeconds =
-    typeof maxTimeoutMs === "number" && Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
-      ? maxTimeoutMs / 1_000
-      : MAX_SESSION_TOOL_TIMEOUT_SECONDS;
-  const boundedSeconds = Math.min(value, configuredMaxSeconds, MAX_SESSION_TOOL_TIMEOUT_SECONDS);
-  return Math.max(1, Math.round(boundedSeconds * 1_000));
-}
-
-function resolveToolTimeoutMs(value: unknown, workerKind: WorkerKind, maxTimeoutMs?: number): number {
-  const explicitTimeoutMs = parseToolTimeoutMs(value, maxTimeoutMs);
-  if (explicitTimeoutMs !== null) {
-    return explicitTimeoutMs;
-  }
-  return boundDefaultToolTimeoutMs(
-    defaultToolTimeoutMs(workerKind),
-    maxTimeoutMs
-  );
-}
-
-function resolveToolTimeoutMsForTask(input: {
-  value: unknown;
-  workerKind: WorkerKind;
-  maxTimeoutMs?: number;
-  taskText: string;
-  parentTaskPrompt: string;
-}): number {
-  if (input.workerKind === "browser" && isSupplementalLocalTimeoutProbeTask(input.taskText)) {
-    return Math.max(
-      parseToolTimeoutMs(input.value, undefined) ?? 0,
-      SUPPLEMENTAL_LOCAL_TIMEOUT_BROWSER_PROBE_TIMEOUT_MS
-    );
-  }
-  const timeoutMs = resolveToolTimeoutMs(input.value, input.workerKind, input.maxTimeoutMs);
-  return applyLocalBrowserTaskTimeoutFloors(timeoutMs, input);
-}
-
-function resolveContinuationToolTimeoutMs(
-  value: unknown,
-  workerKind: WorkerKind,
-  currentStatus: WorkerSessionState["status"],
-  maxTimeoutMs?: number
-): number {
-  const timeoutMs = resolveToolTimeoutMs(value, workerKind, maxTimeoutMs);
-  if (currentStatus !== "cancelled") {
-    return Math.min(
-      timeoutMs,
-      boundDefaultToolTimeoutMs(DEFAULT_RESUMABLE_CONTINUATION_TOOL_TIMEOUT_MS, maxTimeoutMs)
-    );
-  }
-  return Math.max(timeoutMs, boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs));
-}
-
-function resolveContinuationToolTimeoutMsForTask(input: {
-  value: unknown;
-  workerKind: WorkerKind;
-  currentStatus: WorkerSessionState["status"];
-  maxTimeoutMs?: number;
-  taskText: string;
-  parentTaskPrompt: string;
-}): number {
-  const timeoutMs = resolveContinuationToolTimeoutMs(
-    input.value,
-    input.workerKind,
-    input.currentStatus,
-    input.maxTimeoutMs
-  );
-  return applyLocalBrowserTaskTimeoutFloors(timeoutMs, input);
-}
-
-function applyLocalBrowserTaskTimeoutFloors(
-  timeoutMs: number,
-  input: { workerKind: WorkerKind; maxTimeoutMs?: number; taskText: string; parentTaskPrompt: string }
-): number {
-  if (input.workerKind !== "browser") {
-    return timeoutMs;
-  }
-  if (isSlowLoopbackBrowserTask(input.taskText)) {
-    return Math.max(timeoutMs, boundDefaultToolTimeoutMs(MAX_BROWSER_OPEN_TIMEOUT_MS, input.maxTimeoutMs));
-  }
-  if (isLocalApprovalBrowserTask(input.taskText, input.parentTaskPrompt)) {
-    return Math.max(timeoutMs, boundDefaultToolTimeoutMs(LOCAL_APPROVAL_BROWSER_TASK_TIMEOUT_MS, input.maxTimeoutMs));
-  }
-  return timeoutMs;
-}
-
-function isSlowLoopbackBrowserTask(taskText: string): boolean {
-  if (!/\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(taskText)) {
-    return false;
-  }
-  const urls = taskText.match(/https?:\/\/[^\s)]+/gi) ?? [];
-  return urls.some(isLoopbackUrl);
-}
-
-function isSupplementalLocalTimeoutProbeTask(taskText: string): boolean {
-  return /\bsupplemental local timeout probe\b/i.test(taskText);
-}
-
-function isLocalApprovalBrowserTask(taskText: string, parentTaskPrompt: string): boolean {
-  const text = `${parentTaskPrompt}\n${taskText}`;
-  if (!/\b(?:approval|approve|approved|permission|dry[-\s]?run|form|submit|browser\.form\.submit)\b/i.test(text)) {
-    return false;
-  }
-  const urls = text.match(/https?:\/\/[^\s)]+/gi) ?? [];
-  return urls.some(isLoopbackUrl);
-}
-
 function isLoopbackUrl(raw: string): boolean {
   try {
     const parsed = new URL(sanitizeDelegationUrl(raw));
@@ -3740,24 +3621,6 @@ function isLoopbackUrl(raw: string): boolean {
   } catch {
     return false;
   }
-}
-
-function defaultToolTimeoutMs(workerKind: WorkerKind): number {
-  if (workerKind === "browser") {
-    return DEFAULT_BROWSER_SESSION_TOOL_TIMEOUT_MS;
-  }
-  if (workerKind === "explore" || workerKind === "finance") {
-    return DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS;
-  }
-  return DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS;
-}
-
-function boundDefaultToolTimeoutMs(defaultTimeoutMs: number, maxTimeoutMs?: number): number {
-  const configuredMaxMs =
-    typeof maxTimeoutMs === "number" && Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
-      ? maxTimeoutMs
-      : MAX_SESSION_TOOL_TIMEOUT_SECONDS * 1_000;
-  return Math.max(1, Math.min(defaultTimeoutMs, configuredMaxMs, MAX_SESSION_TOOL_TIMEOUT_SECONDS * 1_000));
 }
 
 function formatTimeoutSeconds(timeoutMs: number | null): string {

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  RunDeadlineExceededError,
-  createRunDeadline,
+  AttemptDeadlineExceededError,
+  createAttemptDeadline,
 } from "./run-deadline";
 
 function createControlledTimer(startAt = 1_000) {
@@ -35,9 +35,9 @@ function createControlledTimer(startAt = 1_000) {
   };
 }
 
-test("run deadline exposes one absolute budget and caps local operations", () => {
+test("attempt deadline exposes one active budget and caps local operations", () => {
   const timer = createControlledTimer();
-  const deadline = createRunDeadline({
+  const deadline = createAttemptDeadline({
     maxWallClockMs: 500,
     now: timer.now,
     setTimeout: timer.setTimeout,
@@ -56,11 +56,11 @@ test("run deadline exposes one absolute budget and caps local operations", () =>
   deadline.dispose();
 });
 
-test("run deadline preserves the first parent abort reason", () => {
+test("attempt deadline preserves the first parent abort reason", () => {
   const timer = createControlledTimer();
   const parent = new AbortController();
   const parentReason = new Error("operator cancelled run");
-  const deadline = createRunDeadline({
+  const deadline = createAttemptDeadline({
     maxWallClockMs: 500,
     parentSignal: parent.signal,
     now: timer.now,
@@ -78,9 +78,9 @@ test("run deadline preserves the first parent abort reason", () => {
   deadline.dispose();
 });
 
-test("run deadline aborts with a typed deadline reason", () => {
+test("attempt deadline aborts with a typed deadline reason", () => {
   const timer = createControlledTimer();
-  const deadline = createRunDeadline({
+  const deadline = createAttemptDeadline({
     maxWallClockMs: 500,
     now: timer.now,
     setTimeout: timer.setTimeout,
@@ -90,21 +90,22 @@ test("run deadline aborts with a typed deadline reason", () => {
   timer.advanceTo(1_500);
 
   assert.equal(deadline.signal.aborted, true);
-  assert.equal(deadline.signal.reason instanceof RunDeadlineExceededError, true);
-  assert.equal(deadline.signal.reason.code, "run_deadline_exceeded");
+  assert.equal(deadline.signal.reason instanceof AttemptDeadlineExceededError, true);
+  assert.equal(deadline.signal.reason.clockKind, "attempt_active");
+  assert.equal(deadline.signal.reason.code, "attempt_deadline_exceeded");
   assert.equal(deadline.remainingMs(), 0);
   assert.equal(deadline.cap(100), 0);
 
   deadline.dispose();
 });
 
-test("run deadline adopts an already-aborted parent without scheduling", () => {
+test("attempt deadline adopts an already-aborted parent without scheduling", () => {
   const timer = createControlledTimer();
   const parent = new AbortController();
   const reason = new Error("already cancelled");
   parent.abort(reason);
 
-  const deadline = createRunDeadline({
+  const deadline = createAttemptDeadline({
     maxWallClockMs: 500,
     parentSignal: parent.signal,
     now: timer.now,
@@ -117,10 +118,10 @@ test("run deadline adopts an already-aborted parent without scheduling", () => {
   deadline.dispose();
 });
 
-test("run deadline disposal is idempotent and detaches parent cancellation", () => {
+test("attempt deadline disposal is idempotent and detaches parent cancellation", () => {
   const timer = createControlledTimer();
   const parent = new AbortController();
-  const deadline = createRunDeadline({
+  const deadline = createAttemptDeadline({
     maxWallClockMs: 500,
     parentSignal: parent.signal,
     now: timer.now,

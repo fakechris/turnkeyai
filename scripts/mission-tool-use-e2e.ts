@@ -2567,7 +2567,13 @@ async function runNaturalFollowupScenario(input: {
     method: "POST",
     url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
     token: input.token,
-    body: { content: followup },
+    body: {
+      content: followup,
+      continuation: {
+        mode: "resume-existing",
+        workerRunKey: initialSessionKey,
+      },
+    },
   });
   const result = await waitForNaturalMissionCompletion({
     baseUrl: input.baseUrl,

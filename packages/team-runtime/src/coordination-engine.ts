@@ -36,6 +36,7 @@ import type {
   TeamThreadStore,
   WorkerCompletionIngressInput,
   WorkerKind,
+  WorkerSessionRecord,
 } from "@turnkeyai/core-types/team";
 import {
   createRelayPayload,
@@ -95,6 +96,7 @@ interface FlowStartIntent {
   threadId: string;
   message: TeamMessage;
   flow: FlowLedger;
+  continuation?: SendTeamMessageInput["continuation"];
   scheduledTask?: ScheduledTaskRecord;
 }
 
@@ -256,7 +258,7 @@ export class CoordinationEngine {
   }
 
   private async handleMessageIngress(
-    input: Pick<SendTeamMessageInput, "threadId" | "content" | "idempotencyKey">,
+    input: Pick<SendTeamMessageInput, "threadId" | "content" | "idempotencyKey" | "continuation">,
     kind: Extract<FlowStartIntent["kind"], "user-post" | "worker-completion">,
   ): Promise<void> {
     const thread = await this.deps.teamThreadStore.get(input.threadId);
@@ -276,6 +278,9 @@ export class CoordinationEngine {
       threadId: thread.threadId,
       message: userMessage,
       flow,
+      ...(kind === "user-post" && input.continuation
+        ? { continuation: input.continuation }
+        : {}),
     };
     if (this.ingressOutboxShipper) {
       await this.startFlowViaOutbox(intent);
@@ -1353,33 +1358,7 @@ export class CoordinationEngine {
         return undefined;
       }
 
-      const candidate = candidates[0]!;
-      const summary =
-        candidate.state.continuationDigest?.summary ??
-        candidate.state.lastResult?.summary ??
-        candidate.state.lastError?.message;
-      const browserSession =
-        candidate.state.workerType === "browser"
-          ? decodeBrowserSessionPayload(candidate.state.lastResult?.payload)
-          : null;
-      return {
-        source: "follow_up",
-        workerType: candidate.state.workerType,
-        workerRunKey: candidate.workerRunKey,
-        ...(summary ? { summary } : {}),
-        ...(browserSession
-          ? {
-              browserSession: {
-                sessionId: browserSession.sessionId,
-                ...(browserSession.targetId ? { targetId: browserSession.targetId } : {}),
-                ...(browserSession.resumeMode ? { resumeMode: browserSession.resumeMode } : {}),
-                ownerType: "thread" as const,
-                ownerId: input.threadId,
-                leaseHolderRunKey: candidate.workerRunKey,
-              },
-            }
-          : {}),
-      };
+      return buildUserContinuationContext(candidates[0]!, input.threadId, "follow_up");
     } catch (error) {
       console.error("user continuation context lookup failed", {
         threadId: input.threadId,
@@ -1388,6 +1367,35 @@ export class CoordinationEngine {
       });
       return undefined;
     }
+  }
+
+  private async resolveExplicitUserContinuationContext(input: {
+    threadId: string;
+    roleId: RoleId;
+    workerRunKey: RunKey;
+  }): Promise<DispatchContinuationContext> {
+    if (!this.deps.workerRuntime?.listSessions) {
+      throw new Error("explicit worker continuation is unavailable");
+    }
+    const candidate = (await this.deps.workerRuntime.listSessions()).find(
+      (record) => record.workerRunKey === input.workerRunKey,
+    );
+    if (
+      !candidate ||
+      candidate.context?.threadId !== input.threadId ||
+      candidate.context.roleId !== input.roleId
+    ) {
+      throw new Error(`explicit worker continuation target is not visible: ${input.workerRunKey}`);
+    }
+    const reusable =
+      candidate.state.status === "resumable" ||
+      (candidate.state.status === "done" && candidate.state.lastResult?.status === "completed");
+    if (!reusable) {
+      throw new Error(
+        `explicit worker continuation target is not reusable: ${input.workerRunKey}:${candidate.state.status}`,
+      );
+    }
+    return buildUserContinuationContext(candidate, input.threadId, "explicit_user_target");
   }
 
   private hasDuplicateHandoff(flow: FlowLedger, sourceMessageId: string, targetRoleId: RoleId): boolean {
@@ -1580,11 +1588,17 @@ export class CoordinationEngine {
 
       if (intent.kind === "user-post" || intent.kind === "worker-completion") {
         const continuationContext = intent.kind === "user-post"
-          ? await this.resolveUserContinuationContext({
-              threadId: thread.threadId,
-              roleId: thread.leadRoleId,
-              content: intent.message.content,
-            })
+          ? intent.continuation
+            ? await this.resolveExplicitUserContinuationContext({
+                threadId: thread.threadId,
+                roleId: thread.leadRoleId,
+                workerRunKey: intent.continuation.workerRunKey,
+              })
+            : await this.resolveUserContinuationContext({
+                threadId: thread.threadId,
+                roleId: thread.leadRoleId,
+                content: intent.message.content,
+              })
           : undefined;
         await this.dispatchToRole({
           thread,
@@ -2534,6 +2548,43 @@ function buildScheduledContent(task: ScheduledTaskRecord): string {
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n");
+}
+
+function buildUserContinuationContext(
+  candidate: WorkerSessionRecord,
+  threadId: string,
+  source: Extract<DispatchContinuationContext["source"], "follow_up" | "explicit_user_target">,
+): DispatchContinuationContext {
+  const summary =
+    candidate.state.status === "done"
+      ? candidate.state.lastResult?.summary ??
+        candidate.state.continuationDigest?.summary ??
+        candidate.state.lastError?.message
+      : candidate.state.continuationDigest?.summary ??
+        candidate.state.lastResult?.summary ??
+        candidate.state.lastError?.message;
+  const browserSession =
+    candidate.state.workerType === "browser"
+      ? decodeBrowserSessionPayload(candidate.state.lastResult?.payload)
+      : null;
+  return {
+    source,
+    workerType: candidate.state.workerType,
+    workerRunKey: candidate.workerRunKey,
+    ...(summary ? { summary } : {}),
+    ...(browserSession
+      ? {
+          browserSession: {
+            sessionId: browserSession.sessionId,
+            ...(browserSession.targetId ? { targetId: browserSession.targetId } : {}),
+            ...(browserSession.resumeMode ? { resumeMode: browserSession.resumeMode } : {}),
+            ownerType: "thread" as const,
+            ownerId: threadId,
+            leaseHolderRunKey: candidate.workerRunKey,
+          },
+        }
+      : {}),
+  };
 }
 
 function buildScheduledInstructions(

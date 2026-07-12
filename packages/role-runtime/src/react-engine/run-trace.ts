@@ -10,7 +10,7 @@ import {
 
 import type { ModelCallBoundaryTrace } from "../model-call-trace";
 import type { NativeToolRoundTrace } from "../native-tool-messages";
-import { isRunDeadlineExceeded } from "../run-deadline";
+import { isAttemptDeadlineExceeded } from "../run-deadline";
 import type { EngineCloseoutReason, EnginePolicyTraceEntry } from "./types";
 import type { RunJournalState } from "./run-journal";
 import type { RunLifecycleSnapshot } from "./run-lifecycle";
@@ -379,7 +379,7 @@ function summarizeRunLifecycle(
 }
 
 export function classifyRunFailure(error: unknown): RunIncidentCategory {
-  if (isRunDeadlineExceeded(error)) {
+  if (isAttemptDeadlineExceeded(error)) {
     return "wall_clock_budget";
   }
   if (error instanceof RequestEnvelopeOverflowError) {

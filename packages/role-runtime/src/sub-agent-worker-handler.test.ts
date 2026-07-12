@@ -15,7 +15,7 @@ import type {
 import type { GenerateTextInput, GenerateTextResult } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
-import { RunDeadlineExceededError } from "./run-deadline";
+import { AttemptDeadlineExceededError } from "./run-deadline";
 import { LLMSubAgentWorkerHandler } from "./sub-agent-worker-handler";
 import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 
@@ -467,7 +467,7 @@ test("LLMSubAgentWorkerHandler lets browser_open opt out of the default evidence
   assert.deepEqual(bridgeCalls[0]?.actions?.map((action) => action.kind), ["open", "snapshot"]);
 });
 
-test("LLMSubAgentWorkerHandler extends model-short browser_open timeout for slow loopback diagnostics", async () => {
+test("LLMSubAgentWorkerHandler preserves model browser_open timeout for slow loopback diagnostics", async () => {
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
@@ -504,10 +504,10 @@ test("LLMSubAgentWorkerHandler extends model-short browser_open timeout for slow
 
   assert.equal(result?.status, "completed");
   assert.equal(bridgeCalls[0]?.actions?.[0]?.kind, "open");
-  assert.equal(bridgeCalls[0]?.actions?.[0]?.timeoutMs, 240_000);
+  assert.equal(bridgeCalls[0]?.actions?.[0]?.timeoutMs, 5_000);
 });
 
-test("LLMSubAgentWorkerHandler extends browser_open timeout from slow loopback URL alone", async () => {
+test("LLMSubAgentWorkerHandler does not derive browser_open timeout from a slow loopback URL", async () => {
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
@@ -536,7 +536,7 @@ test("LLMSubAgentWorkerHandler extends browser_open timeout from slow loopback U
 
   assert.equal(result?.status, "completed");
   assert.equal(bridgeCalls[0]?.actions?.[0]?.kind, "open");
-  assert.equal(bridgeCalls[0]?.actions?.[0]?.timeoutMs, 240_000);
+  assert.equal(bridgeCalls[0]?.actions?.[0]?.timeoutMs, undefined);
 });
 
 test("LLMSubAgentWorkerHandler keeps supplemental local timeout probe browser_open bounded", async () => {
@@ -862,10 +862,10 @@ test("LLMSubAgentWorkerHandler does not use browser planner fallback for mutatio
   assert.match(result?.summary ?? "", /Sub-agent failed: llm_request_timeout/);
 });
 
-test("LLMSubAgentWorkerHandler preserves absolute run deadline as a resumable timeout", async () => {
+test("LLMSubAgentWorkerHandler preserves active attempt deadline as a resumable timeout", async () => {
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async () => {
-    throw new RunDeadlineExceededError(12_345);
+    throw new AttemptDeadlineExceededError(12_345);
   };
   const handler = new LLMSubAgentWorkerHandler({
     kind: "explore",
@@ -876,11 +876,11 @@ test("LLMSubAgentWorkerHandler preserves absolute run deadline as a resumable ti
   const result = await handler.run(buildInvocationInput("explore"));
 
   assert.equal(result?.status, "timeout");
-  assert.match(result?.summary ?? "", /run deadline exceeded at 12345/i);
+  assert.match(result?.summary ?? "", /active attempt deadline exceeded at 12345/i);
   assert.deepEqual(result?.payload, {
     mode: "llm_sub_agent",
     workerType: "explore",
-    resumableReason: "run_deadline_exceeded",
+    resumableReason: "attempt_deadline_exceeded",
     deadlineAt: 12_345,
   });
 });

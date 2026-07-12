@@ -37,24 +37,36 @@ function baseContext(
 test("ENGINE_TOOL_CALL_NORMALIZATION_ORDER pins the engine normalizer sequence", () => {
   assert.deepEqual(ENGINE_TOOL_CALL_NORMALIZATION_ORDER, [
     "sessionToolAlias",
-    "enforceMissingApprovalGateRepair",
-    "sessionContinuationDirective",
-    "sessionContinuationLookupDirective",
-    "explicitContinuationHistory",
     "sessionToolCalls",
-    "privateUrlResearchSpawn",
-    "localUrlWebFetch",
-    "boundedTimeoutSourceSpawn",
-    "boundedSourceTimeoutBudget",
-    "supplementalLocalTimeoutProbe",
-    "boundedTimeoutDuplicateSourceSpawn",
-    "sessionContinuationDirectiveRepeat",
-    "approvalGatedBrowserSpawn",
-    "limitIndependentEvidenceSpawn",
   ]);
 });
 
-test("normalizeEngineToolCalls enforces the typed bounded source timeout budget", () => {
+test("normalizeEngineToolCalls binds an explicitly declared continuation proposal", () => {
+  const normalized = normalizeEngineToolCalls(
+    [
+      {
+        id: "send-1",
+        name: "sessions_send",
+        input: {
+          session_key: "worker:browser:wrong",
+          mode: "read_result",
+          message: "Revisit the prior evidence.",
+        },
+      },
+    ],
+    baseContext({
+      declaredContinuationWorkerRunKey: "worker:browser:task:task-1:call-1",
+    }),
+  );
+
+  assert.deepEqual(normalized[0]?.input, {
+    session_key: "worker:browser:task:task-1:call-1",
+    mode: "continue",
+    message: "Revisit the prior evidence.",
+  });
+});
+
+test("normalizeEngineToolCalls preserves model-proposed source timeouts", () => {
   const taskPrompt = [
     "Evaluate a slow source for a release-risk note.",
     "Slow source: http://127.0.0.1:43123/slow",
@@ -102,11 +114,11 @@ test("normalizeEngineToolCalls enforces the typed bounded source timeout budget"
 
   assert.deepEqual(
     normalized.map((call) => call.input.timeout_seconds),
-    [25, 25, 5],
+    [undefined, 90, 5],
   );
 });
 
-test("normalizeEngineToolCalls budgets a local web_fetch after it becomes a session spawn", () => {
+test("normalizeEngineToolCalls does not rewrite a model-proposed local fetch", () => {
   const taskPrompt = [
     "Evaluate a slow source for a release-risk note.",
     "Slow source: http://127.0.0.1:43123/slow",
@@ -132,8 +144,9 @@ test("normalizeEngineToolCalls budgets a local web_fetch after it becomes a sess
   );
 
   assert.equal(normalized.length, 1);
-  assert.equal(normalized[0]?.name, "sessions_spawn");
-  assert.equal(normalized[0]?.input.timeout_seconds, 25);
+  assert.equal(normalized[0]?.name, "web_fetch");
+  assert.equal(normalized[0]?.input.url, "http://127.0.0.1:43123/slow");
+  assert.equal(normalized[0]?.input.timeout_seconds, undefined);
 });
 
 test("normalizeEngineToolCalls does not infer the bounded source budget without typed facts", () => {
@@ -157,7 +170,7 @@ test("normalizeEngineToolCalls does not infer the bounded source budget without 
   assert.equal(normalized[0]?.input.timeout_seconds, undefined);
 });
 
-test("normalizeEngineToolCalls applies the bounded source budget only before the first spawn", () => {
+test("normalizeEngineToolCalls does not add task-derived timeout after a prior spawn", () => {
   const taskPrompt = [
     "Evaluate a slow source with a bounded attempt.",
     "Continue the same source-check context after a timeout.",
@@ -193,7 +206,7 @@ test("normalizeEngineToolCalls applies the bounded source budget only before the
   assert.equal(normalized[0]?.input.timeout_seconds, undefined);
 });
 
-test("normalizeEngineToolCalls preserves the dedicated supplemental probe timeout budget", () => {
+test("normalizeEngineToolCalls does not inject a supplemental probe effect or timeout", () => {
   const taskPrompt = [
     "Continue the same slow-source source-check context after a timeout.",
     "Source: http://127.0.0.1:43123/slow",
@@ -226,12 +239,12 @@ test("normalizeEngineToolCalls preserves the dedicated supplemental probe timeou
   );
 
   assert.equal(normalized.length, 1);
-  assert.equal(normalized[0]?.name, "sessions_spawn");
-  assert.equal(normalized[0]?.input.agent_id, "browser");
-  assert.equal(normalized[0]?.input.timeout_seconds, 45);
+  assert.equal(normalized[0]?.name, "sessions_send");
+  assert.equal(normalized[0]?.input.session_key, "worker:explore:source-check");
+  assert.equal(normalized[0]?.input.timeout_seconds, undefined);
 });
 
-test("normalizeEngineToolCalls invokes PermissionPolicy at the two approval-gate positions", () => {
+test("normalizeEngineToolCalls does not delegate business rewrites to PermissionPolicy", () => {
   const calls: LLMToolCall[] = [
     { id: "call-1", name: "web_fetch", input: { url: "https://example.com" } },
   ];
@@ -261,7 +274,7 @@ test("normalizeEngineToolCalls invokes PermissionPolicy at the two approval-gate
 
   normalizeEngineToolCalls(calls, baseContext({ permissionPolicy }));
 
-  assert.deepEqual(seen, ["missing", "approval"]);
+  assert.deepEqual(seen, []);
 });
 
 test("normalizeEngineToolCalls does not mutate the input call array", () => {
@@ -275,7 +288,7 @@ test("normalizeEngineToolCalls does not mutate the input call array", () => {
   assert.equal(JSON.stringify(calls), before);
 });
 
-test("buildToolCallNormalizationContext resolves live continuation context and workers", () => {
+test("buildToolCallNormalizationContext projects handles without deriving a continuation", () => {
   const sessionKey = "worker:browser:task-abc123";
   const ctx = buildToolCallNormalizationContext({
     taskPrompt: [
@@ -312,7 +325,7 @@ test("buildToolCallNormalizationContext resolves live continuation context and w
   });
 
   assert.match(ctx.sessionContinuationContext, new RegExp(sessionKey));
-  assert.equal(ctx.sessionContinuationDirective?.sessionKey, sessionKey);
+  assert.equal(ctx.sessionContinuationDirective, null);
   assert.equal(ctx.sessionContinuationLookupDirective, null);
   assert.equal(ctx.browserAvailable, true);
   assert.equal(ctx.exploreAvailable, false);
@@ -350,7 +363,7 @@ test("buildToolCallNormalizationContext stops lookup rewrites after a successful
   assert.equal(ctx.sessionContinuationLookupDirective, null);
 });
 
-test("normalizeEngineToolCalls looks up the worker kind from a truncated continuation key", () => {
+test("normalizeEngineToolCalls does not replace a model proposal from task-text continuation hints", () => {
   const taskPrompt = [
     "Original user goal (verbatim):",
     "Evaluate a slow source with a bounded attempt.",
@@ -385,9 +398,9 @@ test("normalizeEngineToolCalls looks up the worker kind from a truncated continu
   );
 
   assert.equal(normalized.length, 1);
-  assert.equal(normalized[0]?.name, "sessions_list");
-  assert.equal(normalized[0]?.input.agent_id, "explore");
-  assert.deepEqual(normalized[0]?.input.kinds, ["explore"]);
+  assert.equal(normalized[0]?.name, "sessions_spawn");
+  assert.equal(normalized[0]?.input.agent_id, "browser");
+  assert.equal(normalized[0]?.input.task, "Retry the source with a different worker.");
 });
 
 test("applyEngineToolCallsHook normalizes before recovery-budget truncation", () => {

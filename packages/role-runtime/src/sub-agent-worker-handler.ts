@@ -22,7 +22,7 @@ import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
-import { isRunDeadlineExceeded } from "./run-deadline";
+import { isAttemptDeadlineExceeded } from "./run-deadline";
 import {
   buildArtifactToolDefinitions,
   SESSION_TOOL_NAMES,
@@ -205,7 +205,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
           payload: {
             mode: "llm_sub_agent",
             workerType: this.kind,
-            resumableReason: "run_deadline_exceeded",
+            resumableReason: "attempt_deadline_exceeded",
             ...(deadline.deadlineAt === null
               ? {}
               : { deadlineAt: deadline.deadlineAt }),
@@ -247,7 +247,7 @@ function readSubAgentDeadline(
   signalReason: unknown,
 ): { message: string; deadlineAt: number | null } | null {
   for (const candidate of [error, signalReason]) {
-    if (!isRunDeadlineExceeded(candidate) && !isWorkerDeadlineError(candidate)) {
+    if (!isAttemptDeadlineExceeded(candidate) && !isWorkerDeadlineError(candidate)) {
       continue;
     }
     const deadlineAt =
@@ -711,7 +711,7 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
             minimum: 1,
             maximum: MAX_BROWSER_OPEN_TIMEOUT_MS,
             description:
-              "Optional page-open timeout in milliseconds. Use an extended value for explicitly slow local/loopback diagnostics; defaults to the runtime browser open timeout.",
+              "Optional page-open timeout in milliseconds, capped by the runtime browser-open limit.",
           },
           screenshot: { type: "boolean", description: "Capture a screenshot after the page opens. Defaults to true; set false only when the parent explicitly does not need visual evidence." },
         },
@@ -825,7 +825,7 @@ function buildBrowserPrivateActionPlan(
       if (!url || !isHttpUrl(url)) {
         return { error: "browser_open requires an absolute http(s) url." };
       }
-      const timeoutMs = resolveBrowserOpenTimeoutMs(raw.timeout_ms, input.packet.taskPrompt, url);
+      const timeoutMs = resolveBrowserOpenTimeoutMs(raw.timeout_ms);
       const actions: BrowserTaskAction[] = [
         { kind: "open", url, ...(timeoutMs ? { timeoutMs } : {}) },
         { kind: "snapshot", note: requiredString(raw.note) ?? "after-open" },
@@ -1234,7 +1234,6 @@ async function runReadOnlyBrowserPlannerFallback(input: {
 
   let result: BrowserTaskResult;
   try {
-    const timeoutMs = resolveSlowLoopbackOpenTimeoutMs(input.input.packet.taskPrompt, url);
     result = await input.browserBridge.spawnSession({
       taskId: `${input.input.activation.handoff.taskId}:browser-planner-fallback`,
       threadId: input.input.activation.thread.threadId,
@@ -1243,7 +1242,7 @@ async function runReadOnlyBrowserPlannerFallback(input: {
         "Capture read-only page evidence from the delegated URL without interacting with account state.",
       ].join(" "),
       actions: [
-        { kind: "open", url, ...(timeoutMs ? { timeoutMs } : {}) },
+        { kind: "open", url },
         { kind: "snapshot", note: "planner-timeout-fallback" },
         { kind: "screenshot", label: "planner-timeout-fallback" },
       ],
@@ -2014,43 +2013,14 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
-function resolveBrowserOpenTimeoutMs(rawTimeoutMs: unknown, taskPrompt: string, url: string): number | null {
-  const slowLoopbackTimeoutMs = resolveSlowLoopbackOpenTimeoutMs(taskPrompt, url);
+function resolveBrowserOpenTimeoutMs(rawTimeoutMs: unknown): number | null {
   if (typeof rawTimeoutMs === "number" && Number.isFinite(rawTimeoutMs)) {
-    const requested = Math.min(Math.max(Math.floor(rawTimeoutMs), 1), MAX_BROWSER_OPEN_TIMEOUT_MS);
-    return slowLoopbackTimeoutMs ? Math.max(requested, slowLoopbackTimeoutMs) : requested;
+    return Math.min(
+      Math.max(Math.floor(rawTimeoutMs), 1),
+      MAX_BROWSER_OPEN_TIMEOUT_MS,
+    );
   }
-  return slowLoopbackTimeoutMs;
-}
-
-function resolveSlowLoopbackOpenTimeoutMs(taskPrompt: string, url: string): number | null {
-  if (!isLoopbackUrl(url)) {
-    return null;
-  }
-  if (isSupplementalLocalTimeoutProbeText(taskPrompt)) {
-    return null;
-  }
-  if (!isSlowDiagnosticText(taskPrompt) && !isSlowDiagnosticText(url)) {
-    return null;
-  }
-  return MAX_BROWSER_OPEN_TIMEOUT_MS;
-}
-
-function isSupplementalLocalTimeoutProbeText(value: string): boolean {
-  return /\bsupplemental local timeout probe\b/i.test(value);
-}
-
-function isSlowDiagnosticText(value: string): boolean {
-  return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(value);
-}
-
-function isLoopbackUrl(raw: string): boolean {
-  try {
-    const parsed = new URL(raw);
-    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
-  } catch {
-    return false;
-  }
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

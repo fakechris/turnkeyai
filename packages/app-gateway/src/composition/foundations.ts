@@ -56,6 +56,7 @@ import { FileBackedTeamRouteMap } from "@turnkeyai/team-runtime/file-backed-team
 import { InMemoryTeamEventBus } from "@turnkeyai/team-runtime/in-memory-team-event-bus";
 import { DefaultRecoveryDirector } from "@turnkeyai/team-runtime/recovery-director";
 import { DefaultRuntimeProgressRecorder } from "@turnkeyai/team-runtime/runtime-progress-recorder";
+import { ExplicitWorkflowRuntime } from "@turnkeyai/team-runtime/explicit-workflow-runtime";
 import { FileRoleScratchpadStore } from "@turnkeyai/team-store/context/file-role-scratchpad-store";
 import { FileSessionMemoryRefreshJobStore } from "@turnkeyai/team-store/context/file-session-memory-refresh-job-store";
 import { FileThreadJournalStore } from "@turnkeyai/team-store/context/file-thread-journal-store";
@@ -78,6 +79,8 @@ import { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/file-r
 import { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
 import { FileScheduledTaskStore } from "@turnkeyai/team-store/scheduled/file-scheduled-task-store";
 import { FileWorkerSessionStore } from "@turnkeyai/team-store/worker/file-worker-session-store";
+import { FileWorkerResultInboxStore } from "@turnkeyai/team-store/worker/file-worker-result-inbox-store";
+import { FileExplicitWorkflowStore } from "@turnkeyai/team-store/workflow/file-explicit-workflow-store";
 import { BrowserWorkerHandler } from "@turnkeyai/worker-runtime/browser-worker-handler";
 import { DefaultCapabilityDiscoveryService } from "@turnkeyai/worker-runtime/capability-discovery-service";
 import { ExploreWorkerHandler } from "@turnkeyai/worker-runtime/explore-worker-handler";
@@ -142,6 +145,9 @@ export interface DaemonFoundations {
   scheduledTaskStore: FileScheduledTaskStore;
   validationOpsRunStore: FileValidationOpsRunStore;
   workerSessionStore: FileWorkerSessionStore;
+  workerResultInboxStore: FileWorkerResultInboxStore;
+  explicitWorkflowStore: FileExplicitWorkflowStore;
+  explicitWorkflowRuntime: ExplicitWorkflowRuntime;
 
   // Builders and policies
   summaryBuilder: SummaryBuilder;
@@ -259,6 +265,17 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
   });
   const workerSessionStore = new FileWorkerSessionStore({
     rootDir: path.join(dataDir, "worker-sessions"),
+  });
+  const workerResultInboxStore = new FileWorkerResultInboxStore({
+    rootDir: path.join(dataDir, "worker-result-inbox"),
+  });
+  const explicitWorkflowStore = new FileExplicitWorkflowStore({
+    rootDir: path.join(dataDir, "explicit-workflows"),
+  });
+  const explicitWorkflowRuntime = new ExplicitWorkflowRuntime({
+    workflowStore: explicitWorkflowStore,
+    workerResultInboxStore,
+    clock: inputs.clock,
   });
 
   // --- Builders ----------------------------------------------------------
@@ -477,6 +494,9 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     scheduledTaskStore,
     validationOpsRunStore,
     workerSessionStore,
+    workerResultInboxStore,
+    explicitWorkflowStore,
+    explicitWorkflowRuntime,
     summaryBuilder,
     relayBriefBuilder,
     recoveryDirector,

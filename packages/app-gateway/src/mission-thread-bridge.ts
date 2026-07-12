@@ -43,6 +43,8 @@ import type {
   TeamMessageStore,
   WorkerSessionRecord,
   WorkerSessionStore,
+  WorkerResultInboxStore,
+  WorkerResultNotification,
 } from "@turnkeyai/core-types/team";
 import {
   evaluateMissionCompletion,
@@ -57,7 +59,16 @@ export interface MissionThreadBridgeOptions {
   // into mocks for no benefit.
   missionStore: MissionThreadBridgeMissionStore;
   roleRunStore?: Pick<RoleRunStore, "listByThread">;
-  workerSessionStore?: Pick<WorkerSessionStore, "list" | "listByThread">;
+  workerSessionStore?: Pick<WorkerSessionStore, "list" | "listByThread"> &
+    Partial<Pick<WorkerSessionStore, "get">>;
+  workerResultInboxStore?: Pick<
+    WorkerResultInboxStore,
+    | "putNotification"
+    | "listNotifications"
+    | "consumeNotification"
+    | "satisfyWaitingJoins"
+    | "abandonExpiredJoins"
+  >;
   teamMessageStore: Pick<TeamMessageStore, "list">;
   activityStore: Pick<ActivityEventStore, "append" | "listByMission" | "replaceAll">;
   artifactStore?: Pick<ArtifactStore, "put" | "listByMission">;
@@ -111,6 +122,12 @@ export interface MissionThreadBridge {
    * polling every mission.
    */
   tickThread?(threadId: string): Promise<Array<{ missionId: string; appended: number }>>;
+  prepareUserMessage?(missionId: string, content: string): Promise<PreparedMissionUserMessage>;
+  acknowledgePreparedUserMessage?(input: {
+    missionId: string;
+    deliveryId: string;
+    notificationIds: readonly string[];
+  }): Promise<void>;
   /**
    * Begin the background interval. Returns an unsubscribe handle.
    * Safe to call multiple times — first call wins; subsequent calls
@@ -118,6 +135,12 @@ export interface MissionThreadBridge {
    * re-composition.
    */
   start(intervalMs?: number): () => void;
+}
+
+export interface PreparedMissionUserMessage {
+  content: string;
+  deliveryId?: string;
+  notificationIds: string[];
 }
 
 export function createMissionThreadBridge(
@@ -164,7 +187,11 @@ export function createMissionThreadBridge(
       });
       return 0;
     }
-    if (messages.length === 0) return 0;
+    if (messages.length === 0) {
+      await abandonExpiredMissionJoins(mission);
+      return 0;
+    }
+    await reconcileInboxConsumption(mission, messages);
 
     let existing: ActivityEvent[];
     try {
@@ -290,6 +317,7 @@ export function createMissionThreadBridge(
       workerSessions,
       roleRuns,
     );
+    await abandonExpiredMissionJoins(mission);
     await reconcileMissionLifecycle(
       mission,
       threadId,
@@ -537,6 +565,11 @@ export function createMissionThreadBridge(
     if (completedBatch.length === 0) return;
 
     const deliveryId = workerCompletionBatchDeliveryId(mission.id, threadId, completedBatch);
+    if (options.workerResultInboxStore) {
+      if (!(await enqueueLateWorkerCompletions(mission, completedBatch))) return;
+      await appendLateWorkerCompletionEvent(mission.id, threadId, completedBatch, deliveryId);
+      return;
+    }
     if (
       options.postLateWorkerCompletionFollowUp &&
       !(await postLateWorkerCompletionFollowUp(
@@ -552,6 +585,67 @@ export function createMissionThreadBridge(
       return;
     }
     await reopenMissionForLateWorkerCompletion(mission);
+  }
+
+  async function enqueueLateWorkerCompletions(
+    mission: Mission,
+    workerSessions: readonly WorkerSessionRecord[],
+  ): Promise<boolean> {
+    const store = options.workerResultInboxStore!;
+    try {
+      for (const workerSession of workerSessions) {
+        const notification = buildWorkerResultNotification(mission, workerSession);
+        await store.putNotification(notification);
+        await store.satisfyWaitingJoins({
+          sourceScopeId: notification.sourceScopeId,
+          notificationId: notification.notificationId,
+          resolvedAt: notification.createdAt,
+        });
+      }
+      return true;
+    } catch (error) {
+      logger.warn("late worker completion inbox enqueue failed", {
+        missionId: mission.id,
+        workerRunKeys: workerSessions.map((workerSession) => workerSession.workerRunKey),
+        error: errorMessage(error),
+      });
+      return false;
+    }
+  }
+
+  async function abandonExpiredMissionJoins(mission: Mission): Promise<void> {
+    if (!options.workerResultInboxStore) return;
+    try {
+      await options.workerResultInboxStore.abandonExpiredJoins({
+        now: options.clock.now(),
+        ownerScopeId: missionScopeId(mission.id),
+      });
+    } catch (error) {
+      logger.warn("worker result join expiry reconciliation failed", {
+        missionId: mission.id,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  function buildWorkerResultNotification(
+    mission: Mission,
+    workerSession: WorkerSessionRecord,
+  ): WorkerResultNotification {
+    const version = workerSession.state.updatedAt;
+    const digest = createHash("sha256")
+      .update(`${mission.id}\n${workerSession.workerRunKey}\n${version}`)
+      .digest("hex")
+      .slice(0, 24);
+    return {
+      notificationId: `worker-result:${digest}`,
+      ownerScopeId: missionScopeId(mission.id),
+      sourceScopeId: workerSession.workerRunKey,
+      sourceVersion: version,
+      resultRef: `worker-session:${workerSession.workerRunKey}`,
+      state: "pending",
+      createdAt: version,
+    };
   }
 
   function isActiveRoleRun(run: RoleRunState): boolean {
@@ -1158,6 +1252,114 @@ export function createMissionThreadBridge(
     return mirror(mission, mission.threadId);
   }
 
+  async function prepareUserMessage(
+    missionId: string,
+    content: string,
+  ): Promise<PreparedMissionUserMessage> {
+    if (
+      !options.workerResultInboxStore ||
+      !options.workerSessionStore ||
+      !options.workerSessionStore.get
+    ) {
+      return { content, notificationIds: [] };
+    }
+    let notifications: WorkerResultNotification[];
+    try {
+      notifications = await options.workerResultInboxStore.listNotifications({
+        ownerScopeId: missionScopeId(missionId),
+        state: "pending",
+      });
+    } catch (error) {
+      logger.warn("worker result inbox projection failed", {
+        missionId,
+        error: errorMessage(error),
+      });
+      return { content, notificationIds: [] };
+    }
+    if (notifications.length === 0) return { content, notificationIds: [] };
+
+    const summaries: string[] = [];
+    for (const notification of notifications) {
+      let session: WorkerSessionRecord | null = null;
+      try {
+        session = await options.workerSessionStore.get(notification.sourceScopeId);
+      } catch (error) {
+        logger.warn("worker result payload lookup failed", {
+          missionId,
+          notificationId: notification.notificationId,
+          error: errorMessage(error),
+        });
+      }
+      summaries.push(
+        `${notification.notificationId}: ${session ? summarizeLateWorkerCompletion(session) : `result available at ${notification.resultRef}`}`,
+      );
+    }
+    const deliveryId = `worker-inbox-delivery:${options.newEventId()}`;
+    const marker = JSON.stringify({
+      deliveryId,
+      notificationIds: notifications.map((notification) => notification.notificationId),
+    });
+    return {
+      content: [
+        content,
+        "",
+        `[turnkeyai.worker_results ${marker}]`,
+        "Durable background results available for this user turn:",
+        ...summaries,
+      ].join("\n"),
+      deliveryId,
+      notificationIds: notifications.map((notification) => notification.notificationId),
+    };
+  }
+
+  async function acknowledgePreparedUserMessage(input: {
+    missionId: string;
+    deliveryId: string;
+    notificationIds: readonly string[];
+  }): Promise<void> {
+    const store = options.workerResultInboxStore;
+    if (!store || input.notificationIds.length === 0) return;
+    const pending = await store.listNotifications({
+      ownerScopeId: missionScopeId(input.missionId),
+      state: "pending",
+    });
+    const allowed = new Set(pending.map((notification) => notification.notificationId));
+    for (const notificationId of input.notificationIds) {
+      if (!allowed.has(notificationId)) continue;
+      await store.consumeNotification({
+        notificationId,
+        consumedAt: options.clock.now(),
+        consumedByMessageId: durableMessageIdForWorkerDelivery(input.deliveryId),
+      });
+    }
+  }
+
+  async function reconcileInboxConsumption(
+    mission: Mission,
+    messages: readonly TeamMessage[],
+  ): Promise<void> {
+    if (!options.workerResultInboxStore) return;
+    for (const message of messages) {
+      if (message.role !== "user") continue;
+      for (const delivery of parseWorkerResultDeliveries(message.content)) {
+        if (message.id !== durableMessageIdForWorkerDelivery(delivery.deliveryId)) continue;
+        try {
+          await acknowledgePreparedUserMessage({
+            missionId: mission.id,
+            deliveryId: delivery.deliveryId,
+            notificationIds: delivery.notificationIds,
+          });
+        } catch (error) {
+          logger.warn("worker result inbox acknowledgement reconciliation failed", {
+            missionId: mission.id,
+            messageId: message.id,
+            error: errorMessage(error),
+          });
+        }
+      }
+    }
+  }
+
   async function tickThread(threadId: string): Promise<Array<{ missionId: string; appended: number }>> {
     let missions: Mission[];
     try {
@@ -1235,7 +1437,44 @@ export function createMissionThreadBridge(
     };
   }
 
-  return { tickAll, tickMission, tickThread, start };
+  return {
+    tickAll,
+    tickMission,
+    tickThread,
+    prepareUserMessage,
+    acknowledgePreparedUserMessage,
+    start,
+  };
+}
+
+function missionScopeId(missionId: string): string {
+  return `mission:${missionId}`;
+}
+
+function durableMessageIdForWorkerDelivery(deliveryId: string): string {
+  return `message:idempotent:${deliveryId}`;
+}
+
+function parseWorkerResultDeliveries(content: string): Array<{
+  deliveryId: string;
+  notificationIds: string[];
+}> {
+  const deliveries: Array<{ deliveryId: string; notificationIds: string[] }> = [];
+  for (const match of content.matchAll(/\[turnkeyai\.worker_results (\{[^\n]+\})\]/g)) {
+    const parsed = safeJsonParse(match[1] ?? "");
+    if (!isRecord(parsed) || typeof parsed["deliveryId"] !== "string") continue;
+    const notificationIds = Array.isArray(parsed["notificationIds"])
+      ? parsed["notificationIds"].filter(
+          (value): value is string => typeof value === "string" && value.length > 0,
+        )
+      : [];
+    if (notificationIds.length === 0) continue;
+    deliveries.push({
+      deliveryId: parsed["deliveryId"],
+      notificationIds,
+    });
+  }
+  return deliveries;
 }
 
 const DEFAULT_MAX_MISSIONS_PER_TICK = 50;

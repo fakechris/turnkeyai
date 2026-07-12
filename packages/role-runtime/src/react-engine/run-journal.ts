@@ -12,6 +12,7 @@ import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import { buildHistoryProtocolUnits } from "../tool-history-pruning";
 import {
   RUN_EFFECT_INDETERMINATE_PROTOCOL,
   RunEffectLedger,
@@ -99,6 +100,7 @@ export function createRunJournal(input: {
     state: RunJournalState,
     now: number,
   ): Promise<void> => {
+    assertProtocolSafeJournalState(state);
     latestState = cloneState(state);
     effectLedger.releaseDurableResults(readTranscriptResultIds(state.messages));
     const stored: StoredRunJournal = {
@@ -345,7 +347,18 @@ function readStoredRunJournal(
   ) {
     return null;
   }
+  if (!messagesAreProtocolSafe(value["messages"] as LLMMessage[])) return null;
   return value as unknown as StoredRunJournal;
+}
+
+function assertProtocolSafeJournalState(state: RunJournalState): void {
+  if (!messagesAreProtocolSafe(state.messages)) {
+    throw new Error("run journal checkpoint contains an incomplete tool protocol unit");
+  }
+}
+
+function messagesAreProtocolSafe(messages: LLMMessage[]): boolean {
+  return buildHistoryProtocolUnits(messages).every((unit) => unit.protocolSafe);
 }
 
 async function appendInterruptedNativeRound(input: {

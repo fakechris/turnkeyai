@@ -54,6 +54,13 @@ import type {
 } from "./types";
 
 export const ENGINE_CLOSEOUT_POLICY_ORDER = [
+  "operator_cancelled",
+  "wall_clock_budget",
+  "round_limit",
+  "model_error",
+] as const;
+
+export const RETIRED_CLOSEOUT_POLICY_CHARACTERIZATION_ORDER = [
   "recovery_tool_budget",
   "operator_cancelled",
   "pseudo_tool_call",
@@ -68,7 +75,8 @@ export const ENGINE_CLOSEOUT_POLICY_ORDER = [
   "model_error",
 ] as const;
 
-export type EngineCloseoutPolicyId = (typeof ENGINE_CLOSEOUT_POLICY_ORDER)[number];
+export type EngineCloseoutPolicyId =
+  (typeof RETIRED_CLOSEOUT_POLICY_CHARACTERIZATION_ORDER)[number];
 
 export type CloseoutPolicyPhase =
   | "pending_calls"
@@ -519,9 +527,12 @@ export interface CloseoutPolicyRegistry {
 }
 
 class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
+  constructor(private readonly automaticProductCloseoutsEnabled: boolean) {}
+
   evaluateRecoveryToolBudget(
     input: RecoveryToolBudgetCloseoutInput,
   ): RecoveryToolBudgetCloseoutDecision | null {
+    if (!this.automaticProductCloseoutsEnabled) return null;
     const budget = input.recoveryToolBudget;
     if (!budget || input.usedToolCalls < budget.maxToolCalls) {
       return null;
@@ -557,6 +568,7 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
     input: RemainingPendingCallsCloseoutInput,
   ): RemainingPendingCallsCloseoutDecision | null {
     if (
+      this.automaticProductCloseoutsEnabled &&
       input.pendingToolCallCount > 0 &&
       shouldCloseoutCancelledSessionWithoutContinuation({
         taskPrompt: input.taskPrompt,
@@ -583,6 +595,7 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
       };
     }
     if (
+      this.automaticProductCloseoutsEnabled &&
       input.pendingToolCallCount === 0 &&
       !input.pendingContinuation &&
       containsAnyToolCallForm({ text: input.lastText })
@@ -608,7 +621,6 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
     const wallClockBudget = input.wallClockBudget;
     if (
       wallClockBudget &&
-      !wallClockBudget.requiredTimeoutContinuationPastWallClock &&
       input.roundCount > 0 &&
       isPositiveFiniteBudgetValue(wallClockBudget.maxWallClockMs) &&
       wallClockBudget.readElapsedMs() >= wallClockBudget.maxWallClockMs
@@ -634,6 +646,7 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
         closeout: snapshot.closeout,
       };
     }
+    if (!this.automaticProductCloseoutsEnabled) return null;
     const repeatedFailure = findRepeatedFailedToolCall(
       input.pendingCalls,
       input.toolTrace,
@@ -717,6 +730,7 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
   evaluatePostExecute(
     input: PostExecuteCloseoutInput,
   ): PostExecuteCloseoutDecision | null {
+    if (!this.automaticProductCloseoutsEnabled) return null;
     if (input.completedSession) {
       return {
         kind: "closeout",
@@ -866,9 +880,6 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
           input.executionBudget.buildPendingCallsWallClockBudgetCloseoutSignal({
             pendingCalls: wallClockInput.pendingCalls,
             pendingContinuation: wallClockInput.pendingContinuation,
-            taskPrompt: input.taskPrompt,
-            messages: input.messages,
-            toolTrace: input.toolTrace,
             maxRounds: input.maxRounds,
             usedToolCalls,
             roundCount,
@@ -1005,7 +1016,11 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
       };
     }
     const completedSession = input.completedSession;
-    if (input.reason === "completed_sub_agent_final" && completedSession) {
+    if (
+      this.automaticProductCloseoutsEnabled &&
+      input.reason === "completed_sub_agent_final" &&
+      completedSession
+    ) {
       const preserveRecoveredTimeoutCloseout =
         shouldPreserveRecoveredTimeoutCloseout({
           taskPrompt: input.taskPrompt,
@@ -1067,7 +1082,11 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
       };
     }
     const timeoutSignal = input.timeoutSignal;
-    if (input.reason === "sub_agent_timeout" && timeoutSignal) {
+    if (
+      this.automaticProductCloseoutsEnabled &&
+      input.reason === "sub_agent_timeout" &&
+      timeoutSignal
+    ) {
       return {
         kind: "closeout",
         policyId: "sub_agent_timeout",
@@ -1168,5 +1187,10 @@ function isPositiveFiniteBudgetValue(value: number | undefined): value is number
 }
 
 export function createCloseoutPolicyRegistry(): CloseoutPolicyRegistry {
-  return new DefaultCloseoutPolicyRegistry();
+  return new DefaultCloseoutPolicyRegistry(false);
+}
+
+/** Test-only characterization of retired automatic product closeouts. */
+export function createCloseoutPolicyCharacterizationRegistry(): CloseoutPolicyRegistry {
+  return new DefaultCloseoutPolicyRegistry(true);
 }

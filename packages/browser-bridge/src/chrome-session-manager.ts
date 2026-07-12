@@ -76,11 +76,8 @@ function resolveBrowserOpenTimeoutMs(timeoutMs: number | undefined): number {
   return Math.min(Math.max(Math.floor(timeoutMs), 1), MAX_BROWSER_OPEN_TIMEOUT_MS);
 }
 
-function resolveBrowserOpenTargetTimeoutMs(url: string, timeoutMs: number | undefined): number {
-  if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs)) {
-    return resolveBrowserOpenTimeoutMs(timeoutMs);
-  }
-  return isSlowLoopbackBrowserUrl(url) ? MAX_BROWSER_OPEN_TIMEOUT_MS : DEFAULT_BROWSER_OPEN_TIMEOUT_MS;
+function resolveBrowserOpenTargetTimeoutMs(_url: string, timeoutMs: number | undefined): number {
+  return resolveBrowserOpenTimeoutMs(timeoutMs);
 }
 
 interface LocalCdpEvent {
@@ -1705,18 +1702,6 @@ export class ChromeSessionManager {
       fileName: sanitizeUploadFileName(metadataFileName || path.basename(record.path)),
       sizeBytes: stats.size,
     };
-  }
-}
-
-function isSlowLoopbackBrowserUrl(raw: string): boolean {
-  try {
-    const url = new URL(raw);
-    if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost" && url.hostname !== "::1") {
-      return false;
-    }
-    return /\b(?:slow[-\s]?source|slow[-\s]?fixture|bounded|does not finish|doesn't finish|timeout|wait boundedly|loading in time)\b/i.test(raw);
-  } catch {
-    return false;
   }
 }
 

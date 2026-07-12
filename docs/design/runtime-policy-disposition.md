@@ -1,16 +1,21 @@
 # Runtime Policy Disposition
 
-Status: design-review inventory. This table prevents the execution-semantics
+Status: production authority migration complete. This table prevents the execution-semantics
 migration from silently deleting hard-won behavior or preserving business
 recovery inside the kernel.
 
-The inventory is derived from all active policy families on `origin/main` at
-`a2dec0b0`: 20 repair ids, 4 continuation ids, 12 closeout ids, 1 permission
-suppression id, and 15 tool-call normalization steps. The machine-readable
+The inventory preserves the policy families inherited from `origin/main` and
+the clock/retry slice: 20 repair ids, 4 continuation ids, 12 closeout ids, 1
+permission suppression id, and 13 remaining tool-call normalization steps. The machine-readable
 source is [runtime-policy-inventory.json](./runtime-policy-inventory.json), and
-`npm run test:runtime-policy-disposition` verifies both source parity and a
-documented disposition for every entry. A disposition describes the target
-owner, not an instruction to change production code in this branch.
+`npm run test:runtime-policy-disposition` verifies original-row parity, the
+exact production authority set, a target owner, and executable deterministic
+evidence for every entry.
+
+Production now retains only syntactic/session-handle normalization and typed
+kernel terminal outcomes. Retired automatic actions remain available solely as
+test characterization; a source guard forbids enabling that mode from any
+other production composition point.
 
 ## Disposition Rules
 
@@ -112,6 +117,13 @@ move to model guidance or an explicit workflow.
 | `sessionContinuationDirectiveRepeat` | Repeated business-effect rewrite | Retire with `sessionContinuationDirective`; workflow transition is applied once by id. |
 | `approvalGatedBrowserSpawn` | Safety rewrite from browser spawn to `permission_query` | Kernel suspends or rejects the unauthorized spawn with typed permission state; it must not replace the proposal. |
 | `limitIndependentEvidenceSpawn` | Product policy mixed with resource safety | Generic concurrency/tool-call caps remain kernel constraints; requested evidence topology belongs to workflow/model guidance. |
+
+Migration update: `boundedSourceTimeoutBudget` and
+`supplementalLocalTimeoutProbe` left the active normalizer/continuation path in
+the clock/retry slice. Numeric attempt and operation bounds now compose
+monotonically; the runtime no longer injects a supplemental probe. Their helper
+implementations may remain temporarily in the fallback pool but have no active
+execution authority.
 
 ## Migration Safety
 

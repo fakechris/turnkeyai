@@ -1228,7 +1228,12 @@ describe("mission-routes", () => {
   // PR K3.5 — mission lifecycle (create → run → follow-up).
   describe("POST /missions + /missions/:id/messages (K3.5)", () => {
     function buildOrchestrator() {
-      const posts: Array<{ threadId: string; content: string }> = [];
+      const posts: Array<{
+        threadId: string;
+        content: string;
+        idempotencyKey?: string;
+        continuation?: { mode: "resume-existing"; workerRunKey: string };
+      }> = [];
       const ticks: string[] = [];
       const spawns: Array<{ title: string; desc: string; owner: string; mode: Mission["mode"] }> = [];
       let nextThread = 0;
@@ -1242,7 +1247,12 @@ describe("mission-routes", () => {
             roleIds: ["role-lead", "role-analyst"],
           };
         },
-        async postUserMessage(input: { threadId: string; content: string }) {
+        async postUserMessage(input: {
+          threadId: string;
+          content: string;
+          idempotencyKey?: string;
+          continuation?: { mode: "resume-existing"; workerRunKey: string };
+        }) {
           posts.push(input);
         },
         threadBridge: {
@@ -1363,11 +1373,11 @@ describe("mission-routes", () => {
       }
     });
 
-    it("approval decisions resume linked mission threads", async () => {
+    it("approval decisions apply permission without manufacturing a follow-up", async () => {
       const t = tmpDir();
       try {
         const deps = composeMissionDeps({ dataDir: t.dir, clock });
-        const { orchestrator, posts, ticks } = buildOrchestrator();
+        const { orchestrator, posts } = buildOrchestrator();
         const { res, getStatus, getJson } = createResponse();
         await handleMissionRoutes({
           req: createRequest({
@@ -1449,17 +1459,7 @@ describe("mission-routes", () => {
         });
         assert.equal(decisionResponse.getStatus(), 200);
         assert.deepEqual(applied, [{ threadId: mission.threadId!, approvalId: "ap.linked-browser-submit" }]);
-        await waitUntil("approval continuation post", () => posts.length === 2);
-        assert.equal(posts[1]?.threadId, mission.threadId);
-        assert.match(posts[1]?.content ?? "", /ap\.linked-browser-submit/);
-        assert.match(posts[1]?.content ?? "", /already recorded permission\.result and permission\.applied/);
-        assert.match(posts[1]?.content ?? "", /runtime permission cache is already applied/);
-        assert.match(posts[1]?.content ?? "", /Do not call permission tools again/);
-        assert.match(posts[1]?.content ?? "", /sessions_spawn/);
-        assert.match(posts[1]?.content ?? "", /agent_id="browser"/);
-        assert.match(posts[1]?.content ?? "", /do not finalize with a pending-approval summary/i);
-        assert.doesNotMatch(posts[1]?.content ?? "", /permission_applied/);
-        await waitUntil("approval continuation tick", () => ticks.filter((id) => id === mission.id).length >= 2);
+        assert.equal(posts.length, 1);
         const resumed = await deps.missionStore.get(mission.id);
         assert.equal(resumed?.status, "working");
       } finally {
@@ -1522,14 +1522,7 @@ describe("mission-routes", () => {
           deps: { ...deps, orchestrator },
         });
         assert.equal(decisionResponse.getStatus(), 200);
-        await waitUntil("denied approval continuation post", () => posts.length === 2);
-        const content = posts[1]?.content ?? "";
-        assert.match(content, /permission_result/);
-        assert.match(content, /safe closeout/);
-        assert.match(content, /safe fallback or next action/);
-        assert.match(content, /unverified/);
-        assert.match(content, /no browser submission or side effect ran/);
-        assert.match(content, /do not call permission_applied/);
+        assert.equal(posts.length, 1);
       } finally {
         t.cleanup();
       }
@@ -1612,9 +1605,7 @@ describe("mission-routes", () => {
           },
         });
         assert.equal(decisionResponse.getStatus(), 200);
-        await waitUntil("approval fallback continuation post", () => posts.length === 2);
-        assert.match(posts[1]?.content ?? "", /permission_result/);
-        assert.match(posts[1]?.content ?? "", /permission_applied/);
+        assert.equal(posts.length, 1);
       } finally {
         t.cleanup();
       }
@@ -1828,7 +1819,13 @@ describe("mission-routes", () => {
           req: createRequest({
             method: "POST",
             url: `/missions/${created.id}/messages`,
-            body: { content: "继续看 macOS 平台支持" },
+            body: {
+              content: "继续看 macOS 平台支持",
+              continuation: {
+                mode: "resume-existing",
+                workerRunKey: "worker:browser:task:prior",
+              },
+            },
           }),
           res,
           url: new URL(`http://127.0.0.1/missions/${created.id}/messages`),
@@ -1841,7 +1838,88 @@ describe("mission-routes", () => {
         assert.equal(posts.length, 2);
         assert.equal(posts[1]!.threadId, created.threadId);
         assert.equal(posts[1]!.content, "继续看 macOS 平台支持");
+        assert.deepEqual(posts[1]!.continuation, {
+          mode: "resume-existing",
+          workerRunKey: "worker:browser:task:prior",
+        });
         assert.ok(ticks.every((id) => id === created.id));
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("delivers pending worker results on the next user turn before acknowledging them", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const base = buildOrchestrator();
+        const deliveryOrder: string[] = [];
+        const acknowledgements: Array<{
+          missionId: string;
+          deliveryId: string;
+          notificationIds: readonly string[];
+        }> = [];
+        const orchestrator = {
+          ...base.orchestrator,
+          async postUserMessage(input: {
+            threadId: string;
+            content: string;
+            idempotencyKey?: string;
+          }) {
+            deliveryOrder.push("post");
+            await base.orchestrator.postUserMessage(input);
+          },
+          threadBridge: {
+            ...base.orchestrator.threadBridge,
+            async prepareUserMessage(missionId: string, content: string) {
+              deliveryOrder.push("prepare");
+              return {
+                content: `${content}\n\n[durable worker result]`,
+                deliveryId: "delivery:1",
+                notificationIds: ["notification:1"],
+              };
+            },
+            async acknowledgePreparedUserMessage(input: {
+              missionId: string;
+              deliveryId: string;
+              notificationIds: readonly string[];
+            }) {
+              deliveryOrder.push("acknowledge");
+              acknowledgements.push(input);
+            },
+          },
+        };
+        const createResp = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions", body: { title: "test" } }),
+          res: createResp.res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        const created = createResp.getJson() as { id: string; threadId: string };
+        await flushMicrotasks();
+
+        const followUpResp = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: `/missions/${created.id}/messages`,
+            body: { content: "continue" },
+          }),
+          res: followUpResp.res,
+          url: new URL(`http://127.0.0.1/missions/${created.id}/messages`),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(followUpResp.getStatus(), 202);
+        await waitUntil("worker result acknowledgement", () => acknowledgements.length === 1);
+        assert.equal(base.posts[1]?.content, "continue\n\n[durable worker result]");
+        assert.equal(base.posts[1]?.idempotencyKey, "delivery:1");
+        assert.deepEqual(acknowledgements, [{
+          missionId: created.id,
+          deliveryId: "delivery:1",
+          notificationIds: ["notification:1"],
+        }]);
+        assert.deepEqual(deliveryOrder.slice(-3), ["prepare", "post", "acknowledge"]);
       } finally {
         t.cleanup();
       }
