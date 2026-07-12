@@ -1,16 +1,16 @@
 # Runtime Policy Migration Product Decision
 
-Status: **PENDING PRODUCT-OWNER SIGNATURE**.
+Status: **SIGNED - OPTION A**.
 
 This is not an engineering inference. Migrating the current automatic repair,
 continuation, and synthesis actions changes the product's quality contract,
 especially for models that do not reliably recover or self-correct without
 runtime intervention.
 
-No policy-action row in
-[Runtime Policy Disposition](./runtime-policy-disposition.md) may migrate while
-this decision is pending. Kernel safety, effect-ledger, clock, persistence, and
-workflow-runtime work may proceed independently.
+The product owner selected Option A. Policy-action rows may migrate only after
+their replacement mechanism and deterministic tests are ready; quality
+regressions may hold a release or create model/workflow work, but they do not
+authorize restoring scenario-specific kernel policy.
 
 ## Decision Being Made
 
@@ -51,11 +51,12 @@ threshold.
 ## Signature
 
 ```text
-Selected option: PENDING (A or B)
-Product owner: PENDING
-Decision date: PENDING
-Notes: PENDING
+Selected option: A - Accept The Authority Shift
+Product owner: Chris
+Decision date: 2026-07-12
+Notes: Confirmed in the Codex task. Runtime semantic safety remains the hard
+       contract; natural-task quality is measured and improved outside kernel
+       authority.
 ```
 
-The signed decision becomes part of the migration acceptance contract. Until
-then, policy migration remains frozen by design.
+This signed decision is part of the migration acceptance contract.

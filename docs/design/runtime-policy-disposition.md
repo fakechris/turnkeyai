@@ -127,7 +127,8 @@ Each production migration must cite one row, add a deterministic mechanism
 test, and keep the old evaluator signal until fixed-version model measurements
 show the impact. No row authorizes fixture-specific replacements.
 
-Policy-action migration is frozen until
-[Runtime Policy Migration Product Decision](./runtime-policy-migration-product-decision.md)
-is signed. Golden trace coverage is retired row by row only after that row's
-replacement mechanism and measurement are accepted; it is not removed in bulk.
+Product Option A is signed in
+[Runtime Policy Migration Product Decision](./runtime-policy-migration-product-decision.md).
+Policy-action migration still requires one reviewed row per slice and its
+replacement mechanism. Golden trace coverage is retired row by row only after
+that row's replacement and measurement are accepted; it is not removed in bulk.

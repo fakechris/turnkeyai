@@ -68,13 +68,14 @@ than rebuilding them:
    `explicit workflow`.
 6. **Validate transcript compaction.** Prove complete tool protocol units survive
    compaction and torn journal frames are ignored.
-7. **Migrate current policies using the disposition table.** This step is frozen
-   until the product owner signs
+7. **Migrate current policies using the disposition table.** Product Option A is
+   signed in
    [Runtime Policy Migration Product Decision](./runtime-policy-migration-product-decision.md).
-   After signature, migrate one row per reviewed slice: hard safety to the
-   kernel, mechanical recovery to transcript/adapters, product continuation to
-   explicit workflows, and answer quality to observers. Retire the matching
-   golden trace segment only when that row lands.
+   Migrate one row per reviewed slice: hard safety to the kernel, mechanical
+   recovery to transcript/adapters, product continuation to explicit workflows,
+   and answer quality to observers. Quality regression may hold release or
+   create model/workflow work, but cannot restore scenario-specific kernel
+   policy. Retire the matching golden trace segment only when that row lands.
 8. **Measure fixed versions.** Run deterministic gates, simulations, then real
    models without editing code inside a batch. Report distributions and failure
    buckets; create separate product or model-compatibility work when needed.
