@@ -2,11 +2,11 @@
 
 Date: 2026-07-12
 
-Branch: `codex/v2-production-migration`
+Merged PR: `#531` (`codex/v2-production-migration`)
 
 Measured runtime commit: `27ef59e6`
 
-Push status: not pushed
+Merge commit: `df8e5d1bd6db9bcc7c7a71ee482e4485a3ba7675`
 
 ## Closure Decision
 
