@@ -1,36 +1,22 @@
 # Execution Simulation Tutorial
 
-This tutorial explains how to change the Agent runtime without using a real LLM
-as a debugger and without adding scenario-specific production rules.
+This tutorial explains how to investigate Agent runtime failures without using
+a real LLM as a debugger or adding scenario-specific production rules.
 
 Read [Agent Execution Semantics](./agent-execution-semantics.md) first. The
-simulator is a reference model for those semantics, not a replacement runtime.
+simulator is executable design evidence for represented state, not a production
+runtime and not a formal proof.
 
-## The Rule
+## Start With A Typed Counterexample
 
-Every runtime problem starts as a deterministic counterexample:
+Every runtime problem starts as:
 
 ```text
-model behavior + tool behavior + timing + ownership + crash point
+model events + tool events + time events + ownership + persistence boundary
 ```
 
-Do not start with a prompt, provider, vendor name, fixture value, or expected
-English phrase. Those belong to model-quality measurement.
-
-## Run the Reference Simulator
-
-```bash
-npm run test:execution-semantics-sim
-```
-
-The simulator lives in:
-
-- `scripts/execution-semantics-sim.ts`
-- `scripts/execution-semantics-sim.test.ts`
-
-It has no production-runtime imports and makes no network calls.
-
-## Describe Behavior, Not a Scenario
+Do not begin with a provider name, vendor name, fixture value, expected English
+phrase, or quality score. Those describe model outcomes, not runtime semantics.
 
 Bad reproduction:
 
@@ -41,214 +27,244 @@ MiniMax failed the slow-source release-risk prompt.
 Useful reproduction:
 
 ```text
-1. Model proposes one child operation with explicit timeout 25s.
-2. The child has not completed when foreground wait expires.
-3. Parent wants to end the turn and preserve a task handle.
-4. Child completes after the parent result is delivered.
-5. Process crashes before the completion notification is consumed.
+1. An effect intent is durable.
+2. Dispatch reaches an external tool.
+3. The process crashes before the receipt is durable.
+4. The provider cannot query the stable idempotency key.
+5. Restart must not dispatch the effect again.
 ```
 
-This trace applies to any model, tool, task wording, and latency distribution.
+## Run The Reference Simulator
 
-## Map the Trace to the Reference Model
+```bash
+npm run test:execution-semantics-sim
+```
+
+The simulator has no production-runtime imports and makes no network calls:
+
+- `scripts/execution-semantics-sim.ts`
+- `scripts/execution-semantics-sim.test.ts`
+
+## Example: Ambiguous Effect Crash
+
+```ts
+const runtime = new ReferenceRuntime();
+
+runtime.admitEffect({
+  effectId: "publish-release-42",
+  signature: "publish_release:{releaseId:42}",
+  scopeId: "publish-operation",
+});
+runtime.startEffect("publish-release-42");
+
+// The process crashes after dispatch and before a durable receipt.
+const restarted = runtime.replay();
+restarted.reconcileStartedEffect("publish-release-42");
+```
+
+Assert the invariant, not output prose:
+
+```ts
+assert.equal(
+  restarted.state.effects["publish-release-42"].status,
+  "indeterminate",
+);
+assert.throws(
+  () => restarted.startEffect("publish-release-42"),
+  /only a durable admitted effect/,
+);
+```
+
+If the provider can reconcile the stable idempotency key, pass the recovered
+receipt instead:
+
+```ts
+restarted.reconcileStartedEffect(
+  "publish-release-42",
+  "provider-receipt:abc",
+);
+```
+
+## Example: Approval Wait And Resume
+
+Approval wait is durable suspension, not active compute:
 
 ```ts
 const runtime = new ReferenceRuntime({
-  rootBudget: { deadlineAt: 300_000 },
+  rootExpiresAt: 3_600_000,
+  rootAttemptBudget: { activeMs: 30_000 },
 });
 
-runtime.proposeEffect({
+runtime.advance(10_000);
+runtime.suspend("query", "external_input", "approval:42");
+runtime.advance(600_000);
+
+assert.equal(runtime.state.scopes.query.state.kind, "suspended");
+assert.equal(runtime.state.attempts["query:attempt:1"].state, "yielded");
+
+runtime.resume("query", "query:attempt:2", { activeMs: 20_000 });
+```
+
+The old attempt remains immutable. The explicit durable scope TTL continues
+while suspended, while no active-attempt clock runs.
+
+## Example: Detached Result Return
+
+```ts
+runtime.admitEffect({
   effectId: "source-check-1",
   signature: "browser_open:source",
   scopeId: "worker-1",
-  explicitBudget: requestedTimeoutBudget(runtime.state.now, 25_000),
-  platformBudget: { deadlineAt: 120_000 },
 });
-
-const wait = runtime.wait("worker-1", 5_000);
+runtime.startEffect("source-check-1");
 runtime.detach("worker-1");
 runtime.completeQuery("answer-ref");
+runtime.commitEffect("source-check-1", "artifact-ref");
 
 const restarted = runtime.replay();
-restarted.succeed("worker-1", "artifact-ref");
+restarted.consumeNotification("notification:worker-1");
 ```
 
-Then assert laws, not prose:
+The result remains in a durable inbox after the parent is terminal. Consuming
+the notification does not automatically invoke a model.
 
-```ts
-assert.equal(wait.kind, "not_ready");
-assert.equal(runtime.state.scopes["worker-1"].budget.deadlineAt, 25_000);
-assert.equal(restarted.state.scopes.query.state.kind, "succeeded");
-assert.equal(restarted.state.notifications.length, 1);
-```
+## Classify A Proposed Change
 
-## Classify a Proposed Change
+Put every change in exactly one category before editing production code.
 
-Before editing production code, put the change in exactly one category.
+### Kernel Mechanism
 
-### Mechanism
-
-Examples: effect idempotency, cancellation propagation, transcript replay,
-attached/detached ownership, protocol validation.
-
-A mechanism may change execution semantics. It requires a minimal simulator
-counterexample and new invariant coverage.
+Effect identity, scope/attempt state, cancellation, transcript protocol,
+durable inbox, journal commit, and reconciliation. A mechanism change requires
+a minimal counterexample and invariant test.
 
 ### Adapter
 
-Examples: Anthropic-compatible stream parsing, tool schema translation,
-provider error normalization.
-
-An adapter may translate external protocols into typed events. It cannot add
-retries, recovery tasks, completion rules, or product policy.
+Provider stream parsing, tool schema translation, idempotency-key placement,
+and typed error normalization. An adapter cannot invent retries, recovery work,
+or completion policy.
 
 ### Model Profile
 
-Examples: context window, cache support, latency distribution, malformed tool
-call rate.
-
-A profile may change defaults and scheduling preferences within the budget
-envelope. It cannot change state transitions or enlarge explicit limits.
+Measured context window, cache support, latency, and protocol-error rates. A
+profile may select defaults within authority; it cannot change state algebra or
+enlarge limits.
 
 ### Observer
 
-Examples: metrics, liveness, quality score, E2E report, alert.
+Metrics, liveness, quality evaluation, E2E report, and alerting. An observer
+reads committed events and cannot dispatch, mutate scopes, or block delivery.
 
-An observer reads the journal. It cannot import dispatch services, mutating
-stores, model callers, or tool executors.
+### Explicit Workflow
 
-### Product Workflow
+A persisted, declared graph of triggers, allowed effects, joins, budgets, and
+retry allowances. It may propose listed work on an explicit trigger. It cannot
+derive new work from task wording or final-answer quality.
 
-Examples: a user-approved retry sequence or an explicit multi-step release
-workflow.
+### Model Guidance
 
-Product work is represented as explicit workflow input or model-proposed typed
-effects. It does not belong in the runtime kernel.
+Prompts, tool descriptions, and context projection. Guidance may improve model
+choices; it cannot become kernel authority.
 
-## Add an Adversarial Trace
+## Adversarial Dimensions
 
-Useful trace dimensions include:
+Model execution:
 
 ```text
-Model:
-  final text
-  empty end turn
-  malformed tool call
-  duplicate effect id
-  retryable transport failure
-  permanent transport failure
-  stream stalls after partial output
+end turn
+malformed tool call
+duplicate effect id
+transport failure before response
+stream stalls after partial response
+```
 
-Tool:
-  succeeds before foreground wait
-  succeeds after foreground wait
-  fails
-  ignores cancellation temporarily
-  produces a duplicate completion
+Effect persistence:
 
-Scheduler:
-  attached
-  detached
-  cancellation before detach
-  cancellation after detach
-  notification before/after parent completion
+```text
+crash before intent
+crash after intent before dispatch
+crash after dispatch before receipt
+crash after receipt
+provider reconciliation available/unavailable
+torn journal frame
+```
 
-Durability:
-  crash before effect commit
-  crash after effect commit
-  crash after tool side effect but before receipt delivery
-  crash after terminal result
+Ownership and time:
+
+```text
+wait expiry before/after completion
+operation expiry
+scope TTL during suspension
+attached cancellation
+detached completion after parent terminal
+join satisfied before/after parent expiry
+```
+
+Transcript:
+
+```text
+single and parallel tool calls
+complete call/result unit
+open call at compaction boundary
+mismatched result ids
+crash before checkpoint commit
+```
 
 Observers:
-  disabled
-  delayed
-  stale
-  incorrect projection
-```
-
-If a production bug cannot be expressed with these typed behaviors, first ask
-whether it is actually a model-quality problem rather than a runtime problem.
-
-## Property-Style Simulation
-
-The reference suite uses a seeded generator so a failure is reproducible. It
-currently checks:
-
-- 10,000 random budget compositions;
-- 5,000 crash/detach/cancel/replay traces;
-- 3,000 runs across distinct model behavior profiles.
-
-A new property test should state a law such as:
 
 ```text
-for every event ordering,
-if an effect receipt is durable,
-replay cannot execute the effect again
+disabled
+delayed
+stale
+incorrect projection
 ```
 
-It should not state:
+## What The Current Suite Establishes
 
-```text
-for this fixture, final text must contain "verified"
-```
+The seeded suite currently exercises:
 
-## Model Profiles and Monte Carlo Runs
+- monotone attempt-budget composition over 10,000 generated inputs;
+- 5,000 generated effect crash-window traces;
+- explicit suspension/TTL, inbox, join, retry-owner, torn-frame, and transcript
+  protocol counterexamples.
 
-Real models can be represented by measured distributions:
+These counts establish reproducibility for those represented dimensions only.
+They do not establish completeness, production wiring, provider behavior, or
+formal correctness. A missing state dimension invalidates any claim about that
+dimension regardless of trace count.
 
-```ts
-const profile = {
-  duplicateToolCallRate: 0.03,
-  malformedToolCallRate: 0.05,
-  toolFailureRate: 0.08,
-  foregroundDetachRate: 0.55,
-  latencyP95Ms: 35_000,
-};
-```
-
-Run thousands of seeded traces and report:
-
-- duplicate committed effects;
-- orphan attached tasks;
-- replay divergence;
-- terminal delivery rate;
-- retry amplification;
-- detached completion delivery;
-- resource distribution.
-
-Changing the profile should change latency, cost, and model success metrics. It
-must not change the execution invariants.
-
-## When Real LLM Runs Are Allowed
+## When Real LLM Runs Are Useful
 
 Run a real model only after:
 
-1. the behavior has a typed simulation trace;
-2. all invariant tests pass;
-3. deterministic integration tests pass;
-4. the code version is fixed for the measurement batch.
+1. the suspected runtime behavior has a typed counterexample;
+2. invariant and deterministic integration tests pass;
+3. the code version is fixed for the measurement batch;
+4. no code changes occur between samples.
 
-Real LLM output answers:
+Real-model output answers:
 
 - Does this model understand the task?
 - Does it select useful tools?
 - Does it produce a useful final answer?
-- What are its latency and cost distributions?
+- What are latency, token, cost, and success distributions?
 
-It must not be used to discover timeout composition, cancellation races,
-duplicate effects, replay divergence, or observer interference.
+It must not define timeout composition, cancellation, effect reconciliation,
+replay, compaction protocol, or observer authority.
 
-## Review Checklist
+## Pull Request Checklist
 
-Every runtime pull request must answer:
+Every runtime change must answer:
 
-1. Which category does this change belong to?
+1. Which category owns the change?
 2. What model-independent counterexample requires it?
-3. Which invariant would fail without it?
-4. Can the same result be achieved in an adapter or profile?
-5. Does the change create hidden business work?
-6. Can it enlarge authority or budget?
-7. Can an observer now influence execution?
-8. Does replay produce the same state?
+3. Which invariant fails without it?
+4. What is the effect crash behavior before and after durable receipt?
+5. Does it create hidden business work?
+6. Can it enlarge authority or multiply retries?
+7. Can an observer influence execution?
+8. Does it preserve complete transcript protocol units?
+9. Is a real-model result being used as measurement or as a rule generator?
 
-If questions 5, 6, or 7 answer yes, the change does not belong in the runtime.
+If the change creates hidden work, enlarges authority, or gives observers
+control, it does not belong in the kernel.

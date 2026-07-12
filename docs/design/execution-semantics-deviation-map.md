@@ -114,7 +114,50 @@ Target law:
 one owner-level retry budget; lower layers report typed failure
 ```
 
-Likely migration owner: query scope budget.
+Likely migration owner: one explicit `RetryAllowance` owner per failure domain.
+
+### Interrupted effects are replayed without an outcome ledger
+
+The current run journal can convert an interrupted native call into an error for
+the resumed model. Asking the model to send the call again is unsafe when the
+external side effect may have completed before the process crashed.
+
+Target law:
+
+```text
+intent -> dispatch -> receipt; ambiguous dispatch becomes indeterminate
+```
+
+Likely migration owner: execution-kernel effect ledger plus adapter-level
+idempotency reconciliation.
+
+### Durable suspension and active attempt time are not separate authorities
+
+Approval waits, provider attempts, caller waits, and run lifetime still rely on
+overlapping timeout mechanisms. A long external wait either consumes active
+budget or requires ad hoc timeout floors.
+
+Target law:
+
+```text
+scope TTL != attempt budget != operation timeout != caller wait
+```
+
+Likely migration owner: durable scope and attempt state algebra.
+
+### Detached completion lacks a complete inbox/join contract
+
+Background sessions and persisted task handles exist, but the authoritative
+owner, notification consumption, and parent-expiry behavior for joins are not a
+single kernel contract.
+
+Target law:
+
+```text
+detached result remains consumable; expired join never cancels detached work
+```
+
+Likely migration owner: durable mission/thread registry.
 
 ## Candidate Stage 10 Branch
 
@@ -136,27 +179,32 @@ semantics are accepted. Do not merge or discard it as one unit.
 A future migration must follow dependency order:
 
 ```text
-authoritative state and ownership
--> monotone budget composition
--> minimal model/effect loop
--> background notification and replay
--> observer separation
--> remove policy-driven effects
--> model conformance measurement
+audit landed foundation against V2
+-> effect intent/dispatch/receipt reconciliation
+-> scope/attempt clocks and retry ownership
+-> durable inbox and join
+-> transcript/journal protocol validation
+-> policy disposition migration
+-> fixed-version model conformance measurement
 ```
 
-Starting with detector removal or E2E threshold changes would repeat the prior
-acceptance-patch cycle because the authoritative execution semantics would
-still be ambiguous.
+Starting with detector removal, E2E threshold changes, or another bake-driven
+patch loop would repeat the prior acceptance cycle because authoritative effect
+and lifetime semantics would still be ambiguous. The earlier six-phase plan is
+reconciled in
+[Execution Semantics And Six-Phase Reconciliation](./execution-semantics-six-phase-reconciliation.md).
 
 ## Exit Criteria for Design Review
 
 Before a migration plan is written, reviewers should agree that:
 
-- the minimal loop is sufficient for foreground and background work;
-- the six execution states are complete and non-overlapping;
-- all budgets compose monotonically;
+- durable scope and ephemeral attempt states are complete and non-overlapping;
+- active budgets compose monotonically and retries have one owner per failure
+  domain;
+- ambiguous external effects become reconciled or indeterminate;
+- detached results and joins have durable delivery semantics;
 - no required recovery depends on product-text detection;
 - observer non-interference is enforceable by package boundaries;
-- simulator counterexamples cover crash, replay, ordering, cancellation,
-  detachment, and model-profile variation.
+- simulator claims are limited to represented crash, transcript, ownership,
+  time, and persistence dimensions;
+- every current repair/continuation policy has an approved disposition.
