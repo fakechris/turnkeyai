@@ -141,6 +141,25 @@ test("compactOlderToolHistoryForGateway replaces old assistant/tool pairs with o
   assert.equal(compacted[4], messages[5]);
 });
 
+test("compactOlderToolHistoryForGateway never summarizes an incomplete tool protocol unit", () => {
+  const messages: LLMMessage[] = [
+    { role: "system", content: "system" },
+    { role: "user", content: "task" },
+    assistantToolUse("call-complete"),
+    toolMessage("call-complete", "complete result"),
+    assistantToolUse("call-open"),
+  ];
+
+  const compacted = compactOlderToolHistoryForGateway(messages, {
+    ...baseLimits,
+    historyMaxMessages: 3,
+    historyMaxBytes: 512,
+  });
+
+  assert.equal(compacted, messages);
+  assert.deepEqual(compacted.at(-1), assistantToolUse("call-open"));
+});
+
 test("compactOlderToolHistoryForGateway compacts repair-heavy history without tool pairs", () => {
   const messages: LLMMessage[] = [
     { role: "system", content: "system" },

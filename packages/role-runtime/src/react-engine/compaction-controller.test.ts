@@ -411,3 +411,32 @@ test("CompactionController adopts a forced checkpoint into state on the next rou
   assert.deepEqual(adopted.messages.slice(-2), nextState.slice(-2));
   assert.equal(readRuntimeCheckpoint(adopted.messages[2])?.version, 1);
 });
+
+test("CompactionController discards a pending forced checkpoint when its source prefix changed", async () => {
+  const messages = buildHistory(7);
+  let summaryCalls = 0;
+  const controller = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 200,
+      estimatedInputTokens: 200,
+      source: "provider_calibrated",
+      inputTokenLimit: 1_000,
+      utilization: 0.2,
+    }),
+    summarize: async () => {
+      summaryCalls += 1;
+      return summaryDraft;
+    },
+  });
+  await controller.forceRoundMessages(messages, 7);
+  const changed = messages.map((message, index) =>
+    index === 1 ? { ...message, content: "changed task" } : message,
+  );
+
+  const result = await controller.applyRoundMessagesHook(changed, 8);
+
+  assert.equal(summaryCalls, 1);
+  assert.equal(result.messages, changed);
+  assert.equal(readRuntimeCheckpoint(result.messages[2]), undefined);
+});

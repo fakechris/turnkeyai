@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type {
   GenerateTextInput,
   LLMMessage,
@@ -106,7 +108,11 @@ export function createCompactionController(
   const recentProtocolUnits =
     input.recentProtocolUnits ?? DEFAULT_RECENT_PROTOCOL_UNITS;
   let pendingForcedCompaction:
-    | { sourceMessageCount: number; messages: LLMMessage[] }
+    | {
+        sourceMessageCount: number;
+        sourceDigest: string;
+        messages: LLMMessage[];
+      }
     | undefined;
   let consecutiveFailures = 0;
   let failureCircuitOpen = false;
@@ -131,7 +137,11 @@ export function createCompactionController(
     if (!force && pendingForcedCompaction) {
       const pending = pendingForcedCompaction;
       pendingForcedCompaction = undefined;
-      if (messages.length >= pending.sourceMessageCount) {
+      if (
+        messages.length >= pending.sourceMessageCount &&
+        transcriptDigest(messages.slice(0, pending.sourceMessageCount)) ===
+          pending.sourceDigest
+      ) {
         return {
           messages: [
             ...pending.messages,
@@ -256,6 +266,7 @@ export function createCompactionController(
       if (force) {
         pendingForcedCompaction = {
           sourceMessageCount: messages.length,
+          sourceDigest: transcriptDigest(messages),
           messages: compacted.messages,
         };
       }
@@ -298,6 +309,10 @@ export function createCompactionController(
     forceRoundMessages: (messages, round, signal) =>
       compact(messages, round, signal, true),
   };
+}
+
+function transcriptDigest(messages: LLMMessage[]): string {
+  return createHash("sha256").update(JSON.stringify(messages)).digest("hex");
 }
 
 export function buildRuntimeCheckpointMessage(
