@@ -38,6 +38,8 @@
     "parity:policy-trace:write": "tsx scripts/engine-policy-trace-characterization.ts --write",
     "replay:run-trace": "tsx scripts/run-trace-replay.ts",
     "test:runtime-chaos": "tsx --test scripts/runtime-chaos-e2e.test.ts",
+    "test:execution-semantics-sim": "tsx --test scripts/execution-semantics-sim.test.ts",
+    "test:runtime-policy-disposition": "tsx --test scripts/runtime-policy-disposition-coverage.test.ts",
     "control-center:smoke": "tsx scripts/control-center-ui-smoke.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
     "install:local-cli": "npm link --workspace @turnkeyai/cli",
