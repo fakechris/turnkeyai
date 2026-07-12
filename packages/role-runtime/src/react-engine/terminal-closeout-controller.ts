@@ -98,6 +98,7 @@ export interface ModelCallErrorFallbackInput {
   active: boolean;
   usableEvidence: boolean;
   activation?: RoleActivationInput;
+  repairPolicy?: RepairPolicyRegistry;
   messages: LLMMessage[];
   packet: RolePromptPacket;
   selection: {
@@ -206,6 +207,7 @@ export interface FinalSynthesisAfterToolRoundLimitInput<
     modelChainId?: string;
   };
   activation?: RoleActivationInput;
+  repairPolicy?: RepairPolicyRegistry;
   reasonLines?: string[];
   recordPruning(
     snapshot: ToolResultPruningSnapshot | undefined,
@@ -969,6 +971,9 @@ export class TerminalCloseoutController {
           // scans its own repair prompt.
           repairMarkers: initialRequest.gatewayMessages,
           resultText: generated.result.text,
+          ...(input.repairPolicy === undefined
+            ? {}
+            : { repairPolicy: input.repairPolicy }),
         });
       if (providerSchemaRepairRequest) {
         await input.recordPruning(providerSchemaRepairRequest.pruning);

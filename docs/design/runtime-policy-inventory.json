@@ -1,63 +1,65 @@
 {
-  "baseline": "c37d52bb+clock-retry-slice",
-  "repair": [
-    "final_recovery_budget_closeout_repair",
-    "missing_browser_evidence",
-    "missing_product_signal_browser_evidence",
-    "missing_approval_gate",
-    "pending_approval_wait_timeout_check",
-    "premature_pending_approval",
-    "stale_pending_approval",
-    "stale_denied_approval",
-    "approval_wait_timeout_closeout",
-    "approval_wait_timeout_local_closeout",
-    "incomplete_approved_browser_action",
-    "missing_requested_table_columns",
-    "extraneous_provider_table_schema",
-    "source_evidence_carry_forward",
-    "weak_evidence_synthesis",
-    "timeout_followup_final_guidance",
-    "missing_requested_next_action",
-    "missing_required_final_deliverables",
-    "missing_browser_evidence_dimensions",
-    "false_evidence_blocked_synthesis"
-  ],
-  "continuation": [
-    "approved_browser_timeout_continuation",
-    "coverage_timeout_continuation",
-    "independent_evidence_stream_continuation",
-    "missing_approval_gate_repair_continuation"
-  ],
-  "closeout": [
-    "recovery_tool_budget",
-    "operator_cancelled",
-    "pseudo_tool_call",
-    "wall_clock_budget",
-    "round_limit",
-    "repeated_tool_failure",
-    "repeated_session_inspection",
-    "excessive_session_continuation",
-    "sub_agent_timeout",
-    "completed_sub_agent_final",
-    "tool_evidence_fallback",
-    "model_error"
-  ],
-  "permission": [
-    "read_only_permission_query"
-  ],
-  "normalizer": [
-    "sessionToolAlias",
-    "enforceMissingApprovalGateRepair",
-    "sessionContinuationDirective",
-    "sessionContinuationLookupDirective",
-    "explicitContinuationHistory",
-    "sessionToolCalls",
-    "privateUrlResearchSpawn",
-    "localUrlWebFetch",
-    "boundedTimeoutSourceSpawn",
-    "boundedTimeoutDuplicateSourceSpawn",
-    "sessionContinuationDirectiveRepeat",
-    "approvalGatedBrowserSpawn",
-    "limitIndependentEvidenceSpawn"
-  ]
+  "baseline": "c37d52bb+v2-production-migration",
+  "rows": {
+    "repair": [
+      { "id": "final_recovery_budget_closeout_repair", "status": "migrated", "targetOwner": "attempt budget signal and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "missing_browser_evidence", "status": "migrated", "targetOwner": "quality evaluator and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "missing_product_signal_browser_evidence", "status": "migrated", "targetOwner": "quality evaluator and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "missing_approval_gate", "status": "migrated", "targetOwner": "permission admission", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "pending_approval_wait_timeout_check", "status": "migrated", "targetOwner": "explicit workflow", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "premature_pending_approval", "status": "migrated", "targetOwner": "typed permission state and explicit workflow", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "stale_pending_approval", "status": "migrated", "targetOwner": "permission adapter and explicit workflow", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "stale_denied_approval", "status": "migrated", "targetOwner": "model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "approval_wait_timeout_closeout", "status": "migrated", "targetOwner": "typed wait outcome and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "approval_wait_timeout_local_closeout", "status": "migrated", "targetOwner": "suspension result and durable handle", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "incomplete_approved_browser_action", "status": "migrated", "targetOwner": "explicit workflow and quality evaluator", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "missing_requested_table_columns", "status": "migrated", "targetOwner": "quality evaluator and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "extraneous_provider_table_schema", "status": "migrated", "targetOwner": "adapter normalization and quality evaluator", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "source_evidence_carry_forward", "status": "migrated", "targetOwner": "checkpoint and transcript projection", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "weak_evidence_synthesis", "status": "migrated", "targetOwner": "quality evaluator and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "timeout_followup_final_guidance", "status": "migrated", "targetOwner": "typed timeout handle and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "missing_requested_next_action", "status": "migrated", "targetOwner": "quality evaluator", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "missing_required_final_deliverables", "status": "migrated", "targetOwner": "explicit workflow and quality evaluator", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "missing_browser_evidence_dimensions", "status": "migrated", "targetOwner": "quality evaluator", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "false_evidence_blocked_synthesis", "status": "migrated", "targetOwner": "typed evidence projection and quality evaluator", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" }
+    ],
+    "continuation": [
+      { "id": "approved_browser_timeout_continuation", "status": "migrated", "targetOwner": "explicit workflow", "evidence": "production ContinuationController never manufactures a continuation effect" },
+      { "id": "coverage_timeout_continuation", "status": "migrated", "targetOwner": "model guidance and explicit workflow", "evidence": "production ContinuationController never manufactures a continuation effect" },
+      { "id": "independent_evidence_stream_continuation", "status": "migrated", "targetOwner": "model proposal", "evidence": "production ContinuationController never manufactures a continuation effect" },
+      { "id": "missing_approval_gate_repair_continuation", "status": "migrated", "targetOwner": "permission admission and explicit workflow", "evidence": "production ContinuationController never manufactures a continuation effect" }
+    ],
+    "closeout": [
+      { "id": "recovery_tool_budget", "status": "migrated", "targetOwner": "attempt budget outcome", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "operator_cancelled", "status": "retained", "targetOwner": "typed kernel terminal outcome", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "pseudo_tool_call", "status": "migrated", "targetOwner": "adapter protocol error", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "wall_clock_budget", "status": "retained", "targetOwner": "absolute attempt deadline", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "round_limit", "status": "retained", "targetOwner": "attempt budget outcome", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "repeated_tool_failure", "status": "migrated", "targetOwner": "effect diagnostics and model guidance", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "repeated_session_inspection", "status": "migrated", "targetOwner": "effect diagnostics and model guidance", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "excessive_session_continuation", "status": "migrated", "targetOwner": "effect diagnostics and model guidance", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "sub_agent_timeout", "status": "migrated", "targetOwner": "durable child result and handle", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "completed_sub_agent_final", "status": "migrated", "targetOwner": "normal transcript projection", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "tool_evidence_fallback", "status": "migrated", "targetOwner": "normal transcript projection", "evidence": "production closeout registry retains only typed kernel terminal outcomes" },
+      { "id": "model_error", "status": "retained", "targetOwner": "typed kernel terminal outcome", "evidence": "production closeout registry retains only typed kernel terminal outcomes" }
+    ],
+    "permission": [
+      { "id": "read_only_permission_query", "status": "migrated", "targetOwner": "permission service typed not_required result", "evidence": "production PermissionPolicy preserves model permission proposals" }
+    ],
+    "normalizer": [
+      { "id": "sessionToolAlias", "status": "retained", "targetOwner": "adapter syntax normalization", "evidence": "ENGINE_TOOL_CALL_NORMALIZATION_ORDER pins the engine normalizer sequence" },
+      { "id": "enforceMissingApprovalGateRepair", "status": "migrated", "targetOwner": "permission admission", "evidence": "normalizeEngineToolCalls does not delegate business rewrites to PermissionPolicy" },
+      { "id": "sessionContinuationDirective", "status": "migrated", "targetOwner": "model or explicit workflow proposal", "evidence": "normalizeEngineToolCalls does not replace a model proposal from task-text continuation hints" },
+      { "id": "sessionContinuationLookupDirective", "status": "migrated", "targetOwner": "explicit workflow", "evidence": "buildToolCallNormalizationContext projects handles without deriving a continuation" },
+      { "id": "explicitContinuationHistory", "status": "migrated", "targetOwner": "typed handle projection", "evidence": "normalizeEngineToolCalls does not replace a model proposal from task-text continuation hints" },
+      { "id": "sessionToolCalls", "status": "retained", "targetOwner": "adapter handle and schema normalization", "evidence": "ENGINE_TOOL_CALL_NORMALIZATION_ORDER pins the engine normalizer sequence" },
+      { "id": "privateUrlResearchSpawn", "status": "migrated", "targetOwner": "network admission", "evidence": "normalizeEngineToolCalls does not rewrite a model-proposed local fetch" },
+      { "id": "localUrlWebFetch", "status": "migrated", "targetOwner": "network admission", "evidence": "normalizeEngineToolCalls does not rewrite a model-proposed local fetch" },
+      { "id": "boundedTimeoutSourceSpawn", "status": "migrated", "targetOwner": "model guidance and operation budget", "evidence": "normalizeEngineToolCalls preserves model-proposed source timeouts" },
+      { "id": "boundedTimeoutDuplicateSourceSpawn", "status": "migrated", "targetOwner": "effect ledger stable-id deduplication", "evidence": "normalizeEngineToolCalls does not mutate the input call array" },
+      { "id": "sessionContinuationDirectiveRepeat", "status": "migrated", "targetOwner": "explicit workflow idempotency", "evidence": "normalizeEngineToolCalls does not replace a model proposal from task-text continuation hints" },
+      { "id": "approvalGatedBrowserSpawn", "status": "migrated", "targetOwner": "permission admission", "evidence": "normalizeEngineToolCalls does not delegate business rewrites to PermissionPolicy" },
+      { "id": "limitIndependentEvidenceSpawn", "status": "migrated", "targetOwner": "generic concurrency budget and model proposal", "evidence": "ENGINE_TOOL_CALL_NORMALIZATION_ORDER pins the engine normalizer sequence" }
+    ]
+  }
 }

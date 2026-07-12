@@ -1367,11 +1367,11 @@ describe("mission-routes", () => {
       }
     });
 
-    it("approval decisions resume linked mission threads", async () => {
+    it("approval decisions apply permission without manufacturing a follow-up", async () => {
       const t = tmpDir();
       try {
         const deps = composeMissionDeps({ dataDir: t.dir, clock });
-        const { orchestrator, posts, ticks } = buildOrchestrator();
+        const { orchestrator, posts } = buildOrchestrator();
         const { res, getStatus, getJson } = createResponse();
         await handleMissionRoutes({
           req: createRequest({
@@ -1453,17 +1453,7 @@ describe("mission-routes", () => {
         });
         assert.equal(decisionResponse.getStatus(), 200);
         assert.deepEqual(applied, [{ threadId: mission.threadId!, approvalId: "ap.linked-browser-submit" }]);
-        await waitUntil("approval continuation post", () => posts.length === 2);
-        assert.equal(posts[1]?.threadId, mission.threadId);
-        assert.match(posts[1]?.content ?? "", /ap\.linked-browser-submit/);
-        assert.match(posts[1]?.content ?? "", /already recorded permission\.result and permission\.applied/);
-        assert.match(posts[1]?.content ?? "", /runtime permission cache is already applied/);
-        assert.match(posts[1]?.content ?? "", /Do not call permission tools again/);
-        assert.match(posts[1]?.content ?? "", /sessions_spawn/);
-        assert.match(posts[1]?.content ?? "", /agent_id="browser"/);
-        assert.match(posts[1]?.content ?? "", /do not finalize with a pending-approval summary/i);
-        assert.doesNotMatch(posts[1]?.content ?? "", /permission_applied/);
-        await waitUntil("approval continuation tick", () => ticks.filter((id) => id === mission.id).length >= 2);
+        assert.equal(posts.length, 1);
         const resumed = await deps.missionStore.get(mission.id);
         assert.equal(resumed?.status, "working");
       } finally {
@@ -1526,14 +1516,7 @@ describe("mission-routes", () => {
           deps: { ...deps, orchestrator },
         });
         assert.equal(decisionResponse.getStatus(), 200);
-        await waitUntil("denied approval continuation post", () => posts.length === 2);
-        const content = posts[1]?.content ?? "";
-        assert.match(content, /permission_result/);
-        assert.match(content, /safe closeout/);
-        assert.match(content, /safe fallback or next action/);
-        assert.match(content, /unverified/);
-        assert.match(content, /no browser submission or side effect ran/);
-        assert.match(content, /do not call permission_applied/);
+        assert.equal(posts.length, 1);
       } finally {
         t.cleanup();
       }
@@ -1616,9 +1599,7 @@ describe("mission-routes", () => {
           },
         });
         assert.equal(decisionResponse.getStatus(), 200);
-        await waitUntil("approval fallback continuation post", () => posts.length === 2);
-        assert.match(posts[1]?.content ?? "", /permission_result/);
-        assert.match(posts[1]?.content ?? "", /permission_applied/);
+        assert.equal(posts.length, 1);
       } finally {
         t.cleanup();
       }

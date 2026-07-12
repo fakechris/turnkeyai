@@ -9,7 +9,7 @@ import type {
 
 import type { RolePromptPacket } from "../prompt-policy";
 import type { ToolLoopCloseoutMetadata } from "../runtime-derived-mission-report";
-import { createRepairPolicyRegistry } from "./repair-policy-registry";
+import { createRepairPolicyCharacterizationRegistry as createRepairPolicyRegistry } from "./repair-policy-registry";
 import { createTerminalCloseoutController } from "./terminal-closeout-controller";
 
 function packet(
@@ -426,6 +426,7 @@ test("TerminalCloseoutController evaluates final synthesis provider-schema repai
   const controller = createTerminalCloseoutController();
 
   const decision = controller.evaluateFinalSynthesisProviderSchemaRepair({
+    repairPolicy: createRepairPolicyRegistry(),
     messages: [],
     repairMarkers: [],
     resultText: [
@@ -445,6 +446,7 @@ test("TerminalCloseoutController evaluates final synthesis provider-schema repai
 
   assert.equal(
     controller.evaluateFinalSynthesisProviderSchemaRepair({
+      repairPolicy: createRepairPolicyRegistry(),
       messages: [],
       repairMarkers: [],
       resultText: [
@@ -472,6 +474,7 @@ test("TerminalCloseoutController builds final synthesis provider-schema repair r
   ].join("\n");
 
   const request = controller.buildFinalSynthesisProviderSchemaRepairRequest({
+    repairPolicy: createRepairPolicyRegistry(),
     taskPrompt:
       "Compare pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead.",
     messages,
@@ -494,6 +497,7 @@ test("TerminalCloseoutController builds final synthesis provider-schema repair r
 
   assert.equal(
     controller.buildFinalSynthesisProviderSchemaRepairRequest({
+      repairPolicy: createRepairPolicyRegistry(),
       taskPrompt:
         "Compare provider options for DeepSeek R1 search/web_search support, input price, and output price.",
       messages,
@@ -541,6 +545,7 @@ test("TerminalCloseoutController owns final synthesis provider repair orchestrat
   const requests: LLMMessage[][] = [];
 
   const synthesis = await controller.synthesizeFinalAfterToolRoundLimit({
+    repairPolicy: createRepairPolicyRegistry(),
     packet: packet(
       "Compare pricing, strengths, risks, tradeoff, and a clear recommendation for the product lead.",
     ),

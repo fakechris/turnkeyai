@@ -64,9 +64,11 @@ import {
   attachEngineRunDiagnostics,
   buildRunTrace,
   classifyRunFailure,
+  createCloseoutPolicyCharacterizationRegistry,
   createCloseoutPolicyRegistry,
   createCompactionController,
   createCompletedCloseoutController,
+  createContinuationCharacterizationController,
   createContinuationController,
   createEngineFinalResponseBuilder,
   createEnginePolicyTrace,
@@ -74,6 +76,8 @@ import {
   createEvidenceLedger,
   createExecutionBudgetController,
   createPermissionPolicy,
+  createPermissionPolicyCharacterization,
+  createRepairPolicyCharacterizationRegistry,
   createRepairPolicyRegistry,
   createRoleEngineAgentRunner,
   createRoleEngineModelClient,
@@ -119,6 +123,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     | undefined;
   private readonly clock: Clock;
   private readonly deferToolObservability: boolean;
+  private readonly testOnlyCharacterizeRetiredPolicies: boolean;
 
   constructor(options: {
     gateway: LLMGateway;
@@ -130,6 +135,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     toolResultArtifactStore?: ToolResultArtifactStore;
     clock?: Clock;
     deferToolObservability?: boolean;
+    testOnlyCharacterizeRetiredPolicies?: true;
   }) {
     this.gateway = options.gateway;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
@@ -147,6 +153,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       : undefined;
     this.clock = options.clock ?? { now: () => Date.now() };
     this.deferToolObservability = options.deferToolObservability === true;
+    this.testOnlyCharacterizeRetiredPolicies =
+      options.testOnlyCharacterizeRetiredPolicies === true;
   }
 
   async generate(input: {
@@ -355,6 +363,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       restoredJournal?.messages ?? initialGatewayInput.messages;
     const initialRound = restoredJournal?.nextRound ?? 0;
 
+    const repairPolicy = this.testOnlyCharacterizeRetiredPolicies
+      ? createRepairPolicyCharacterizationRegistry()
+      : createRepairPolicyRegistry();
     const synthesizeFinalAfterToolRoundLimit =
       createTerminalFinalSynthesisRunner({
         gateway: this.gateway,
@@ -367,6 +378,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         baseGatewayInput: initialGatewayInput,
         modelCallTrace,
         lifecycle,
+        repairPolicy,
       });
 
     const toolDefinitions = initialGatewayInput.tools ?? [];
@@ -390,11 +402,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       activation,
       messages: engineInitialMessages,
     });
-    const permissionPolicy = createPermissionPolicy();
+    const permissionPolicy = this.testOnlyCharacterizeRetiredPolicies
+      ? createPermissionPolicyCharacterization()
+      : createPermissionPolicy();
     const executionBudget = createExecutionBudgetController();
-    const continuation = createContinuationController();
-    const closeoutPolicy = createCloseoutPolicyRegistry();
-    const repairPolicy = createRepairPolicyRegistry();
+    const continuation = this.testOnlyCharacterizeRetiredPolicies
+      ? createContinuationCharacterizationController()
+      : createContinuationController();
+    const closeoutPolicy = this.testOnlyCharacterizeRetiredPolicies
+      ? createCloseoutPolicyCharacterizationRegistry()
+      : createCloseoutPolicyRegistry();
     const completedCloseout = createCompletedCloseoutController();
     const terminalCloseout = createTerminalCloseoutController();
     const taskPlanController = createTaskPlanController();
@@ -625,6 +642,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             executionBudget,
             recoveryToolBudget,
             recoveryToolCallsBeforeActivation,
+            ...(this.testOnlyCharacterizeRetiredPolicies
+              ? { testOnlyCharacterizeRetiredPolicies: true as const }
+              : {}),
             ...(packet.capabilityInspection === undefined
               ? {}
               : { capabilityInspection: packet.capabilityInspection }),

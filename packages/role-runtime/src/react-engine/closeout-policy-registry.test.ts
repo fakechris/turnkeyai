@@ -10,8 +10,10 @@ import type {
 import type { LLMToolCall } from "./types";
 import {
   buildRemainingPendingCallsSessionContext,
-  createCloseoutPolicyRegistry,
-  ENGINE_CLOSEOUT_POLICY_ORDER,
+  createCloseoutPolicyCharacterizationRegistry as createCloseoutPolicyRegistry,
+  createCloseoutPolicyRegistry as createProductionCloseoutPolicyRegistry,
+  ENGINE_CLOSEOUT_POLICY_ORDER as PRODUCTION_CLOSEOUT_POLICY_ORDER,
+  RETIRED_CLOSEOUT_POLICY_CHARACTERIZATION_ORDER as ENGINE_CLOSEOUT_POLICY_ORDER,
 } from "./closeout-policy-registry";
 
 function recoverySnapshot(): ExecutionBudgetCloseoutSnapshot {
@@ -165,6 +167,35 @@ test("ENGINE_CLOSEOUT_POLICY_ORDER pins terminal closeout precedence", () => {
   assert.equal(
     new Set(ENGINE_CLOSEOUT_POLICY_ORDER).size,
     ENGINE_CLOSEOUT_POLICY_ORDER.length,
+  );
+});
+
+test("production closeout registry retains only typed kernel terminal outcomes", () => {
+  assert.deepEqual([...PRODUCTION_CLOSEOUT_POLICY_ORDER], [
+    "operator_cancelled",
+    "wall_clock_budget",
+    "round_limit",
+    "model_error",
+  ]);
+  const registry = createProductionCloseoutPolicyRegistry();
+  assert.equal(
+    registry.evaluateRecoveryToolBudget({
+      recoveryToolBudget: { maxToolCalls: 1 },
+      usedToolCalls: 1,
+      pendingToolCallCount: 1,
+      messages: [],
+      repairMarkers: [],
+      resultText: "",
+      buildCloseoutSnapshot: recoverySnapshot,
+    }),
+    null,
+  );
+  assert.equal(
+    registry.evaluatePostExecute({
+      completedSession: { final: "done" },
+      timeoutSignal: null,
+    }),
+    null,
   );
 });
 

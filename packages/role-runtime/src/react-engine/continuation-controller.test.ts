@@ -5,7 +5,10 @@ import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
-import { createContinuationController } from "./continuation-controller";
+import {
+  createContinuationCharacterizationController as createContinuationController,
+  createContinuationController as createProductionContinuationController,
+} from "./continuation-controller";
 
 const sessionKey = "worker:explore:task-source:toolu-timeout";
 
@@ -119,6 +122,34 @@ function incompleteApprovedBrowserResults(): Array<{
     },
   ];
 }
+
+test("production ContinuationController never manufactures a continuation effect", () => {
+  const controller = createProductionContinuationController();
+  const input = {
+    active: true,
+    messages: [] as LLMMessage[],
+    round: 0,
+    taskPrompt: taskPromptWithSession(),
+    toolTrace: [] as NativeToolRoundTrace[],
+    tools: [
+      { name: "sessions_send" },
+      { name: "sessions_list" },
+      { name: "sessions_spawn" },
+      { name: "permission_result" },
+    ],
+  };
+
+  assert.equal(controller.previewEmptyRoundContinuation(input), null);
+  assert.deepEqual(controller.onRoundEmpty(input), { kind: "none" });
+  assert.deepEqual(
+    controller.forcePendingApprovalWaitTimeoutPermissionResult({
+      taskPrompt: "Wait for approval, then continue.",
+      toolTrace: [],
+      tools: input.tools,
+    }),
+    { kind: "none" },
+  );
+});
 
 function approvedBrowserActionTaskPrompt(): string {
   return [

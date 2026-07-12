@@ -50,6 +50,7 @@ import type { EngineContinueAction } from "./types";
 // normalizer order, or runtime progress recording. It returns actions; it does
 // not mutate ReAct state.
 export const CONTINUATION_CONTROLLER_MODULE = "continuation-controller" as const;
+export const ENGINE_ACTIVE_CONTINUATION_POLICY_IDS = [] as const;
 
 export interface ContinuationToolDefinition {
   name: string;
@@ -171,10 +172,12 @@ export type ForcedToolRoundExecutor = (
 }>;
 
 export class ContinuationController {
+  constructor(private readonly automaticActionsEnabled: boolean) {}
+
   previewEmptyRoundContinuation(
     input: EmptyRoundContinuationInput,
   ): LLMToolCall | null {
-    if (!input.active) {
+    if (!this.automaticActionsEnabled || !input.active) {
       return null;
     }
     const continuationContext = buildContinuationDirectiveContext(
@@ -281,6 +284,7 @@ export class ContinuationController {
   onAfterExecuteTimeoutContinuation(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const approvedBrowser = this.continueTimedOutApprovedBrowserSession(input);
     if (approvedBrowser.kind !== "none") {
       return approvedBrowser;
@@ -291,6 +295,7 @@ export class ContinuationController {
   continueTimedOutApprovedBrowserSession(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const facts = buildTimeoutContinuationPolicyFacts(input);
     const decision = selectTimeoutContinuationPolicy({ facts });
     if (
@@ -318,6 +323,7 @@ export class ContinuationController {
   continueTimedOutSiblingSession(
     input: TimeoutContinuationInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const facts = buildTimeoutContinuationPolicyFacts(input);
     const decision = selectTimeoutContinuationPolicy({ facts });
     if (
@@ -343,6 +349,7 @@ export class ContinuationController {
   continueIncompleteApprovedBrowserSession(
     input: IncompleteApprovedBrowserSessionInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const continuation = findIncompleteApprovedBrowserSession({
       results: input.results,
       taskPrompt: input.taskPrompt,
@@ -373,6 +380,7 @@ export class ContinuationController {
   continueIndependentEvidenceStreams(
     input: IndependentEvidenceStreamsInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const facts = buildIndependentEvidenceStreamsPolicyFacts(input);
     const decision = selectIndependentEvidenceStreamsPolicy({ facts });
     if (decision.kind !== "continue") {
@@ -398,6 +406,7 @@ export class ContinuationController {
   continueMissingApprovalGateRepair(
     input: MissingApprovalGateRepairInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const decision = selectMissingApprovalGateContinuationPolicy({
       facts: buildMissingApprovalGateContinuationFacts(input),
     });
@@ -420,6 +429,7 @@ export class ContinuationController {
   forcePendingApprovalWaitTimeoutPermissionResult(
     input: ForcedPermissionResultInput,
   ): EngineContinueAction {
+    if (!this.automaticActionsEnabled) return { kind: "none" };
     const call = buildForcedPendingApprovalWaitTimeoutPermissionResultCall({
       taskPrompt: input.taskPrompt,
       toolTrace: input.toolTrace,
@@ -591,7 +601,12 @@ function appliedApprovalBrowserContinuationRequested(input: {
 }
 
 export function createContinuationController(): ContinuationController {
-  return new ContinuationController();
+  return new ContinuationController(false);
+}
+
+/** Test-only characterization of retired automatic continuation actions. */
+export function createContinuationCharacterizationController(): ContinuationController {
+  return new ContinuationController(true);
 }
 
 function hasToolDefinition(

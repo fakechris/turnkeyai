@@ -22,6 +22,7 @@ import type { EngineSuppressDecision } from "./types";
 // helpers while inline is still the parity reference; this module is the engine
 // policy boundary that calls them.
 export const PERMISSION_POLICY_MODULE = "permission-policy" as const;
+export const ENGINE_ACTIVE_PERMISSION_POLICY_IDS = [] as const;
 
 export interface PermissionToolCallInput {
   calls: LLMToolCall[];
@@ -84,6 +85,11 @@ export interface PermissionPolicy {
 }
 
 export function createPermissionPolicy(): PermissionPolicy {
+  return NO_ACTION_PERMISSION_POLICY;
+}
+
+/** Test-only characterization of retired task-text permission actions. */
+export function createPermissionPolicyCharacterization(): PermissionPolicy {
   return DEFAULT_PERMISSION_POLICY;
 }
 
@@ -204,5 +210,26 @@ const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
         facts: buildPermissionSuppressionFacts(input),
       }).kind === "suppress"
     );
+  },
+};
+
+const NO_ACTION_PERMISSION_POLICY: PermissionPolicy = {
+  normalizeMissingApprovalGateRepair(input) {
+    return input.calls;
+  },
+  normalizeApprovalGatedBrowserSpawn(input) {
+    return input.calls;
+  },
+  suppressReadOnlyPermissionQuery() {
+    return { kind: "none" };
+  },
+  applySuppressDecision() {
+    return null;
+  },
+  applySuppressToolCallsHook() {
+    return null;
+  },
+  wouldSuppressReadOnlyPermissionQuery() {
+    return false;
   },
 };

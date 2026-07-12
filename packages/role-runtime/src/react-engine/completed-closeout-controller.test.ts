@@ -10,7 +10,7 @@ import type {
 import type { NativeToolRoundTrace } from "../native-tool-messages";
 import type { RolePromptPacket } from "../prompt-policy";
 import { createCompletedCloseoutController } from "./completed-closeout-controller";
-import { createRepairPolicyRegistry } from "./repair-policy-registry";
+import { createRepairPolicyCharacterizationRegistry as createRepairPolicyRegistry } from "./repair-policy-registry";
 
 function textResult(
   text: string,

@@ -18,6 +18,7 @@ import type {
 } from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
 import type { RunLifecycleRecorder } from "./react-engine/run-lifecycle";
+import type { RepairPolicyRegistry } from "./react-engine/repair-policy-registry";
 import { createTerminalCloseoutController } from "./react-engine/terminal-closeout-controller";
 import { recordToolResultPruningBoundarySafely } from "./tool-history-pruning";
 
@@ -37,6 +38,7 @@ export interface GenerateFinalAfterToolRoundLimitInput {
   maxRounds: number;
   modelCallTrace?: ModelCallBoundaryTrace[] | undefined;
   lifecycle?: RunLifecycleRecorder | undefined;
+  repairPolicy?: RepairPolicyRegistry | undefined;
   reasonLines?: string[] | undefined;
 }
 
@@ -55,6 +57,7 @@ export type TerminalFinalSynthesisRunnerInput = Omit<
   | "baseGatewayInput"
   | "modelCallTrace"
   | "lifecycle"
+  | "repairPolicy"
 >;
 
 export type TerminalFinalSynthesisRunner = (
@@ -81,6 +84,7 @@ export async function generateFinalAfterToolRoundLimit(
     messages: input.messages,
     maxRounds: input.maxRounds,
     selection: input.selection,
+    ...(input.repairPolicy === undefined ? {} : { repairPolicy: input.repairPolicy }),
     ...(input.reasonLines === undefined ? {} : { reasonLines: input.reasonLines }),
     recordPruning: (snapshot) =>
       recordToolResultPruningBoundarySafely({

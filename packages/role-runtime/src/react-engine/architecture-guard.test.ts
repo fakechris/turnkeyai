@@ -649,7 +649,6 @@ test("engine task intent facts are built at the adapter boundary and consumed by
       "repair-policy-registry.ts",
       "buildNaturalFinishRepairPolicyFacts(input)",
     ],
-    ["tool-call-normalizer.ts", "x.taskFacts.requiredIndependentEvidenceStreams"],
   ];
   for (const [fileName, expectedSource] of ownerExpectations) {
     const ownerSource = readFileSync(path.join(ENGINE_DIR, fileName), "utf8");

@@ -57,6 +57,7 @@ import {
 import type { LLMMessage, ReActToolChoice } from "./types";
 
 export const REPAIR_POLICY_REGISTRY_MODULE = "repair-policy-registry" as const;
+export const ENGINE_ACTIVE_REPAIR_POLICY_IDS = [] as const;
 
 export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "final_recovery_budget_closeout_repair",
@@ -330,6 +331,24 @@ export interface RepairPolicyRegistry {
     input: CompletedSynthesisRepairInput,
   ): CompletedSynthesisRepairDecision | null;
 }
+
+const NO_ACTION_REPAIR_POLICY_REGISTRY: RepairPolicyRegistry = {
+  applyNaturalFinishRepairHook() {
+    return null;
+  },
+  applyNaturalFinishRepair() {
+    return null;
+  },
+  evaluateNaturalFinish() {
+    return null;
+  },
+  applyNaturalFinishRepairDecision() {
+    return null;
+  },
+  evaluateCompletedSynthesis() {
+    return null;
+  },
+};
 
 class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
   applyNaturalFinishRepairHook(
@@ -661,5 +680,10 @@ function renderCompletedSynthesisRepairDecision(
 }
 
 export function createRepairPolicyRegistry(): RepairPolicyRegistry {
+  return NO_ACTION_REPAIR_POLICY_REGISTRY;
+}
+
+/** Test-only characterization of the retired automatic policy actions. */
+export function createRepairPolicyCharacterizationRegistry(): RepairPolicyRegistry {
   return new DefaultRepairPolicyRegistry();
 }

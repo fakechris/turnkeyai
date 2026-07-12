@@ -1,16 +1,21 @@
 # Runtime Policy Disposition
 
-Status: design-review inventory. This table prevents the execution-semantics
+Status: production authority migration complete. This table prevents the execution-semantics
 migration from silently deleting hard-won behavior or preserving business
 recovery inside the kernel.
 
-The inventory is derived from all active policy families on `origin/main` at
-`a2dec0b0`: 20 repair ids, 4 continuation ids, 12 closeout ids, 1 permission
-suppression id, and 15 tool-call normalization steps. The machine-readable
+The inventory preserves the policy families inherited from `origin/main` and
+the clock/retry slice: 20 repair ids, 4 continuation ids, 12 closeout ids, 1
+permission suppression id, and 13 remaining tool-call normalization steps. The machine-readable
 source is [runtime-policy-inventory.json](./runtime-policy-inventory.json), and
-`npm run test:runtime-policy-disposition` verifies both source parity and a
-documented disposition for every entry. A disposition describes the target
-owner, not an instruction to change production code in this branch.
+`npm run test:runtime-policy-disposition` verifies original-row parity, the
+exact production authority set, a target owner, and executable deterministic
+evidence for every entry.
+
+Production now retains only syntactic/session-handle normalization and typed
+kernel terminal outcomes. Retired automatic actions remain available solely as
+test characterization; a source guard forbids enabling that mode from any
+other production composition point.
 
 ## Disposition Rules
 

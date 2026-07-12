@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  createRepairPolicyRegistry,
+  createRepairPolicyCharacterizationRegistry as createRepairPolicyRegistry,
+  createRepairPolicyRegistry as createProductionRepairPolicyRegistry,
   ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER,
   ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER,
 } from "./repair-policy-registry";
@@ -75,6 +76,32 @@ test("ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER pins completed-closeout rep
     "missing_browser_evidence_dimensions",
     "false_evidence_blocked_synthesis",
   ]);
+});
+
+test("production RepairPolicyRegistry never manufactures work or rewrites a terminal answer", () => {
+  const registry = createProductionRepairPolicyRegistry();
+  const naturalInput = {
+    finalRecoveryBudget: { maxToolCalls: 1, usedToolCalls: 1 },
+    messages: [] as LLMMessage[],
+    repairMarkers: [] as LLMMessage[],
+    resultText: "No evidence was gathered.",
+    taskPrompt: "Open a browser and request approval before submitting.",
+  };
+
+  assert.equal(registry.evaluateNaturalFinish(naturalInput), null);
+  assert.equal(registry.applyNaturalFinishRepair(naturalInput), null);
+  assert.equal(
+    registry.evaluateCompletedSynthesis({
+      completedEvidenceText: "",
+      delegatedEvidenceText: "",
+      completedSessionFinalContents: [],
+      messages: [],
+      repairMarkers: [],
+      resultText: "No evidence was gathered.",
+      taskPrompt: "Return every requested deliverable.",
+    }),
+    null,
+  );
 });
 
 test("RepairPolicyRegistry skips final-recovery repair before budget is exhausted", () => {
