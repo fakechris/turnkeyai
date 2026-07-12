@@ -53,7 +53,14 @@ test("runs one tool round then a final answer, in order", async () => {
 
   assert.deepEqual(
     events.map((e) => e.type),
-    ["model_response", "tool_started", "tool_result", "model_response", "final"]
+    [
+      "model_response",
+      "tool_admitted",
+      "tool_started",
+      "tool_result",
+      "model_response",
+      "final",
+    ]
   );
   const final = events.at(-1);
   assert.equal(final?.type === "final" && final.text, "done");

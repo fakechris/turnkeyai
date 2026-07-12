@@ -4,7 +4,7 @@ import test from "node:test";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import { createExecutionBudgetController } from "./execution-budget-controller";
-import type { RoleToolContext, RoleToolLoopOptions } from "../tool-use";
+import type { RoleToolContext } from "../tool-use";
 
 function call(id: string): LLMToolCall {
   return {
@@ -445,27 +445,10 @@ test("ExecutionBudgetController rethrows abort tool failures", async () => {
   );
 });
 
-test("ExecutionBudgetController applies engine tool-batch hook with active role loop executor", async () => {
+test("ExecutionBudgetController applies engine tool-batch hook through the authoritative executor", async () => {
   const controller = createExecutionBudgetController();
   const calls = [call("a")];
-  const seen: Array<{ activation: unknown; packet: unknown; signal: boolean }> = [];
-  const activeToolLoop: RoleToolLoopOptions = {
-    executor: {
-      definitions: () => [],
-      async execute(input) {
-        seen.push({
-          activation: input.activation,
-          packet: input.packet,
-          signal: Boolean(input.signal),
-        });
-        return {
-          toolCallId: input.call.id,
-          toolName: input.call.name,
-          content: "ok",
-        };
-      },
-    },
-  };
+  const seen: Array<{ callId: string; signal: boolean }> = [];
   const ctx = {
     activation: { thread: { threadId: "thread-1" } },
     packet: { taskPrompt: "task" },
@@ -475,9 +458,17 @@ test("ExecutionBudgetController applies engine tool-batch hook with active role 
   const results = await controller.runEngineToolBatchHook({
     calls,
     ctx,
+    runOne: async (toolCall, signal) => {
+      seen.push({ callId: toolCall.id, signal: Boolean(signal) });
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "ok",
+      };
+    },
     now: () => 0,
     toolLoopStartedAtMs: 0,
-    activeToolLoop,
+    activeToolLoop: { maxWallClockMs: 1_000 },
   });
 
   assert.deepEqual(results, [
@@ -489,8 +480,7 @@ test("ExecutionBudgetController applies engine tool-batch hook with active role 
   ]);
   assert.deepEqual(seen, [
     {
-      activation: ctx.activation,
-      packet: ctx.packet,
+      callId: "a",
       signal: true,
     },
   ]);

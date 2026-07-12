@@ -326,6 +326,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           activation,
           taskFingerprint: fingerprintRunJournalTask(activation),
           now: runNow,
+          ...(this.toolLoop?.executor.reconcile
+            ? {
+                reconcileEffect: (effect) =>
+                  this.toolLoop!.executor.reconcile!({
+                    call: effect.call,
+                    activation,
+                    packet,
+                    ...(signal ? { signal } : {}),
+                  }),
+              }
+            : {}),
         })
       : undefined;
     const restoredJournal = runJournal
@@ -455,6 +466,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         packet,
         toolTrace,
         observer,
+        ...(runJournal
+          ? {
+              effectLifecycle: {
+                onAdmitted: ({ round, call }) =>
+                  runJournal.effectLedger.admit({ round, call }),
+                onStarted: ({ call }) =>
+                  runJournal.effectLedger.start(call.id),
+                onResult: ({ result }) =>
+                  runJournal.effectLedger.recordResult(result),
+              },
+            }
+          : {}),
         toolLoopStartedAtMs,
         mapToolResultsForHistory,
         ...(signal ? { signal } : {}),
@@ -624,12 +647,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         // order-dependent serialization, bounded concurrency, and per-chunk
         // wall-clock aborts. `calls` here is already the executable subset (schema
         // validation and the per-turn cap ran in onBeforeExecute).
-        runToolBatch: async (calls, _runOne, hookCtx) =>
+        runToolBatch: async (calls, runOne, hookCtx) =>
           // The over-cap skipped results are produced by onBeforeExecute (above)
           // and ordered by agent-core after these executed results.
           executionBudget.runEngineToolBatchHook({
             calls,
             ctx: hookCtx,
+            runOne,
             now: runNow,
             toolLoopStartedAtMs,
             ...(activeToolLoop ? { activeToolLoop } : {}),
@@ -983,6 +1007,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         ...(initialRound > 0 ? { initialRound } : {}),
         ctx,
         ...(signal ? { signal } : {}),
+        ...(runJournal
+          ? {
+              effectLifecycle: {
+                onAdmitted: ({ round, call }) =>
+                  runJournal.effectLedger.admit({ round: round + 1, call }),
+                onStarted: ({ call }) =>
+                  runJournal.effectLedger.start(call.id),
+                onResult: ({ result }) =>
+                  runJournal.effectLedger.recordResult(result),
+              },
+            }
+          : {}),
         observer,
       });
     } catch (error) {

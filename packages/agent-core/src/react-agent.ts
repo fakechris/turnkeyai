@@ -58,7 +58,14 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
   const onToolCalls = hooks.onToolCalls ?? options.onToolCalls;
 
   return {
-    async *run({ messages, ctx, signal, initialRound }: ReActRunInput<Ctx>): AsyncIterable<ReActEvent> {
+    async *run({
+      messages,
+      ctx,
+      signal,
+      initialRound,
+      onToolExecutionStart,
+      onToolExecutionResult,
+    }: ReActRunInput<Ctx>): AsyncIterable<ReActEvent> {
       const resumedRound =
         typeof initialRound === "number" && Number.isFinite(initialRound)
           ? Math.max(0, Math.floor(initialRound))
@@ -292,27 +299,44 @@ export function createReActAgent<Ctx extends ToolContext>(options: ReActLoopOpti
           });
           throwIfAborted(signal);
           for (const call of executable) {
+            yield emit({ type: "tool_admitted", round, call });
+          }
+          throwIfAborted(signal);
+          for (const call of executable) {
             yield emit({ type: "tool_started", round, call });
           }
           const toolCtx: Ctx = signal ? ({ ...ctx, signal } as Ctx) : ctx;
-          const runOne = async (call: LLMToolCall): Promise<ToolResult> => {
+          const runOne = async (
+            call: LLMToolCall,
+            executionSignal?: AbortSignal,
+          ): Promise<ToolResult> => {
+            const activeSignal = executionSignal ?? signal;
+            const executionCtx = executionSignal
+              ? ({ ...ctx, signal: executionSignal } as Ctx)
+              : toolCtx;
+            await onToolExecutionStart?.({ round, call });
+            throwIfAborted(activeSignal);
+            let result: ToolResult;
             try {
-              return await options.toolkit.execute(call, toolCtx);
+              throwIfAborted(activeSignal);
+              result = await options.toolkit.execute(call, executionCtx);
             } catch (error) {
-              throwIfAborted(signal);
+              throwIfAborted(activeSignal);
               // Isolate a throwing tool as an error result instead of rejecting
               // the batch and crashing the whole loop.
-              return {
+              result = {
                 toolCallId: call.id,
                 toolName: call.name,
                 isError: true,
                 content: error instanceof Error ? error.message : String(error),
               };
             }
+            await onToolExecutionResult?.({ round, result });
+            return result;
           };
           const executed: ToolResult[] = hooks.runToolBatch
             ? await hooks.runToolBatch(executable, runOne, toolCtx)
-            : await Promise.all(executable.map(runOne));
+            : await Promise.all(executable.map((call) => runOne(call)));
           throwIfAborted(signal);
           // Executed results first, then onBeforeExecute's rejected results. A host
           // that rejects over-cap calls (e.g. an execution-cap that keeps the first N

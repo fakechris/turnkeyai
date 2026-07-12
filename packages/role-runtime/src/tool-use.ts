@@ -106,6 +106,9 @@ export interface RoleToolContext extends ToolContext {
 export interface RoleToolExecutor {
   definitions(): LLMToolDefinition[];
   execute(input: RoleToolExecutionInput): Promise<RoleToolExecutionResult>;
+  /** Read-only lookup by the stable tool-call/effect id. It must never dispatch
+   * the effect. Returning null means the external outcome cannot be proven. */
+  reconcile?(input: RoleToolExecutionInput): Promise<RoleToolExecutionResult | null>;
 }
 
 export interface RoleToolLoopOptions {
@@ -279,6 +282,8 @@ export async function executeRoleToolCalls(input: {
   toolCalls: LLMToolCall[];
   toolLoopStartedAtMs: number;
   signal?: AbortSignal | undefined;
+  onAdmitted?: ((call: LLMToolCall) => Promise<void>) | undefined;
+  onStarted?: ((call: LLMToolCall) => Promise<void>) | undefined;
   onProgress?:
     | ((
         call: LLMToolCall,
@@ -348,6 +353,8 @@ export async function executeRoleToolCalls(input: {
       const chunkResults = await Promise.all(
         chunk.map(async (call) => {
           throwIfAborted(input.signal);
+          await input.onAdmitted?.(call);
+          await input.onStarted?.(call);
           await emitProgress(call, {
             phase: "started",
             toolName: call.name,
@@ -441,6 +448,15 @@ export interface RuntimeForcedToolRoundObserver {
   }): Promise<{ messages: LLMMessage[]; toolResults: RoleToolExecutionResult[] }>;
 }
 
+export interface RuntimeForcedToolEffectLifecycle {
+  onAdmitted(input: { round: number; call: LLMToolCall }): Promise<void>;
+  onStarted(input: { round: number; call: LLMToolCall }): Promise<void>;
+  onResult(input: {
+    round: number;
+    result: RoleToolExecutionResult;
+  }): Promise<void>;
+}
+
 export async function executeRuntimeForcedToolRound(input: {
   toolLoop: RoleToolLoopOptions | undefined;
   runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
@@ -468,6 +484,7 @@ export async function executeRuntimeForcedToolRound(input: {
   mapToolResultsForHistory?(
     results: RoleToolExecutionResult[],
   ): Promise<RoleToolExecutionResult[]>;
+  effectLifecycle?: RuntimeForcedToolEffectLifecycle | undefined;
 }): Promise<{ messages: LLMMessage[]; toolResults: RoleToolExecutionResult[] }> {
   if (input.observer) {
     return input.observer.observeRuntimeForcedToolRound({
@@ -486,8 +503,20 @@ export async function executeRuntimeForcedToolRound(input: {
           toolCalls: input.toolCalls,
           toolLoopStartedAtMs: input.toolLoopStartedAtMs,
           ...(input.signal ? { signal: input.signal } : {}),
+          onAdmitted: (call) =>
+            input.effectLifecycle?.onAdmitted({ round: input.round, call }) ??
+            Promise.resolve(),
+          onStarted: (call) =>
+            input.effectLifecycle?.onStarted({ round: input.round, call }) ??
+            Promise.resolve(),
           onProgress,
-          onResult,
+          onResult: async (result) => {
+            await input.effectLifecycle?.onResult({
+              round: input.round,
+              result,
+            });
+            await onResult(result);
+          },
         }),
       ...(input.mapToolResultsForHistory
         ? { mapToolResultsForHistory: input.mapToolResultsForHistory }
@@ -516,6 +545,12 @@ export async function executeRuntimeForcedToolRound(input: {
     toolCalls: input.toolCalls,
     toolLoopStartedAtMs: input.toolLoopStartedAtMs,
     ...(input.signal ? { signal: input.signal } : {}),
+    onAdmitted: (call) =>
+      input.effectLifecycle?.onAdmitted({ round: input.round, call }) ??
+      Promise.resolve(),
+    onStarted: (call) =>
+      input.effectLifecycle?.onStarted({ round: input.round, call }) ??
+      Promise.resolve(),
     onProgress: async (call, progress) => {
       roundTrace.progress?.push(
         toNativeToolProgressTrace(call, progress, input.now()),
@@ -525,6 +560,10 @@ export async function executeRuntimeForcedToolRound(input: {
       });
     },
     onResult: async (toolResult) => {
+      await input.effectLifecycle?.onResult({
+        round: input.round,
+        result: toolResult,
+      });
       roundTrace.results.push(toNativeToolResultTrace(toolResult));
       await input.persistNativeToolTrace();
     },

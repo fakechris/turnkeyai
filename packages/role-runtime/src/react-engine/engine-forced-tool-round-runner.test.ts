@@ -19,6 +19,7 @@ test("createEngineRuntimeForcedToolRoundRunner wires forced-round persistence an
   const toolTrace: NativeToolRoundTrace[] = [];
   const persisted: TeamMessage[] = [];
   const providerProgress: unknown[] = [];
+  const lifecycle: string[] = [];
   const call: LLMToolCall = {
     id: "call-1",
     name: "permission_result",
@@ -29,6 +30,7 @@ test("createEngineRuntimeForcedToolRoundRunner wires forced-round persistence an
       executor: {
         definitions: () => [],
         async execute() {
+          lifecycle.push("execute");
           return {
             toolCallId: "call-1",
             toolName: "permission_result",
@@ -52,6 +54,17 @@ test("createEngineRuntimeForcedToolRoundRunner wires forced-round persistence an
     activation: buildActivation(),
     packet: buildPacket(),
     toolTrace,
+    effectLifecycle: {
+      async onAdmitted({ call: admittedCall }) {
+        lifecycle.push(`admitted:${admittedCall.id}`);
+      },
+      async onStarted({ call: startedCall }) {
+        lifecycle.push(`started:${startedCall.id}`);
+      },
+      async onResult({ result: settledResult }) {
+        lifecycle.push(`result:${settledResult.toolCallId}`);
+      },
+    },
     toolLoopStartedAtMs: 1200,
   });
 
@@ -68,6 +81,12 @@ test("createEngineRuntimeForcedToolRoundRunner wires forced-round persistence an
   assert.equal(toolTrace[0]?.round, 1);
   assert.equal(toolTrace[0]?.calls[0]?.name, "permission_result");
   assert.equal(toolTrace[0]?.results[0]?.toolName, "permission_result");
+  assert.deepEqual(lifecycle, [
+    "admitted:call-1",
+    "started:call-1",
+    "execute",
+    "result:call-1",
+  ]);
   assert.ok(persisted.length > 0);
   assert.equal(
     providerProgress.some(
@@ -134,6 +153,56 @@ test("createRoleEngineRuntimeForcedToolRoundRunner selects tool-loop recorder fo
     ),
     true,
   );
+});
+
+test("forced tool execution fails closed when authoritative effect persistence fails", async (t) => {
+  for (const failurePoint of ["admitted", "started"] as const) {
+    await t.test(failurePoint, async () => {
+      let executions = 0;
+      const runner = createEngineRuntimeForcedToolRoundRunner({
+        toolLoop: {
+          executor: {
+            definitions: () => [],
+            async execute({ call }) {
+              executions += 1;
+              return {
+                toolCallId: call.id,
+                toolName: call.name,
+                content: "must not run",
+              };
+            },
+          },
+        },
+        runtimeProgressRecorder: undefined,
+        now: () => 1234,
+        activation: buildActivation(),
+        packet: buildPacket(),
+        toolTrace: [],
+        toolLoopStartedAtMs: 1200,
+        effectLifecycle: {
+          async onAdmitted() {
+            if (failurePoint === "admitted") throw new Error("admit failed");
+          },
+          async onStarted() {
+            if (failurePoint === "started") throw new Error("start failed");
+          },
+          async onResult() {},
+        },
+      });
+
+      await assert.rejects(
+        runner({
+          messages: [{ role: "user", content: "Run." }],
+          toolCalls: [
+            { id: "call-1", name: "permission_result", input: {} },
+          ],
+          assistantText: "Running.",
+        }),
+        failurePoint === "admitted" ? /admit failed/ : /start failed/,
+      );
+      assert.equal(executions, 0);
+    });
+  }
 });
 
 function buildActivation(): RoleActivationInput {

@@ -468,6 +468,85 @@ test("engine agent event consumption routes through runner owner", () => {
   );
 });
 
+test("authoritative effect lifecycle is fail-closed and stays outside observers", () => {
+  const adapterSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  const runnerSource = readFileSync(
+    path.join(ENGINE_DIR, "engine-agent-runner.ts"),
+    "utf8",
+  );
+  const observerSource = readFileSync(ENGINE_RUN_OBSERVER, "utf8");
+  const toolUseSource = readFileSync(TOOL_USE, "utf8");
+  const executeStart = toolUseSource.indexOf(
+    "export async function executeRoleToolCalls",
+  );
+  const executeEnd = toolUseSource.indexOf(
+    "export interface RuntimeForcedToolRoundObserver",
+    executeStart,
+  );
+  const executeSource = toolUseSource.slice(executeStart, executeEnd);
+
+  assert.equal(
+    adapterSource.includes("runJournal.effectLedger.admit"),
+    true,
+    "engine composition must persist effect admission for normal and forced rounds",
+  );
+  assert.equal(
+    adapterSource.includes("runJournal.effectLedger.start"),
+    true,
+    "engine composition must persist effect start before dispatch",
+  );
+  assert.equal(
+    adapterSource.includes("runJournal.effectLedger.recordResult"),
+    true,
+    "engine composition must persist effect receipts",
+  );
+  assert.ok(
+    runnerSource.indexOf("effectLifecycle?.onStarted") <
+      runnerSource.indexOf("observer.onToolStarted"),
+    "normal tool start must reach the authoritative ledger before observers",
+  );
+  assert.equal(
+    runnerSource.includes("onToolExecutionStart: async"),
+    true,
+    "normal tool start persistence must run at the actual dispatch boundary",
+  );
+  assert.equal(
+    runnerSource.includes("onToolExecutionResult: async"),
+    true,
+    "normal tool receipts must persist at the actual executor-return boundary",
+  );
+  assert.equal(
+    adapterSource.includes("runToolBatch: async (calls, runOne, hookCtx)"),
+    true,
+    "engine batch scheduling must execute through agent-core's authoritative runOne boundary",
+  );
+  assert.equal(
+    adapterSource.includes("_runOne"),
+    false,
+    "engine batch scheduling must not discard the authoritative runOne executor",
+  );
+  assert.ok(
+    runnerSource.indexOf("effectLifecycle?.onResult") <
+      runnerSource.indexOf("observer.onToolResult"),
+    "normal tool receipt must reach the authoritative ledger before observers",
+  );
+  assert.equal(
+    observerSource.includes("effectLedger"),
+    false,
+    "EngineRunObserver must not own authoritative effect state",
+  );
+  assert.ok(
+    executeSource.indexOf("await input.onAdmitted?.(call)") <
+      executeSource.indexOf("activeToolLoop.executor.execute"),
+    "forced tool admission must persist before external dispatch",
+  );
+  assert.ok(
+    executeSource.indexOf("await input.onStarted?.(call)") <
+      executeSource.indexOf("activeToolLoop.executor.execute"),
+    "forced tool start must persist before external dispatch",
+  );
+});
+
 test("engine ReAct agent creation routes through runner owner", () => {
   const source = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
   const start = source.indexOf("private async runEngine");
