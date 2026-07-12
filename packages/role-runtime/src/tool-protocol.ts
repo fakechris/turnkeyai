@@ -244,11 +244,22 @@ export function normalizeSessionToolAliasCalls(
 export function normalizeSessionToolCalls(
   toolCalls: LLMToolCall[],
   sessionContext = "",
+  declaredContinuationWorkerRunKey?: string,
 ): LLMToolCall[] {
   const knownSessionKeys = extractKnownWorkerSessionKeys(sessionContext);
   return toolCalls.map((call) => {
     if (call.name !== "sessions_send" && call.name !== "sessions_history") {
       return call;
+    }
+    if (call.name === "sessions_send" && declaredContinuationWorkerRunKey) {
+      return {
+        ...call,
+        input: {
+          ...call.input,
+          session_key: declaredContinuationWorkerRunKey,
+          mode: "continue",
+        },
+      };
     }
     const sessionKey = readStringInput(call.input, "session_key");
     const extractedSessionKey = sessionKey

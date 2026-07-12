@@ -41,6 +41,31 @@ test("ENGINE_TOOL_CALL_NORMALIZATION_ORDER pins the engine normalizer sequence",
   ]);
 });
 
+test("normalizeEngineToolCalls binds an explicitly declared continuation proposal", () => {
+  const normalized = normalizeEngineToolCalls(
+    [
+      {
+        id: "send-1",
+        name: "sessions_send",
+        input: {
+          session_key: "worker:browser:wrong",
+          mode: "read_result",
+          message: "Revisit the prior evidence.",
+        },
+      },
+    ],
+    baseContext({
+      declaredContinuationWorkerRunKey: "worker:browser:task:task-1:call-1",
+    }),
+  );
+
+  assert.deepEqual(normalized[0]?.input, {
+    session_key: "worker:browser:task:task-1:call-1",
+    mode: "continue",
+    message: "Revisit the prior evidence.",
+  });
+});
+
 test("normalizeEngineToolCalls preserves model-proposed source timeouts", () => {
   const taskPrompt = [
     "Evaluate a slow source for a release-risk note.",

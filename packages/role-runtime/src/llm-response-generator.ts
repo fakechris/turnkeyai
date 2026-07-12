@@ -209,6 +209,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         buildToolDefinitionFilterTaskContext(input.activation, input.packet.taskPrompt),
       )
       : undefined;
+    const declaredContinuationWorkerRunKey =
+      input.packet.continuityMode === "resume-existing" &&
+      input.packet.continuationContext?.source === "explicit_user_target"
+        ? input.packet.continuationContext.workerRunKey
+        : undefined;
+    if (
+      declaredContinuationWorkerRunKey &&
+      (!activeToolLoop || !toolDefinitions?.some((definition) => definition.name === "sessions_send"))
+    ) {
+      throw new Error("explicit worker continuation requires the sessions_send tool");
+    }
 
     let initialGatewayInput = buildGatewayInput({
       activation: input.activation,
@@ -313,6 +324,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       recoveryToolBudget,
       recoveryToolCallsBeforeActivation,
     } = args;
+    const declaredContinuationWorkerRunKey =
+      packet.continuityMode === "resume-existing" &&
+      packet.continuationContext?.source === "explicit_user_target"
+        ? packet.continuationContext.workerRunKey
+        : undefined;
     const lifecycle = createRunLifecycleRecorder({
       activation,
       recorder: this.runtimeProgressRecorder,
@@ -617,7 +633,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               activation,
             );
           }
-          return planned;
+          return round === initialRound && declaredContinuationWorkerRunKey
+            ? { ...planned, forceToolChoice: { name: "sessions_send" } }
+            : planned;
         },
         // Tool-call normalization — the engine's full port of the inline pipeline
         // (Stage 8B Batch B). Runs every active-loop round before execution and
@@ -638,6 +656,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolTrace,
             repairMarkers: hookCtx.repairMarkers ?? [],
             permissionPolicy,
+            ...(declaredContinuationWorkerRunKey
+              ? { declaredContinuationWorkerRunKey }
+              : {}),
             taskFacts,
             executionBudget,
             recoveryToolBudget,

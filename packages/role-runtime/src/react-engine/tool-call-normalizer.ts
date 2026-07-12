@@ -49,6 +49,7 @@ export interface ToolCallNormalizationContext {
   toolTrace: NativeToolRoundTrace[];
   repairMarkers: LLMMessage[];
   sessionContinuationContext: string;
+  declaredContinuationWorkerRunKey?: string;
   sessionContinuationDirective: SessionContinuationDirective | null;
   sessionContinuationLookupDirective: SessionContinuationLookupDirective | null;
   browserAvailable: boolean;
@@ -64,6 +65,7 @@ export interface ToolCallNormalizationContextInput {
   toolTrace: NativeToolRoundTrace[];
   repairMarkers: LLMMessage[];
   capabilityInspection?: { availableWorkers?: readonly string[] };
+  declaredContinuationWorkerRunKey?: string;
   taskFacts?: TaskFactsSnapshot;
   permissionPolicy?: PermissionPolicy;
   testOnlyCharacterizeRetiredPolicies?: true;
@@ -86,6 +88,7 @@ export interface EngineToolCallsHookInput {
   recoveryToolBudget: RecoveryToolBudget | null;
   recoveryToolCallsBeforeActivation: number;
   capabilityInspection?: { availableWorkers?: readonly string[] };
+  declaredContinuationWorkerRunKey?: string;
   taskFacts?: TaskFactsSnapshot;
   testOnlyCharacterizeRetiredPolicies?: true;
 }
@@ -101,7 +104,12 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
   { name: "sessionToolAlias", apply: (c) => normalizeSessionToolAliasCalls(c) },
   {
     name: "sessionToolCalls",
-    apply: (c, x) => normalizeSessionToolCalls(c, x.sessionContinuationContext),
+    apply: (calls, context) =>
+      normalizeSessionToolCalls(
+        calls,
+        context.sessionContinuationContext,
+        context.declaredContinuationWorkerRunKey,
+      ),
   },
 ];
 
@@ -209,6 +217,9 @@ export function buildToolCallNormalizationContext(
     messages: input.messages,
     toolTrace: input.toolTrace,
     repairMarkers: input.repairMarkers,
+    ...(input.declaredContinuationWorkerRunKey
+      ? { declaredContinuationWorkerRunKey: input.declaredContinuationWorkerRunKey }
+      : {}),
     sessionContinuationContext,
     sessionContinuationDirective: continuationDirective,
     sessionContinuationLookupDirective:
@@ -288,6 +299,9 @@ export function applyEngineToolCallsHook(
       toolTrace: input.toolTrace,
       repairMarkers: input.repairMarkers,
       permissionPolicy: input.permissionPolicy,
+      ...(input.declaredContinuationWorkerRunKey
+        ? { declaredContinuationWorkerRunKey: input.declaredContinuationWorkerRunKey }
+        : {}),
       ...(input.capabilityInspection === undefined
         ? {}
         : { capabilityInspection: input.capabilityInspection }),

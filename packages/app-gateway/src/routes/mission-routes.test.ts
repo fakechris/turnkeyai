@@ -1228,7 +1228,12 @@ describe("mission-routes", () => {
   // PR K3.5 — mission lifecycle (create → run → follow-up).
   describe("POST /missions + /missions/:id/messages (K3.5)", () => {
     function buildOrchestrator() {
-      const posts: Array<{ threadId: string; content: string; idempotencyKey?: string }> = [];
+      const posts: Array<{
+        threadId: string;
+        content: string;
+        idempotencyKey?: string;
+        continuation?: { mode: "resume-existing"; workerRunKey: string };
+      }> = [];
       const ticks: string[] = [];
       const spawns: Array<{ title: string; desc: string; owner: string; mode: Mission["mode"] }> = [];
       let nextThread = 0;
@@ -1246,6 +1251,7 @@ describe("mission-routes", () => {
           threadId: string;
           content: string;
           idempotencyKey?: string;
+          continuation?: { mode: "resume-existing"; workerRunKey: string };
         }) {
           posts.push(input);
         },
@@ -1813,7 +1819,13 @@ describe("mission-routes", () => {
           req: createRequest({
             method: "POST",
             url: `/missions/${created.id}/messages`,
-            body: { content: "继续看 macOS 平台支持" },
+            body: {
+              content: "继续看 macOS 平台支持",
+              continuation: {
+                mode: "resume-existing",
+                workerRunKey: "worker:browser:task:prior",
+              },
+            },
           }),
           res,
           url: new URL(`http://127.0.0.1/missions/${created.id}/messages`),
@@ -1826,6 +1838,10 @@ describe("mission-routes", () => {
         assert.equal(posts.length, 2);
         assert.equal(posts[1]!.threadId, created.threadId);
         assert.equal(posts[1]!.content, "继续看 macOS 平台支持");
+        assert.deepEqual(posts[1]!.continuation, {
+          mode: "resume-existing",
+          workerRunKey: "worker:browser:task:prior",
+        });
         assert.ok(ticks.every((id) => id === created.id));
       } finally {
         t.cleanup();

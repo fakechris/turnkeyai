@@ -143,7 +143,12 @@ export interface BrowserContinuationHint {
 }
 
 export interface DispatchContinuationContext {
-  source: "scheduled_reentry" | "timeout_summary" | "follow_up" | "recovery_dispatch";
+  source:
+    | "scheduled_reentry"
+    | "timeout_summary"
+    | "follow_up"
+    | "explicit_user_target"
+    | "recovery_dispatch";
   workerType?: WorkerKind;
   workerRunKey?: RunKey;
   summary?: string;

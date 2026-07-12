@@ -9011,6 +9011,101 @@ test("llm role response generator forces sessions_send for explicit continuation
   assert.match(String(executedCalls[0]?.input.message), /decision criteria/);
 });
 
+test("llm role response generator executes a typed explicit worker continuation first", async () => {
+  const workerRunKey = "worker:browser:task:prior:call-1";
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_send" });
+      return {
+        text: "Continuing the declared worker.",
+        toolCalls: [
+          {
+            id: "call-explicit-continuation",
+            name: "sessions_send",
+            input: {
+              session_key: "worker:browser:wrong",
+              mode: "read_result",
+              message: "Revisit the prior evidence and report what changed.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "auto");
+    return {
+      text: "Final answer after the declared continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              session_key: { type: "string" },
+              mode: { type: "string", enum: ["continue", "read_result"] },
+              message: { type: "string" },
+            },
+            required: ["session_key", "mode", "message"],
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.input.session_key, workerRunKey);
+      assert.equal(input.call.input.mode, "continue");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          session_key: workerRunKey,
+          final_content: "Updated worker evidence.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 8 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: "Revisit the prior worker evidence.",
+      continuityMode: "resume-existing",
+      continuationContext: {
+        source: "explicit_user_target",
+        workerType: "browser",
+        workerRunKey,
+      },
+    },
+  });
+
+  assert.equal(executedCalls.length, 1);
+  assert.equal(result.content, "Final answer after the declared continuation.");
+});
+
 test("llm role response generator forces session lookup when explicit continuation answers directly without a key", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const sessionKey = "worker:explore:task-source:toolu-timeout";

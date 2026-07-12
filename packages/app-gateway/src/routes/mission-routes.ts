@@ -97,11 +97,17 @@ export interface MissionOrchestratorDeps {
     threadId: string;
     content: string;
     idempotencyKey?: string;
+    continuation?: MissionFollowUpContinuation;
   }): Promise<void>;
   /** Mirrors the linked thread's messages onto the mission activity
    *  log immediately. Routes call this after each post so the new row
    *  appears without waiting for the next interval tick. */
   threadBridge: MissionThreadBridge;
+}
+
+interface MissionFollowUpContinuation {
+  mode: "resume-existing";
+  workerRunKey: string;
 }
 
 export interface MissionRouteDeps {
@@ -491,7 +497,7 @@ export async function handleMissionRoutes(input: {
       });
       return true;
     }
-    const bodyResult = await readJsonBodySafe<{ content?: unknown }>(req);
+    const bodyResult = await readJsonBodySafe<{ content?: unknown; continuation?: unknown }>(req);
     if (!bodyResult.ok) {
       sendJson(res, 400, { error: bodyResult.error });
       return true;
@@ -501,6 +507,12 @@ export async function handleMissionRoutes(input: {
       sendJson(res, 400, { error: "content is required" });
       return true;
     }
+    const continuationResult = parseMissionFollowUpContinuation(bodyResult.value.continuation);
+    if (!continuationResult.ok) {
+      sendJson(res, 400, { error: continuationResult.error });
+      return true;
+    }
+    const continuation = continuationResult.value;
     // codex K3.5: honor Idempotency-Key so a retried follow-up
     // doesn't double-post on the linked thread. Fingerprinting on
     // (missionId, content) — same key + same payload replays the
@@ -512,7 +524,7 @@ export async function handleMissionRoutes(input: {
       res,
       store: deps.idempotencyStore,
       scope: `missions:${mission.id}:messages`,
-      fingerprint: { missionId: mission.id, content },
+      fingerprint: { missionId: mission.id, content, ...(continuation ? { continuation } : {}) },
       execute: async () => {
         const followUpMission = await reopenDoneMissionForFollowUp(deps, mission);
         startMissionFollowUpInBackground({
@@ -521,6 +533,7 @@ export async function handleMissionRoutes(input: {
           mission: followUpMission,
           threadId: linkedThreadId,
           content,
+          ...(continuation ? { continuation } : {}),
         });
         return {
           statusCode: 202,
@@ -1403,6 +1416,7 @@ function startMissionFollowUpInBackground(input: {
   mission: Mission;
   threadId: string;
   content: string;
+  continuation?: MissionFollowUpContinuation;
 }): void {
   void (async () => {
     try {
@@ -1416,6 +1430,7 @@ function startMissionFollowUpInBackground(input: {
         threadId: input.threadId,
         content: prepared.content,
         ...(prepared.deliveryId ? { idempotencyKey: prepared.deliveryId } : {}),
+        ...(input.continuation ? { continuation: input.continuation } : {}),
       });
       const mirrorLoop = mirrorMissionWhilePostRuns({
         orchestrator: input.orchestrator,
@@ -1555,6 +1570,26 @@ function readApprovalToolPermissionThreadId(payload: Record<string, unknown> | u
   }
   const threadId = toolPermission["threadId"];
   return typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
+}
+
+function parseMissionFollowUpContinuation(
+  value: unknown,
+): { ok: true; value?: MissionFollowUpContinuation } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true };
+  if (!isRecord(value)) {
+    return { ok: false, error: "continuation must be an object" };
+  }
+  if (value["mode"] !== "resume-existing") {
+    return { ok: false, error: "continuation.mode must be resume-existing" };
+  }
+  const workerRunKey = readNonEmptyString(value["workerRunKey"]);
+  if (!workerRunKey) {
+    return { ok: false, error: "continuation.workerRunKey is required" };
+  }
+  return {
+    ok: true,
+    value: { mode: "resume-existing", workerRunKey },
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -470,11 +470,16 @@ const missionOrchestrator = {
     threadId: string;
     content: string;
     idempotencyKey?: string;
+    continuation?: {
+      mode: "resume-existing";
+      workerRunKey: string;
+    };
   }) {
     await coordinationEngine.handleUserPost({
       threadId: input.threadId,
       content: input.content,
       ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+      ...(input.continuation ? { continuation: input.continuation } : {}),
     });
   },
   threadBridge: missionThreadBridge,
