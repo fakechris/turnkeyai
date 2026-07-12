@@ -38,9 +38,9 @@ historical failure corpus without preserving the old control plane.
 - execution-semantics simulator: 17/17
 - `git diff --check`: pass
 
-## Remaining Work
+## Measurement
 
-The production migration slices are now complete. The remaining goal item is a
-fixed-version MiniMax-M3 reliability measurement. It is observational: run one
-unchanged commit, always collect RunTrace and structured termination output,
-classify failures, and do not patch production code from individual scenarios.
+The fixed-version MiniMax-M3 measurement is recorded in
+`docs/STAGE9_V2_CLOSURE_REPORT.md`. It stopped at the first model-selection
+failure as required; no production policy was restored and no scenario patch
+was made.
