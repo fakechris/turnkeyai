@@ -64,7 +64,7 @@ test("llm role response generator enforces one absolute run deadline", async () 
       assert.equal(providerSignal?.aborted, true);
       assert.equal(
         (providerSignal?.reason as { code?: string } | undefined)?.code,
-        "run_deadline_exceeded",
+        "attempt_deadline_exceeded",
       );
       assert.equal(
         readEngineRunDiagnostics(error)?.runTrace.incidents.wall_clock_budget,
@@ -5828,7 +5828,7 @@ test("llm role response generator accepts markdown-bold requested conclusion lab
   assert.ok(gatewayInputs.length >= 2);
 });
 
-test("llm role response generator repairs required timeout continuation synthesis that omits completed browser evidence dimensions", async () => {
+test("llm role response generator does not bypass attempt budget for evidence repair", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let executedTools = 0;
   let now = 0;
@@ -5979,32 +5979,24 @@ test("llm role response generator repairs required timeout continuation synthesi
     },
   });
 
-  assert.match(result.content, /Stuck missions: 6/);
-  assert.match(result.content, /Weak answer rate: 24%/);
-  assert.equal(executedTools, 3);
-  assert.equal(gatewayInputs.length, 4);
-  assert.equal(gatewayInputs[3]?.toolChoice, "none");
-  const repairPrompt = readToolContent(
-    gatewayInputs[3]?.messages.at(-1)?.content ?? "",
+  assert.equal(
+    result.content,
+    "The product signal dashboard closeout only has a high-level browser note and residual risk from the local fixture.",
   );
-  assert.match(
-    repairPrompt,
-    /final answer omitted requested browser evidence dimensions/,
-  );
-  assert.match(repairPrompt, /product signal dashboard counters/);
-  assert.match(repairPrompt, /Stuck missions: 6/);
-  assert.match(repairPrompt, /Weak answer rate: 24%/);
+  assert.equal(executedTools, 2);
+  assert.equal(gatewayInputs.length, 3);
+  assert.equal(gatewayInputs[2]?.toolChoice, "none");
   const closeout = result.metadata?.toolLoopCloseout as
     | Record<string, unknown>
     | undefined;
-  assert.equal(closeout?.reason, "completed_sub_agent_final");
-  assert.equal(closeout?.toolName, "sessions_send");
-  assert.equal(closeout?.toolCallCount, 3);
+  assert.equal(closeout?.reason, "wall_clock_budget");
+  assert.equal(closeout?.toolName, undefined);
+  assert.equal(closeout?.toolCallCount, 2);
   const missionReport = result.metadata?.missionReport as
     | Record<string, unknown>
     | undefined;
-  assert.equal(missionReport?.status, "completed");
-  assert.equal(missionReport?.reason, "completed_sub_agent_final");
+  assert.equal(missionReport?.status, "partial");
+  assert.equal(missionReport?.reason, "wall_clock_budget");
   assert.equal(missionReport?.source, "runtime_derived");
   // runtime-derived reports do not carry authorizedPartial (task-authorization
   // is decided by an explicit model report / the evaluator, not the runtime).
@@ -6071,7 +6063,7 @@ test("llm role response generator terminates foreground tool execution at the ab
   await assert.rejects(
     () => generator.generate({ activation: buildActivation(), packet: buildPacket() }),
     (error) => {
-      assert.equal((error as { code?: string }).code, "run_deadline_exceeded");
+      assert.equal((error as { code?: string }).code, "attempt_deadline_exceeded");
       assert.equal(
         readEngineRunDiagnostics(error)?.runTrace.incidents.wall_clock_budget,
         1,
@@ -6081,7 +6073,7 @@ test("llm role response generator terminates foreground tool execution at the ab
   );
   assert.equal(
     (observedAbortReason as { code?: string } | undefined)?.code,
-    "run_deadline_exceeded",
+    "attempt_deadline_exceeded",
   );
   assert.equal(gatewayInputs.length, 1);
 });
@@ -6147,7 +6139,7 @@ test("llm role response generator does not extend the absolute deadline for loop
 
   await assert.rejects(
     () => generator.generate({ activation: buildActivation(), packet: buildPacket() }),
-    (error) => (error as { code?: string }).code === "run_deadline_exceeded",
+    (error) => (error as { code?: string }).code === "attempt_deadline_exceeded",
   );
   assert.equal(observedAbort, true);
   assert.equal(gatewayInputs.length, 1);
@@ -6214,7 +6206,7 @@ test("llm role response generator aborts foreground browser sessions at the pare
 
   await assert.rejects(
     () => generator.generate({ activation: buildActivation(), packet: buildPacket() }),
-    (error) => (error as { code?: string }).code === "run_deadline_exceeded",
+    (error) => (error as { code?: string }).code === "attempt_deadline_exceeded",
   );
   assert.equal(observedAbort, true);
   assert.equal(gatewayInputs.length, 1);
@@ -6487,7 +6479,7 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
   assert.equal(closeout?.roundCount, 1);
 });
 
-test("llm role response generator continues provider search pricing timeout before final synthesis", async () => {
+test("llm role response generator does not continue or append policy after attempt budget expires", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   let now = 0;
@@ -6621,23 +6613,15 @@ test("llm role response generator continues provider search pricing timeout befo
     },
   });
 
-  assert.equal(
-    result.content,
-    [
-      "Final answer from continued provider evidence.",
-      "",
-      "Timeout closeout: the resumed source produced source-backed evidence. Continue or retry the same source-check with a bounded timeout if future release-gated evidence is missing or if production-equivalent validation is required.",
-    ].join("\n"),
-  );
+  assert.equal(result.content, "Final answer from continued provider evidence.");
   assert.deepEqual(
     executedCalls.map((call) => call.name),
-    ["sessions_spawn", "sessions_send"],
+    ["sessions_spawn"],
   );
   const closeout = result.metadata?.toolLoopCloseout as
     | Record<string, unknown>
     | undefined;
-  assert.equal(closeout?.reason, "completed_sub_agent_final");
-  assert.equal(closeout?.toolName, "sessions_send");
+  assert.equal(closeout?.reason, "wall_clock_budget");
 });
 
 test("llm role response generator enforces final recovery total tool budget", async () => {
@@ -11577,7 +11561,7 @@ test("llm role response generator prefers explicit timeout closeout session over
   );
 });
 
-test("llm role response generator adds a browser probe after content-poor resumed loopback timeout evidence", async () => {
+test("llm role response generator does not inject a probe for content-poor resumed timeout evidence", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gatewayInputs: GenerateTextInput[] = [];
   const timeoutSessionKey =
@@ -11607,7 +11591,7 @@ test("llm role response generator adds a browser probe after content-poor resume
       });
     }
     return {
-      text: "Final release-risk note: browser probe verified TURNKEYAI_MISSION_FIXTURE_OK; earlier timeout no longer blocks the source-bounded conclusion.",
+      text: "Final release-risk note: the source remains unverified after the resumed timeout.",
       modelId: "claude-test",
       providerId: "anthropic",
       protocol: "anthropic-compatible",
@@ -11735,7 +11719,7 @@ test("llm role response generator adds a browser probe after content-poor resume
     },
   });
 
-  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.doesNotMatch(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
   assert.deepEqual(
     executedCalls.map((call) => [
       call.name,
@@ -11743,10 +11727,9 @@ test("llm role response generator adds a browser probe after content-poor resume
     ]),
     [
       ["sessions_send", timeoutSessionKey],
-      ["sessions_spawn", "browser"],
     ],
   );
-  assert.ok(
+  assert.equal(
     gatewayInputs.some((input) =>
       readMessageContentTextForTest(
         input.messages.at(-1)?.content ?? "",
@@ -11754,10 +11737,11 @@ test("llm role response generator adds a browser probe after content-poor resume
         "Runtime correction: resumed timeout evidence is still content-poor.",
       ),
     ),
+    false,
   );
 });
 
-test("llm role response generator adds a browser probe when resumed loopback session times out again", async () => {
+test("llm role response generator does not manufacture a browser probe after resumed timeout", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const timeoutSessionKey =
     "worker:explore:task:TASK-slow-again:call_function_timeout_1";
@@ -11782,7 +11766,7 @@ test("llm role response generator adds a browser probe when resumed loopback ses
       });
     }
     return {
-      text: "Final release-risk note: supplemental browser probe verified visible marker TURNKEYAI_MISSION_FIXTURE_OK after the resumed timeout.",
+      text: "Final release-risk note: the source remains unverified after the resumed timeout.",
       modelId: "claude-test",
       providerId: "anthropic",
       protocol: "anthropic-compatible",
@@ -11922,7 +11906,7 @@ test("llm role response generator adds a browser probe when resumed loopback ses
     },
   });
 
-  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.doesNotMatch(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
   assert.deepEqual(
     executedCalls.map((call) => [
       call.name,
@@ -11930,7 +11914,6 @@ test("llm role response generator adds a browser probe when resumed loopback ses
     ]),
     [
       ["sessions_send", timeoutSessionKey],
-      ["sessions_spawn", "browser"],
     ],
   );
 });
@@ -12050,7 +12033,7 @@ test("llm role response generator does not browser-probe content-poor timeout wh
   );
 });
 
-test("llm role response generator probes browser after runtime-forced continuation times out", async () => {
+test("llm role response generator does not manufacture a browser probe after forced continuation timeout", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const timeoutSessionKey =
     "worker:explore:task:TASK-runtime-forced:call_function_timeout_1";
@@ -12087,7 +12070,7 @@ test("llm role response generator probes browser after runtime-forced continuati
       );
     }
     return {
-      text: "Final release-risk note: supplemental browser probe verified visible marker TURNKEYAI_MISSION_FIXTURE_OK after the runtime-forced continuation timeout.",
+      text: "Final release-risk note: the source remains unverified after the forced continuation timeout.",
       modelId: "claude-test",
       providerId: "anthropic",
       protocol: "anthropic-compatible",
@@ -12238,7 +12221,7 @@ test("llm role response generator probes browser after runtime-forced continuati
     },
   });
 
-  assert.match(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
+  assert.doesNotMatch(result.content, /TURNKEYAI_MISSION_FIXTURE_OK/);
   assert.deepEqual(
     executedCalls.map((call) => [
       call.name,
@@ -12247,7 +12230,6 @@ test("llm role response generator probes browser after runtime-forced continuati
     [
       ["sessions_list", "explore"],
       ["sessions_send", timeoutSessionKey],
-      ["sessions_spawn", "browser"],
     ],
   );
 });

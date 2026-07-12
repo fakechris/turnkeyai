@@ -10,7 +10,6 @@ import {
 } from "../runtime-policy/prompt-renderers";
 import { buildContinuationDirectiveContext } from "../tool-protocol";
 import {
-  enforceSupplementalLocalTimeoutProbeToolCall,
   findSessionContinuationDirective,
   findSessionContinuationLookupDirective,
   limitIndependentEvidenceSpawnCalls,
@@ -33,7 +32,6 @@ import type {
   ExecutionBudgetController,
   RecoveryToolBudget,
 } from "./execution-budget-controller";
-import { applyBoundedSourceCheckTimeoutBudget } from "./session-timeout-budget";
 
 // Stage 8 engine cleanup — ToolCallNormalizer.
 //
@@ -106,12 +104,10 @@ export interface EngineToolCallsHookInput {
  *   7. normalizePrivateUrlResearchSpawnCalls
  *   8. normalizeLocalUrlWebFetchCalls
  *   9. normalizeBoundedTimeoutSourceSpawnAgents
- *  10. applyBoundedSourceCheckTimeoutBudget
- *  11. enforceSupplementalLocalTimeoutProbeToolCall
- *  12. normalizeBoundedTimeoutDuplicateSourceSpawns
- *  13. applySessionContinuationDirective (repeat)
- *  14. normalizeApprovalGatedBrowserSpawnCalls
- *  15. limitIndependentEvidenceSpawnCalls
+ *  10. normalizeBoundedTimeoutDuplicateSourceSpawns
+ *  11. applySessionContinuationDirective (repeat)
+ *  12. normalizeApprovalGatedBrowserSpawnCalls
+ *  13. limitIndependentEvidenceSpawnCalls
  */
 const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
   { name: "sessionToolAlias", apply: (c) => normalizeSessionToolAliasCalls(c) },
@@ -163,18 +159,6 @@ const ENGINE_TOOL_CALL_NORMALIZATION_PIPELINE: ToolCallNormalizationStep[] = [
         exploreAvailable: x.exploreAvailable,
         taskPrompt: x.taskPrompt,
       }),
-  },
-  {
-    name: "boundedSourceTimeoutBudget",
-    apply: (c, x) =>
-      applyBoundedSourceCheckTimeoutBudget(c, {
-        toolTrace: x.toolTrace,
-        ...(x.taskFacts === undefined ? {} : { taskFacts: x.taskFacts }),
-      }),
-  },
-  {
-    name: "supplementalLocalTimeoutProbe",
-    apply: (c, x) => enforceSupplementalLocalTimeoutProbeToolCall(c, x.messages),
   },
   {
     name: "boundedTimeoutDuplicateSourceSpawn",

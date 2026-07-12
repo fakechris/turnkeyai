@@ -624,7 +624,6 @@ test("CloseoutPolicyRegistry pending-call flow passes continuation preview into 
         assert.equal(input.pendingContinuation, continuation);
         return {
           maxWallClockMs: 90_000,
-          requiredTimeoutContinuationPastWallClock: false,
           readElapsedMs: () => 90_000,
           buildCloseoutSnapshot: wallClockSnapshot,
         };
@@ -777,7 +776,6 @@ test("CloseoutPolicyRegistry returns wall-clock budget closeout decision", () =>
     roundCount: 3,
     wallClockBudget: {
       maxWallClockMs: 90_000,
-      requiredTimeoutContinuationPastWallClock: false,
       readElapsedMs: () => 90_000,
       buildCloseoutSnapshot: wallClockSnapshot,
     },
@@ -788,21 +786,19 @@ test("CloseoutPolicyRegistry returns wall-clock budget closeout decision", () =>
   assert.deepEqual(decision?.closeout, wallClockSnapshot().closeout);
 });
 
-test("CloseoutPolicyRegistry lets required timeout continuation pass wall-clock budget", () => {
+test("CloseoutPolicyRegistry does not let continuation policy bypass wall-clock budget", () => {
   const registry = createCloseoutPolicyRegistry();
 
-  assert.equal(
-    registry.evaluateRemainingPendingCalls(remainingPendingInput({
+  const decision = registry.evaluateRemainingPendingCalls(remainingPendingInput({
       roundCount: 1,
       wallClockBudget: {
         maxWallClockMs: 90_000,
-        requiredTimeoutContinuationPastWallClock: true,
         readElapsedMs: () => 90_000,
         buildCloseoutSnapshot: wallClockSnapshot,
       },
-    })),
-    null,
-  );
+    }));
+
+  assert.equal(decision?.reason, "wall_clock_budget");
 });
 
 test("CloseoutPolicyRegistry skips wall-clock budget before any executed round", () => {
@@ -814,7 +810,6 @@ test("CloseoutPolicyRegistry skips wall-clock budget before any executed round",
       roundCount: 0,
       wallClockBudget: {
         maxWallClockMs: 90_000,
-        requiredTimeoutContinuationPastWallClock: false,
         readElapsedMs: () => {
           elapsedReads += 1;
           return 90_000;

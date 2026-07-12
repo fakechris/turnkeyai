@@ -81,7 +81,7 @@ test("session tool result protocol maps typed worker timeout to resumable sessio
       summary: "Sub-agent timed out at the absolute run deadline.",
       payload: {
         mode: "llm_sub_agent",
-        resumableReason: "run_deadline_exceeded",
+        resumableReason: "attempt_deadline_exceeded",
         content: "Non-authoritative partial text.",
       },
     },

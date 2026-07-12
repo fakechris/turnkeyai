@@ -3,10 +3,31 @@ import test from "node:test";
 
 import { RequestEnvelopeOverflowError } from "./request-envelope-guard";
 import {
+  createRetryAllowance,
   decideProviderRetry,
   type ProviderRetryPolicy,
 } from "./retry-policy";
 import { ProviderRequestError } from "./types";
+
+test("retry allowance is consumed once across one failure domain", () => {
+  const allowance = createRetryAllowance({
+    allowanceId: "allowance-1",
+    ownerScopeId: "gateway-call-1",
+    failureDomain: "model_transport",
+    maxAttempts: 2,
+  });
+
+  assert.equal(allowance.claimAttempt(), true);
+  assert.equal(allowance.claimAttempt(), true);
+  assert.equal(allowance.claimAttempt(), false);
+  assert.deepEqual(allowance.snapshot(), {
+    allowanceId: "allowance-1",
+    ownerScopeId: "gateway-call-1",
+    failureDomain: "model_transport",
+    initialAttempts: 2,
+    remainingAttempts: 0,
+  });
+});
 
 const policy: ProviderRetryPolicy = {
   transientMaxAttempts: 3,

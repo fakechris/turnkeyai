@@ -1,6 +1,6 @@
 # Execution Semantics Deviation Map
 
-Baseline: `origin/main` at `a2dec0b0`.
+Baseline: `origin/main` at `c37d52bb`.
 
 This document is an audit input for a future migration plan. It does not
 authorize implementation changes.
@@ -118,6 +118,8 @@ Likely migration owner: one explicit `RetryAllowance` owner per failure domain.
 
 ### Interrupted effects are replayed without an outcome ledger
 
+Status: **closed on main by the effect-ledger migration slice**.
+
 The current run journal can convert an interrupted native call into an error for
 the resumed model. Asking the model to send the call again is unsafe when the
 external side effect may have completed before the process crashed.
@@ -128,8 +130,9 @@ Target law:
 intent -> dispatch -> receipt; ambiguous dispatch becomes indeterminate
 ```
 
-Likely migration owner: execution-kernel effect ledger plus adapter-level
-idempotency reconciliation.
+Implemented owner: execution-kernel effect ledger plus adapter-level
+idempotency reconciliation. Keep this entry as a regression constraint; it is
+not remaining migration work.
 
 ### Durable suspension and active attempt time are not separate authorities
 

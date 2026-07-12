@@ -9,7 +9,6 @@ import {
   buildIncompleteApprovedBrowserSessionContinuationPrompt,
   buildIndependentEvidenceStreamContinuationPrompt,
   buildMissingApprovalGateRepairPrompt,
-  buildSupplementalLocalTimeoutProbePrompt,
   buildForcedPendingApprovalWaitTimeoutPermissionResultCall,
   FORCED_PERMISSION_RESULT_ASSISTANT_TEXT,
 } from "../runtime-policy/prompt-renderers";
@@ -19,9 +18,7 @@ import {
   findSessionContinuationLookupDirective,
   findIncompleteApprovedBrowserSession,
   hasExecutedSessionsSend,
-  shouldRunSupplementalLocalTimeoutProbe,
 } from "../runtime-facts/text-fallback-readers";
-import { hasLatestSupplementalLocalTimeoutProbePrompt } from "../runtime-facts/repair-marker-facts";
 import type { SubAgentToolTimeoutSignal } from "../runtime-facts/text-fallback-readers";
 import { produceTaskIntentEnvelope } from "../runtime-facts/task-intent-producer";
 import {
@@ -76,17 +73,6 @@ export interface TimeoutContinuationInput {
   tools?: readonly ContinuationToolDefinition[];
 }
 
-export interface SupplementalLocalTimeoutProbeInput {
-  messages: LLMMessage[];
-  taskPrompt: string;
-  toolTrace: NativeToolRoundTrace[];
-  evidenceText: string;
-  completedSessionEvidence: boolean;
-  timeoutSignal: SubAgentToolTimeoutSignal | null;
-  tools?: readonly ContinuationToolDefinition[];
-  browserAvailable: boolean;
-}
-
 export interface IncompleteApprovedBrowserSessionInput {
   results: readonly { toolName: string; content: string }[];
   messages: LLMMessage[];
@@ -124,11 +110,9 @@ export interface AfterExecuteContinuationInput {
   toolTrace: NativeToolRoundTrace[];
   timeoutSignal: SubAgentToolTimeoutSignal | null;
   completedSessionFinalContents: readonly string[] | null;
-  currentRoundEvidenceText: string;
   results: readonly { toolName: string; content: string }[];
   repairMarkers: LLMMessage[];
   tools?: readonly ContinuationToolDefinition[];
-  browserAvailable: boolean;
   taskFacts?: TaskFactsSnapshot;
 }
 
@@ -193,20 +177,13 @@ export class ContinuationController {
     if (!input.active) {
       return null;
     }
-    const probePending = hasLatestSupplementalLocalTimeoutProbePrompt(
-      input.messages,
-    );
     const continuationContext = buildContinuationDirectiveContext(
       input.taskPrompt,
       input.messages,
     );
-    const contextualDirective = !probePending
-      ? findSessionContinuationDirective(continuationContext)
-      : null;
-    const directive = probePending
-      ? null
-      : (contextualDirective ??
-        findSessionContinuationDirective(input.taskPrompt));
+    const directive =
+      findSessionContinuationDirective(continuationContext) ??
+      findSessionContinuationDirective(input.taskPrompt);
     if (
       directive &&
       !hasExecutedSessionsSend(input.toolTrace, directive.sessionKey) &&
@@ -224,7 +201,6 @@ export class ContinuationController {
     }
 
     const lookupDirective =
-      !probePending &&
       !directive &&
       !appliedApprovalBrowserContinuationRequested(input)
         ? findSessionContinuationLookupDirective(
@@ -361,40 +337,6 @@ export class ContinuationController {
       ],
       forceToolChoice: { name: "sessions_send" },
       reason: "coverage_timeout_continuation",
-    };
-  }
-
-  continueSupplementalLocalTimeoutProbe(
-    input: SupplementalLocalTimeoutProbeInput,
-  ): EngineContinueAction {
-    if (
-      !input.completedSessionEvidence &&
-      (!input.timeoutSignal || input.timeoutSignal.agentId === "browser")
-    ) {
-      return { kind: "none" };
-    }
-    const probe = shouldRunSupplementalLocalTimeoutProbe({
-      taskPrompt: input.taskPrompt,
-      messages: input.messages,
-      toolTrace: input.toolTrace,
-      evidenceText: input.evidenceText,
-      ...(input.tools === undefined ? {} : { tools: input.tools }),
-      browserAvailable: input.browserAvailable,
-    });
-    if (!probe) {
-      return { kind: "none" };
-    }
-    return {
-      kind: "continue",
-      messages: [
-        ...input.messages,
-        {
-          role: "user",
-          content: buildSupplementalLocalTimeoutProbePrompt(probe),
-        },
-      ],
-      forceToolChoice: { name: "sessions_spawn" },
-      reason: "supplemental_local_timeout_probe",
     };
   }
 
@@ -539,39 +481,10 @@ export class ContinuationController {
       return timeoutContinuationResult;
     }
 
-    if (!input.completedSessionFinalContents) {
-      const timeoutProbe = this.continueSupplementalLocalTimeoutProbe({
-        taskPrompt: input.taskPrompt,
-        messages: input.messages,
-        toolTrace: input.toolTrace,
-        evidenceText: input.currentRoundEvidenceText,
-        completedSessionEvidence: false,
-        timeoutSignal: input.timeoutSignal,
-        ...(input.tools === undefined ? {} : { tools: input.tools }),
-        browserAvailable: input.browserAvailable,
-      });
-      return this.applyContinueAction(timeoutProbe);
-    }
+    if (!input.completedSessionFinalContents) return null;
 
     const completedEvidenceText =
       input.completedSessionFinalContents.join("\n\n");
-    const supplementalLocalTimeoutProbe =
-      this.continueSupplementalLocalTimeoutProbe({
-        taskPrompt: input.taskPrompt,
-        messages: input.messages,
-        toolTrace: input.toolTrace,
-        evidenceText: completedEvidenceText,
-        completedSessionEvidence: true,
-        timeoutSignal: input.timeoutSignal,
-        ...(input.tools === undefined ? {} : { tools: input.tools }),
-        browserAvailable: input.browserAvailable,
-      });
-    const supplementalLocalTimeoutProbeResult =
-      this.applyContinueAction(supplementalLocalTimeoutProbe);
-    if (supplementalLocalTimeoutProbeResult) {
-      return supplementalLocalTimeoutProbeResult;
-    }
-
     const incompleteApprovedBrowserSession =
       this.continueIncompleteApprovedBrowserSession({
         results: input.results,
@@ -654,11 +567,9 @@ export class ContinuationController {
         timeoutSignal: roundEvidence.timeoutSignals[0] ?? null,
         completedSessionFinalContents:
           collectCompletedSessionFinalContents(roundEvidence.completedSessions),
-        currentRoundEvidenceText: roundEvidence.roundEvidenceText,
         results: input.results,
         repairMarkers: input.repairMarkers,
         ...(input.tools === undefined ? {} : { tools: input.tools }),
-        browserAvailable: input.browserAvailable,
         ...(input.taskFacts === undefined ? {} : { taskFacts: input.taskFacts }),
       },
       executeForcedRound,

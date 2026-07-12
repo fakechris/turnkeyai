@@ -113,6 +113,13 @@ move to model guidance or an explicit workflow.
 | `approvalGatedBrowserSpawn` | Safety rewrite from browser spawn to `permission_query` | Kernel suspends or rejects the unauthorized spawn with typed permission state; it must not replace the proposal. |
 | `limitIndependentEvidenceSpawn` | Product policy mixed with resource safety | Generic concurrency/tool-call caps remain kernel constraints; requested evidence topology belongs to workflow/model guidance. |
 
+Migration update: `boundedSourceTimeoutBudget` and
+`supplementalLocalTimeoutProbe` left the active normalizer/continuation path in
+the clock/retry slice. Numeric attempt and operation bounds now compose
+monotonically; the runtime no longer injects a supplemental probe. Their helper
+implementations may remain temporarily in the fallback pool but have no active
+execution authority.
+
 ## Migration Safety
 
 The table deliberately distinguishes behavior from automatic authority:

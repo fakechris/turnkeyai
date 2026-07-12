@@ -25,9 +25,9 @@ import {
 } from "./prompt-policy";
 import { getRoleModelSelection } from "./role-model-selection";
 import {
-  createRunDeadline,
-  isRunDeadlineExceeded,
-  type RunDeadline,
+  createAttemptDeadline,
+  isAttemptDeadlineExceeded,
+  type AttemptDeadline,
 } from "./run-deadline";
 import type { ToolLoopCloseoutMetadata } from "./runtime-derived-mission-report";
 import {
@@ -154,7 +154,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     packet: RolePromptPacket;
     signal?: AbortSignal;
   }): Promise<GeneratedRoleReply> {
-    const runDeadline = createRunDeadline({
+    const runDeadline = createAttemptDeadline({
       maxWallClockMs: this.toolLoop?.maxWallClockMs ?? 5 * 60_000,
       ...(input.signal ? { parentSignal: input.signal } : {}),
     });
@@ -171,7 +171,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       packet: RolePromptPacket;
       signal?: AbortSignal;
     },
-    runDeadline: RunDeadline,
+    runDeadline: AttemptDeadline,
   ): Promise<GeneratedRoleReply> {
     const role = input.activation.thread.roles.find(
       (item) => item.roleId === input.activation.runState.roleId,
@@ -1026,7 +1026,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       await lifecycle.record({
         kind: "run_terminal",
         at: completedAt,
-        status: isRunDeadlineExceeded(signal?.reason)
+        status: isAttemptDeadlineExceeded(signal?.reason)
           ? "deadline"
           : signal?.aborted
             ? "cancelled"

@@ -15,6 +15,64 @@ export const DEFAULT_PROVIDER_RETRY_POLICY: ProviderRetryPolicy = {
   maxDelayMs: 20_000,
 };
 
+export type RetryFailureDomain =
+  | "model_transport"
+  | "tool_transport"
+  | "workflow_step";
+
+export interface RetryAllowanceSnapshot {
+  allowanceId: string;
+  ownerScopeId: string;
+  failureDomain: RetryFailureDomain;
+  initialAttempts: number;
+  remainingAttempts: number;
+}
+
+export class RetryAllowance {
+  private remaining: number;
+
+  constructor(
+    private readonly state: Omit<
+      RetryAllowanceSnapshot,
+      "initialAttempts" | "remainingAttempts"
+    > & { maxAttempts: number },
+  ) {
+    if (!Number.isInteger(state.maxAttempts) || state.maxAttempts <= 0) {
+      throw new RangeError("retry allowance maxAttempts must be a positive integer");
+    }
+    this.remaining = state.maxAttempts;
+  }
+
+  claimAttempt(): boolean {
+    if (this.remaining <= 0) return false;
+    this.remaining -= 1;
+    return true;
+  }
+
+  hasRemainingAttempts(): boolean {
+    return this.remaining > 0;
+  }
+
+  snapshot(): RetryAllowanceSnapshot {
+    return {
+      allowanceId: this.state.allowanceId,
+      ownerScopeId: this.state.ownerScopeId,
+      failureDomain: this.state.failureDomain,
+      initialAttempts: this.state.maxAttempts,
+      remainingAttempts: this.remaining,
+    };
+  }
+}
+
+export function createRetryAllowance(input: {
+  allowanceId: string;
+  ownerScopeId: string;
+  failureDomain: RetryFailureDomain;
+  maxAttempts: number;
+}): RetryAllowance {
+  return new RetryAllowance(input);
+}
+
 export type ProviderRetryDecision =
   | { retry: true; delayMs: number }
   | { retry: false; delayMs: 0 };

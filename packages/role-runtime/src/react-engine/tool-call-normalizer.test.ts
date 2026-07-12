@@ -45,8 +45,6 @@ test("ENGINE_TOOL_CALL_NORMALIZATION_ORDER pins the engine normalizer sequence",
     "privateUrlResearchSpawn",
     "localUrlWebFetch",
     "boundedTimeoutSourceSpawn",
-    "boundedSourceTimeoutBudget",
-    "supplementalLocalTimeoutProbe",
     "boundedTimeoutDuplicateSourceSpawn",
     "sessionContinuationDirectiveRepeat",
     "approvalGatedBrowserSpawn",
@@ -54,7 +52,7 @@ test("ENGINE_TOOL_CALL_NORMALIZATION_ORDER pins the engine normalizer sequence",
   ]);
 });
 
-test("normalizeEngineToolCalls enforces the typed bounded source timeout budget", () => {
+test("normalizeEngineToolCalls preserves model-proposed source timeouts", () => {
   const taskPrompt = [
     "Evaluate a slow source for a release-risk note.",
     "Slow source: http://127.0.0.1:43123/slow",
@@ -102,11 +100,11 @@ test("normalizeEngineToolCalls enforces the typed bounded source timeout budget"
 
   assert.deepEqual(
     normalized.map((call) => call.input.timeout_seconds),
-    [25, 25, 5],
+    [undefined, 90, 5],
   );
 });
 
-test("normalizeEngineToolCalls budgets a local web_fetch after it becomes a session spawn", () => {
+test("normalizeEngineToolCalls does not add task-derived timeout after a routing rewrite", () => {
   const taskPrompt = [
     "Evaluate a slow source for a release-risk note.",
     "Slow source: http://127.0.0.1:43123/slow",
@@ -133,7 +131,7 @@ test("normalizeEngineToolCalls budgets a local web_fetch after it becomes a sess
 
   assert.equal(normalized.length, 1);
   assert.equal(normalized[0]?.name, "sessions_spawn");
-  assert.equal(normalized[0]?.input.timeout_seconds, 25);
+  assert.equal(normalized[0]?.input.timeout_seconds, undefined);
 });
 
 test("normalizeEngineToolCalls does not infer the bounded source budget without typed facts", () => {
@@ -157,7 +155,7 @@ test("normalizeEngineToolCalls does not infer the bounded source budget without 
   assert.equal(normalized[0]?.input.timeout_seconds, undefined);
 });
 
-test("normalizeEngineToolCalls applies the bounded source budget only before the first spawn", () => {
+test("normalizeEngineToolCalls does not add task-derived timeout after a prior spawn", () => {
   const taskPrompt = [
     "Evaluate a slow source with a bounded attempt.",
     "Continue the same source-check context after a timeout.",
@@ -193,7 +191,7 @@ test("normalizeEngineToolCalls applies the bounded source budget only before the
   assert.equal(normalized[0]?.input.timeout_seconds, undefined);
 });
 
-test("normalizeEngineToolCalls preserves the dedicated supplemental probe timeout budget", () => {
+test("normalizeEngineToolCalls does not inject a supplemental probe effect or timeout", () => {
   const taskPrompt = [
     "Continue the same slow-source source-check context after a timeout.",
     "Source: http://127.0.0.1:43123/slow",
@@ -226,9 +224,9 @@ test("normalizeEngineToolCalls preserves the dedicated supplemental probe timeou
   );
 
   assert.equal(normalized.length, 1);
-  assert.equal(normalized[0]?.name, "sessions_spawn");
-  assert.equal(normalized[0]?.input.agent_id, "browser");
-  assert.equal(normalized[0]?.input.timeout_seconds, 45);
+  assert.equal(normalized[0]?.name, "sessions_send");
+  assert.equal(normalized[0]?.input.session_key, "worker:explore:source-check");
+  assert.equal(normalized[0]?.input.timeout_seconds, undefined);
 });
 
 test("normalizeEngineToolCalls invokes PermissionPolicy at the two approval-gate positions", () => {

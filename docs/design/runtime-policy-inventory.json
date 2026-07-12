@@ -1,5 +1,5 @@
 {
-  "baseline": "a2dec0b0",
+  "baseline": "c37d52bb+clock-retry-slice",
   "repair": [
     "final_recovery_budget_closeout_repair",
     "missing_browser_evidence",
@@ -55,8 +55,6 @@
     "privateUrlResearchSpawn",
     "localUrlWebFetch",
     "boundedTimeoutSourceSpawn",
-    "boundedSourceTimeoutBudget",
-    "supplementalLocalTimeoutProbe",
     "boundedTimeoutDuplicateSourceSpawn",
     "sessionContinuationDirectiveRepeat",
     "approvalGatedBrowserSpawn",

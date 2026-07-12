@@ -182,9 +182,6 @@ test("ExecutionBudgetController builds wall-clock closeout signals", () => {
   const signal = controller.buildWallClockBudgetCloseoutSignal({
     toolCalls: [call("a")],
     pendingToolCallCount: 1,
-    taskPrompt: "Inspect this source.",
-    messages: [{ role: "user", content: "Inspect this source." }],
-    toolTrace: [],
     maxRounds: 3,
     usedToolCalls: 4,
     roundCount: 2,
@@ -195,7 +192,6 @@ test("ExecutionBudgetController builds wall-clock closeout signals", () => {
   });
 
   assert.equal(signal.maxWallClockMs, 90_000);
-  assert.equal(signal.requiredTimeoutContinuationPastWallClock, false);
   assert.equal(signal.readElapsedMs(), 120_000);
   assert.deepEqual(signal.buildCloseoutSnapshot(90_000).closeout, {
     reason: "wall_clock_budget",
@@ -213,9 +209,6 @@ test("ExecutionBudgetController builds pending-call wall-clock signals from call
   const direct = controller.buildPendingCallsWallClockBudgetCloseoutSignal({
     pendingCalls: [call("a"), call("b")],
     pendingContinuation: call("continuation"),
-    taskPrompt: "Continue source inspection.",
-    messages: [{ role: "user", content: "Continue source inspection." }],
-    toolTrace: [],
     maxRounds: 3,
     usedToolCalls: 2,
     roundCount: 1,
@@ -233,9 +226,6 @@ test("ExecutionBudgetController builds pending-call wall-clock signals from call
   const continuation = controller.buildPendingCallsWallClockBudgetCloseoutSignal({
     pendingCalls: [],
     pendingContinuation: call("continuation"),
-    taskPrompt: "Continue source inspection.",
-    messages: [{ role: "user", content: "Continue source inspection." }],
-    toolTrace: [],
     maxRounds: 3,
     usedToolCalls: 2,
     roundCount: 1,
@@ -253,9 +243,6 @@ test("ExecutionBudgetController builds pending-call wall-clock signals from call
     controller.buildPendingCallsWallClockBudgetCloseoutSignal({
       pendingCalls: [],
       pendingContinuation: null,
-      taskPrompt: "No pending work.",
-      messages: [{ role: "user", content: "No pending work." }],
-      toolTrace: [],
       maxRounds: 3,
       usedToolCalls: 2,
       roundCount: 1,

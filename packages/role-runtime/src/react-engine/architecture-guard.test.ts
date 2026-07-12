@@ -28,6 +28,15 @@ const TERMINAL_FINAL_SYNTHESIS = path.join(
   "terminal-final-synthesis.ts",
 );
 const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
+const TOOL_PROTOCOL = path.join(ROLE_RUNTIME_DIR, "tool-protocol.ts");
+const OPERATION_TIMEOUT_BUDGET = path.join(
+  ROLE_RUNTIME_DIR,
+  "operation-timeout-budget.ts",
+);
+const SUB_AGENT_WORKER_HANDLER = path.join(
+  ROLE_RUNTIME_DIR,
+  "sub-agent-worker-handler.ts",
+);
 const ENGINE_RUN_OBSERVER = path.join(ENGINE_DIR, "engine-run-observer.ts");
 const RUNTIME_POLICY_DIR = path.join(ROLE_RUNTIME_DIR, "runtime-policy");
 const RUNTIME_FACTS_DIR = path.join(ROLE_RUNTIME_DIR, "runtime-facts");
@@ -2212,6 +2221,44 @@ test("active runtime policy is free of acceptance-fixture literals", () => {
     [],
     `acceptance fixtures must stay in tests/harnesses, never active runtime policy:\n${offenders.join("\n")}`,
   );
+});
+
+test("time authority is task-text independent and cannot restore timeout floors", () => {
+  const budgetSource = readFileSync(OPERATION_TIMEOUT_BUDGET, "utf8");
+  assert.deepEqual(
+    regexLiteralTexts(budgetSource),
+    [],
+    "operation-timeout-budget.ts must compose numeric bounds only",
+  );
+  for (const forbidden of ["taskPrompt", "messages", "toolTrace"]) {
+    assert.equal(
+      budgetSource.includes(forbidden),
+      false,
+      `operation-timeout-budget.ts must not receive ${forbidden}`,
+    );
+  }
+
+  const activeTimeSource = [
+    TOOL_USE,
+    TOOL_PROTOCOL,
+    SUB_AGENT_WORKER_HANDLER,
+    path.join(ENGINE_DIR, "execution-budget-controller.ts"),
+    path.join(ENGINE_DIR, "closeout-policy-registry.ts"),
+    path.join(ENGINE_DIR, "tool-call-normalizer.ts"),
+  ].map((file) => readFileSync(file, "utf8")).join("\n");
+  for (const forbidden of [
+    "applyLocalBrowserTaskTimeoutFloors",
+    "resolveSlowLoopbackOpenTimeoutMs",
+    "requiredTimeoutContinuationPastWallClock",
+    'name: "boundedSourceTimeoutBudget"',
+    'name: "supplementalLocalTimeoutProbe"',
+  ]) {
+    assert.equal(
+      activeTimeSource.includes(forbidden),
+      false,
+      `active time authority must not restore ${forbidden}`,
+    );
+  }
 });
 
 function runtimeProductionSourceFiles(root: string): string[] {

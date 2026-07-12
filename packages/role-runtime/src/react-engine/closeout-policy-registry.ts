@@ -608,7 +608,6 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
     const wallClockBudget = input.wallClockBudget;
     if (
       wallClockBudget &&
-      !wallClockBudget.requiredTimeoutContinuationPastWallClock &&
       input.roundCount > 0 &&
       isPositiveFiniteBudgetValue(wallClockBudget.maxWallClockMs) &&
       wallClockBudget.readElapsedMs() >= wallClockBudget.maxWallClockMs
@@ -866,9 +865,6 @@ class DefaultCloseoutPolicyRegistry implements CloseoutPolicyRegistry {
           input.executionBudget.buildPendingCallsWallClockBudgetCloseoutSignal({
             pendingCalls: wallClockInput.pendingCalls,
             pendingContinuation: wallClockInput.pendingContinuation,
-            taskPrompt: input.taskPrompt,
-            messages: input.messages,
-            toolTrace: input.toolTrace,
             maxRounds: input.maxRounds,
             usedToolCalls,
             roundCount,
