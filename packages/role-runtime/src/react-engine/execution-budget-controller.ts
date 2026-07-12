@@ -66,12 +66,16 @@ export interface EngineBeforeExecuteHookInput {
 export interface EngineToolBatchHookInput {
   calls: LLMToolCall[];
   ctx: RoleToolContext;
+  runOne(
+    call: LLMToolCall,
+    executionSignal?: AbortSignal,
+  ): Promise<ToolResult>;
   now(): number;
   toolLoopStartedAtMs: number;
   activeToolLoop?:
     | Pick<
         RoleToolLoopOptions,
-        "executor" | "maxParallelToolCalls" | "maxWallClockMs"
+        "maxParallelToolCalls" | "maxWallClockMs"
       >
     | undefined;
 }
@@ -431,17 +435,7 @@ export class ExecutionBudgetController {
       ...(activeToolLoop?.maxWallClockMs === undefined
         ? {}
         : { maxWallClockMs: activeToolLoop.maxWallClockMs }),
-      ...(activeToolLoop
-        ? {
-            execute: (call, ctx, signal) =>
-              activeToolLoop.executor.execute({
-                call,
-                activation: ctx.activation,
-                packet: ctx.packet,
-                ...(signal ? { signal } : {}),
-              }),
-          }
-        : {}),
+      execute: (call, _ctx, signal) => input.runOne(call, signal),
     });
   }
 }

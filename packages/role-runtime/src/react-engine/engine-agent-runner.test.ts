@@ -33,6 +33,7 @@ test("runEngineAgent consumes ReAct events and dispatches engine observer callba
   };
   const events: ReActEvent[] = [
     { type: "model_response", round: 0, text: "Searching", toolCalls: [call] },
+    { type: "tool_admitted", round: 0, call },
     { type: "tool_started", round: 0, call },
     { type: "tool_result", round: 0, result },
     { type: "final", text: "Done.", rounds: 1 },
@@ -43,6 +44,18 @@ test("runEngineAgent consumes ReAct events and dispatches engine observer callba
       assert.equal(input.ctx.activation, "activation");
       assert.deepEqual(input.messages, [{ role: "user", content: "Start." }]);
       for (const event of events) {
+        if (event.type === "tool_started") {
+          await input.onToolExecutionStart?.({
+            round: event.round,
+            call: event.call,
+          });
+        }
+        if (event.type === "tool_result") {
+          await input.onToolExecutionResult?.({
+            round: event.round,
+            result: event.result,
+          });
+        }
         yield event;
       }
     },
@@ -52,6 +65,18 @@ test("runEngineAgent consumes ReAct events and dispatches engine observer callba
     agent,
     messages: [{ role: "user", content: "Start." }],
     ctx: { activation: "activation" },
+    effectLifecycle: {
+      async onAdmitted(input) {
+        seen.push(`admit:${input.round}:${input.call.name}`);
+        return null;
+      },
+      async onStarted(input) {
+        seen.push(`ledger-start:${input.round}:${input.call.name}`);
+      },
+      async onResult(input) {
+        seen.push(`ledger-result:${input.result.toolName}`);
+      },
+    },
     observer: {
       onModelResponse(input) {
         seen.push(`model:${input.round}:${input.toolCalls.length}`);
@@ -68,7 +93,10 @@ test("runEngineAgent consumes ReAct events and dispatches engine observer callba
   assert.equal(finalText, "Done.");
   assert.deepEqual(seen, [
     "model:0:1",
+    "admit:0:memory_search",
+    "ledger-start:0:memory_search",
     "start:0:memory_search",
+    "ledger-result:memory_search",
     "result:memory_search",
   ]);
 });
@@ -96,6 +124,80 @@ test("runEngineAgent forwards a resumed initial round to agent-core", async () =
 
   assert.equal(finalText, "resumed");
   assert.equal(observedInitialRound, 7);
+});
+
+test("runEngineAgent returns a prior receipt for a re-proposed effect without dispatch", async () => {
+  const call: LLMToolCall = {
+    id: "committed-effect",
+    name: "publish",
+    input: { release: "v1" },
+  };
+  let modelRound = 0;
+  let dispatches = 0;
+  let starts = 0;
+  const observedResults: ToolResult[] = [];
+  const runAgent = createRoleEngineAgentRunner<TestContext>({
+    model: {
+      async generate() {
+        modelRound += 1;
+        return modelRound === 1
+          ? { text: "publish", toolCalls: [call] }
+          : { text: "done" };
+      },
+    },
+    toolkit: {
+      definitions: () => [
+        { name: call.name, description: "", inputSchema: {} },
+      ],
+      has: (name) => name === call.name,
+      async execute(toolCall) {
+        dispatches += 1;
+        return {
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          content: "must not dispatch",
+        };
+      },
+    },
+    maxRounds: 2,
+    hooks: {},
+  });
+
+  const finalText = await runAgent({
+    messages: [{ role: "user", content: "continue" }],
+    ctx: { activation: "activation" },
+    effectLifecycle: {
+      async onAdmitted() {
+        return {
+          toolCallId: call.id,
+          toolName: call.name,
+          content: "prior durable receipt",
+        };
+      },
+      async onStarted() {
+        starts += 1;
+      },
+      async onResult() {},
+    },
+    observer: {
+      onModelResponse() {},
+      async onToolStarted() {},
+      async onToolResult({ result }) {
+        observedResults.push(result);
+      },
+    },
+  });
+
+  assert.equal(finalText, "done");
+  assert.equal(dispatches, 0);
+  assert.equal(starts, 0);
+  assert.deepEqual(observedResults, [
+    {
+      toolCallId: call.id,
+      toolName: call.name,
+      content: "prior durable receipt",
+    },
+  ]);
 });
 
 test("createRoleEngineAgentRunner preserves the boundary model round for pending-call closeout", async () => {

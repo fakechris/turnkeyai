@@ -22,6 +22,7 @@ export interface ModelClient {
 /** Streaming events emitted while the loop runs. */
 export type ReActEvent =
   | { type: "model_response"; round: number; text: string; toolCalls: LLMToolCall[] }
+  | { type: "tool_admitted"; round: number; call: LLMToolCall }
   | { type: "tool_started"; round: number; call: LLMToolCall }
   | { type: "tool_result"; round: number; result: ToolResult }
   | { type: "final"; text: string; rounds: number; stopReason?: string; closeoutReason?: string };
@@ -171,12 +172,15 @@ export interface ReActHooks<Ctx extends ToolContext> {
    * `Promise.all`. A host supplies this to enforce concurrency caps, ordered
    * serialization, and per-call wall-clock aborts. It MUST return results in the
    * same order as `calls` so `tool_result` emission and message pairing stay
-   * correct. `runOne` is the default per-call executor (with the run signal); a
-   * host may call it or run the executor directly with its own signals.
+   * correct. The host MUST dispatch each selected call through `runOne`; it is
+   * the authoritative pre-dispatch boundary used by durable effect tracking.
    */
   runToolBatch?(
     calls: LLMToolCall[],
-    runOne: (call: LLMToolCall) => Promise<ToolResult>,
+    runOne: (
+      call: LLMToolCall,
+      executionSignal?: AbortSignal,
+    ) => Promise<ToolResult>,
     ctx: Ctx
   ): Promise<ToolResult[]>;
   /** After a round executes and its messages are appended, optionally run a
@@ -249,6 +253,18 @@ export interface ReActRunInput<Ctx extends ToolContext> {
   signal?: AbortSignal;
   /** Zero-based round to resume from. The maxRounds budget remains total, not reset. */
   initialRound?: number;
+  /** Authoritative pre-dispatch callback. It is awaited immediately before
+   * toolkit.execute for calls the batch scheduler actually dispatches. */
+  onToolExecutionStart?: (input: {
+    round: number;
+    call: LLMToolCall;
+  }) => Promise<ToolResult | void>;
+  /** Authoritative receipt callback. It is awaited immediately after a
+   * dispatched call returns, before batch completion or result events. */
+  onToolExecutionResult?: (input: {
+    round: number;
+    result: ToolResult;
+  }) => Promise<void>;
 }
 
 export interface ReActLoop<Ctx extends ToolContext> {

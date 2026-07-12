@@ -18,6 +18,7 @@ import {
   executeRuntimeForcedToolRound,
   type RoleToolExecutionResult,
   type RoleToolLoopOptions,
+  type RuntimeForcedToolEffectLifecycle,
   type RuntimeForcedToolRoundObserver,
 } from "../tool-use";
 
@@ -32,6 +33,7 @@ export interface CreateEngineRuntimeForcedToolRoundRunnerInput {
   packet: RolePromptPacket;
   toolTrace: NativeToolRoundTrace[];
   observer?: RuntimeForcedToolRoundObserver | undefined;
+  effectLifecycle?: RuntimeForcedToolEffectLifecycle | undefined;
   toolLoopStartedAtMs: number;
   signal?: AbortSignal | undefined;
   mapToolResultsForHistory?: (
@@ -70,6 +72,9 @@ export function createEngineRuntimeForcedToolRoundRunner(
       messages: roundInput.messages,
       toolTrace: input.toolTrace,
       observer: input.observer,
+      ...(input.effectLifecycle
+        ? { effectLifecycle: input.effectLifecycle }
+        : {}),
       toolCalls: roundInput.toolCalls,
       round: roundInput.round ?? input.toolTrace.length + 1,
       toolLoopStartedAtMs: input.toolLoopStartedAtMs,

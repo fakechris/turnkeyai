@@ -4210,11 +4210,13 @@ test("llm role response generator persists native tool progress while the tool i
     true,
   );
   assert.equal(completedAssistant?.toolProgress?.at(-1)?.phase, "completed");
-  assert.equal(completedAssistant?.timeCost, 4);
+  // The authoritative start boundary now runs after the scheduler creates the
+  // chunk signal, so this fake monotonic clock measures only dispatched work.
+  assert.equal(completedAssistant?.timeCost, 3);
   assert.equal(toolMessage?.role, "tool");
   assert.equal(toolMessage?.toolCallId, "toolu-live");
   assert.equal(toolMessage?.content, "Example Domain");
-  assert.equal(toolMessage?.timeCost, 4);
+  assert.equal(toolMessage?.timeCost, 3);
   assert.ok(appendedMessages.length >= 3);
 });
 

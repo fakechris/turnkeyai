@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { LLMToolCall } from "@turnkeyai/llm-adapter/types";
-import type { Tool, ToolContext } from "./tool";
+import type { Tool, ToolContext, ToolResult } from "./tool";
 import { createToolkit } from "./toolkit";
 import type { ModelClient, ReActEvent, ReActHooks } from "./react-loop";
 import { collectReActRun, createReActAgent } from "./react-agent";
@@ -105,9 +105,151 @@ test("aborting while a tool call resolves suppresses its result and final events
     /stop after tool/
   );
   assert.equal(events.filter((event) => event.type === "model_response").length, 1);
+  assert.equal(events.filter((event) => event.type === "tool_admitted").length, 1);
   assert.equal(events.filter((event) => event.type === "tool_started").length, 1);
   assert.equal(events.filter((event) => event.type === "tool_result").length, 0);
   assert.equal(events.filter((event) => event.type === "final").length, 0);
+});
+
+test("a consumer that cannot persist tool admission stops before dispatch", async () => {
+  let executions = 0;
+  const model = scriptedModel([
+    { text: "use a tool", toolCalls: [call("c1", "search")] },
+  ]);
+  const tool: Tool<Ctx> = {
+    definition: { name: "search", description: "search", inputSchema: {} },
+    async execute(toolCall) {
+      executions += 1;
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "must not run",
+      };
+    },
+  };
+  const events = createReActAgent({
+    model,
+    toolkit: createToolkit([tool]),
+  }).run({ messages: [{ role: "user", content: "hi" }], ctx: {} });
+
+  await assert.rejects(async () => {
+    for await (const event of events) {
+      if (event.type === "tool_admitted") {
+        throw new Error("admission persistence failed");
+      }
+    }
+  }, /admission persistence failed/);
+  assert.equal(executions, 0);
+});
+
+test("a consumer that cannot persist tool start stops before dispatch", async () => {
+  let executions = 0;
+  const model = scriptedModel([
+    { text: "use a tool", toolCalls: [call("c1", "search")] },
+  ]);
+  const tool: Tool<Ctx> = {
+    definition: { name: "search", description: "search", inputSchema: {} },
+    async execute(toolCall) {
+      executions += 1;
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "must not run",
+      };
+    },
+  };
+  const agent = createReActAgent({
+    model,
+    toolkit: createToolkit([tool]),
+  });
+
+  await assert.rejects(
+    () => drain(agent.run({
+      messages: [{ role: "user", content: "hi" }],
+      ctx: {},
+      onToolExecutionStart: async () => {
+        throw new Error("start persistence failed");
+      },
+    })),
+    /start persistence failed/,
+  );
+  assert.equal(executions, 0);
+});
+
+test("a consumer that cannot persist a receipt stops before result publication", async () => {
+  let executions = 0;
+  const observed: ReActEvent[] = [];
+  const model = scriptedModel([
+    { text: "use a tool", toolCalls: [call("c1", "search")] },
+  ]);
+  const tool: Tool<Ctx> = {
+    definition: { name: "search", description: "search", inputSchema: {} },
+    async execute(toolCall) {
+      executions += 1;
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "executed",
+      };
+    },
+  };
+  const agent = createReActAgent({
+    model,
+    toolkit: createToolkit([tool]),
+    hooks: { onProgress: (event) => observed.push(event) },
+  });
+
+  await assert.rejects(
+    () => drain(agent.run({
+      messages: [{ role: "user", content: "hi" }],
+      ctx: {},
+      onToolExecutionResult: async () => {
+        throw new Error("receipt persistence failed");
+      },
+    })),
+    /receipt persistence failed/,
+  );
+  assert.equal(executions, 1);
+  assert.equal(observed.some((event) => event.type === "tool_result"), false);
+});
+
+test("duplicate tool-call ids fail before admission or dispatch", async () => {
+  let admissions = 0;
+  let executions = 0;
+  const duplicate = call("same-id", "search");
+  const model = scriptedModel([
+    { text: "duplicate", toolCalls: [duplicate, duplicate] },
+  ]);
+  const tool: Tool<Ctx> = {
+    definition: { name: "search", description: "search", inputSchema: {} },
+    async execute(toolCall) {
+      executions += 1;
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: "must not run",
+      };
+    },
+  };
+  const agent = createReActAgent({
+    model,
+    toolkit: createToolkit([tool]),
+    hooks: {
+      onProgress(event) {
+        if (event.type === "tool_admitted") admissions += 1;
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => drain(agent.run({
+      messages: [{ role: "user", content: "hi" }],
+      ctx: {},
+    })),
+    /duplicate tool call id/,
+  );
+  assert.equal(admissions, 0);
+  assert.equal(executions, 0);
 });
 
 test("filterTools restricts the tool definitions offered to the model", async () => {
@@ -689,7 +831,7 @@ test("onProgress observes every emitted event", async () => {
   const model = scriptedModel([{ text: "go", toolCalls: [call("c1", "search")] }, { text: "done" }]);
   const observed: string[] = [];
   await run(model, { onProgress: (e) => observed.push(e.type) });
-  assert.deepEqual(observed, ["model_response", "tool_started", "tool_result", "model_response", "final"]);
+  assert.deepEqual(observed, ["model_response", "tool_admitted", "tool_started", "tool_result", "model_response", "final"]);
 });
 
 test("collectReActRun surfaces the closeout reason", async () => {
@@ -731,6 +873,53 @@ test("runToolBatch receives the executable calls and its result order drives too
     results.map((e) => (e.type === "tool_result" ? e.result.toolName : "")),
     ["b", "a"] // tool_result order follows runToolBatch's returned order
   );
+});
+
+test("onToolExecutionStart follows actual batch dispatch order", async () => {
+  const lifecycle: string[] = [];
+  const model = scriptedModel([
+    { text: "fan out", toolCalls: [call("c1", "a"), call("c2", "b")] },
+    { text: "done" },
+  ]);
+  const tools = ["a", "b"].map<Tool<Ctx>>((name) => ({
+    definition: { name, description: name, inputSchema: { type: "object" } },
+    async execute(toolCall) {
+      lifecycle.push(`execute:${toolCall.id}`);
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: `ran ${toolCall.name}`,
+      };
+    },
+  }));
+  const agent = createReActAgent<Ctx>({
+    model,
+    toolkit: createToolkit(tools),
+    hooks: {
+      runToolBatch: async (calls, runOne) => {
+        const results: ToolResult[] = [];
+        for (const executable of [...calls].reverse()) {
+          results.push(await runOne(executable));
+        }
+        return results;
+      },
+    },
+  });
+
+  await drain(agent.run({
+    messages: [{ role: "user", content: "hi" }],
+    ctx: {},
+    onToolExecutionStart: async ({ call: executable }) => {
+      lifecycle.push(`started:${executable.id}`);
+    },
+  }));
+
+  assert.deepEqual(lifecycle, [
+    "started:c2",
+    "execute:c2",
+    "started:c1",
+    "execute:c1",
+  ]);
 });
 
 test("without runToolBatch the engine still runs the default Promise.all", async () => {

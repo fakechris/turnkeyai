@@ -12,6 +12,18 @@ import type { ToolResult } from "@turnkeyai/agent-core/tool";
 import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { NativeToolRoundTrace } from "../native-tool-messages";
+import {
+  RUN_EFFECT_INDETERMINATE_PROTOCOL,
+  RunEffectLedger,
+  restoreRunEffectLedger,
+  type RunEffectRecord,
+  type RunEffectLedgerSnapshot,
+} from "./effect-ledger";
+
+export {
+  RUN_EFFECT_INDETERMINATE_PROTOCOL,
+  RUN_EFFECT_NOT_DISPATCHED_PROTOCOL,
+} from "./effect-ledger";
 
 export const RUN_JOURNAL_PROTOCOL = "turnkeyai.run_journal.v1" as const;
 export const RUN_RESUME_INTERRUPTED_TOOL_PROTOCOL =
@@ -33,6 +45,14 @@ export interface RunJournal {
   load(): Promise<RunJournalResumeState | null>;
   checkpoint(state: RunJournalState): Promise<void>;
   complete(state: RunJournalState): Promise<void>;
+  effectLedger: {
+    admit(input: {
+      round: number;
+      call: LLMToolCall;
+    }): Promise<ToolResult | null>;
+    start(effectId: string): Promise<void>;
+    recordResult(result: ToolResult): Promise<void>;
+  };
 }
 
 export function fingerprintRunJournalTask(
@@ -57,6 +77,7 @@ interface StoredRunJournal extends RunJournalState {
   taskId: string;
   taskFingerprint: string;
   updatedAt: number;
+  effectLedger?: RunEffectLedgerSnapshot | undefined;
 }
 
 export function createRunJournal(input: {
@@ -64,14 +85,22 @@ export function createRunJournal(input: {
   activation: RoleActivationInput;
   taskFingerprint: string;
   now: () => number;
+  reconcileEffect?: (
+    effect: RunEffectRecord,
+  ) => Promise<ToolResult | null>;
 }): RunJournal {
   const journalId = `runtime-journal:${input.activation.runState.runKey}`;
+  let effectLedger = new RunEffectLedger();
+  let latestState: RunJournalState | null = null;
+  let effectTransitionQueue: Promise<void> = Promise.resolve();
 
-  const write = async (
+  const writeAt = async (
     status: StoredRunJournal["status"],
     state: RunJournalState,
+    now: number,
   ): Promise<void> => {
-    const now = input.now();
+    latestState = cloneState(state);
+    effectLedger.releaseDurableResults(readTranscriptResultIds(state.messages));
     const stored: StoredRunJournal = {
       protocol: RUN_JOURNAL_PROTOCOL,
       status,
@@ -80,6 +109,7 @@ export function createRunJournal(input: {
       taskFingerprint: input.taskFingerprint,
       updatedAt: now,
       ...cloneState(state),
+      effectLedger: effectLedger.snapshot(),
     };
     const role = input.activation.thread.roles.find(
       (candidate) => candidate.roleId === input.activation.runState.roleId,
@@ -107,6 +137,46 @@ export function createRunJournal(input: {
       },
     });
   };
+  const write = (
+    status: StoredRunJournal["status"],
+    state: RunJournalState,
+  ): Promise<void> => writeAt(status, state, input.now());
+
+  const persistEffectLedger = async (): Promise<void> => {
+    if (!latestState) {
+      throw new Error("run journal checkpoint required before effect admission");
+    }
+    await write("in_flight", latestState);
+  };
+
+  const enqueueEffectTransition = <T>(
+    transition: () => Promise<T>,
+  ): Promise<T> => {
+    const queued = effectTransitionQueue.then(transition);
+    effectTransitionQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  };
+
+  const persistLedgerTransition = async <T>(
+    transition: () => T,
+  ): Promise<T> => {
+    const before = effectLedger.snapshot();
+    try {
+      const value = transition();
+      await persistEffectLedger();
+      return value;
+    } catch (error) {
+      const restored = restoreRunEffectLedger(before);
+      if (!restored) {
+        throw new Error("internal effect-ledger rollback failed");
+      }
+      effectLedger = restored;
+      throw error;
+    }
+  };
 
   return {
     async load() {
@@ -120,13 +190,42 @@ export function createRunJournal(input: {
       ) {
         return null;
       }
+      if (stored.effectLedger !== undefined) {
+        const restoredLedger = restoreRunEffectLedger(stored.effectLedger);
+        if (!restoredLedger) return null;
+        effectLedger = restoredLedger;
+      } else {
+        effectLedger = new RunEffectLedger();
+      }
       const state = cloneState(stored);
+      latestState = cloneState(state);
+      const threadMessages = await input.store.list(
+        input.activation.thread.threadId,
+      );
+      await appendEffectLedgerResumeRound({
+        threadMessages,
+        activation: input.activation,
+        journalUpdatedAt: message?.updatedAt ?? stored.updatedAt,
+        state,
+        effectLedger,
+        ...(input.reconcileEffect
+          ? { reconcileEffect: input.reconcileEffect }
+          : {}),
+      });
       await appendInterruptedNativeRound({
-        store: input.store,
+        threadMessages,
         activation: input.activation,
         journalUpdatedAt: message?.updatedAt ?? stored.updatedAt,
         state,
       });
+      latestState = cloneState(state);
+      if (effectLedger.snapshot().records.length > 0) {
+        await writeAt(
+          "in_flight",
+          state,
+          message?.updatedAt ?? stored.updatedAt,
+        );
+      }
       return {
         ...state,
         resumedAfterCrash: true,
@@ -134,6 +233,95 @@ export function createRunJournal(input: {
     },
     checkpoint: (state) => write("in_flight", state),
     complete: (state) => write("completed", state),
+    effectLedger: {
+      admit: (effect) =>
+        enqueueEffectTransition(async () => {
+          const existing = effectLedger.get(effect.call.id);
+          if (existing) {
+            const record = effectLedger.admit(effect);
+            if (
+              record.status === "committed" ||
+              record.status === "failed" ||
+              record.status === "indeterminate"
+            ) {
+              return readDurableEffectReceipt(record, latestState);
+            }
+            throw new Error(
+              `effect already has an active admission: ${record.effectId}:${record.status}`,
+            );
+          }
+          return persistLedgerTransition(() => {
+            effectLedger.admit(effect);
+            return null;
+          });
+        }),
+      start: (effectId) =>
+        enqueueEffectTransition(() =>
+          persistLedgerTransition(() => {
+            effectLedger.start(effectId);
+          }),
+        ),
+      recordResult: (result) =>
+        enqueueEffectTransition(async () => {
+          const existing = effectLedger.get(result.toolCallId);
+          if (!existing) return;
+          if (
+            existing.status === "committed" ||
+            existing.status === "failed" ||
+            existing.status === "indeterminate"
+          ) {
+            effectLedger.recordResult(result);
+            return;
+          }
+          await persistLedgerTransition(() => {
+            effectLedger.recordResult(result);
+          });
+        }),
+    },
+  };
+}
+
+function readDurableEffectReceipt(
+  record: RunEffectRecord,
+  state: RunJournalState | null,
+): ToolResult {
+  if (record.result) return structuredClone(record.result);
+  const message = [...(state?.messages ?? [])]
+    .reverse()
+    .find(
+      (candidate) =>
+        candidate.role === "tool" &&
+        candidate.toolCallId === record.effectId,
+    );
+  if (!message) {
+    throw new Error(`durable effect receipt is missing: ${record.effectId}`);
+  }
+  const resultBlock = Array.isArray(message.content)
+    ? message.content.find(
+        (block) =>
+          block.type === "tool_result" && block.toolUseId === record.effectId,
+      )
+    : undefined;
+  const content = typeof message.content === "string"
+    ? message.content
+    : resultBlock?.type === "tool_result"
+      ? resultBlock.content
+      : null;
+  if (content === null) {
+    throw new Error(`durable effect receipt content is missing: ${record.effectId}`);
+  }
+  const traceResult = [...(state?.toolTrace ?? [])]
+    .reverse()
+    .flatMap((round) => [...round.results].reverse())
+    .find((result) => result.toolCallId === record.effectId);
+  return {
+    toolCallId: record.effectId,
+    toolName: record.call.name,
+    content,
+    ...(record.status === "committed" && traceResult?.isError !== true
+      ? {}
+      : { isError: true }),
+    ...(traceResult?.cancelled ? { cancelled: true } : {}),
   };
 }
 
@@ -161,14 +349,12 @@ function readStoredRunJournal(
 }
 
 async function appendInterruptedNativeRound(input: {
-  store: Pick<TeamMessageStore, "list">;
+  threadMessages: TeamMessage[];
   activation: RoleActivationInput;
   journalUpdatedAt: number;
   state: RunJournalState;
 }): Promise<void> {
-  const threadMessages = await input.store.list(
-    input.activation.thread.threadId,
-  );
+  const threadMessages = input.threadMessages;
   const existingResultIds = new Set(
     input.state.messages
       .filter((message) => message.role === "tool")
@@ -255,13 +441,110 @@ function interruptedToolResult(call: LLMToolCall): ToolResult {
     toolName: call.name,
     isError: true,
     content: JSON.stringify({
-      protocol: RUN_RESUME_INTERRUPTED_TOOL_PROTOCOL,
-      code: "tool_round_interrupted_by_restart",
+      protocol: RUN_EFFECT_INDETERMINATE_PROTOCOL,
+      legacy_protocol: RUN_RESUME_INTERRUPTED_TOOL_PROTOCOL,
+      code: "effect_outcome_indeterminate_after_restart",
       tool_call_id: call.id,
       tool_name: call.name,
       instruction:
-        "The previous process stopped before this tool result was durably recorded. Reissue the call only if the task still requires it.",
+        "The effect may have executed, so it must not be dispatched again automatically. Reconcile by the stable tool call id or request explicit operator action.",
     }),
+  };
+}
+
+async function appendEffectLedgerResumeRound(input: {
+  threadMessages: TeamMessage[];
+  activation: RoleActivationInput;
+  journalUpdatedAt: number;
+  state: RunJournalState;
+  effectLedger: RunEffectLedger;
+  reconcileEffect?: (
+    effect: RunEffectRecord,
+  ) => Promise<ToolResult | null>;
+}): Promise<void> {
+  const existingResultIds = new Set(
+    input.state.messages
+      .filter((message) => message.role === "tool")
+      .map((message) => message.toolCallId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const persistedResults = new Map(
+    input.threadMessages
+      .filter(
+        (message) =>
+          message.role === "tool" &&
+          message.roleId === input.activation.runState.roleId &&
+          message.metadata?.["nativeToolUse"] === true &&
+          message.metadata?.["flowId"] === input.activation.flow.flowId &&
+          message.updatedAt >= input.journalUpdatedAt &&
+          typeof message.toolCallId === "string",
+      )
+      .map((message) => [message.toolCallId!, toPersistedToolResult(message)]),
+  );
+  for (const record of input.effectLedger.snapshot().records) {
+    if (record.status !== "started") continue;
+    const persisted = persistedResults.get(record.effectId);
+    if (persisted) {
+      input.effectLedger.recordResult(persisted);
+      continue;
+    }
+    if (input.reconcileEffect) {
+      try {
+        const reconciled = await input.reconcileEffect(record);
+        if (reconciled) input.effectLedger.recordResult(reconciled);
+      } catch {
+        // A failed lookup cannot prove success or failure. The ledger converts
+        // this started effect to indeterminate below and never redispatches it.
+      }
+    }
+  }
+
+  const resumeResults = input.effectLedger.reconcileForResume(existingResultIds);
+  const byRound = new Map<number, typeof resumeResults>();
+  for (const item of resumeResults) {
+    const round = byRound.get(item.round) ?? [];
+    round.push(item);
+    byRound.set(item.round, round);
+  }
+  for (const [round, items] of [...byRound.entries()].sort(
+    ([left], [right]) => left - right,
+  )) {
+    input.state.messages = appendAssistantToolCallMessage(input.state.messages, {
+      text: "",
+      toolCalls: items.map((item) => item.call),
+    });
+    input.state.messages = appendToolResultMessages(
+      input.state.messages,
+      items.map((item) => item.result),
+    );
+    input.state.toolTrace.push({
+      round,
+      calls: items.map((item) => ({
+        id: item.call.id,
+        name: item.call.name,
+        input: item.call.input,
+      })),
+      results: items.map((item) => ({
+        toolCallId: item.result.toolCallId,
+        toolName: item.result.toolName,
+        isError: item.result.isError === true,
+        contentBytes: Buffer.byteLength(item.result.content, "utf8"),
+        content: item.result.content,
+        ...(item.result.cancelled ? { cancelled: true } : {}),
+      })),
+    });
+    input.state.nextRound = Math.max(input.state.nextRound, round);
+    for (const item of items) existingResultIds.add(item.result.toolCallId);
+  }
+}
+
+function toPersistedToolResult(message: TeamMessage): ToolResult {
+  return {
+    toolCallId: message.toolCallId!,
+    toolName: message.name ?? "unknown_tool",
+    content: message.content,
+    ...(message.toolStatus === "failed" ? { isError: true } : {}),
+    ...(message.toolStatus === "cancelled" ? { cancelled: true } : {}),
   };
 }
 
@@ -273,6 +556,15 @@ function cloneState(state: RunJournalState): RunJournalState {
     toolTrace: state.toolTrace,
     planState: state.planState,
   });
+}
+
+function readTranscriptResultIds(messages: readonly LLMMessage[]): Set<string> {
+  return new Set(
+    messages
+      .filter((message) => message.role === "tool")
+      .map((message) => message.toolCallId)
+      .filter((id): id is string => Boolean(id)),
+  );
 }
 
 function readPositiveInteger(value: unknown): number | null {

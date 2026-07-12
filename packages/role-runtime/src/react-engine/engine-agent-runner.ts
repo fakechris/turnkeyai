@@ -1,4 +1,4 @@
-import type { ToolContext } from "@turnkeyai/agent-core/tool";
+import type { ToolContext, ToolResult } from "@turnkeyai/agent-core/tool";
 import { createReActAgent } from "@turnkeyai/agent-core/react-agent";
 import type {
   ModelClient,
@@ -6,7 +6,7 @@ import type {
   ReActLoop,
 } from "@turnkeyai/agent-core/react-loop";
 import type { Toolkit } from "@turnkeyai/agent-core/toolkit";
-import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
+import type { LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 
 import type { EngineRunObserver } from "./engine-run-observer";
 
@@ -20,6 +20,16 @@ export interface EngineAgentRunnerInput<Ctx extends ToolContext> {
     EngineRunObserver,
     "onModelResponse" | "onToolStarted" | "onToolResult"
   >;
+  effectLifecycle?: EngineEffectLifecycle | undefined;
+}
+
+export interface EngineEffectLifecycle {
+  onAdmitted(input: {
+    round: number;
+    call: LLMToolCall;
+  }): Promise<ToolResult | null>;
+  onStarted(input: { round: number; call: LLMToolCall }): Promise<void>;
+  onResult(input: { round: number; result: ToolResult }): Promise<void>;
 }
 
 export interface CreateRoleEngineAgentRunnerInput<Ctx extends ToolContext> {
@@ -55,6 +65,7 @@ export async function runEngineAgent<Ctx extends ToolContext>(
   input: EngineAgentRunnerInput<Ctx>,
 ): Promise<string> {
   let finalText = "";
+  const priorResults = new Map<string, ToolResult>();
   for await (const event of input.agent.run({
     messages: input.messages,
     ctx: input.ctx,
@@ -62,17 +73,27 @@ export async function runEngineAgent<Ctx extends ToolContext>(
       ? {}
       : { initialRound: input.initialRound }),
     ...(input.signal ? { signal: input.signal } : {}),
+    onToolExecutionStart: async ({ round, call }) => {
+      const priorResult = priorResults.get(call.id);
+      if (priorResult) return structuredClone(priorResult);
+      await input.effectLifecycle?.onStarted({ round, call });
+      await input.observer.onToolStarted({ round, call });
+    },
+    onToolExecutionResult: async ({ round, result }) => {
+      await input.effectLifecycle?.onResult({ round, result });
+    },
   })) {
     if (event.type === "model_response") {
       input.observer.onModelResponse({
         round: event.round,
         toolCalls: event.toolCalls,
       });
-    } else if (event.type === "tool_started") {
-      await input.observer.onToolStarted({
+    } else if (event.type === "tool_admitted") {
+      const priorResult = await input.effectLifecycle?.onAdmitted({
         round: event.round,
         call: event.call,
       });
+      if (priorResult) priorResults.set(event.call.id, priorResult);
     } else if (event.type === "tool_result") {
       await input.observer.onToolResult({ result: event.result });
     } else if (event.type === "final") {
