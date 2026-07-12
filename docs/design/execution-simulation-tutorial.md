@@ -252,4 +252,3 @@ Every runtime pull request must answer:
 8. Does replay produce the same state?
 
 If questions 5, 6, or 7 answer yes, the change does not belong in the runtime.
-
