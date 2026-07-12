@@ -843,12 +843,7 @@ test("sessions_spawn does not enlarge an explicit timeout for slow loopback brow
       return { workerType: "browser", workerRunKey: "worker:browser:slow-loopback" };
     },
     async send() {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      return {
-        workerType: "browser",
-        status: "completed",
-        summary: "Slow loopback check completed.",
-      };
+      return new Promise<never>(() => undefined);
     },
     async interrupt() {},
   } as unknown as WorkerRuntime;
