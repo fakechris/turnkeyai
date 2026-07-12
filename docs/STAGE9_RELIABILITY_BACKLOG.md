@@ -4,25 +4,29 @@ These items are independent from the closed runtime-foundation migration. They
 must be measured on immutable commits and must not trigger scenario-specific
 kernel policy patches.
 
-## P0: Define Follow-Up Continuity Product Semantics
+## Resolved: Strict Follow-Up Continuity Contract
 
-Decide whether a request to "ask the same research thread" requires an actual
-`sessions_send`, or whether a source-bounded answer from durable prior evidence
-can satisfy the product contract. Keep the decision outside the runtime kernel.
-Then measure a varied cohort across models, entities, languages, and phrasing.
-
-## P1: Improve Model Proposal Reliability
-
-If actual worker re-entry is required, improve generic tool descriptions,
-typed handle projection, and model selection. Do not reintroduce hidden
-continuation effects. Evaluate pass-rate distributions rather than consecutive
-3/3 gates.
+Strict worker re-entry now uses an explicit typed `resume-existing` target with
+a thread-scoped `workerRunKey`. The workflow-owned first proposal is
+`sessions_send`; adapter normalization binds only the declared handle and
+schema mode. Natural-language continuation remains best-effort and has no
+kernel authority.
 
 ## P1: Complete Fixed-Version Cohorts
 
 Run the five unattempted natural core scenarios in a future measurement batch
 on an unchanged commit. Preserve the first-failure report and do not patch
 between samples.
+
+Include varied entities, languages, models, and follow-up wording. Report the
+distribution; do not require consecutive 3/3 as an architecture proof.
+
+## P1: Generalize Source-Label Evaluation
+
+The quality evaluator can mistake a session tool's user-visible operation
+label for a factual source label. Separate producer/operation labels from
+evidence-source labels in typed timeline metadata, then validate with varied
+labels. Do not add label-specific regex exceptions.
 
 ## P1: Exercise Long-Context Mechanisms
 

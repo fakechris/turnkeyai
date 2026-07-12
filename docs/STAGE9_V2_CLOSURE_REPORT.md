@@ -4,7 +4,7 @@ Date: 2026-07-12
 
 Branch: `codex/v2-production-migration`
 
-Measured commit: `c4a9577c`
+Measured runtime commit: `27ef59e6`
 
 Push status: not pushed
 
@@ -32,8 +32,8 @@ signal, not permission to restore task-text repair or continuation policies.
 | `npm run typecheck` | pass |
 | agent-core | 64/64 |
 | llm-adapter | 60/60 |
-| react-engine | 393/393 |
-| llm-response-generator + tool-use | 315/315 |
+| react-engine | 394/394 |
+| llm-response-generator + tool-use | 316/316 |
 | role-runtime support | 302/302 |
 | core-types + team-runtime + team-store | 202/202 |
 | app-gateway | 699 pass, 0 fail, 1 existing skip |
@@ -47,44 +47,36 @@ production composition point under the source guard.
 
 ## MiniMax-M3 Measurement
 
-Command: one natural core matrix run with a 180-second per-scenario deadline,
-one model (`MiniMax-M3`), no fallback, and structured JSON output. Code was not
-edited during the run.
+Command: one targeted `natural-followup-continuation` run with a 180-second
+deadline, one model (`MiniMax-M3`), no fallback, and structured JSON output.
+Code was not edited during the run.
 
-Result: the first three scenarios passed; the runner stopped on the first
-failure in scenario 4, as required.
+Result: pass in 70.9 seconds. The initial turn spawned one browser worker; the
+follow-up submitted an explicit typed `resume-existing` target and executed
+`sessions_send` against the same durable `workerRunKey` before synthesis.
 
-| Scenario | Result | Duration | Model calls | Input / output tokens |
-| --- | --- | ---: | ---: | ---: |
-| comparison research | pass | 60.8s | 3 | 21,761 / 1,377 |
-| provider search pricing | pass | 66.6s | 3 | 24,368 / 1,388 |
-| browser dynamic page | pass | 41.5s | 4 | 46,787 / 1,504 |
-| follow-up continuation | fail | 61.7s | 4 | 40,238 / 2,948 |
+| Signal | Result |
+| --- | --- |
+| mission / natural quality | `done` / pass |
+| model calls | 5 |
+| input tokens | 51,935 total; 30,189 uncached; 21,746 cache-read |
+| output tokens | 3,353 |
+| tools / sessions | 3/3 results; 1 spawned; 1 continued |
+| liveness | 0 active; 0 waiting; 0 stale |
+| compaction / resume | 0 / 0 |
+| duplicate tool calls / closeouts | 0 / 0 |
+| browser failures / profile fallback | none / 0 |
 
-Aggregate attempted work: 14 model calls, 133,154 input tokens, 61,730
-uncached input tokens, 71,424 cache-read input tokens, and 7,217 output tokens.
-About 53.6% of input tokens were cache reads.
+Structured report: `/tmp/turnkeyai-v2-27ef59e6-followup.json`.
 
-Failure bucket: `model_tool_selection / continuation_contract_miss`.
-
-The initial turn completed `sessions_spawn` and `artifacts_read`. On the
-follow-up, MiniMax produced a source-bounded decision note directly from the
-existing transcript and did not call `sessions_send`. The harness requires the
-same worker session to be revisited, so it failed the scenario. The run itself
-terminated normally within the deadline: 0 compactions, 0 resume events, 0
-duplicate tool calls, and 0 closeout reasons. This is not a timeout, crash,
-stuck loop, or exactly-once failure.
-
-Structured report:
-`/tmp/turnkeyai-v2-c4a9577c-natural-core.json`
-
-Retained runtime root:
-`/var/folders/s9/szs_2cwj41d2l0n_1r85nnnm0000gn/T/turnkeyai-mission-e2e-fsmluX`
+This one pass proves that the typed same-worker contract is executable through
+the real MiniMax transport. It is not a claim of a 100% reliability rate or a
+replacement for a fixed-version multi-run cohort.
 
 ## Release Interpretation
 
-The runtime foundation is mergeable on deterministic and structural grounds.
-The natural core matrix is not fully green, so a release that promises strict
-same-worker follow-up execution should remain gated. A release whose contract
-allows transcript-backed continuation can evaluate that product requirement
-separately; this migration does not silently redefine it.
+The runtime foundation is mergeable. Deterministic, structural, crash/replay,
+and simulator gates are green, and the previously failing strict same-worker
+follow-up contract passed through a typed public API on the measured runtime
+commit. Remaining cross-model reliability work is measurement and evaluator
+generalization, not a reason to restore task-text policy authority.
