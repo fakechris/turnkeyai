@@ -26,6 +26,7 @@
     "./scheduled/file-scheduled-task-store": "./src/scheduled/file-scheduled-task-store.ts",
     "./worker/file-worker-session-store": "./src/worker/file-worker-session-store.ts",
     "./worker/file-worker-result-inbox-store": "./src/worker/file-worker-result-inbox-store.ts",
+    "./workflow/file-explicit-workflow-store": "./src/workflow/file-explicit-workflow-store.ts",
     "./mission/file-mission-store": "./src/mission/file-mission-store.ts",
     "./mission/file-work-item-store": "./src/mission/file-work-item-store.ts",
     "./mission/file-activity-event-store": "./src/mission/file-activity-event-store.ts",

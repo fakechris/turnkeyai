@@ -14,3 +14,4 @@ export * from "./scheduled-task-runtime";
 export * from "./session-memory-refresh-worker";
 export * from "./serial-batch-uploader";
 export * from "./file-batch-outbox";
+export * from "./explicit-workflow-runtime";

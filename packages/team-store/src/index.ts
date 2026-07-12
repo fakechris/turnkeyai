@@ -8,6 +8,7 @@ export * from "./file-runtime-progress-store";
 export * from "./file-team-message-store";
 export * from "./file-team-thread-store";
 export * from "./worker/file-worker-result-inbox-store";
+export * from "./workflow/file-explicit-workflow-store";
 export * from "./context/file-thread-summary-store";
 export * from "./context/file-role-scratchpad-store";
 export * from "./context/file-thread-memory-store";
