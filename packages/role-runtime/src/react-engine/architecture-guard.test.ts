@@ -29,6 +29,10 @@ const TERMINAL_FINAL_SYNTHESIS = path.join(
 );
 const TOOL_USE = path.join(ROLE_RUNTIME_DIR, "tool-use.ts");
 const TOOL_PROTOCOL = path.join(ROLE_RUNTIME_DIR, "tool-protocol.ts");
+const TOOL_DEFINITION_FILTER = path.join(
+  ROLE_RUNTIME_DIR,
+  "tool-definition-filter.ts",
+);
 const OPERATION_TIMEOUT_BUDGET = path.join(
   ROLE_RUNTIME_DIR,
   "operation-timeout-budget.ts",
@@ -2286,6 +2290,31 @@ test("retired synthetic recovery text cannot control production runtime", () => 
     offenders,
     [],
     `retired recovery prose must not admit, suppress, continue, or budget production work:\n${offenders.join("\n")}`,
+  );
+});
+
+test("model mode does not filter caller-approved tools from task text", () => {
+  assert.equal(
+    existsSync(TOOL_DEFINITION_FILTER),
+    false,
+    "task-text tool filtering must not return to the standard model loop",
+  );
+  const generatorSource = readFileSync(LLM_RESPONSE_GENERATOR, "utf8");
+  for (const forbidden of [
+    "filterToolDefinitionsForTask",
+    "taskRequestsFocusedDurableMemoryRecall",
+    "taskAllowsTaskTrackingTools",
+  ]) {
+    assert.equal(
+      generatorSource.includes(forbidden),
+      false,
+      `model-mode composition must not use semantic tool filter ${forbidden}`,
+    );
+  }
+  assert.match(
+    generatorSource,
+    /const toolDefinitions = activeToolLoop\s*\? activeToolLoop\.executor\.definitions\(\)\s*: undefined;/,
+    "model mode must pass the caller-approved executor definitions through unchanged",
   );
 });
 

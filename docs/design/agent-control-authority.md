@@ -111,6 +111,7 @@ An evaluator failure is data for the caller. It is never a runtime transition.
 | Incomplete-final automatic follow-up | Removed | Correct | Evaluator reports blocked quality and one activity event only |
 | Late worker completion fallback follow-up | Removed; durable inbox is the only production path | Correct | Retain typed inbox delivery |
 | Role repair/continuation/permission product policies | Production factories return no-op; old actions are isolated characterization | Correct production boundary | Guard production composition from enabling characterization |
+| Model tool definitions | Caller/capability-owned executor definitions are passed to the model unchanged | Correct | Kernel validates schema, permission, safety, and effects; task text cannot hide tools |
 | Tool-call normalizer | Protocol aliases, handles, and schema normalization remain; product rewrites are retired | Correct | Retain syntax normalization; prohibit business rewrites |
 | Handoff planner | Validates structured `@{roleId}` proposals emitted by the model and applies hop limits | Model-mode proposal adapter, despite the `planner` name | Retain as declared proposal protocol; do not infer delegation from unstructured text |
 | Scheduled/cron dispatch | Caller creates a typed durable schedule; a due trigger dispatches the predeclared target | Explicit caller input, not a hidden planner | Retain |
@@ -127,6 +128,8 @@ An evaluator failure is data for the caller. It is never a runtime transition.
   `createPermissionPolicy()` returns `NO_ACTION_PERMISSION_POLICY`.
 - Product closeouts are disabled except typed kernel outcomes:
   `createCloseoutPolicyRegistry()` disables automatic product closeouts.
+- Model mode passes the caller-approved executor tool definitions through
+  unchanged. Task or transcript text cannot add, remove, or narrow tools.
 - app-gateway mission completion may update `Mission.status`, blockers, and
   activity events as a product read-model projection. It cannot submit a user
   turn, call a model/tool, signal a workflow, or mutate role/flow/effect state.
@@ -271,7 +274,10 @@ The production migration reduced control surfaces as follows:
    production work;
 6. historical policy characterization remains available only through explicitly
    test-only wiring, with a guard preventing production composition from enabling
-   it. Physically archiving those test fixtures is maintenance, not an open
+   it;
+7. task-text tool filtering is removed, so model mode receives the
+   caller-approved capability set without semantic narrowing. Physically
+   archiving retired test fixtures is maintenance, not an open
    production control-authority gap.
 
 The migration must not add detectors, prompt repairs, scenario closeouts, new

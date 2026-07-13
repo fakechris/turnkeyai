@@ -1586,10 +1586,10 @@ test("llm role response generator suppresses provider pricing read-only permissi
   assert.match(result.content, /OpenRouter/);
   assert.match(result.content, /是否明确支持 search\/web_search/);
   const firstToolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
-  assert.ok(!firstToolNames.includes("permission_query"));
+  assert.ok(firstToolNames.includes("permission_query"));
 });
 
-test("llm role response generator hides permission tools for non-mutating slow-source follow-ups", async () => {
+test("llm role response generator preserves caller-approved permission tools for non-mutating follow-ups", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -1649,11 +1649,11 @@ test("llm role response generator hides permission tools for non-mutating slow-s
 
   const toolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
   assert.ok(toolNames.includes("sessions_spawn"));
-  assert.ok(!toolNames.includes("permission_query"));
-  assert.ok(!toolNames.includes("permission_result"));
+  assert.ok(toolNames.includes("permission_query"));
+  assert.ok(toolNames.includes("permission_result"));
 });
 
-test("llm role response generator hides task tracking tools for timeout continuation follow-ups", async () => {
+test("llm role response generator preserves caller-approved task tools for timeout follow-ups", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -1712,11 +1712,11 @@ test("llm role response generator hides task tracking tools for timeout continua
 
   const toolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
   assert.ok(toolNames.includes("sessions_send"));
-  assert.ok(!toolNames.includes("tasks_create"));
-  assert.ok(!toolNames.includes("tasks_update"));
+  assert.ok(toolNames.includes("tasks_create"));
+  assert.ok(toolNames.includes("tasks_update"));
 });
 
-test("llm role response generator hides task tracking tools for slow-source recovery prompts", async () => {
+test("llm role response generator preserves caller-approved task tools despite recovery prose", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -1800,9 +1800,9 @@ test("llm role response generator hides task tracking tools for slow-source reco
   assert.ok(toolNames.includes("sessions_list"));
   assert.ok(toolNames.includes("sessions_send"));
   assert.ok(toolNames.includes("sessions_spawn"));
-  assert.ok(!toolNames.includes("tasks_list"));
-  assert.ok(!toolNames.includes("tasks_create"));
-  assert.ok(!toolNames.includes("tasks_update"));
+  assert.ok(toolNames.includes("tasks_list"));
+  assert.ok(toolNames.includes("tasks_create"));
+  assert.ok(toolNames.includes("tasks_update"));
 });
 
 test("llm role response generator keeps tools enabled when approval-gated browser inspection needs parent permission", async () => {
@@ -3750,7 +3750,7 @@ test("llm role response generator does not suppress memory tools for follow-up r
   assert.match(result.content, /Tuesday 09:30/);
 });
 
-test("llm role response generator only exposes memory tools for focused durable memory recall turns", async () => {
+test("llm role response generator preserves non-memory tools for focused durable memory recall turns", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -3872,10 +3872,18 @@ test("llm role response generator only exposes memory tools for focused durable 
   });
 
   const exposedToolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
-  assert.deepEqual(exposedToolNames, ["memory_search", "memory_get"]);
+  assert.deepEqual(exposedToolNames, [
+    "memory_search",
+    "memory_get",
+    "sessions_spawn",
+    "sessions_history",
+    "sessions_list",
+    "tasks_create",
+    "tasks_update",
+  ]);
 });
 
-test("llm role response generator recognizes focused durable memory recall from recent user context", async () => {
+test("llm role response generator does not narrow tools from recent user memory context", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -3968,7 +3976,12 @@ test("llm role response generator recognizes focused durable memory recall from 
   });
 
   const exposedToolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
-  assert.deepEqual(exposedToolNames, ["memory_search", "memory_get"]);
+  assert.deepEqual(exposedToolNames, [
+    "memory_search",
+    "memory_get",
+    "sessions_list",
+    "tasks_create",
+  ]);
 });
 
 test("llm role response generator serializes order-dependent tool batches", async () => {
