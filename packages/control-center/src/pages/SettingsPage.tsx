@@ -2,11 +2,18 @@
 
 import { useRef, useState } from "react";
 
-import type { DiagnosticsSnapshot, ModelCatalogConfigReport, ModelsReport } from "../api/types";
+import type {
+  DiagnosticsSnapshot,
+  ModelCatalogConfigReport,
+  ModelCatalogOpenReport,
+  ModelCatalogReloadReport,
+  ModelsReport,
+} from "../api/types";
 import { useApiClient } from "../api/useApiClient";
 import { Icon } from "../components/Icon";
 import { usePolling } from "../hooks/usePolling";
 import { useAppState } from "../state/AppState";
+import type { Scope } from "../state/types";
 
 const POLICIES = [
   { k: "Submitting forms in the browser", v: "Ask first", lvl: "warning" as const },
@@ -26,12 +33,20 @@ interface SettingsLive {
   reachable: boolean;
 }
 
+interface CatalogNotice {
+  message: string;
+  ok: boolean;
+}
+
+type CatalogAction = "opening" | "reloading" | null;
+
 export function SettingsPage() {
   const client = useApiClient();
   const { state, setRoute } = useAppState();
   const editorDirtyRef = useRef(false);
   const [catalogEditor, setCatalogEditor] = useState("");
-  const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
+  const [catalogNotice, setCatalogNotice] = useState<CatalogNotice | null>(null);
+  const [catalogAction, setCatalogAction] = useState<CatalogAction>(null);
   const [catalogSaving, setCatalogSaving] = useState(false);
   const [live, setLive] = useState<SettingsLive>({
     diagnostics: null,
@@ -80,15 +95,66 @@ export function SettingsPage() {
       }));
       editorDirtyRef.current = false;
       setCatalogEditor(saved.content);
-      setCatalogNotice(
-        saved.restartRequired
+      setCatalogNotice({
+        ok: true,
+        message: saved.restartRequired
           ? "Catalog saved. Restart the daemon for the new runtime model selection to take effect."
-          : "Catalog saved and reloaded."
-      );
+          : "Catalog saved and reloaded.",
+      });
     } catch (error) {
-      setCatalogNotice(readableSettingsError(error));
+      setCatalogNotice({ ok: false, message: readableSettingsError(error) });
     } finally {
       setCatalogSaving(false);
+    }
+  };
+
+  const openCatalog = async () => {
+    setCatalogAction("opening");
+    setCatalogNotice(null);
+    try {
+      const opened = await client.postNoAuthReset<ModelCatalogOpenReport>("/daemon/config/model-catalog/open");
+      setLive((current) => ({
+        ...current,
+        modelCatalogConfig: opened,
+        modelCatalogConfigError: null,
+        reachable: true,
+      }));
+      if (!editorDirtyRef.current) setCatalogEditor(opened.content);
+      setCatalogNotice({
+        ok: true,
+        message: opened.created
+          ? "Created the model configuration file and opened it in your system editor."
+          : "Opened the model configuration file in your system editor.",
+      });
+    } catch (error) {
+      setCatalogNotice({ ok: false, message: readableSettingsError(error) });
+    } finally {
+      setCatalogAction(null);
+    }
+  };
+
+  const reloadCatalog = async () => {
+    setCatalogAction("reloading");
+    setCatalogNotice(null);
+    try {
+      const reloaded = await client.postNoAuthReset<ModelCatalogReloadReport>(
+        "/daemon/config/model-catalog/reload"
+      );
+      const models = await client.get<ModelsReport>("/models").catch(() => null);
+      editorDirtyRef.current = false;
+      setCatalogEditor(reloaded.content);
+      setLive((current) => ({
+        ...current,
+        models: models ?? current.models,
+        modelCatalogConfig: reloaded,
+        modelCatalogConfigError: null,
+        reachable: true,
+      }));
+      setCatalogNotice({ ok: true, message: "Reloaded the model configuration from disk." });
+    } catch (error) {
+      setCatalogNotice({ ok: false, message: readableSettingsError(error) });
+    } finally {
+      setCatalogAction(null);
     }
   };
 
@@ -144,6 +210,16 @@ export function SettingsPage() {
         </section>
       </div>
 
+      <ModelCatalogFileActions
+        config={live.modelCatalogConfig}
+        error={live.modelCatalogConfigError}
+        scope={state.scope}
+        action={catalogAction}
+        notice={catalogNotice}
+        onOpen={openCatalog}
+        onReload={reloadCatalog}
+      />
+
       <details className="settings-advanced">
         <summary>Advanced local setup</summary>
         <div className="settings-advanced-body">
@@ -178,7 +254,6 @@ export function SettingsPage() {
                 error={live.modelCatalogConfigError}
                 editor={catalogEditor}
                 saving={catalogSaving}
-                notice={catalogNotice}
                 scope={state.scope}
                 onChange={(value) => {
                   editorDirtyRef.current = true;
@@ -225,12 +300,104 @@ export function SettingsPage() {
   );
 }
 
+function ModelCatalogFileActions({
+  config,
+  error,
+  scope,
+  action,
+  notice,
+  onOpen,
+  onReload,
+}: {
+  config: ModelCatalogConfigReport | null;
+  error: string | null;
+  scope: Scope;
+  action: CatalogAction;
+  notice: CatalogNotice | null;
+  onOpen: () => void;
+  onReload: () => void;
+}) {
+  const fileActions = modelCatalogFileActionState(config, scope);
+  return (
+    <section className="card settings-model-config-card">
+      <div className="card-hd">
+        <Icon name="settings" size={13} />
+        <h3>Model configuration</h3>
+      </div>
+      <div className="card-bd">
+        <div className="setting-row settings-catalog-file-row">
+          <div className="lbl">
+            <b>Configuration file</b>
+            <span>Open the JSON file in your system editor, save it, then reload it here.</span>
+          </div>
+          <div className="settings-catalog-file-main">
+            <input
+              className="field mono"
+              value={config?.editableModelCatalogPath ?? error ?? "Checking configuration path"}
+              readOnly
+              aria-label="Model configuration file"
+            />
+            <span className="settings-catalog-file-hint">{fileActions.reloadHint}</span>
+          </div>
+          <div className="settings-catalog-actions">
+            <button
+              type="button"
+              className="btn"
+              onClick={onOpen}
+              disabled={!fileActions.canOpen || action != null}
+              title={fileActions.canOpen ? "Open the JSON file in your system editor" : fileActions.reloadHint}
+            >
+              {action === "opening" ? "Opening" : "Open config"}
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={onReload}
+              disabled={!fileActions.canReload || action != null}
+              title={fileActions.reloadHint}
+            >
+              {action === "reloading" ? "Reloading" : "Reload"}
+            </button>
+          </div>
+        </div>
+        {notice ? (
+          <div className="settings-catalog-feedback settings-model-config-notice" data-ok={notice.ok ? "true" : "false"}>
+            {notice.message}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+export function modelCatalogFileActionState(
+  config: ModelCatalogConfigReport | null,
+  scope: Scope
+): { canOpen: boolean; canReload: boolean; reloadHint: string } {
+  if (scope !== "admin" && scope !== "unknown") {
+    return { canOpen: false, canReload: false, reloadHint: "Admin token required" };
+  }
+  if (!config) {
+    return { canOpen: false, canReload: false, reloadHint: "Waiting for configuration status" };
+  }
+  if (config.restartRequired || !config.liveReloadAvailable) {
+    return {
+      canOpen: true,
+      canReload: false,
+      reloadHint: "Restart the daemon to activate this file",
+    };
+  }
+  if (!config.exists) {
+    return { canOpen: true, canReload: false, reloadHint: "Open the file to create it first" };
+  }
+  return { canOpen: true, canReload: true, reloadHint: "Reload changes from disk" };
+}
+
 function ModelCatalogEditor({
   config,
   error,
   editor,
   saving,
-  notice,
   scope,
   onChange,
   onSave,
@@ -239,8 +406,7 @@ function ModelCatalogEditor({
   error: string | null;
   editor: string;
   saving: boolean;
-  notice: string | null;
-  scope: string;
+  scope: Scope;
   onChange: (value: string) => void;
   onSave: () => void;
 }) {
@@ -249,8 +415,8 @@ function ModelCatalogEditor({
   return (
     <div className="setting-row settings-catalog-editor">
       <div className="lbl">
-        <b>Catalog editor</b>
-        <span>admin-scoped local JSON; restart only when live reload is unavailable</span>
+        <b>Inline JSON editor</b>
+        <span>Advanced fallback for editing the same local file in this page</span>
       </div>
       <div className="settings-catalog-editor-main">
         <textarea
@@ -279,7 +445,6 @@ function ModelCatalogEditor({
             ))}
           </div>
         ) : null}
-        {notice ? <div className="settings-catalog-feedback" data-ok="true">{notice}</div> : null}
       </div>
       <div>
         <button

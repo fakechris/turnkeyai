@@ -65,6 +65,31 @@ test("api client uses short text error bodies before falling back to generic sta
   }
 });
 
+test("api client can call optional admin POST routes without clearing a lower-scope token", async () => {
+  let clearedPath: string | null = null;
+  const restore = mockFetch(
+    new Response(JSON.stringify({ error: "admin token required" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    })
+  );
+  try {
+    const client = createApiClient({
+      getToken: () => "operator-token",
+      onUnauthorized: (pathname) => {
+        clearedPath = pathname;
+      },
+    });
+    await assert.rejects(
+      () => client.postNoAuthReset("/daemon/config/model-catalog/reload"),
+      (error) => error instanceof UnauthorizedError && error.message === "admin token required"
+    );
+    assert.equal(clearedPath, null);
+  } finally {
+    restore();
+  }
+});
+
 function mockFetch(response: Response): () => void {
   const previous = globalThis.fetch;
   globalThis.fetch = (async () => response.clone()) as typeof fetch;
