@@ -721,7 +721,7 @@ describe("MissionThreadBridge", () => {
     );
   });
 
-  it("reopens a prematurely done mission when goal-slot coverage later fails", async () => {
+  it("corrects a prematurely done mission projection when goal-slot coverage later fails", async () => {
     counter = 0;
     const mission: Mission = {
       ...baseMission,

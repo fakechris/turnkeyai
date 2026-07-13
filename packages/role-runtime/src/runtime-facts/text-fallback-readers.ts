@@ -2295,14 +2295,7 @@ export function allowsSupplementalBrowserProbe(packet: RolePromptPacket): boolea
 export function findSessionContinuationDirective(
   taskPrompt: string,
 ): SessionContinuationDirective | null {
-  let latestUserText = extractLatestUserContinuationText(taskPrompt);
-  if (!isExplicitSessionContinuationRequest(latestUserText)) {
-    if (!readPolicyForceSlowSourceRecoveryContinuation(taskPrompt)) {
-      return null;
-    }
-    latestUserText =
-      "Continue the same slow-source source-check context after the previous timeout. Resume the existing source-check session.";
-  }
+  const latestUserText = extractLatestUserContinuationText(taskPrompt);
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
@@ -2466,14 +2459,7 @@ export function findSessionContinuationLookupDirective(
   taskPrompt: string,
   context: string,
 ): SessionContinuationLookupDirective | null {
-  let latestUserText = extractLatestUserContinuationText(taskPrompt);
-  if (!isExplicitSessionContinuationRequest(latestUserText)) {
-    if (!readPolicyForceSlowSourceRecoveryContinuation(context)) {
-      return null;
-    }
-    latestUserText =
-      "Continue the same slow-source source-check context after the previous timeout. Resume the existing source-check session.";
-  }
+  const latestUserText = extractLatestUserContinuationText(taskPrompt);
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
@@ -2512,19 +2498,6 @@ function readTruncatedContinuationWorkerKind(
       .filter((kind): kind is string => Boolean(kind)),
   );
   return workerKinds.size === 1 ? [...workerKinds][0]! : null;
-}
-
-export function readPolicyForceSlowSourceRecoveryContinuation(context: string): boolean {
-  return (
-    /\bSystem recovery:\s*the previous final answer did not satisfy required goal slots\b/i.test(
-      context,
-    ) &&
-    taskIntentFactsForPrompt(context).sourceCheckContinuationRequested &&
-    contextHasTimeoutSessionResult(context) &&
-    /\b(?:Resume or retry the same slow source-check context|same source-check context|required release-risk slots|release-risk slots)\b/i.test(
-      context,
-    )
-  );
 }
 
 export function sessionContextSupportsContinuation(context: string): boolean {
@@ -4189,27 +4162,6 @@ export function hasSessionTimeoutEvidence(input: {
   );
 }
 
-export function resolveRecoveryToolBudgetForActivation(input: {
-  activation: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-}): { maxToolCalls: number } | null {
-  return resolveFinalRecoveryToolBudget(
-    buildFinalRecoveryBudgetContext(input),
-  );
-}
-
-export function countRecoveryToolCallsBeforeActivation(input: {
-  activation: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-}): number {
-  const context = buildFinalRecoveryBudgetContext(input);
-  const marker = findLastFinalRecoveryBudgetMarker(context);
-  if (marker < 0) return 0;
-  return countRenderedToolCallLines(context.slice(marker));
-}
-
 export function readPolicyFinalRecoveryBudgetCloseoutRepair(input: {
   messages: LLMMessage[];
   repairMarkers: LLMMessage[];
@@ -4238,76 +4190,6 @@ function hasFinalRecoveryBudgetCloseoutRepairPrompt(
   );
 }
 
-function resolveFinalRecoveryToolBudget(
-  taskPrompt: string,
-): { maxToolCalls: number } | null {
-  const attempt = taskPrompt.match(/Automatic recovery attempt\s+(\d+)\s+of\s+(\d+)/i);
-  if (!attempt) return null;
-  const currentAttempt = Number(attempt[1]);
-  const maxAttempt = Number(attempt[2]);
-  if (
-    !Number.isFinite(currentAttempt) ||
-    !Number.isFinite(maxAttempt) ||
-    currentAttempt < maxAttempt
-  ) {
-    return null;
-  }
-  const budget = taskPrompt.match(
-    /at most\s+([a-z]+|\d+)\s+additional tool calls total/i,
-  );
-  if (!budget) return null;
-  const maxToolCalls = parseSmallIntegerWord(budget[1] ?? "");
-  if (!Number.isFinite(maxToolCalls) || maxToolCalls <= 0) return null;
-  return { maxToolCalls };
-}
-
-function findLastFinalRecoveryBudgetMarker(text: string): number {
-  let marker = -1;
-  const pattern =
-    /Automatic recovery attempt\s+(\d+)\s+of\s+(\d+)[\s\S]{0,600}?at most\s+([a-z]+|\d+)\s+additional tool calls total/gi;
-  for (const match of text.matchAll(pattern)) {
-    const currentAttempt = Number(match[1]);
-    const maxAttempt = Number(match[2]);
-    if (
-      Number.isFinite(currentAttempt) &&
-      Number.isFinite(maxAttempt) &&
-      currentAttempt >= maxAttempt
-    ) {
-      marker = match.index ?? marker;
-    }
-  }
-  return marker;
-}
-
-function countRenderedToolCallLines(text: string): number {
-  return Array.from(
-    text.matchAll(
-      /(?:^|[\n\r])\s*Calling\s+[A-Za-z_][\w-]*\s*\(/g,
-    ),
-  ).length;
-}
-
-function buildFinalRecoveryBudgetContext(input: {
-  activation: RoleActivationInput;
-  taskPrompt: string;
-  messages: LLMMessage[];
-}): string {
-  const intent = input.activation.handoff.payload.intent;
-  return [
-    input.taskPrompt,
-    intent?.relayBrief ?? "",
-    intent?.instructions ?? "",
-    ...(intent?.recentMessages ?? []).map((message) =>
-      typeof message.content === "string"
-        ? message.content
-        : JSON.stringify(message.content ?? ""),
-    ),
-    ...input.messages
-      .filter((message) => message.role === "user")
-      .map((message) => readFinalRecoveryMessageContentText(message.content)),
-  ].join("\n");
-}
-
 function readFinalRecoveryMessageContentText(
   content: LLMMessage["content"],
 ): string {
@@ -4322,23 +4204,4 @@ function readFinalRecoveryMessageContentText(
     })
     .filter(Boolean)
     .join("\n");
-}
-
-function parseSmallIntegerWord(value: string): number {
-  const normalized = value.trim().toLowerCase();
-  const numeric = Number(normalized);
-  if (Number.isFinite(numeric)) return Math.floor(numeric);
-  const words: Record<string, number> = {
-    one: 1,
-    two: 2,
-    three: 3,
-    four: 4,
-    five: 5,
-    six: 6,
-    seven: 7,
-    eight: 8,
-    nine: 9,
-    ten: 10,
-  };
-  return words[normalized] ?? Number.NaN;
 }

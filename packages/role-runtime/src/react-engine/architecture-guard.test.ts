@@ -45,6 +45,7 @@ const GATEWAY_INPUT_BUILDER = path.join(
   "gateway-input-builder.ts",
 );
 const PACKAGES_DIR = path.resolve(ROLE_RUNTIME_DIR, "../..");
+const TEAM_RUNTIME_DIR = path.join(PACKAGES_DIR, "team-runtime/src");
 
 const FORBIDDEN_RUNTIME_FIXTURE_LITERALS = [
   "Vendor Alpha",
@@ -2258,6 +2259,52 @@ test("time authority is task-text independent and cannot restore timeout floors"
       `active time authority must not restore ${forbidden}`,
     );
   }
+});
+
+test("retired synthetic recovery text cannot control production runtime", () => {
+  const sourceFiles = [ROLE_RUNTIME_DIR, TEAM_RUNTIME_DIR].flatMap((root) =>
+    runtimeProductionSourceFiles(root),
+  );
+  const forbidden = [
+    "System recovery: the previous final answer did not satisfy required goal slots",
+    "Automatic recovery attempt",
+    "shouldSuppressMentionDispatchAfterFinalRecoveryBudget",
+    "readPolicyForceSlowSourceRecoveryContinuation",
+    "resolveRecoveryToolBudgetForActivation",
+    "countRecoveryToolCallsBeforeActivation",
+  ];
+  const offenders: string[] = [];
+  for (const file of sourceFiles) {
+    const source = readFileSync(file, "utf8");
+    for (const marker of forbidden) {
+      if (source.includes(marker)) {
+        offenders.push(`${path.relative(PACKAGES_DIR, file)}: ${marker}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `retired recovery prose must not admit, suppress, continue, or budget production work:\n${offenders.join("\n")}`,
+  );
+});
+
+test("retired policy characterization cannot be enabled by production composition", () => {
+  const allowedOwners = new Set([
+    LLM_RESPONSE_GENERATOR,
+    path.join(ENGINE_DIR, "tool-call-normalizer.ts"),
+  ]);
+  const offenders = runtimeProductionSourceFiles(PACKAGES_DIR)
+    .filter((file) => !allowedOwners.has(file))
+    .filter((file) =>
+      readFileSync(file, "utf8").includes("testOnlyCharacterizeRetiredPolicies"),
+    )
+    .map((file) => path.relative(PACKAGES_DIR, file));
+  assert.deepEqual(
+    offenders,
+    [],
+    `only the isolated characterization harness may expose retired policy behavior:\n${offenders.join("\n")}`,
+  );
 });
 
 function runtimeProductionSourceFiles(root: string): string[] {

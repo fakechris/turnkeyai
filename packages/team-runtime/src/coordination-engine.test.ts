@@ -820,7 +820,7 @@ test("coordination engine dedupes repeated handoffs and advances edge state to c
   assert.equal(storedFlow.edges[0]?.state, "closed");
 });
 
-test("coordination engine suppresses mention dispatch after final recovery tool budget is exhausted", async () => {
+test("coordination engine ignores retired recovery prose and honors the model handoff proposal", async () => {
   const thread: TeamThread = {
     threadId: "thread-recovery-budget",
     teamId: "team-recovery-budget",
@@ -971,9 +971,19 @@ test("coordination engine suppresses mention dispatch after final recovery tool 
           lastActiveAt: 1,
         };
       },
-      async enqueue() {
+      async enqueue(_runKey, nextHandoff) {
         enqueueCount += 1;
-        throw new Error("mention dispatch should have been suppressed");
+        return {
+          runKey: `role:operator:thread:${thread.threadId}`,
+          threadId: thread.threadId,
+          roleId: "operator",
+          mode: "group",
+          status: "queued",
+          iterationCount: 0,
+          maxIterations: 6,
+          inbox: [nextHandoff],
+          lastActiveAt: 20,
+        };
       },
       async dequeue() {
         return null;
@@ -1062,10 +1072,10 @@ test("coordination engine suppresses mention dispatch after final recovery tool 
     message: replyMessage,
   });
 
-  assert.equal(enqueueCount, 0);
-  assert.deepEqual(recoveryMentions, []);
-  assert.equal(storedFlow.status, "completed");
-  assert.equal(storedFlow.activeRoleIds.length, 0);
+  assert.equal(enqueueCount, 1);
+  assert.equal(recoveryMentions, null);
+  assert.equal(storedFlow.status, "waiting_role");
+  assert.deepEqual(storedFlow.activeRoleIds, ["operator"]);
 });
 
 test("coordination engine does not abort flow at hop limit while roles are still active", async () => {

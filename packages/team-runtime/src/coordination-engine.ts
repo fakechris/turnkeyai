@@ -636,23 +636,6 @@ export class CoordinationEngine {
       return;
     }
 
-    if (
-      await this.shouldSuppressMentionDispatchAfterFinalRecoveryBudget(
-        thread.threadId,
-        intent.message,
-      )
-    ) {
-      const recovery = await this.deps.recoveryDirector.onRoleReply({
-        thread,
-        flow: latestFlow,
-        message: intent.message,
-        mentions: [],
-      });
-
-      await this.applyRecoveryDecision(recovery, latestFlow, thread, intent.message);
-      return;
-    }
-
     const fanOutGroupId = decision.targetRoleIds.length > 1 ? `${intent.message.id}:fanout` : undefined;
     for (const [index, targetRoleId] of decision.targetRoleIds.entries()) {
       await this.dispatchToRole({
@@ -2082,20 +2065,6 @@ export class CoordinationEngine {
     }
   }
 
-  private async shouldSuppressMentionDispatchAfterFinalRecoveryBudget(
-    threadId: string,
-    message: TeamMessage
-  ): Promise<boolean> {
-    if (!/@\{[^}]+}/.test(message.content)) {
-      return false;
-    }
-    const messages = await this.deps.teamMessageStore.list(threadId, 80);
-    return isFinalRecoveryBudgetExhausted([
-      ...messages.map((item) => item.content),
-      message.content,
-    ]);
-  }
-
   private async putFlow(flow: FlowLedger): Promise<void> {
     await this.deps.flowLedgerStore.put(flow, { expectedVersion: flow.version ?? 0 });
     await this.recordRuntimeChainBestEffort("syncFlowStatus", flow, () => this.deps.runtimeChainRecorder?.syncFlowStatus(flow));
@@ -2257,69 +2226,6 @@ function buildHandoffEdge(flowId: string, handoff: HandoffEnvelope): FlowLedger[
   }
 
   return edge;
-}
-
-function isFinalRecoveryBudgetExhausted(contents: string[]): boolean {
-  const context = contents.join("\n");
-  const marker = findLastFinalRecoveryBudgetMarker(context);
-  if (!marker) {
-    return false;
-  }
-  const toolCalls = countRenderedToolCalls(context.slice(marker.index));
-  return toolCalls >= marker.maxToolCalls;
-}
-
-function findLastFinalRecoveryBudgetMarker(
-  context: string
-): { index: number; maxToolCalls: number } | null {
-  let marker: { index: number; maxToolCalls: number } | null = null;
-  const pattern =
-    /Automatic recovery attempt\s+(\d+)\s+of\s+(\d+)[\s\S]{0,600}?at most\s+([a-z]+|\d+)\s+additional tool calls total/gi;
-  for (const match of context.matchAll(pattern)) {
-    const currentAttempt = Number(match[1]);
-    const maxAttempt = Number(match[2]);
-    const maxToolCalls = parseSmallIntegerWord(match[3] ?? "");
-    if (
-      Number.isFinite(currentAttempt) &&
-      Number.isFinite(maxAttempt) &&
-      currentAttempt >= maxAttempt &&
-      Number.isFinite(maxToolCalls) &&
-      maxToolCalls > 0
-    ) {
-      marker = {
-        index: match.index ?? 0,
-        maxToolCalls,
-      };
-    }
-  }
-  return marker;
-}
-
-function countRenderedToolCalls(context: string): number {
-  return Array.from(
-    context.matchAll(
-      /(?:^|[\n\r])\s*Calling\s+[A-Za-z_][\w-]*\s*\(/g,
-    ),
-  ).length;
-}
-
-function parseSmallIntegerWord(value: string): number {
-  const normalized = value.trim().toLowerCase();
-  const numeric = Number(normalized);
-  if (Number.isFinite(numeric)) return Math.floor(numeric);
-  const words: Record<string, number> = {
-    one: 1,
-    two: 2,
-    three: 3,
-    four: 4,
-    five: 5,
-    six: 6,
-    seven: 7,
-    eight: 8,
-    nine: 9,
-    ten: 10,
-  };
-  return words[normalized] ?? Number.NaN;
 }
 
 function buildFanOutMergeContext(group: ShardGroupRecord): FanOutMergeContext {

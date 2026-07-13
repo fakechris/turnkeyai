@@ -48,4 +48,20 @@ test("semantic observer modules have no execution dependency", () => {
     assert.doesNotMatch(source, /explicit-workflow/);
     assert.doesNotMatch(source, /\.generate\(/);
   }
+
+  const bridge = readSource("mission-thread-bridge.ts");
+  for (const forbidden of [
+    "handleUserPost",
+    "coordination-engine",
+    "signalRoleLoop",
+    "dispatchToRole",
+    "explicitWorkflowRuntime",
+    ".generate(",
+  ]) {
+    assert.equal(
+      bridge.includes(forbidden),
+      false,
+      `mission lifecycle projection must not reach execution sink ${forbidden}`,
+    );
+  }
 });

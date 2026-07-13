@@ -296,7 +296,7 @@ export function createMissionThreadBridge(
       roleRuns,
     );
     await abandonExpiredMissionJoins(mission);
-    await reconcileMissionLifecycle(
+    await reconcileMissionProjection(
       mission,
       threadId,
       messages,
@@ -383,7 +383,7 @@ export function createMissionThreadBridge(
     });
   }
 
-  async function reconcileMissionLifecycle(
+  async function reconcileMissionProjection(
     mission: Mission,
     threadId: string,
     messages: TeamMessage[],
@@ -397,8 +397,8 @@ export function createMissionThreadBridge(
       workerSessions,
     });
     if (decision.action !== "update") return;
-    await updateMissionLifecycle(mission, decision.patch, {
-      allowDoneReopen:
+    await updateMissionProjection(mission, decision.patch, {
+      allowTerminalProjectionCorrection:
         decision.reason === "incomplete_final_answer" ||
         decision.reason === "active_execution" ||
         decision.reason === "awaiting_work",
@@ -408,18 +408,18 @@ export function createMissionThreadBridge(
     }
   }
 
-  async function updateMissionLifecycle(
+  async function updateMissionProjection(
     mission: Mission,
     patch: Partial<Pick<Mission, "status" | "progress" | "blockers" | "pendingApprovals" | "closeout" | "terminalReason">>,
-    lifecycleOptions: { allowDoneReopen?: boolean } = {}
+    projectionOptions: { allowTerminalProjectionCorrection?: boolean } = {}
   ): Promise<void> {
     try {
       const latest = (await options.missionStore.get(mission.id)) ?? mission;
-      const canReopenDoneForPendingApproval =
+      const canCorrectDoneProjectionForPendingApproval =
         latest.status === "done" && patch.status === "needs_approval" && latest.pendingApprovals > 0;
       if (
-        !canReopenDoneForPendingApproval &&
-        !(lifecycleOptions.allowDoneReopen && latest.status === "done") &&
+        !canCorrectDoneProjectionForPendingApproval &&
+        !(projectionOptions.allowTerminalProjectionCorrection && latest.status === "done") &&
         (latest.status === "done" || latest.status === "archived" || latest.status === "draft")
       ) {
         return;

@@ -32,9 +32,7 @@ import {
 import type { ToolLoopCloseoutMetadata } from "./runtime-derived-mission-report";
 import {
   allowsSupplementalBrowserProbe,
-  countRecoveryToolCallsBeforeActivation,
   findSessionContinuationDirective,
-  resolveRecoveryToolBudgetForActivation,
 } from "./runtime-facts/text-fallback-readers";
 import { createTerminalFinalSynthesisRunner } from "./terminal-final-synthesis";
 import {
@@ -257,28 +255,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     }
 
     const modelCallTrace: ModelCallBoundaryTrace[] = [];
-    const recoveryToolBudget = activeToolLoop
-      ? resolveRecoveryToolBudgetForActivation({
-        activation: input.activation,
-        taskPrompt: input.packet.taskPrompt,
-        messages: initialGatewayInput.messages,
-      })
-      : null;
-    const recoveryToolCallsBeforeActivation = recoveryToolBudget
-      ? countRecoveryToolCallsBeforeActivation({
-        activation: input.activation,
-        taskPrompt: input.packet.taskPrompt,
-        messages: initialGatewayInput.messages,
-      })
-      : 0;
     return await this.runEngine({
       input: { ...input, signal: runDeadline.signal },
       selection,
       activeToolLoop,
       initialGatewayInput,
       modelCallTrace,
-      recoveryToolBudget,
-      recoveryToolCallsBeforeActivation,
+      recoveryToolBudget: null,
+      recoveryToolCallsBeforeActivation: 0,
     });
   }
 

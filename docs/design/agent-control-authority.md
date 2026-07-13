@@ -1,8 +1,7 @@
 # Agent Control Authority
 
-Status: accepted architecture decision. Product disposition A was approved on
-2026-07-12. Implementation still requires a separate subtractive migration
-plan and review.
+Status: implemented production architecture decision. Product disposition A
+was approved and the subtractive production migration completed on 2026-07-12.
 
 ## Objective
 
@@ -103,15 +102,15 @@ An evaluator failure is data for the caller. It is never a runtime transition.
 | --- | --- | --- | --- |
 | Public user post | User | Correct | Planner input |
 | Native model tool call | Model | Correct | Model-mode proposal |
-| Typed `resume-existing` request | Caller, currently implemented with a forced first `sessions_send` choice | Explicit intent, but coupled to the model loop | Execute as an explicit command prelude or represent as typed planner input; do not infer from text |
+| Typed `resume-existing` request | Caller, implemented with a forced first `sessions_send` choice | Correct explicit caller intent | Retain; never infer it from text |
 | Effect ledger and run journal | Kernel | Correct | Retain |
 | Attempt deadline and retry allowance | Kernel | Correct | Retain |
 | Compaction/checkpoint/externalization | Kernel projection | Correct contract; real long-context evidence is still limited | Retain and measure |
 | Worker-result inbox | External event delivered on a later user turn | Correct | Retain as transcript fact |
-| Mission goal-slot evaluator | Observer plus hidden planner | Violation | Observation only |
-| Incomplete-final automatic follow-up | Evaluator result is posted through `handleUserPost` | Violation | Product disposition required; remove from standard agent control flow |
-| Late worker completion fallback follow-up | Dead compatibility path: the only production composition always injects a durable inbox and does not wire the callback | No active violation, but dead authority surface | Remove with the semantic recovery unit |
-| Role repair/continuation/permission product policies | Production factories return no-op; old actions are test-only characterization | No active violation, but a large regression surface | Move characterization out of production composition and prevent reactivation |
+| Mission goal-slot evaluator | Observer writing mission/API quality projection only | Correct | Retain projection; never wake execution |
+| Incomplete-final automatic follow-up | Removed | Correct | Evaluator reports blocked quality and one activity event only |
+| Late worker completion fallback follow-up | Removed; durable inbox is the only production path | Correct | Retain typed inbox delivery |
+| Role repair/continuation/permission product policies | Production factories return no-op; old actions are isolated characterization | Correct production boundary | Guard production composition from enabling characterization |
 | Tool-call normalizer | Protocol aliases, handles, and schema normalization remain; product rewrites are retired | Correct | Retain syntax normalization; prohibit business rewrites |
 | Handoff planner | Validates structured `@{roleId}` proposals emitted by the model and applies hop limits | Model-mode proposal adapter, despite the `planner` name | Retain as declared proposal protocol; do not infer delegation from unstructured text |
 | Scheduled/cron dispatch | Caller creates a typed durable schedule; a due trigger dispatches the predeclared target | Explicit caller input, not a hidden planner | Retain |
@@ -128,18 +127,21 @@ An evaluator failure is data for the caller. It is never a runtime transition.
   `createPermissionPolicy()` returns `NO_ACTION_PERMISSION_POLICY`.
 - Product closeouts are disabled except typed kernel outcomes:
   `createCloseoutPolicyRegistry()` disables automatic product closeouts.
-- The active semantic violation is in app-gateway: mission completion classifies
-  answer text, builds incomplete-final `System recovery` content, and the daemon
-  submits it through `coordinationEngine.handleUserPost()`.
-- app-gateway contains a second `System recovery` generator for late worker
-  completion, but it is unreachable in the current production composition:
-  the daemon is the only non-test bridge composition, always supplies the
-  concrete durable inbox, the inbox branch returns before the fallback callback,
-  and no non-test caller wires `postLateWorkerCompletionFollowUp`.
+- app-gateway mission completion may update `Mission.status`, blockers, and
+  activity events as a product read-model projection. It cannot submit a user
+  turn, call a model/tool, signal a workflow, or mutate role/flow/effect state.
+- Both app-gateway `System recovery` generators, callback surfaces, daemon
+  wiring, retry counters, and prefix detectors were deleted.
+- team-runtime no longer parses retired recovery prose to suppress a structured
+  model handoff proposal.
+- role-runtime no longer derives continuation or tool budgets from retired
+  synthetic recovery prose.
+- Late worker results enter the durable inbox exactly once. They do not reopen a
+  mission or invoke model compute.
 - The explicit workflow runtime is constructed in composition foundations, but
   no non-test production code calls its transition methods.
 
-## Product Disposition Required
+## Product Disposition
 
 Removing incomplete-final `System recovery` changes visible behavior: a mission
 will no longer silently create another model turn when an evaluator considers
@@ -234,7 +236,7 @@ existence.
 8. Compaction preserves protocol units and does not create actions.
 9. Model changes require no new detector, timeout floor, or closeout rule.
 
-## Verification Before Migration
+## Verification And Closure Evidence
 
 The architecture is accepted by model-independent checks, not a natural-language
 fixture pass:
@@ -243,7 +245,10 @@ fixture pass:
   or tool-dispatch APIs;
 - transition tests inject compliant, early-finishing, verbose, malformed,
   duplicate-call, and non-deterministic model traces;
-- observer-on and observer-off runs produce identical authoritative events;
+- incomplete-final observer tests prove the message transcript is unchanged
+  while mission quality projection and diagnostics remain visible;
+- legacy recovery-prose tests prove a structured model handoff is still
+  dispatched rather than suppressed;
 - crash injection covers admission, dispatch, receipt, notification, compaction,
   and resume boundaries;
 - fixed-version real-model cohorts measure behavior without changing code
@@ -252,22 +257,22 @@ fixture pass:
 Real-model success rates are release evidence. They do not define control-flow
 semantics and do not authorize scenario-specific patches.
 
-## Subtractive Migration Boundary
+## Completed Subtractive Migration
 
-Any future implementation plan must reduce control surfaces:
+The production migration reduced control surfaces as follows:
 
-1. prevent new observer-to-execution dependencies;
-2. after product disposition is signed, remove semantic automatic follow-up
-   from the standard agent path as one atomic unit: both `System recovery`
-   generators, both prefix detectors in completion/observability, callback
-   surfaces and daemon wiring, and acceptance assertions that require the
-   synthetic turn;
-3. narrow or retire generic ReAct hooks that can inject calls, rewrite messages,
-   or re-arm completion when production has no legitimate owner for them;
-4. keep explicit workflow outside standard agent composition unless an explicit
-   product caller is approved;
-5. remove retired characterization bodies from production modules after their
-   historical tests are archived or replaced.
+1. observer-to-execution dependencies are statically forbidden;
+2. both semantic automatic follow-up units and their acceptance contracts were
+   removed atomically;
+3. production ReAct policy factories are no-op and cannot re-arm completion or
+   manufacture product work;
+4. explicit workflow remains outside standard agent composition;
+5. retired synthetic recovery text cannot continue, budget, suppress, or admit
+   production work;
+6. historical policy characterization remains available only through explicitly
+   test-only wiring, with a guard preventing production composition from enabling
+   it. Physically archiving those test fixtures is maintenance, not an open
+   production control-authority gap.
 
 The migration must not add detectors, prompt repairs, scenario closeouts, new
 workflow machinery, or pass-rate-specific gates.

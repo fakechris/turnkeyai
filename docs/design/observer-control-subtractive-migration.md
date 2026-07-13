@@ -59,6 +59,10 @@ only after landing.
   mission or invoke model compute.
 - Synthetic recovery builders, callback surfaces, retry counters, daemon
   execution wiring, and obsolete prefix detectors were deleted together.
+- Retired recovery prose no longer supplies continuation/tool budgets or
+  suppresses structured handoff proposals in role-runtime or team-runtime.
+- `Mission.status` is explicitly a product read-model projection, not an
+  authoritative run/flow/effect state or an execution signal.
 - The architecture guard prevents observer modules from regaining execution
   dependencies or synthetic recovery control surfaces.
 
@@ -67,7 +71,7 @@ Final deterministic gates:
 - typecheck: pass;
 - agent-core: 64/64;
 - llm-adapter: 60/60;
-- role-runtime: 932/932;
+- role-runtime: 930/930;
 - team-runtime: 103/103;
 - app-gateway: 438/438;
 - `git diff --check`: pass.
