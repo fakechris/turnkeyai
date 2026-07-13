@@ -1,7 +1,8 @@
 # Agent Control Authority
 
-Status: proposed architecture decision for review. This document does not
-authorize implementation work.
+Status: accepted architecture decision. Product disposition A was approved on
+2026-07-12. Implementation still requires a separate subtractive migration
+plan and review.
 
 ## Objective
 
@@ -145,11 +146,11 @@ will no longer silently create another model turn when an evaluator considers
 the answer incomplete. The value must have an explicit destination before a
 migration is approved.
 
-Choose exactly one:
+Decision options considered:
 
-- **A. Observer and caller control:** expose unmet goal slots and quality status
+- **A. Observer and caller control (approved):** expose unmet goal slots and quality status
   in mission APIs/UI. The caller or user decides whether to submit a follow-up.
-  This is the recommended disposition because it preserves standard model-mode
+  This disposition preserves standard model-mode
   authority and adds no new runtime mechanism.
 - **B. Explicit workflow control:** only missions created in
   `explicit_workflow` mode may predeclare a bounded quality-remediation step.
@@ -157,7 +158,12 @@ Choose exactly one:
   because `ExplicitWorkflowRuntime` exists; it requires a real product owner and
   workflow contract.
 
-Product signature: **pending**.
+Product signature: **A approved, 2026-07-12**.
+
+Consequently, semantic evaluator output is observational in every standard
+model-mode mission. It may be displayed, queried, alerted on, or exported, but
+it may not create a follow-up turn. `ExplicitWorkflowRuntime` is not the
+destination for this deleted behavior.
 
 The associated acceptance contract changes with either choice. Existing E2E
 tests must no longer require an automatic recovery turn in model mode. Under A,
