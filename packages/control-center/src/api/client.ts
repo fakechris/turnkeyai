@@ -91,6 +91,8 @@ export function createApiClient(options: ApiClientOptions) {
     getNoAuthReset: <T>(pathname: string) =>
       send<T>("GET", pathname, undefined, { clearOnUnauthorized: false }),
     post: <T>(pathname: string, body?: unknown) => send<T>("POST", pathname, body),
+    postNoAuthReset: <T>(pathname: string, body?: unknown) =>
+      send<T>("POST", pathname, body, { clearOnUnauthorized: false }),
     put: <T>(pathname: string, body?: unknown) => send<T>("PUT", pathname, body),
     putNoAuthReset: <T>(pathname: string, body?: unknown) =>
       send<T>("PUT", pathname, body, { clearOnUnauthorized: false }),

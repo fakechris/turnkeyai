@@ -267,6 +267,15 @@ export interface ModelCatalogConfigReport {
   };
 }
 
+export interface ModelCatalogOpenReport extends ModelCatalogConfigReport {
+  opened: true;
+  created: boolean;
+}
+
+export interface ModelCatalogReloadReport extends ModelCatalogConfigReport {
+  reloaded: true;
+}
+
 // --- /capabilities (packages/app-gateway/src/routes/inspection-routes.ts) ---
 
 export interface CapabilityInspectionReport {

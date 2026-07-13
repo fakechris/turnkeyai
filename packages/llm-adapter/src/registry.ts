@@ -39,6 +39,11 @@ export class ModelRegistry {
     this.loadedCatalog = null;
   }
 
+  async reload(catalog?: ModelCatalog): Promise<void> {
+    const nextCatalog = normalizeCatalog(catalog ?? await this.source.load());
+    this.loadedCatalog = nextCatalog;
+  }
+
   async describeSelection(input: { modelId?: string; modelChainId?: string }): Promise<{
     chainId?: string;
     primary: ModelConfigEntry;

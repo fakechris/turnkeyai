@@ -10,7 +10,8 @@ import { readJsonBodySafe, sendJson } from "../http-helpers";
 export interface DaemonConfigRouteDeps {
   currentModelCatalogPath: string | null;
   editableModelCatalogPath: string;
-  reloadActiveModelCatalog?(): Promise<void>;
+  reloadActiveModelCatalog?(catalog: ModelCatalog): Promise<void>;
+  openModelCatalogInEditor?(filePath: string): Promise<void>;
 }
 
 interface ModelCatalogConfigBody {
@@ -34,7 +35,73 @@ export async function handleDaemonConfigRoutes(input: {
   deps: DaemonConfigRouteDeps;
 }): Promise<boolean> {
   const { req, res, url, deps } = input;
-  if (url.pathname !== "/daemon/config/model-catalog") {
+  const catalogPath = "/daemon/config/model-catalog";
+  if (url.pathname === `${catalogPath}/open`) {
+    if (req.method !== "POST") return false;
+    if (!deps.openModelCatalogInEditor) {
+      sendJson(res, 501, { error: "system editor integration is unavailable" });
+      return true;
+    }
+    const existed = await access(deps.editableModelCatalogPath).then(() => true, () => false);
+    if (!existed) {
+      await writeJsonFileAtomic(deps.editableModelCatalogPath, defaultModelCatalogTemplate());
+    }
+    try {
+      await deps.openModelCatalogInEditor(deps.editableModelCatalogPath);
+    } catch (error) {
+      sendJson(res, 500, {
+        error: error instanceof Error ? `failed to open system editor: ${error.message}` : "failed to open system editor",
+      });
+      return true;
+    }
+    sendJson(res, 200, {
+      ...(await buildModelCatalogConfigReport(deps)),
+      opened: true,
+      created: !existed,
+    });
+    return true;
+  }
+  if (url.pathname === `${catalogPath}/reload`) {
+    if (req.method !== "POST") return false;
+    if (deps.currentModelCatalogPath !== deps.editableModelCatalogPath || !deps.reloadActiveModelCatalog) {
+      sendJson(res, 409, {
+        error: "The daemon is not using this editable model catalog. Restart the daemon to activate this file.",
+        restartRequired: true,
+      });
+      return true;
+    }
+    const contentResult = await readEditableCatalog(deps.editableModelCatalogPath);
+    if (!contentResult.exists) {
+      sendJson(res, 404, { error: "editable model catalog does not exist" });
+      return true;
+    }
+    if (!contentResult.catalog) {
+      const parsed = parseCatalogContent(contentResult.content);
+      sendJson(res, 400, {
+        error: parsed.ok ? "model catalog validation failed" : parsed.error,
+      });
+      return true;
+    }
+    const validation = await validateModelCatalog(contentResult.catalog);
+    if (!validation.ok) {
+      sendJson(res, 400, { error: "model catalog validation failed", validation });
+      return true;
+    }
+    try {
+      await deps.reloadActiveModelCatalog(contentResult.catalog);
+    } catch (error) {
+      sendJson(res, 400, {
+        error: error instanceof Error ? `model catalog reload failed: ${error.message}` : "model catalog reload failed",
+      });
+      return true;
+    }
+    sendJson(res, 200, {
+      ...(await buildModelCatalogConfigReport(deps, contentResult.catalog)),
+      reloaded: true,
+    });
+    return true;
+  }
+  if (url.pathname !== catalogPath) {
     return false;
   }
   if (req.method === "GET" || req.method === "HEAD") {
@@ -73,7 +140,7 @@ export async function handleDaemonConfigRoutes(input: {
     const activePathMatches = deps.currentModelCatalogPath === deps.editableModelCatalogPath;
     let restartRequired = !activePathMatches || !deps.reloadActiveModelCatalog;
     if (activePathMatches && deps.reloadActiveModelCatalog) {
-      await deps.reloadActiveModelCatalog();
+      await deps.reloadActiveModelCatalog(parsed.catalog);
       restartRequired = false;
     }
     sendJson(res, 200, {

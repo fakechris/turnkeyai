@@ -257,7 +257,7 @@ function isValidationRoute(pathname: string): boolean {
 }
 
 function isDaemonConfigRoute(pathname: string): boolean {
-  return pathname === "/daemon/config/model-catalog";
+  return pathname === "/daemon/config/model-catalog" || pathname.startsWith("/daemon/config/model-catalog/");
 }
 
 function isBrowserRoute(pathname: string): boolean {

@@ -1,5 +1,5 @@
 import http from "node:http";
-import { access, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -83,6 +83,7 @@ import { createBrowserContextSourceProvider } from "./browser-context-source-pro
 import { createMissionThreadBridge, type MissionThreadBridge } from "./mission-thread-bridge";
 import { createMissionTaskToolService } from "./mission-task-tool-service";
 import { createMissionToolPermissionService } from "./tool-permission-service";
+import { resolveModelCatalogPaths } from "./model-catalog-paths";
 import { buildBrowserRuntimeHealthSnapshot } from "./browser-runtime-health";
 import { buildDiagnosticsMissionHealthSnapshot } from "./mission-health-diagnostics";
 
@@ -130,6 +131,7 @@ import {
   type DiagnosticsBrowserHealthSnapshot,
 } from "./routes/diagnostics-routes";
 import { handleDaemonConfigRoutes } from "./routes/daemon-config-routes";
+import { openFileInSystemEditor } from "./system-file-opener";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleMissionRoutes } from "./routes/mission-routes";
 import { handleOnboardingRoutes } from "./routes/onboarding-routes";
@@ -177,8 +179,10 @@ const routeIdempotencyStore = createFileRouteIdempotencyStore({
 });
 type RuntimeChainEntry = { chain: RuntimeChain; status: RuntimeChainStatus };
 const runtimeLimits = DEFAULT_DAEMON_RUNTIME_LIMITS;
-const modelCatalogPath = await resolveModelCatalogPath();
-const editableModelCatalogPath = resolveEditableModelCatalogPath();
+const {
+  currentModelCatalogPath: modelCatalogPath,
+  editableModelCatalogPath,
+} = await resolveModelCatalogPaths();
 
 const foundations = composeDaemonFoundations({
   dataDir: DATA_DIR,
@@ -735,11 +739,11 @@ const server = http.createServer(async (req, res) => {
         deps: {
           currentModelCatalogPath: modelCatalogPath,
           editableModelCatalogPath,
+          openModelCatalogInEditor: openFileInSystemEditor,
           ...(modelRegistry && modelCatalogPath === editableModelCatalogPath
             ? {
-                reloadActiveModelCatalog: async () => {
-                  modelRegistry.clearCache();
-                  await modelRegistry.describeSelection({});
+                reloadActiveModelCatalog: async (catalog) => {
+                  await modelRegistry.reload(catalog);
                 },
               }
             : {}),
@@ -1074,35 +1078,6 @@ async function hydrateMissionShortIdSeed(dataDir: string): Promise<number> {
     });
     return 0;
   }
-}
-
-async function resolveModelCatalogPath(): Promise<string | null> {
-  const explicit = process.env.TURNKEYAI_MODEL_CATALOG?.trim();
-  if (explicit) {
-    const candidate = path.resolve(explicit);
-    await access(candidate);
-    return candidate;
-  }
-
-  const candidates = [
-    path.resolve(process.cwd(), "models.local.json"),
-    path.resolve(process.cwd(), "models.json"),
-    path.resolve(process.cwd(), "models.example.json"),
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {}
-  }
-
-  return null;
-}
-
-function resolveEditableModelCatalogPath(): string {
-  const explicit = process.env.TURNKEYAI_MODEL_CATALOG?.trim();
-  return explicit ? path.resolve(explicit) : path.resolve(process.cwd(), "models.local.json");
 }
 
 function wantsProcessHelp(args: string[]): boolean {

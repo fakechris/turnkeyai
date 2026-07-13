@@ -988,6 +988,9 @@ a { color: inherit; text-decoration: none; }
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+.settings-model-config-card {
+  margin-top: 14px;
+}
 .settings-overview-card .btn {
   align-self: flex-start;
 }
@@ -4053,6 +4056,32 @@ a { color: inherit; text-decoration: none; }
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+.settings-catalog-file-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.settings-catalog-file-hint {
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.settings-catalog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.settings-model-config-notice {
+  margin-top: 10px;
+}
+@media (max-width: 760px) {
+  .settings-catalog-file-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-catalog-actions {
+    justify-content: flex-start;
+  }
 }
 .settings-catalog-textarea {
   min-height: 220px;
