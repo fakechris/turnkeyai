@@ -23,7 +23,8 @@
     "verify:mac": "node scripts/verify-macos-signature.mjs",
     "verify:mac:release": "node scripts/verify-macos-signature.mjs --require-arch=arm64 --require-arch=x86_64",
     "verify:release-tag": "node scripts/verify-release-version.mjs",
-    "test": "tsx --test src/**/*.test.ts",
+    "release": "node scripts/release-desktop.mjs",
+    "test": "tsx --test src/**/*.test.ts scripts/**/*.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {

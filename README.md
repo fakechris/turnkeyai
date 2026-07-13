@@ -166,6 +166,8 @@ npm run desktop:dist:mac:arm64  # 当前 Apple Silicon 版本
 npm run desktop:dist:mac        # 同时生成 arm64 + Intel x64
 npm run desktop:verify:mac      # 验证 Signature=adhoc / TeamIdentifier=not set
 npm run desktop:verify:mac:release # 发布门禁：同时要求 arm64 + x86_64
+npm run desktop:release         # tag / GitHub Release 发布前检查
+npm run desktop:release -- --push # 推分支和 desktop-v* tag，自动触发 GitHub Release
 ```
 
 产物位于 `packages/desktop/dist/release/`，并附带 `SHA256SUMS.txt`。固定 Bundle ID 为
@@ -173,6 +175,8 @@ npm run desktop:verify:mac:release # 发布门禁：同时要求 arm64 + x86_64
 公证，用户首次启动仍需在“系统设置 → 隐私与安全性”中点击“仍要打开”。详细说明见
 `packages/desktop/README.md`。正式发布前还必须在另一台 Mac 或干净 macOS 环境中，
 从 GitHub Release 经浏览器重新下载 DMG，实际验收 quarantine 与首次手工放行流程。
+完整的版本、tag、Actions pipeline、失败重跑与发布后验收说明见
+`packages/desktop/README.md`。
 
 Control Center 现在是 Mission Control 工作台：First Run、Missions、Approvals、Agents、Context、Agent Connect、Runtime、Settings。无需额外构建步骤，daemon 直接服务静态 bundle。
 

@@ -1,28 +1,42 @@
-name: Build Desktop DMGs
+name: Publish Desktop
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
+  push:
+    tags:
+      - "desktop-v*"
   workflow_dispatch:
-  release:
-    types:
-      - published
+    inputs:
+      tag:
+        description: "Existing desktop-v* tag to rebuild and publish"
+        required: true
+        type: string
+
+concurrency:
+  group: desktop-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   macos:
-    name: macOS ad-hoc DMGs
-    if: ${{ github.event_name != 'release' || startsWith(github.event.release.tag_name, 'desktop-v') }}
+    name: Build and publish macOS DMGs
     runs-on: macos-latest
     timeout-minutes: 45
     permissions:
       contents: write
+    env:
+      DESKTOP_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -30,9 +44,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify release tag matches desktop version
-        if: ${{ github.event_name == 'release' }}
-        run: npm run verify:release-tag --workspace @turnkeyai/desktop -- "${{ github.event.release.tag_name }}"
+      - name: Verify tag and desktop version
+        shell: bash
+        run: |
+          [[ "$DESKTOP_RELEASE_TAG" == desktop-v* ]]
+          git show-ref --verify --quiet "refs/tags/$DESKTOP_RELEASE_TAG"
+          [[ "$(git rev-parse HEAD)" == "$(git rev-list -n 1 "refs/tags/$DESKTOP_RELEASE_TAG")" ]]
+          npm run verify:release-tag --workspace @turnkeyai/desktop -- "$DESKTOP_RELEASE_TAG"
 
       - name: Build arm64 and x64 DMGs
         run: npm run desktop:dist:mac
@@ -43,14 +61,29 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: turnkeyai-macos-dmgs
+          name: turnkeyai-macos-${{ env.DESKTOP_RELEASE_TAG }}
           if-no-files-found: error
+          retention-days: 14
           path: |
             packages/desktop/dist/release/*.dmg
             packages/desktop/dist/release/SHA256SUMS.txt
 
-      - name: Upload DMGs to GitHub Release
-        if: ${{ github.event_name == 'release' }}
-        run: gh release upload "${{ github.event.release.tag_name }}" packages/desktop/dist/release/*.dmg packages/desktop/dist/release/SHA256SUMS.txt --clobber
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          assets=(
+            packages/desktop/dist/release/*.dmg
+            packages/desktop/dist/release/SHA256SUMS.txt
+          )
+          if gh release view "$DESKTOP_RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$DESKTOP_RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            version="${DESKTOP_RELEASE_TAG#desktop-v}"
+            gh release create "$DESKTOP_RELEASE_TAG" "${assets[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --latest=false \
+              --title "TurnkeyAI Desktop v$version"
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
