@@ -715,14 +715,9 @@ function missionGoalTextForAnswer(mission: Mission, messages: TeamMessage[], ans
 
 function shouldPreferLatestUserGoal(text: string): boolean {
   if (!text) return false;
-  if (looksLikeAutomaticRecoveryUserMessage(text)) return false;
   if (/^user says\s+\S+$/i.test(text)) return false;
   if (/^(?:继续|继续吧|go on|continue|keep going|resume)$/i.test(text.trim())) return false;
   return true;
-}
-
-function looksLikeAutomaticRecoveryUserMessage(text: string): boolean {
-  return /^\s*System recovery:\s+/i.test(text) || /\bAutomatic recovery attempt\s+\d+\s+of\s+\d+\b/i.test(text);
 }
 
 function latestUserMessageBeforeAnswer(messages: TeamMessage[], answer: TeamMessage): TeamMessage | null {

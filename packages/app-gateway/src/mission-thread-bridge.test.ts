@@ -655,7 +655,7 @@ describe("MissionThreadBridge", () => {
     assert.equal(duplicateRecoveryEvents.length, 1);
   });
 
-  it("posts one continuation when goal-slot coverage blocks an incomplete final answer", async () => {
+  it("keeps an incomplete final blocked and emits observation without starting another turn", async () => {
     counter = 0;
     const mission: Mission = {
       ...baseMission,
@@ -665,7 +665,6 @@ describe("MissionThreadBridge", () => {
     };
     const missionStore = memMissionStore([mission]);
     const activity = memActivityStore();
-    const followUps: Array<{ threadId: string; content: string }> = [];
     const messages: TeamMessage[] = [
       baseMessage("m1", "user", 100),
       {
@@ -705,327 +704,21 @@ describe("MissionThreadBridge", () => {
       activityStore: activity,
       newEventId,
       clock,
-      async postIncompleteFinalFollowUp(input) {
-        followUps.push({ threadId: input.threadId, content: input.content });
-        messages.push({ ...baseMessage("m3", "user", 300), content: input.content });
-      },
     });
 
     await bridge.tickMission("msn.1");
     await bridge.tickMission("msn.1");
 
-    assert.equal(followUps.length, 1);
-    assert.equal(followUps[0]?.threadId, "thread-1");
-    assert.match(followUps[0]?.content ?? "", /Continue the original mission/);
-    assert.match(followUps[0]?.content ?? "", /provider support.*search support.*pricing/s);
-    assert.match(followUps[0]?.content ?? "", /Do not search for placeholder words/);
-    assert.match(followUps[0]?.content ?? "", /Previous incomplete answer signals/);
-    const updated = await missionStore.get("msn.1");
-    assert.equal(updated?.status, "working");
-    assert.equal(updated?.blockers, 0);
-  });
-
-  it("builds incomplete-final follow-ups from the active user goal, not stale setup text", async () => {
-    counter = 0;
-    const mission: Mission = {
-      ...baseMission,
-      agents: ["role-lead"],
-      desc: [
-        "Legacy setup text from a previous run.",
-        "调研 deepseek v4 flash api，有哪些 provider 支持 search，价格怎么样。",
-      ].join("\n"),
-      progress: 0.8,
-    };
-    const missionStore = memMissionStore([mission]);
-    const activity = memActivityStore();
-    const followUps: Array<{ threadId: string; content: string }> = [];
-    const bridge = createMissionThreadBridge({
-      missionStore,
-      roleRunStore: memRoleRunStore([
-        {
-          runKey: "role:role-lead:thread:thread-1",
-          threadId: "thread-1",
-          roleId: "role-lead",
-          mode: "group",
-          status: "idle",
-          iterationCount: 1,
-          maxIterations: 6,
-          inbox: [],
-          lastActiveAt: 200,
-        },
-      ]),
-      teamMessageStore: memTeamMessageStore([
-        {
-          ...baseMessage("m1", "user", 100),
-          content:
-            "Aurora-19 launch handoff: verify the owner, launch window, hard constraint, and risk from durable memory.",
-        },
-        {
-          ...baseMessage("m2", "assistant", 200),
-          roleId: "role-lead",
-          name: "Lead",
-          content: [
-            "Owner: verified from durable memory.",
-            "Launch window: verified from durable memory.",
-            "Hard constraint: verified from durable memory.",
-            "Risk: not verified.",
-          ].join("\n"),
-          source: {
-            type: "worker",
-            chatType: "group",
-            route: "lead-role",
-            speakerType: "Role",
-            speakerName: "Lead",
-          },
-        },
-      ]),
-      activityStore: activity,
-      newEventId,
-      clock,
-      async postIncompleteFinalFollowUp(input) {
-        followUps.push({ threadId: input.threadId, content: input.content });
-      },
-    });
-
-    await bridge.tickMission("msn.1");
-
-    const content = followUps[0]?.content ?? "";
-    assert.match(content, /risk or limitation/);
-    const slotLine =
-      content
-        .split(/\r?\n/)
-        .find((line) => line.includes("missing or unverified core slots")) ?? "";
-    assert.doesNotMatch(slotLine, /provider support|search support|pricing/i);
-    assert.match(content, /Do not introduce provider\/search\/model-support columns/);
-  });
-
-  it("does not inject provider search recovery slots into ordinary vendor comparisons", async () => {
-    counter = 0;
-    const mission: Mission = {
-      ...baseMission,
-      agents: ["role-lead"],
-      desc: [
-        "A product lead is deciding between Vendor Alpha and Vendor Beta.",
-        "Return a concise recommendation that compares pricing, strengths, risks, and the tradeoff that matters most.",
-      ].join("\n"),
-    };
-    const missionStore = memMissionStore([mission]);
-    const activity = memActivityStore();
-    const followUps: Array<{ threadId: string; content: string }> = [];
-    const bridge = createMissionThreadBridge({
-      missionStore,
-      roleRunStore: memRoleRunStore([
-        {
-          runKey: "role:role-lead:thread:thread-1",
-          threadId: "thread-1",
-          roleId: "role-lead",
-          mode: "group",
-          status: "idle",
-          iterationCount: 1,
-          maxIterations: 6,
-          inbox: [],
-          lastActiveAt: 200,
-        },
-      ]),
-      teamMessageStore: memTeamMessageStore([
-        baseMessage("m1", "user", 100),
-        {
-          ...baseMessage("m2", "assistant", 200),
-          roleId: "role-lead",
-          name: "Lead",
-          content: [
-            "Vendor Alpha costs $19 per seat.",
-            "Vendor Beta pricing: 未验证。",
-            "Risks: 未验证。",
-          ].join("\n"),
-          source: {
-            type: "worker",
-            chatType: "group",
-            route: "lead-role",
-            speakerType: "Role",
-            speakerName: "Lead",
-          },
-        },
-      ]),
-      activityStore: activity,
-      newEventId,
-      clock,
-      async postIncompleteFinalFollowUp(input) {
-        followUps.push({ threadId: input.threadId, content: input.content });
-      },
-    });
-
-    await bridge.tickMission("msn.1");
-
-    const content = followUps[0]?.content ?? "";
-    assert.match(content, /pricing.*risk or limitation/s);
-    const slotLine =
-      content
-        .split(/\r?\n/)
-        .find((line) => line.includes("missing or unverified core slots")) ?? "";
-    assert.doesNotMatch(slotLine, /provider support|search\/web_search support|search support|model-support/i);
-    assert.match(content, /Do not introduce provider\/search\/model-support columns/);
-    assert.doesNotMatch(content, /Source\/provider labels/i);
-  });
-
-  it("does not echo unverified placeholder tables into incomplete-final recovery prompts", async () => {
-    counter = 0;
-    const mission: Mission = {
-      ...baseMission,
-      agents: ["role-lead"],
-      desc: "调研 DeepSeek V4 Flash API：provider、search/web_search 支持、价格和关键原文摘录。",
-    };
-    const missionStore = memMissionStore([mission]);
-    const activity = memActivityStore();
-    const followUps: Array<{ threadId: string; content: string }> = [];
-    const bridge = createMissionThreadBridge({
-      missionStore,
-      roleRunStore: memRoleRunStore([
-        {
-          runKey: "role:role-lead:thread:thread-1",
-          threadId: "thread-1",
-          roleId: "role-lead",
-          mode: "group",
-          status: "idle",
-          iterationCount: 1,
-          maxIterations: 6,
-          inbox: [],
-          lastActiveAt: 200,
-        },
-      ]),
-      teamMessageStore: memTeamMessageStore([
-        baseMessage("m1", "user", 100),
-        {
-          ...baseMessage("m2", "assistant", 200),
-          roleId: "role-lead",
-          name: "Lead",
-          content: [
-            "## 调研结果：blocked / partial",
-            "| Provider | 支持 | search | 价格 | 证据 URL |",
-            "|---|---|---|---|---|",
-            "| DeepSeek 官方 (api.deepseek.com) | 未验证 | 未验证 | 未验证 | https://api-docs.deepseek.com/ |",
-            "| OpenRouter | 未验证 | 未验证 | 未验证 | https://openrouter.ai/models/deepseek-v4-flash |",
-            "DuckDuckGo 搜索 \"未验证\" 结果（与目标研究无关）。",
-          ].join("\n"),
-          source: {
-            type: "worker",
-            chatType: "group",
-            route: "lead-role",
-            speakerType: "Role",
-            speakerName: "Lead",
-          },
-        },
-      ]),
-      activityStore: activity,
-      newEventId,
-      clock,
-      async postIncompleteFinalFollowUp(input) {
-        followUps.push({ threadId: input.threadId, content: input.content });
-      },
-    });
-
-    await bridge.tickMission("msn.1");
-
-    const content = followUps[0]?.content ?? "";
-    assert.match(content, /Previous incomplete answer signals/);
-    assert.match(content, /URLs already mentioned: https:\/\/api-docs\.deepseek\.com\/, https:\/\/openrouter\.ai\/models\/deepseek-v4-flash/);
-    assert.match(content, /Source labels already mentioned: DeepSeek 官方 \(api\.deepseek\.com\), OpenRouter/);
-    assert.doesNotMatch(content, /Source\/provider labels/);
-    assert.doesNotMatch(content, /DuckDuckGo 搜索 "未验证"/);
-    assert.doesNotMatch(content, /\| Provider \| 支持 \| search \| 价格 \|/);
-  });
-
-  it("caps repeated incomplete-final automatic continuations per mission", async () => {
-    counter = 0;
-    const mission: Mission = {
-      ...baseMission,
-      agents: ["role-lead"],
-      desc: "调研 DeepSeek V4 Flash API：provider、search/web_search 支持、价格和关键原文摘录。",
-    };
-    const missionStore = memMissionStore([mission]);
-    const activity = memActivityStore();
-    const followUps: Array<{ threadId: string; content: string }> = [];
-    const messages: TeamMessage[] = [baseMessage("m1", "user", 100)];
-    const bridge = createMissionThreadBridge({
-      missionStore,
-      roleRunStore: memRoleRunStore([
-        {
-          runKey: "role:role-lead:thread:thread-1",
-          threadId: "thread-1",
-          roleId: "role-lead",
-          mode: "group",
-          status: "idle",
-          iterationCount: 1,
-          maxIterations: 6,
-          inbox: [],
-          lastActiveAt: 200,
-        },
-      ]),
-      teamMessageStore: memTeamMessageStore(messages),
-      activityStore: activity,
-      newEventId,
-      clock,
-      async postIncompleteFinalFollowUp(input) {
-        followUps.push({ threadId: input.threadId, content: input.content });
-      },
-    });
-    const leadIncomplete = (id: string, createdAt: number): TeamMessage => ({
-      ...baseMessage(id, "assistant", createdAt),
-      roleId: "role-lead",
-      name: "Lead",
-      content: [
-        "结论：DeepSeek V4 Flash API 可能可通过多个 provider 访问。",
-        "provider 支持：未验证。",
-        "search/web_search 支持：未验证。",
-        "输入/输出价格：未验证。",
-        "关键原文摘录：未验证。",
-      ].join("\n"),
-      source: {
-        type: "worker",
-        chatType: "group",
-        route: "lead-role",
-        speakerType: "Role",
-        speakerName: "Lead",
-      },
-    });
-    const reviveMission = async () => {
-      const latest = await missionStore.get("msn.1");
-      await missionStore.putRaw({
-        ...latest!,
-        status: "working",
-        blockers: 0,
-      });
-    };
-
-    messages.push(leadIncomplete("m2", 200));
-    await bridge.tickMission("msn.1");
-    assert.equal(followUps.length, 1);
-    assert.match(followUps[0]?.content ?? "", /Automatic recovery attempt 1 of 2/);
-
-    await reviveMission();
-    messages.push({ ...baseMessage("m3", "user", 300), content: followUps[0]!.content });
-    messages.push(leadIncomplete("m4", 400));
-    await bridge.tickMission("msn.1");
-    assert.equal(followUps.length, 2);
-    assert.match(followUps[1]?.content ?? "", /Automatic recovery attempt 2 of 2/);
-    assert.match(followUps[1]?.content ?? "", /last automatic recovery attempt/);
-    assert.match(followUps[1]?.content ?? "", /at most five additional tool calls total/);
-
-    await reviveMission();
-    messages.push({ ...baseMessage("m5", "user", 500), content: followUps[1]!.content });
-    messages.push(leadIncomplete("m6", 600));
-    await bridge.tickMission("msn.1");
-
-    assert.equal(followUps.length, 2);
-    const incompleteEvents = activity.events.filter(
-      (event) =>
-        event.runtime?.eventType === "mission.incomplete_final_answer" &&
-        event.runtime?.reason === "goal_slots_unverified"
-    );
-    assert.equal(incompleteEvents.length, 3);
     const updated = await missionStore.get("msn.1");
     assert.equal(updated?.status, "blocked");
     assert.equal(updated?.blockers, 1);
+    assert.equal(messages.length, 2);
+    assert.equal(
+      activity.events.filter(
+        (event) => event.runtime?.eventType === "mission.incomplete_final_answer",
+      ).length,
+      1,
+    );
   });
 
   it("reopens a prematurely done mission when goal-slot coverage later fails", async () => {
@@ -1440,7 +1133,7 @@ describe("MissionThreadBridge", () => {
     assert.deepEqual(stalled?.tags, ["mission_stalled", "resumable"]);
   });
 
-  it("recovers a late completed worker after a prior session timeout and posts one continuation", async () => {
+  it("enqueues a late completed worker after a prior session timeout without reopening the mission", async () => {
     counter = 0;
     const mission: Mission = {
       ...baseMission,
@@ -1485,7 +1178,7 @@ describe("MissionThreadBridge", () => {
         },
       },
     ]);
-    const followUps: Array<{ threadId: string; content: string }> = [];
+    const inbox = memWorkerResultInboxStore();
     const bridge = createMissionThreadBridge({
       missionStore,
       workerSessionStore: memWorkerSessionStore([
@@ -1516,13 +1209,11 @@ describe("MissionThreadBridge", () => {
           },
         },
       ]),
+      workerResultInboxStore: inbox,
       teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
       activityStore: activity,
       newEventId,
       clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        followUps.push({ threadId: input.threadId, content: input.content });
-      },
     });
 
     await bridge.tickMission("msn.1");
@@ -1533,12 +1224,11 @@ describe("MissionThreadBridge", () => {
     );
     assert.equal(recoveredEvents.length, 1);
     assert.match(recoveredEvents[0]!.text, /Found provider evidence after timeout/);
-    assert.equal(followUps.length, 1);
-    assert.equal(followUps[0]!.threadId, "thread-1");
-    assert.match(followUps[0]!.content, /Continue the original mission/);
+    assert.equal(inbox.notifications.length, 1);
+    assert.equal(inbox.notifications[0]?.state, "pending");
     const updated = await missionStore.get("msn.1");
-    assert.equal(updated?.status, "working");
-    assert.equal(updated?.blockers, 0);
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
     assert.equal(updated?.progress, 0.95);
   });
 
@@ -1599,7 +1289,6 @@ describe("MissionThreadBridge", () => {
       expiresAt: 200,
     });
     const messages = [baseMessage("m1", "user", 50)];
-    let automaticFollowUps = 0;
     const bridge = createMissionThreadBridge({
       missionStore,
       workerSessionStore: memWorkerSessionStore(sessions),
@@ -1608,15 +1297,11 @@ describe("MissionThreadBridge", () => {
       activityStore: activity,
       newEventId,
       clock,
-      async postLateWorkerCompletionFollowUp() {
-        automaticFollowUps += 1;
-      },
     });
 
     await bridge.tickMission(mission.id);
     await bridge.tickMission(mission.id);
 
-    assert.equal(automaticFollowUps, 0);
     assert.equal(inbox.notifications.length, 1);
     assert.equal(inbox.notifications[0]?.state, "pending");
     assert.equal(inbox.joins[0]?.state, "abandoned");
@@ -1655,212 +1340,7 @@ describe("MissionThreadBridge", () => {
     );
   });
 
-  it("delivers a completed background worker exactly once without a prior timeout", async () => {
-    counter = 0;
-    const mission: Mission = {
-      ...baseMission,
-      agents: ["role-lead"],
-      status: "working",
-      progress: 0.8,
-    };
-    const activity = memActivityStore([
-      {
-        id: "background-call",
-        missionId: mission.id,
-        tMs: 100,
-        kind: "tool",
-        actor: "Lead",
-        text: "Calling sessions_spawn",
-        tags: ["thread", "tool-call", "sessions_spawn"],
-        runtime: {
-          threadId: "thread-1",
-          toolName: "sessions_spawn",
-          toolPhase: "call",
-          toolCallId: "call-background",
-          callInput: JSON.stringify({
-            agent_id: "explore",
-            run_in_background: true,
-          }),
-        },
-      },
-      {
-        id: "background-accepted",
-        missionId: mission.id,
-        tMs: 110,
-        kind: "tool",
-        actor: "Lead",
-        text: "Background worker accepted",
-        tags: ["thread", "tool-result", "sessions_spawn"],
-        runtime: {
-          threadId: "thread-1",
-          toolName: "sessions_spawn",
-          toolPhase: "result",
-          toolCallId: "call-background",
-          resultContent: JSON.stringify({
-            protocol: "turnkeyai.background_worker_session.v1",
-            version: 1,
-            status: "running",
-            session_key: "worker:explore:background:1",
-          }),
-        },
-      },
-    ]);
-    const followUps: Array<{ deliveryId?: string; content: string }> = [];
-    let deliveryAttempts = 0;
-    const bridge = createMissionThreadBridge({
-      missionStore: memMissionStore([mission]),
-      workerSessionStore: memWorkerSessionStore([
-        {
-          workerRunKey: "worker:explore:background:1",
-          executionToken: 1,
-          context: {
-            threadId: "thread-1",
-            flowId: "flow-1",
-            taskId: "task-background",
-            roleId: "role-lead",
-            parentSpanId: "span-1",
-            toolCallId: "call-background",
-            label: "source research",
-            background: true,
-            deadlineAt: 10_000,
-          },
-          state: {
-            workerRunKey: "worker:explore:background:1",
-            workerType: "explore",
-            status: "done",
-            createdAt: 100,
-            updatedAt: 300,
-            lastResult: {
-              workerType: "explore",
-              status: "completed",
-              summary: "Background source evidence completed.",
-              payload: { content: "Background source evidence completed." },
-            },
-          },
-        },
-      ]),
-      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
-      activityStore: activity,
-      newEventId,
-      clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        deliveryAttempts += 1;
-        if (deliveryAttempts === 1) {
-          throw new Error("temporary ingress failure");
-        }
-        followUps.push({
-          deliveryId: input.deliveryId,
-          content: input.content,
-        });
-      },
-      logger: { warn() {} },
-    });
-
-    await bridge.tickMission(mission.id);
-    await bridge.tickMission(mission.id);
-
-    const delivered = activity.events.filter(
-      (event) => event.runtime?.eventType === "mission.worker_late_completion",
-    );
-    assert.equal(delivered.length, 1);
-    assert.equal(deliveryAttempts, 2);
-    assert.equal(followUps.length, 1);
-    assert.match(followUps[0]?.deliveryId ?? "", /^worker-completion-batch:[a-f0-9]{24}$/);
-    assert.match(followUps[0]?.content ?? "", /Background source evidence completed/);
-  });
-
-  it("fans in same-tick background completions and retries one stable batch after ingress failure", async () => {
-    counter = 0;
-    const mission: Mission = {
-      ...baseMission,
-      agents: ["role-lead"],
-      status: "working",
-      progress: 0.8,
-    };
-    const activity = memActivityStore([
-      {
-        id: "background-call",
-        missionId: mission.id,
-        tMs: 100,
-        kind: "tool",
-        actor: "Lead",
-        text: "Calling sessions_spawn",
-        tags: ["thread", "tool-call", "sessions_spawn"],
-        runtime: {
-          threadId: "thread-1",
-          toolName: "sessions_spawn",
-          toolPhase: "call",
-          toolCallId: "call-background",
-        },
-      },
-    ]);
-    const workerSessions: WorkerSessionRecord[] = [
-      backgroundWorkerSession({
-        workerRunKey: "worker:explore:background:alpha",
-        updatedAt: 300,
-        summary: "Alpha source evidence completed.",
-      }),
-      backgroundWorkerSession({
-        workerRunKey: "worker:browser:background:beta",
-        workerType: "browser",
-        updatedAt: 310,
-        summary: "Beta browser evidence completed.",
-      }),
-    ];
-    const deliveryAttempts: Array<{
-      deliveryId: string;
-      workerRunKeys: string[];
-      content: string;
-    }> = [];
-    const bridge = createMissionThreadBridge({
-      missionStore: memMissionStore([mission]),
-      workerSessionStore: memWorkerSessionStore(workerSessions),
-      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
-      activityStore: activity,
-      newEventId,
-      clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        deliveryAttempts.push({
-          deliveryId: input.deliveryId,
-          workerRunKeys: input.workerSessions.map((session) => session.workerRunKey),
-          content: input.content,
-        });
-        if (deliveryAttempts.length === 1) {
-          throw new Error("temporary batch ingress failure");
-        }
-      },
-      logger: { warn() {} },
-    });
-
-    await bridge.tickMission(mission.id);
-    assert.equal(
-      activity.events.some((event) => event.runtime?.eventType === "mission.worker_late_completion"),
-      false,
-      "a failed batch ingress must not be marked delivered",
-    );
-
-    await bridge.tickMission(mission.id);
-    await bridge.tickMission(mission.id);
-
-    assert.equal(deliveryAttempts.length, 2);
-    assert.equal(deliveryAttempts[0]?.deliveryId, deliveryAttempts[1]?.deliveryId);
-    assert.deepEqual(deliveryAttempts[1]?.workerRunKeys, [
-      "worker:browser:background:beta",
-      "worker:explore:background:alpha",
-    ]);
-    assert.match(deliveryAttempts[1]?.content ?? "", /Alpha source evidence completed/);
-    assert.match(deliveryAttempts[1]?.content ?? "", /Beta browser evidence completed/);
-    const delivered = activity.events.filter(
-      (event) => event.runtime?.eventType === "mission.worker_late_completion",
-    );
-    assert.equal(delivered.length, 1, "one durable batch marker must cover both workers");
-    assert.deepEqual(JSON.parse(delivered[0]?.runtime?.workerRunKeys ?? "[]"), [
-      "worker:browser:background:beta",
-      "worker:explore:background:alpha",
-    ]);
-  });
-
-  it("delivers a later background completion in a new batch without replaying prior workers", async () => {
+  it("fans in background completions to the durable inbox exactly once", async () => {
     counter = 0;
     const mission: Mission = { ...baseMission, agents: ["role-lead"], progress: 0.8 };
     const activity = memActivityStore([
@@ -1880,186 +1360,48 @@ describe("MissionThreadBridge", () => {
         },
       },
     ]);
-    const workerSessions: WorkerSessionRecord[] = [
+    const sessions = [
       backgroundWorkerSession({
-        workerRunKey: "worker:explore:background:first",
+        workerRunKey: "worker:explore:background:alpha",
         updatedAt: 300,
-        summary: "First source completed.",
+        summary: "Alpha source evidence completed.",
       }),
       backgroundWorkerSession({
-        workerRunKey: "worker:browser:background:later",
+        workerRunKey: "worker:browser:background:beta",
         workerType: "browser",
-        status: "running",
-        updatedAt: 200,
-        summary: "Later browser source completed.",
+        updatedAt: 310,
+        summary: "Beta browser evidence completed.",
       }),
     ];
-    const batches: string[][] = [];
+    const inbox = memWorkerResultInboxStore();
     const bridge = createMissionThreadBridge({
       missionStore: memMissionStore([mission]),
-      workerSessionStore: memWorkerSessionStore(workerSessions),
+      workerSessionStore: memWorkerSessionStore(sessions),
+      workerResultInboxStore: inbox,
       teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
       activityStore: activity,
       newEventId,
       clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        batches.push(input.workerSessions.map((session) => session.workerRunKey));
-      },
     });
 
     await bridge.tickMission(mission.id);
-    workerSessions[1] = backgroundWorkerSession({
-      workerRunKey: "worker:browser:background:later",
-      workerType: "browser",
-      updatedAt: 400,
-      summary: "Later browser source completed.",
-    });
     await bridge.tickMission(mission.id);
 
-    assert.deepEqual(batches, [
-      ["worker:explore:background:first"],
-      ["worker:browser:background:later"],
-    ]);
-  });
-
-  it("does not repost late worker recovery when a successful follow-up discusses the earlier timeout", async () => {
-    counter = 0;
-    const mission: Mission = { ...baseMission, agents: ["role-lead"], progress: 0.95 };
-    const missionStore = memMissionStore([mission]);
-    const activity = memActivityStore([
-      {
-        id: "original-call",
-        missionId: mission.id,
-        tMs: 100,
-        kind: "tool",
-        actor: "Lead",
-        text: "Calling sessions_send",
-        tags: ["thread", "tool-call", "sessions_send"],
-        runtime: {
-          threadId: "thread-1",
-          toolName: "sessions_send",
-          toolPhase: "call",
-          toolCallId: "call-send-original",
-          callInput: JSON.stringify({ session_key: "worker:browser:1" }),
-        },
-      },
-      {
-        id: "original-timeout",
-        missionId: mission.id,
-        tMs: 200,
-        kind: "tool",
-        actor: "Lead",
-        text: "Tool sessions_send failed: Sub-agent session timed out.",
-        emph: "danger",
-        tags: ["thread", "tool-result", "sessions_send"],
-        runtime: {
-          threadId: "thread-1",
-          toolName: "sessions_send",
-          toolPhase: "result",
-          toolCallId: "call-send-original",
-          resultContent: "Sub-agent session timed out.",
-        },
-      },
-      {
-        id: "late-recovery",
-        missionId: mission.id,
-        tMs: 300,
-        kind: "recovery",
-        actor: "system",
-        text: "mission.worker_late_completion: Browser failure buckets: attach_failed=2.",
-        tags: ["worker_late_completion", "browser"],
-        runtime: {
-          eventType: "mission.worker_late_completion",
-          threadId: "thread-1",
-          workerRunKey: "worker:browser:1",
-          workerType: "browser",
-          workerUpdatedAt: "300",
-        },
-      },
-      {
-        id: "follow-up-call",
-        missionId: mission.id,
-        tMs: 400,
-        kind: "tool",
-        actor: "Lead",
-        text: "Calling sessions_send",
-        tags: ["thread", "tool-call", "sessions_send"],
-        runtime: {
-          threadId: "thread-1",
-          toolName: "sessions_send",
-          toolPhase: "call",
-          toolCallId: "call-send-follow-up",
-          callInput: JSON.stringify({ session_key: "worker:browser:1" }),
-        },
-      },
-      {
-        id: "follow-up-result",
-        missionId: mission.id,
-        tMs: 500,
-        kind: "tool",
-        actor: "Lead",
-        text: "Tool sessions_send returned: completed",
-        tags: ["thread", "tool-result", "sessions_send"],
-        runtime: {
-          threadId: "thread-1",
-          toolName: "sessions_send",
-          toolPhase: "result",
-          toolCallId: "call-send-follow-up",
-          resultContent: JSON.stringify({
-            protocol: "turnkeyai.session_tool_result.v1",
-            status: "completed",
-            final_content: "Browser evidence completed; the earlier timeout remains part of the audit trail.",
-          }),
-        },
-      },
-    ]);
-    const followUps: string[] = [];
-    const bridge = createMissionThreadBridge({
-      missionStore,
-      workerSessionStore: memWorkerSessionStore([
-        {
-          workerRunKey: "worker:browser:1",
-          executionToken: 1,
-          context: {
-            threadId: "thread-1",
-            flowId: "flow-1",
-            taskId: "task-1",
-            roleId: "role-lead",
-            parentSpanId: "span-1",
-            toolCallId: "call-send-original",
-            label: "ops dashboard browser review",
-          },
-          state: {
-            workerRunKey: "worker:browser:1",
-            workerType: "browser",
-            status: "done",
-            createdAt: 100,
-            updatedAt: 600,
-            lastResult: {
-              workerType: "browser",
-              status: "completed",
-              summary: "Browser failure buckets: attach_failed=2.",
-              payload: { mode: "llm_sub_agent", content: "Browser failure buckets: attach_failed=2." },
-            },
-          },
-        },
-      ]),
-      teamMessageStore: memTeamMessageStore([baseMessage("m1", "user", 50)]),
-      activityStore: activity,
-      newEventId,
-      clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        followUps.push(input.content);
-      },
-    });
-
-    await bridge.tickMission("msn.1");
-
-    const recoveredEvents = activity.events.filter(
-      (event) => event.runtime?.eventType === "mission.worker_late_completion"
+    assert.deepEqual(
+      inbox.notifications.map((notification) => notification.sourceScopeId).sort(),
+      [
+        "worker:browser:background:beta",
+        "worker:explore:background:alpha",
+      ],
     );
-    assert.equal(recoveredEvents.length, 1);
-    assert.equal(followUps.length, 0);
+    const delivered = activity.events.filter(
+      (event) => event.runtime?.eventType === "mission.worker_late_completion",
+    );
+    assert.equal(delivered.length, 1);
+    assert.deepEqual(JSON.parse(delivered[0]?.runtime?.workerRunKeys ?? "[]"), [
+      "worker:browser:background:beta",
+      "worker:explore:background:alpha",
+    ]);
   });
 
   it("does not recover a completed worker when no prior session tool failed or timed out", async () => {
@@ -2103,7 +1445,6 @@ describe("MissionThreadBridge", () => {
         },
       },
     ]);
-    const followUps: string[] = [];
     const bridge = createMissionThreadBridge({
       missionStore: memMissionStore([mission]),
       workerSessionStore: memWorkerSessionStore([
@@ -2136,15 +1477,11 @@ describe("MissionThreadBridge", () => {
       activityStore: activity,
       newEventId,
       clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        followUps.push(input.content);
-      },
     });
 
     await bridge.tickMission("msn.1");
 
     assert.equal(activity.events.some((event) => event.runtime?.eventType === "mission.worker_late_completion"), false);
-    assert.equal(followUps.length, 0);
   });
 
   it("treats a canonical completed result as consuming an abbreviated session continuation", async () => {
@@ -2228,7 +1565,6 @@ describe("MissionThreadBridge", () => {
         },
       },
     ]);
-    const followUps: string[] = [];
     const bridge = createMissionThreadBridge({
       missionStore: memMissionStore([mission]),
       workerSessionStore: memWorkerSessionStore([
@@ -2262,9 +1598,6 @@ describe("MissionThreadBridge", () => {
       activityStore: activity,
       newEventId,
       clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        followUps.push(input.content);
-      },
     });
 
     await bridge.tickMission(mission.id);
@@ -2276,7 +1609,6 @@ describe("MissionThreadBridge", () => {
       ),
       false,
     );
-    assert.equal(followUps.length, 0);
   });
 
   it("does not recover a worker whose earlier timeout was superseded by a completed parent result", async () => {
@@ -2341,7 +1673,6 @@ describe("MissionThreadBridge", () => {
         },
       },
     ]);
-    const followUps: string[] = [];
     const bridge = createMissionThreadBridge({
       missionStore: memMissionStore([mission]),
       workerSessionStore: memWorkerSessionStore([
@@ -2378,9 +1709,6 @@ describe("MissionThreadBridge", () => {
       activityStore: activity,
       newEventId,
       clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        followUps.push(input.content);
-      },
     });
 
     await bridge.tickMission("msn.1");
@@ -2392,7 +1720,6 @@ describe("MissionThreadBridge", () => {
       ),
       false,
     );
-    assert.equal(followUps.length, 0);
   });
 
   it("waits for an in-flight parent session result before recovering a done worker", async () => {
@@ -2455,7 +1782,6 @@ describe("MissionThreadBridge", () => {
         },
       },
     ]);
-    const followUps: string[] = [];
     const bridge = createMissionThreadBridge({
       missionStore: memMissionStore([mission]),
       workerSessionStore: memWorkerSessionStore([
@@ -2492,9 +1818,6 @@ describe("MissionThreadBridge", () => {
       activityStore: activity,
       newEventId,
       clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        followUps.push(input.content);
-      },
     });
 
     await bridge.tickMission("msn.1");
@@ -2506,7 +1829,6 @@ describe("MissionThreadBridge", () => {
       ),
       false,
     );
-    assert.equal(followUps.length, 0);
   });
 
   it("does not recover a done worker while its parent role run is still active", async () => {
@@ -2550,7 +1872,6 @@ describe("MissionThreadBridge", () => {
         },
       },
     ]);
-    const followUps: string[] = [];
     const bridge = createMissionThreadBridge({
       missionStore: memMissionStore([mission]),
       roleRunStore: memRoleRunStore([
@@ -2600,9 +1921,6 @@ describe("MissionThreadBridge", () => {
       activityStore: activity,
       newEventId,
       clock,
-      async postLateWorkerCompletionFollowUp(input) {
-        followUps.push(input.content);
-      },
     });
 
     await bridge.tickMission("msn.1");
@@ -2614,7 +1932,6 @@ describe("MissionThreadBridge", () => {
       ),
       false,
     );
-    assert.equal(followUps.length, 0);
   });
 
   it("marks a mission blocked when the latest lead tool turn was skipped without a final answer", async () => {

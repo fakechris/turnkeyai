@@ -419,21 +419,6 @@ const missionThreadBridge = createMissionThreadBridge({
   }),
   newEventId: () => idGenerator.messageId(),
   clock,
-  async postIncompleteFinalFollowUp(input) {
-    void coordinationEngine
-      .handleUserPost({
-        threadId: input.threadId,
-        content: input.content,
-      })
-      .catch((error) => {
-        console.error("incomplete final follow-up failed", {
-          missionId: input.mission.id,
-          messageId: input.recovery.message.id,
-          reason: input.recovery.reason,
-          error,
-        });
-      });
-  },
 });
 const stopMissionThreadBridge = missionThreadBridge.start(2000);
 const stopMissionThreadEventMirror = installMissionThreadEventMirror({

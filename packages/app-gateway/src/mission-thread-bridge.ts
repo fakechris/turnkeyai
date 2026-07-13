@@ -50,7 +50,6 @@ import {
   evaluateMissionCompletion,
   type MissionCompletionRecovery,
 } from "./mission-completion-evaluator";
-import { evaluateMissionGoalSlotCoverage } from "./mission-goal-slot-coverage";
 
 export interface MissionThreadBridgeOptions {
   // `findByThreadId` is no longer needed at this layer (we resolve
@@ -81,21 +80,6 @@ export interface MissionThreadBridgeOptions {
   /** Max linked missions to scan per interval tick. Active/recent missions
    *  are prioritized before this cap is applied. */
   maxMissionsPerTick?: number;
-  /** Max automatic continuations after a lead final answer fails goal-slot coverage. */
-  maxIncompleteFinalFollowUps?: number;
-  postLateWorkerCompletionFollowUp?: (input: {
-    mission: Mission;
-    threadId: string;
-    workerSessions: readonly WorkerSessionRecord[];
-    deliveryId: string;
-    content: string;
-  }) => Promise<void>;
-  postIncompleteFinalFollowUp?: (input: {
-    mission: Mission;
-    threadId: string;
-    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>;
-    content: string;
-  }) => Promise<void>;
   logger?: { warn(message: string, context?: Record<string, unknown>): void };
 }
 
@@ -154,12 +138,6 @@ export function createMissionThreadBridge(
     options.maxMissionsPerTick > 0
       ? Math.floor(options.maxMissionsPerTick)
       : DEFAULT_MAX_MISSIONS_PER_TICK;
-  const maxIncompleteFinalFollowUps =
-    typeof options.maxIncompleteFinalFollowUps === "number" &&
-    Number.isFinite(options.maxIncompleteFinalFollowUps) &&
-    options.maxIncompleteFinalFollowUps >= 0
-      ? Math.floor(options.maxIncompleteFinalFollowUps)
-      : DEFAULT_MAX_INCOMPLETE_FINAL_FOLLOW_UPS;
   let interval: NodeJS.Timeout | null = null;
 
   // codex K3.5: per-mission serialization of mirror() runs. Two
@@ -426,26 +404,7 @@ export function createMissionThreadBridge(
         decision.reason === "awaiting_work",
     });
     if (decision.recovery) {
-      const recoveryAppended = await appendMissionRecoveryEvent(mission.id, threadId, decision.recovery);
-      if (
-        recoveryAppended &&
-        decision.recovery.kind === "incomplete_final_answer" &&
-        (await shouldPostIncompleteFinalFollowUp(mission.id, decision.recovery)) &&
-        options.postIncompleteFinalFollowUp
-      ) {
-        const posted = await postIncompleteFinalFollowUp(mission, threadId, decision.recovery);
-        if (posted) {
-          await updateMissionLifecycle(
-            mission,
-            {
-              status: "working",
-              blockers: 0,
-              progress: Math.min(mission.progress, 0.95),
-            },
-            { allowDoneReopen: true }
-          );
-        }
-      }
+      await appendMissionRecoveryEvent(mission.id, threadId, decision.recovery);
     }
   }
 
@@ -565,26 +524,9 @@ export function createMissionThreadBridge(
     if (completedBatch.length === 0) return;
 
     const deliveryId = workerCompletionBatchDeliveryId(mission.id, threadId, completedBatch);
-    if (options.workerResultInboxStore) {
-      if (!(await enqueueLateWorkerCompletions(mission, completedBatch))) return;
-      await appendLateWorkerCompletionEvent(mission.id, threadId, completedBatch, deliveryId);
-      return;
-    }
-    if (
-      options.postLateWorkerCompletionFollowUp &&
-      !(await postLateWorkerCompletionFollowUp(
-        mission,
-        threadId,
-        completedBatch,
-        deliveryId,
-      ))
-    ) {
-      return;
-    }
-    if (!(await appendLateWorkerCompletionEvent(mission.id, threadId, completedBatch, deliveryId))) {
-      return;
-    }
-    await reopenMissionForLateWorkerCompletion(mission);
+    if (!options.workerResultInboxStore) return;
+    if (!(await enqueueLateWorkerCompletions(mission, completedBatch))) return;
+    await appendLateWorkerCompletionEvent(mission.id, threadId, completedBatch, deliveryId);
   }
 
   async function enqueueLateWorkerCompletions(
@@ -858,50 +800,6 @@ export function createMissionThreadBridge(
     }
   }
 
-  async function reopenMissionForLateWorkerCompletion(mission: Mission): Promise<void> {
-    try {
-      const latest = (await options.missionStore.get(mission.id)) ?? mission;
-      if (latest.status === "archived" || latest.status === "draft") return;
-      if (latest.status === "working" && latest.blockers === 0) return;
-      await options.missionStore.putRaw({
-        ...latest,
-        status: "working",
-        blockers: 0,
-        progress: Math.min(latest.progress, 0.95),
-      });
-    } catch (error) {
-      logger.warn("late worker completion mission reopen failed", {
-        missionId: mission.id,
-        error: errorMessage(error),
-      });
-    }
-  }
-
-  async function postLateWorkerCompletionFollowUp(
-    mission: Mission,
-    threadId: string,
-    workerSessions: readonly WorkerSessionRecord[],
-    deliveryId: string,
-  ): Promise<boolean> {
-    try {
-      await options.postLateWorkerCompletionFollowUp!({
-        mission,
-        threadId,
-        workerSessions,
-        deliveryId,
-        content: buildLateWorkerCompletionFollowUp(workerSessions),
-      });
-      return true;
-    } catch (error) {
-      logger.warn("late worker completion follow-up post failed", {
-        missionId: mission.id,
-        workerRunKeys: workerSessions.map((workerSession) => workerSession.workerRunKey),
-        error: errorMessage(error),
-      });
-      return false;
-    }
-  }
-
   function workerCompletionBatchDeliveryId(
     missionId: string,
     threadId: string,
@@ -916,20 +814,6 @@ export function createMissionThreadBridge(
     ].join("\n");
     const digest = createHash("sha256").update(versionSet).digest("hex").slice(0, 24);
     return `worker-completion-batch:${digest}`;
-  }
-
-  function buildLateWorkerCompletionFollowUp(workerSessions: readonly WorkerSessionRecord[]): string {
-    const summaries = workerSessions.map((workerSession) => {
-      const label = workerSession.context?.label ? ` (${workerSession.context.label})` : "";
-      return `- ${workerSession.workerRunKey}${label}: ${summarizeLateWorkerCompletion(workerSession)}`;
-    });
-    return [
-      `System recovery: ${workerSessions.length} sub-agent session(s) completed after the parent turn moved on.`,
-      "Continue the original mission using this completed evidence. Incorporate the results into the answer, verify any still-missing goal slots, and do not mark the mission complete until the required slots are answered or explicitly blocked.",
-      "Completed worker summaries:",
-      ...summaries,
-      "Use sessions_history for a listed session if its summary is not enough.",
-    ].join("\n");
   }
 
   function summarizeLateWorkerCompletion(workerSession: WorkerSessionRecord): string {
@@ -1040,168 +924,6 @@ export function createMissionThreadBridge(
     }
   }
 
-  async function shouldPostIncompleteFinalFollowUp(
-    missionId: string,
-    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>
-  ): Promise<boolean> {
-    if (recovery.reason !== "goal_slots_unverified") return false;
-    if (maxIncompleteFinalFollowUps <= 0) return false;
-    const attempt = await countIncompleteFinalRecoveryEvents(missionId, recovery.reason);
-    return attempt <= maxIncompleteFinalFollowUps;
-  }
-
-  async function postIncompleteFinalFollowUp(
-    mission: Mission,
-    threadId: string,
-    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>
-  ): Promise<boolean> {
-    try {
-      const attempt = await countIncompleteFinalRecoveryEvents(mission.id, recovery.reason);
-      await options.postIncompleteFinalFollowUp!({
-        mission,
-        threadId,
-        recovery,
-        content: buildIncompleteFinalFollowUp(mission, recovery, attempt, maxIncompleteFinalFollowUps),
-      });
-      return true;
-    } catch (error) {
-      logger.warn("incomplete final follow-up post failed", {
-        missionId: mission.id,
-        messageId: recovery.message.id,
-        reason: recovery.reason,
-        error: errorMessage(error),
-      });
-      return false;
-    }
-  }
-
-  function buildIncompleteFinalFollowUp(
-    mission: Mission,
-    recovery: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>,
-    attempt: number,
-    maxAttempts: number
-  ): string {
-    const slotGuidance = summarizeRecoverySlotGuidance(recovery.goalText, recovery.message.content);
-    const approvalRewriteOnly = isApprovalGatedBrowserRewriteOnlyRecovery(recovery.goalText, recovery.message.content);
-    const lines = [
-      "System recovery: the previous final answer did not satisfy required goal slots.",
-      `Automatic recovery attempt ${attempt} of ${maxAttempts}.`,
-      approvalRewriteOnly
-        ? slotGuidance
-          ? `Continue the original mission by rewriting the final answer from existing permission and browser evidence only; missing or unverified final-answer slots: ${slotGuidance}.`
-          : "Continue the original mission by rewriting the final answer from existing permission and browser evidence only."
-        : slotGuidance
-          ? `Continue the original mission instead of closing it. Use available tools to verify only the missing or unverified core slots requested by the original mission: ${slotGuidance}.`
-          : "Continue the original mission instead of closing it. Use available tools to verify only the missing or unverified core slots requested by the original mission.",
-      "Do not introduce provider/search/model-support columns unless the original mission explicitly requested provider, search/web_search, or model-support evidence.",
-      "Do not search for placeholder words from the failed answer such as '未验证', 'not verified', 'unknown', or 'missing'. Search the original entity/provider names and official domains instead.",
-      "Do not repeat the same partial answer as final. If accessible sources are genuinely exhausted, provide a blocked closeout that lists the exact pages/tools attempted, what each proved, and what remains missing.",
-    ];
-    if (approvalRewriteOnly) {
-      lines.push(
-        "This recovery is for approval-gated browser closeout wording. The previous answer already described native permission.query/permission.result/permission.applied and browser evidence.",
-        "Do not call sessions_spawn, sessions_send, permission tools, or browser tools again just to repair the final wording. Do not repeat browser.form.submit or any browser side effect.",
-        "Use the existing timeline/tool evidence and return the missing required marker/slots, or mark blocked if that native evidence is genuinely absent."
-      );
-    }
-    if (isSlowSourceReleaseRiskRecovery(recovery.goalText)) {
-      lines.push(
-        "This recovery is for a slow-source release-risk note, not a provider comparison. Do not use pricing, strengths, provider-support, model-support, or vendor-comparison table columns.",
-        "Resume or retry the same slow source-check context. The required release-risk slots are: verified source/status, owner, risk, mitigation, what remains unverified, residual risk, and how to continue or retry.",
-        "If the released source still cannot be read within the remaining budget, close out as blocked/partial with timeout evidence instead of inventing pricing or strengths."
-      );
-    }
-    if (attempt >= maxAttempts) {
-      lines.push(
-        "This is the last automatic recovery attempt for this mission. Use at most five additional tool calls total. Pick the highest-value official/source pages for the missing slots; do not broaden to new providers unless the original prompt explicitly required them. If the missing slots still cannot be verified within that budget, stop with a bounded blocked closeout instead of producing another incomplete final answer."
-      );
-    }
-    lines.push(`Previous incomplete answer signals: ${summarizeIncompleteFinalForRecovery(recovery.message.content)}`);
-    return lines.join("\n");
-  }
-
-  function isApprovalGatedBrowserRewriteOnlyRecovery(goalText: string, finalText: string): boolean {
-    const combined = `${goalText}\n${finalText}`;
-    return (
-      /\b(?:browser\.form\.submit|form submission|approval[- ]gated|approval gate|permission\.query|permission\.result|permission\.applied)\b/i.test(
-        combined
-      ) &&
-      /\b(?:permission\.query|permission\.result|permission\.applied|approval request|approval decision|browser fixture evidence|sessions_spawn|browser\.form\.submit)\b/i.test(
-        finalText
-      )
-    );
-  }
-
-  function isSlowSourceReleaseRiskRecovery(goalText: string): boolean {
-    return (
-      /\b(?:slow source|slow-source|slow fixture|slow-fixture|source-check|source check)\b/i.test(goalText) &&
-      /\b(?:release-risk|release risk|risk note|bounded attempt|timeout|timed out|resume|continue|follow-up|followup)\b/i.test(goalText)
-    );
-  }
-
-  function summarizeRecoverySlotGuidance(goalText: string, finalText: string): string {
-    const coverage = evaluateMissionGoalSlotCoverage({ goalText, finalText });
-    if (coverage.issues.length === 0) return "";
-    return coverage.issues
-      .map((issue) => `${issue.label} (${issue.reason})`)
-      .join(", ");
-  }
-
-  function summarizeIncompleteFinalForRecovery(content: string): string {
-    const signals: string[] = [];
-    const normalized = content.replace(/\s+/g, " ").trim();
-    if (/\b(?:not verified|unverified|unknown|missing)\b/i.test(normalized) || /未验证|无法验证|缺少|未访问/.test(normalized)) {
-      signals.push("The answer contained unverified placeholders; treat them as missing slots, not search terms.");
-    }
-    const urls = extractUrls(normalized).slice(0, 8);
-    if (urls.length > 0) {
-      signals.push(`URLs already mentioned: ${urls.join(", ")}`);
-    }
-    const sourceLabels = extractSourceLabels(content).slice(0, 6);
-    if (sourceLabels.length > 0) {
-      signals.push(`Source labels already mentioned: ${sourceLabels.join(", ")}`);
-    }
-    if (signals.length === 0) {
-      signals.push(capText(normalized, 500));
-    }
-    return capText(signals.join(" "), 900);
-  }
-
-  function extractUrls(content: string): string[] {
-    const matches = content.match(/https?:\/\/[^\s)\]}>"'`]+/g) ?? [];
-    return uniqueStrings(matches.map((url) => url.replace(/[.,;:]+$/, "")));
-  }
-
-  function extractSourceLabels(content: string): string[] {
-    const labels: string[] = [];
-    const tableRows = content.split(/\n+/).filter((line) => /^\s*\|/.test(line) && /\|\s*$/.test(line));
-    for (const row of tableRows) {
-      const firstCell = row.split("|").map((cell) => cell.trim()).filter(Boolean)[0];
-      if (
-        firstCell &&
-        !/^[-:]+$/.test(firstCell) &&
-        !/provider|source|证据|来源|维度/i.test(firstCell) &&
-        !/^https?:\/\//i.test(firstCell) &&
-        !/^(?:✅|❌|not verified|未验证|unknown|—|-)/i.test(firstCell)
-      ) {
-        labels.push(firstCell);
-      }
-    }
-    return uniqueStrings(labels);
-  }
-
-  function uniqueStrings(values: string[]): string[] {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const value of values) {
-      const trimmed = value.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      out.push(trimmed);
-    }
-    return out;
-  }
-
   async function hasExistingRecoveryEvent(
     missionId: string,
     expected: { eventType: string; messageId: string; reason?: string; status?: string }
@@ -1222,27 +944,6 @@ export function createMissionThreadBridge(
         error: errorMessage(error),
       });
       return false;
-    }
-  }
-
-  async function countIncompleteFinalRecoveryEvents(
-    missionId: string,
-    reason: string
-  ): Promise<number> {
-    try {
-      const events = await options.activityStore.listByMission(missionId);
-      return events.filter((event) => {
-        if (event.kind !== "recovery") return false;
-        if (event.runtime?.eventType !== "mission.incomplete_final_answer") return false;
-        return event.runtime?.reason === reason;
-      }).length;
-    } catch (error) {
-      logger.warn("mission incomplete final recovery count failed", {
-        missionId,
-        reason,
-        error: errorMessage(error),
-      });
-      return maxIncompleteFinalFollowUps;
     }
   }
 
@@ -1478,7 +1179,6 @@ function parseWorkerResultDeliveries(content: string): Array<{
 }
 
 const DEFAULT_MAX_MISSIONS_PER_TICK = 50;
-const DEFAULT_MAX_INCOMPLETE_FINAL_FOLLOW_UPS = 2;
 const ACTIVE_MISSION_STATUSES = new Set<Mission["status"]>([
   "planning",
   "working",
