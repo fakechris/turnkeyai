@@ -33,6 +33,16 @@ test("model catalog file actions require admin scope and an active editable file
     canReload: true,
     reloadHint: "Reload changes from disk",
   });
+  assert.deepEqual(modelCatalogFileActionState(config, "unknown"), {
+    canOpen: true,
+    canReload: true,
+    reloadHint: "Reload changes from disk",
+  });
+  assert.deepEqual(modelCatalogFileActionState({ ...config, exists: false }, "admin"), {
+    canOpen: true,
+    canReload: false,
+    reloadHint: "Open the file to create it first",
+  });
   assert.deepEqual(modelCatalogFileActionState({ ...config, liveReloadAvailable: false, restartRequired: true }, "admin"), {
     canOpen: true,
     canReload: false,

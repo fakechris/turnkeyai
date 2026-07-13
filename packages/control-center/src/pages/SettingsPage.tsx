@@ -36,6 +36,7 @@ interface SettingsLive {
 interface CatalogNotice {
   message: string;
   ok: boolean;
+  source: "save" | "open" | "reload";
 }
 
 type CatalogAction = "opening" | "reloading" | null;
@@ -97,12 +98,13 @@ export function SettingsPage() {
       setCatalogEditor(saved.content);
       setCatalogNotice({
         ok: true,
+        source: "save",
         message: saved.restartRequired
           ? "Catalog saved. Restart the daemon for the new runtime model selection to take effect."
           : "Catalog saved and reloaded.",
       });
     } catch (error) {
-      setCatalogNotice({ ok: false, message: readableSettingsError(error) });
+      setCatalogNotice({ ok: false, source: "save", message: readableSettingsError(error) });
     } finally {
       setCatalogSaving(false);
     }
@@ -122,12 +124,13 @@ export function SettingsPage() {
       if (!editorDirtyRef.current) setCatalogEditor(opened.content);
       setCatalogNotice({
         ok: true,
+        source: "open",
         message: opened.created
           ? "Created the model configuration file and opened it in your system editor."
           : "Opened the model configuration file in your system editor.",
       });
     } catch (error) {
-      setCatalogNotice({ ok: false, message: readableSettingsError(error) });
+      setCatalogNotice({ ok: false, source: "open", message: readableSettingsError(error) });
     } finally {
       setCatalogAction(null);
     }
@@ -150,9 +153,13 @@ export function SettingsPage() {
         modelCatalogConfigError: null,
         reachable: true,
       }));
-      setCatalogNotice({ ok: true, message: "Reloaded the model configuration from disk." });
+      setCatalogNotice({
+        ok: true,
+        source: "reload",
+        message: "Reloaded the model configuration from disk.",
+      });
     } catch (error) {
-      setCatalogNotice({ ok: false, message: readableSettingsError(error) });
+      setCatalogNotice({ ok: false, source: "reload", message: readableSettingsError(error) });
     } finally {
       setCatalogAction(null);
     }
@@ -215,7 +222,7 @@ export function SettingsPage() {
         error={live.modelCatalogConfigError}
         scope={state.scope}
         action={catalogAction}
-        notice={catalogNotice}
+        notice={catalogNotice?.source === "save" ? null : catalogNotice}
         onOpen={openCatalog}
         onReload={reloadCatalog}
       />
@@ -254,6 +261,7 @@ export function SettingsPage() {
                 error={live.modelCatalogConfigError}
                 editor={catalogEditor}
                 saving={catalogSaving}
+                notice={catalogNotice?.source === "save" ? catalogNotice : null}
                 scope={state.scope}
                 onChange={(value) => {
                   editorDirtyRef.current = true;
@@ -361,7 +369,11 @@ function ModelCatalogFileActions({
           </div>
         </div>
         {notice ? (
-          <div className="settings-catalog-feedback settings-model-config-notice" data-ok={notice.ok ? "true" : "false"}>
+          <div
+            className="settings-catalog-feedback settings-model-config-notice"
+            data-ok={notice.ok ? "true" : "false"}
+            aria-live="polite"
+          >
             {notice.message}
           </div>
         ) : null}
@@ -398,6 +410,7 @@ function ModelCatalogEditor({
   error,
   editor,
   saving,
+  notice,
   scope,
   onChange,
   onSave,
@@ -406,6 +419,7 @@ function ModelCatalogEditor({
   error: string | null;
   editor: string;
   saving: boolean;
+  notice: CatalogNotice | null;
   scope: Scope;
   onChange: (value: string) => void;
   onSave: () => void;
@@ -443,6 +457,11 @@ function ModelCatalogEditor({
             {[...validation.errors, ...validation.warnings].slice(0, 4).map((item) => (
               <div key={item}>{item}</div>
             ))}
+          </div>
+        ) : null}
+        {notice ? (
+          <div className="settings-catalog-feedback" data-ok={notice.ok ? "true" : "false"} aria-live="polite">
+            {notice.message}
           </div>
         ) : null}
       </div>

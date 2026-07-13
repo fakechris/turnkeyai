@@ -183,6 +183,44 @@ test("POST /daemon/config/model-catalog/open creates the editable catalog before
   }
 });
 
+test("POST /daemon/config/model-catalog/open reports unavailable editor integration", async () => {
+  const routeDeps = deps();
+  try {
+    const response = createResponse();
+    await handleDaemonConfigRoutes({
+      req: createRequest({ method: "POST", url: "/daemon/config/model-catalog/open" }),
+      res: response.res,
+      url: new URL("http://127.0.0.1/daemon/config/model-catalog/open"),
+      deps: routeDeps,
+    });
+    assert.equal(response.status, 501);
+    assert.match(response.json.error, /unavailable/);
+  } finally {
+    rmSync(path.dirname(routeDeps.editableModelCatalogPath), { recursive: true, force: true });
+  }
+});
+
+test("POST /daemon/config/model-catalog/open reports editor launch failures", async () => {
+  const routeDeps = deps({
+    openModelCatalogInEditor: async () => {
+      throw new Error("no display available");
+    },
+  });
+  try {
+    const response = createResponse();
+    await handleDaemonConfigRoutes({
+      req: createRequest({ method: "POST", url: "/daemon/config/model-catalog/open" }),
+      res: response.res,
+      url: new URL("http://127.0.0.1/daemon/config/model-catalog/open"),
+      deps: routeDeps,
+    });
+    assert.equal(response.status, 500);
+    assert.match(response.json.error, /failed to open system editor.*no display available/);
+  } finally {
+    rmSync(path.dirname(routeDeps.editableModelCatalogPath), { recursive: true, force: true });
+  }
+});
+
 test("POST /daemon/config/model-catalog/reload validates disk content and reloads the active catalog", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "tk-model-config-external-reload-"));
   const file = path.join(dir, "models.local.json");

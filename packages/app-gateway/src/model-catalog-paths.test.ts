@@ -44,3 +44,33 @@ test("a missing explicit catalog remains editable without blocking daemon startu
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("an existing relative explicit path is both active and editable", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "tk-model-paths-"));
+  const explicitPath = path.join(cwd, "models.custom.json");
+  writeFileSync(explicitPath, "{}", "utf8");
+  try {
+    assert.deepEqual(await resolveModelCatalogPaths({ cwd, explicitPath: "models.custom.json" }), {
+      currentModelCatalogPath: explicitPath,
+      editableModelCatalogPath: explicitPath,
+    });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("models.local.json has priority over the other fallback catalogs", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "tk-model-paths-"));
+  const localPath = path.join(cwd, "models.local.json");
+  writeFileSync(localPath, "{}", "utf8");
+  writeFileSync(path.join(cwd, "models.json"), "{}", "utf8");
+  writeFileSync(path.join(cwd, "models.example.json"), "{}", "utf8");
+  try {
+    assert.deepEqual(await resolveModelCatalogPaths({ cwd, explicitPath: null }), {
+      currentModelCatalogPath: localPath,
+      editableModelCatalogPath: localPath,
+    });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

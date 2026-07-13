@@ -24,3 +24,10 @@ test("runSystemEditorCommand rejects when the launcher exits unsuccessfully", as
     /exited with code 7/
   );
 });
+
+test("runSystemEditorCommand rejects when the launcher cannot be spawned", async () => {
+  await assert.rejects(
+    runSystemEditorCommand({ command: "turnkeyai-command-that-does-not-exist", args: [] }),
+    /ENOENT|spawn/
+  );
+});
