@@ -10,7 +10,7 @@ latency distributions, context windows, and task domains change. Runtime
 correctness must not be learned by adding scenario detectors after real-model
 failures.
 
-The target is a Claude Code-shaped model loop inside a durable service
+The target is a tool-capable model loop inside a durable service
 envelope:
 
 ```text

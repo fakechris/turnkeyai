@@ -1,10 +1,8 @@
 # P0 — Completion Decision Rebuild (Design)
 
 Goal: replace the prose-regex completion judge with a **typed completion
-contract** driven by structured runtime state, per the 5-system comparison
-(`docs/review/harness-comparison-defect-diagnosis-2026-06.md`). Keep the
-centralized completion-policy *layer* (sound — OpenClaw injects host policy
-too); replace only the *implementation*. Keep the genuine wins (closeout
+contract** driven by structured runtime state. Keep the centralized
+completion-policy layer and replace only its implementation. Keep the genuine wins (closeout
 semantics, budgets, in-loop approval, answer-aware gate) — drive them from
 typed state instead of regex.
 
@@ -34,7 +32,7 @@ text is at most an advisory tiebreaker.
   - `TeamMessage.metadata.toolLoopCloseout.reason` (round_limit / wall_clock_budget / repeated_tool_failure / tool_evidence_fallback / operator_cancelled / sub_agent_timeout / completed_sub_agent_final / …)
   - `RoleRunState.status: idle|running|waiting_input|waiting_external|resumable|done|failed|cancelled` (`team-worker-runtime.ts:59`)
   - `WorkerExecutionResult.status: completed|partial|failed` (`:37`) + session-tool-result protocol status enum
-  - **Flow-close signal**: `coordination-engine.ts:600` — lead reply with no dispatchable `@{mention}` ⇒ flow closes. This is our existing equivalent of Accio's `isFinished`.
+  - **Flow-close signal**: `coordination-engine.ts:600` — lead reply with no dispatchable `@{mention}` ⇒ flow closes.
 - **Missing**: the lead's final answer is a plain assistant message with **no
   typed terminal self-report**; `evaluateMissionCompletion` re-derives "is this
   the final lead answer and is it complete?" from prose.
@@ -71,9 +69,8 @@ evaluateMissionCompletion(mission, messages, roleRuns, workerSessions, taskSpec?
                     fail past cause-gated budget → typed terminal with closeout.
 ```
 
-Step 3 + "fail closed" is the spine: **no self-reported, verifier-passed
-completion ⇒ never `done`.** This is multica's `daemon.go:2489-2497` rule and
-Accio's typed `isFinished` + status enum, ported.
+Step 3 + "fail closed" is the spine: **`done` requires a typed `completed`
+self-report plus either a passing verifier or passing evidence coverage.**
 
 ---
 
@@ -132,13 +129,13 @@ Replaces the §469 patch with the general mechanism:
   prompt is generated from the **typed gap**: which `unverifiedSlots` lack a
   covering evidence event, and which tool families could supply them. No
   fixture prose.
-- **Cause-gated retry** (multica `task.go:1493-1502`): only recover when the
+- **Cause-gated retry**: only recover when the
   gap is plausibly closable (missing evidence + tools available + budget left).
   A deterministic agent-side failure (verifier failed for a real reason) is
   surfaced, not replayed.
 - **Bounded**: keep an attempt cap, but exhaustion → typed `blocked` closeout
-  (honest fail), never a re-loop. Output-fingerprint stuck-detection (OpenClaw
-  `goal-controller.ts`) optional follow-up to abort earlier when answers repeat.
+  (honest fail), never a re-loop. Output-fingerprint stuck-detection is an
+  optional follow-up to abort earlier when answers repeat.
 
 ---
 
@@ -151,11 +148,10 @@ Two stages, so we don't block on model-prompt changes:
   partial/exhausted answer. Map that + the structural flow-close into a
   `missionReport` written to the final message metadata. This gives typed
   self-report for free on day one (covers the common cases incl. MSN-0113).
-- **Stage B (model-facing, later)**: expose a `mission_report` tool (Accio
-  `task_update` / multica `issue status` / OpenClaw completion-marker analog) so
+- **Stage B (model-facing, later)**: expose a `mission_report` tool so
   the lead *explicitly* declares terminal status + unverified slots + evidence
-  refs, with prompts that forbid early/approximate completion (OpenClaw Ralph
-  wording). Strongest signal; opt-in per team.
+  refs, with prompts that forbid early or approximate completion. Strongest
+  signal; opt-in per team.
 
 Evaluator prefers B > A > structural > evidence > advisory.
 
@@ -192,8 +188,8 @@ Evaluator prefers B > A > structural > evidence > advisory.
 - **Phase 4 — `mission_report` model tool (Stage B)** + optional
   output-fingerprint stuck-detection.
 
-Phases 1–3 remove the defect; Phase 4 is the full Accio/multica-style explicit
-self-report. We can stop after any phase with a coherent system.
+Phases 1–3 remove the defect; Phase 4 adds explicit model self-report. We can
+stop after any phase with a coherent system.
 
 ---
 

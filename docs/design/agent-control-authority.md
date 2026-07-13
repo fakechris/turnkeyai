@@ -6,8 +6,8 @@ was approved and the subtractive production migration completed on 2026-07-12.
 ## Objective
 
 Keep TurnkeyAI stable across models by fixing who may create work, not by
-predicting model-specific failures. The standard agent runtime should converge
-on the same control shape that makes Claude Code robust:
+predicting model-specific failures. The standard agent runtime uses one
+explicit control shape:
 
 ```text
 input/event -> planner -> native tool proposal -> kernel -> durable result
@@ -175,13 +175,11 @@ tests must no longer require an automatic recovery turn in model mode. Under A,
 they verify that diagnostics are surfaced and no new turn is created. Under B,
 automatic remediation is tested only for an explicitly declared workflow.
 
-## Claude Code Reference Shape
+## Runtime Control Shape
 
-The local Claude Code reverse-engineering snapshot is not a small codebase and
-is not a template to copy line for line. Its useful property is authority
-placement:
+TurnkeyAI's authority placement follows these product-owned requirements:
 
-- its main loop continues on native tool use and normally completes on a valid
+- the main loop continues on native tool use and normally completes on a valid
   tool-free response;
 - generic protocol recovery handles prompt overflow and output truncation;
 - stop hooks are explicit extensions, not built-in business-slot evaluators;
@@ -190,9 +188,6 @@ placement:
 - task completion returns as a generic notification in the message stream;
 - resume rebuilds from the persisted transcript and tool-result state;
 - compaction changes the context projection, not the task planner.
-
-TurnkeyAI should copy these boundaries, not Claude Code's file layout or every
-feature gate.
 
 ## Target Standard Agent Loop
 

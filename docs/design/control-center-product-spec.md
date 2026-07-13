@@ -76,7 +76,7 @@ The user proposed six. Spec'ing each as: **goal · entry point · happy path · 
 - Direct-CDP endpoint unreachable → Step 2 shows the probe failure inline.
 - Onboarding-state PUT 401 → wizard surfaces "this dashboard's token can't write onboarding state; run `turnkeyai app` with an operator-or-above token". (Should not happen in practice — `turnkeyai app` defaults to operator scope when one is available.)
 
-**Permission gate**: dashboard runs on whatever token `turnkeyai app` resolved. `GET /onboarding/state` is `read`. `PUT /onboarding/state` (marker only) is `operator`. **Transport selection itself is `admin`** via `/daemon/config/browser-transport` — the wizard step renders an admin-required hint if scope < admin (gemini-HIGH catch: onboarding cannot be a back-door around admin-gated config changes).
+**Permission gate**: dashboard runs on whatever token `turnkeyai app` resolved. `GET /onboarding/state` is `read`. `PUT /onboarding/state` (marker only) is `operator`. **Transport selection itself is `admin`** via `/daemon/config/browser-transport` — the wizard step renders an admin-required hint if scope < admin, so onboarding cannot bypass admin-gated config changes.
 
 **Marker location**: `<runtimeRoot>/onboarding.json` where `runtimeRoot` is resolved via `getRuntimePaths()` (already platform-aware: honors `TURNKEYAI_HOME` env var, defaults to `path.join(homedir(), ".turnkeyai")` cross-platform). Separate from `config.json` so auth config stays purely about auth + port.
 
@@ -134,7 +134,7 @@ The user proposed six. Spec'ing each as: **goal · entry point · happy path · 
    - **Snapshot**: `POST /bridge/command` with `{tool: "snapshot"}`. Inline JSON viewer.
    - **Screenshot**: `POST /bridge/command` with `{tool: "screenshot"}`. Inline image preview.
    - **Revoke session**: `POST /browser-sessions/:id/revoke`. Confirmation dialog requires the user to type the literal string `REVOKE` (constant — auto-generated IDs in the dialog are too easy to mis-type). Dialog also shows the session ID + thread ID + how many actions the session has executed so the user has context for the decision.
-4. **Visible-state guarantee** (with caveat): every active session has a row in the left pane within at most one poll tick. **The current 5s polling makes this an aspiration, not an enforcement** (gemini catch) — a fast-running agent can execute multiple actions before the next tick surfaces the session. WebSocket events (see §6, J4+) are the real fix. Until then: the dashboard is a fast-converging mirror of daemon state, not an instantaneous one. **The hard guarantee that DOES hold** (because the daemon enforces it server-side) is that no session can run without being persisted to the daemon's session store — so any dashboard reload AT WORST has a 5s lag before showing it. Sessions cannot be hidden from inspection, only delayed.
+4. **Visible-state guarantee** (with caveat): every active session has a row in the left pane within at most one poll tick. **The current 5s polling makes this an aspiration, not an enforcement** — a fast-running agent can execute multiple actions before the next tick surfaces the session. WebSocket events (see §6, J4+) are the real fix. Until then: the dashboard is a fast-converging mirror of daemon state, not an instantaneous one. **The hard guarantee that DOES hold** (because the daemon enforces it server-side) is that no session can run without being persisted to the daemon's session store — so any dashboard reload AT WORST has a 5s lag before showing it. Sessions cannot be hidden from inspection, only delayed.
 
 **Failure paths:**
 
@@ -292,7 +292,7 @@ These block PR J1. I am NOT making the call unilaterally.
 
 **Q7. Recovery-run mutations** — confirmed deferred to a follow-up, but is "Show advanced recovery (read-only)" worth in J2 as a viewer, with no buttons? Or wait entirely?
 
-**Q8. WebSocket events vs polling — bring forward?** The "visible-state guarantee" in US-3 is currently aspirational with 5s polling (gemini caught this). A fast agent can run several actions before the dashboard reflects the new session. WebSocket `/events` would close the gap. Cost: meaningful daemon work (new endpoint, event-bus plumbing, dashboard reconnect logic). **Recommendation**: keep deferred for J series — the daemon enforces the hard guarantee that no session can run unpersisted, so the 5s lag is a UX issue, not a security one. Promote WebSocket to J4 (post-Settings) if real users complain.
+**Q8. WebSocket events vs polling — bring forward?** The "visible-state guarantee" in US-3 is currently aspirational with 5s polling. A fast agent can run several actions before the dashboard reflects the new session. WebSocket `/events` would close the gap. Cost: meaningful daemon work (new endpoint, event-bus plumbing, dashboard reconnect logic). **Recommendation**: keep deferred for J series — the daemon enforces the hard guarantee that no session can run unpersisted, so the 5s lag is a UX issue, not a security one. Promote WebSocket to J4 (post-Settings) if real users complain.
 
 ## 8. PR split
 

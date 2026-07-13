@@ -235,47 +235,27 @@ sub-agent-worker-handler.test.ts, tool-use.test.ts, model-adapter.test.ts.)
 | Quality gate not consulted by lifecycle | P1 | mission-observability vs. thread-bridge | Open — `done` should require gate pass |
 | Thread-summary `userGoal` lossy + late | P1 | context-state-maintainer.ts | Mitigated by fix §5.1 |
 | Browser-vs-fetch routing encoded as prompt regexes | P1(c) | llm-response-generator normalize* | Open |
-| Accio parity docs vs. reference | P2 | docs/design/runtime-hard-points-parity-plan.md 等 | See §7 |
 
 (Environment note: `packages/app-gateway/src/routes/browser-expert-live-e2e.test.ts`
 fails on machines whose HTTP proxy intercepts localhost CDP requests (HTTP
 407); it is gated on a locally-resolvable Chrome and is unrelated to runtime
 changes.)
 
-## 7. Accio Work reference parity (structural)
+## 7. Product-Native Architecture Validation
 
-Reference: extracted runtime at
-`/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5`
-(`app/out/{main,preload,renderer}`, minified Electron bundles, ~20 MB; the
-asar source is `/Applications/Accio.app/Contents/Resources/app.asar`. Do NOT
-use `/Users/chris/workspace/accio` — deprecated repo).
+Architecture decisions must be justified by TurnkeyAI's own product contracts,
+runtime invariants, acceptance scenarios, and user-visible outcomes.
 
-Honest status: this round's deep parity read did NOT complete (the audit
-sub-agents hit session limits), so this section deliberately avoids claiming
-per-mechanism findings that were not verified. What this round establishes:
-
-- the comparison must be STRUCTURAL (prompt harness, tool schema, enforcement,
-  replay), not JS-diffing of minified bundles;
-- TurnkeyAI's own goal-anchoring gap (§2.1) was the largest structural
-  divergence from any production agent runtime: the original task text must
-  be an immutable anchor re-presented at every synthesis boundary — that is
-  now implemented (§5.1);
-- existing parity docs (runtime-hard-points-parity-plan.md,
-  runtime-mechanisms-gap-analysis.md, p0-natural-runtime-parity-reset.md)
-  should be re-validated against the extracted reference before being cited
-  in any A/B claim — treat their per-mechanism claims as unverified until
-  then.
-
-Next concrete step: grep the reference bundles for long English prompt
-strings, tool schema literals (session/sub-agent/browser/fetch tools), and
-status enums; map each to the TurnkeyAI equivalent listed in §1; record
-deltas here with file paths on both sides.
+The original task text remains an immutable anchor at every synthesis boundary.
+Prompt construction, tool schemas, permission enforcement, persistence, replay,
+and recovery must be verified directly against the contracts in this repository.
+Only TurnkeyAI's own product contract defines acceptance.
 
 ## 8. How to verify capability for real (not in this round)
 
-- Same-goal A/B against Accio Work on missions whose specs exceed 220 chars
-  and demand explicit table columns + per-row evidence — this directly
-  exercises fix §5.1.
+- A mission whose specification exceeds 220 characters and demands explicit
+  table columns plus per-row evidence must preserve the full goal through final
+  synthesis. This directly exercises fix §5.1.
 - A bounded-failure browser mission (CDP down) must end visibly as
   closed-incomplete in the UI, not "done 100%".
 - A sub-agent timeout with partial evidence must produce a final answer whose

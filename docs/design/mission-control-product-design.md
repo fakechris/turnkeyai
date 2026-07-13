@@ -30,7 +30,7 @@ The user should feel like they are managing a small local agent team, not operat
 
 Example mission:
 
-> Research five competitors, verify claims through live websites, track source evidence, update the comparison document, flag uncertain facts, and produce a final report.
+> Research five implementation options, verify claims through live websites, track source evidence, update the decision document, flag uncertain facts, and produce a final report.
 
 That mission naturally needs several capabilities:
 
@@ -447,9 +447,9 @@ Do not expose raw tool power as the default UX:
 
 ## 10. Product Use Cases
 
-### UC-1. Competitive Research Report
+### UC-1. Multi-Source Research Report
 
-User asks TurnkeyAI to research competitors and produce a report.
+User asks TurnkeyAI to research several implementation options and produce a report.
 
 Agents:
 
