@@ -32,7 +32,8 @@
 ### 1.4 Mission Control 终端用户
 
 - 期望：通过友好的本地工作台创建任务、观察多 agent 协同、审批高风险动作、查看证据和最终结果
-- 当前入口：macOS Desktop App / `turnkeyai app` / daemon-served Control Center
+- 启动方式：macOS Desktop App / `turnkeyai app`
+- 用户界面：由本地 daemon 提供的 Control Center
 - 当前能力：First Run、Missions、Mission Detail、Approvals、Agents、Context、Agent Connect、Runtime、Settings
 - 边界：Desktop App 与 Web Control Center 共享同一个本地 Runtime；自动更新、托盘和更深的 OS 集成仍在演进
 

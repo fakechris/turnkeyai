@@ -21,7 +21,7 @@ TurnkeyAI 的目标，是让这类任务可以持续、透明地运行：
 
 ## 产品形态
 
-TurnkeyAI 的三个入口共享同一套本地运行时和任务数据。
+TurnkeyAI 提供桌面应用和 CLI 两种启动方式。它们打开同一个 Control Center，并共享同一套本地 Runtime 和 Mission 数据。
 
 ### Desktop App
 
@@ -31,19 +31,21 @@ macOS 桌面应用是日常使用入口，在独立窗口中运行完整的 Turn
 
 当前 DMG 使用 ad-hoc 签名。首次打开时，macOS 可能要求你在“系统设置 → 隐私与安全性”中确认运行。
 
-### Web Control Center
+### CLI
 
-不安装桌面应用也可以在浏览器中使用同一个工作台。需要 Node.js 24 或更高版本：
+不安装桌面应用也可以通过 CLI 启动浏览器版 Control Center。需要 Node.js 24 或更高版本：
 
 ```bash
 npx @turnkeyai/cli app
 ```
 
-命令会在本地启动 TurnkeyAI，并打开 Control Center。你可以在其中创建和查看 Missions、处理 Approvals、管理 Agents 与 Context，并检查任务运行状态。
+命令会启动本地 Runtime，并在浏览器中打开 Control Center。
 
-### Local Runtime & CLI
+### Control Center & Local Runtime
 
-本地 Runtime 负责执行任务、保存状态以及连接模型、浏览器和工具。CLI 适合开发、自动化和高级诊断；普通使用不需要手动管理 daemon。
+Control Center 是 TurnkeyAI 的用户界面。你可以在其中创建和查看 Missions、处理 Approvals、管理 Agents 与 Context，并检查任务运行状态。
+
+Local Runtime 是桌面应用和 CLI 共用的执行层，负责运行任务、保存状态以及连接模型、浏览器和工具。普通使用不需要手动管理 daemon。
 
 详细命令见 [CLI 使用说明](./packages/cli/README.md)。
 

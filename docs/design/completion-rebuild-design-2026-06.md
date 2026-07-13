@@ -69,8 +69,8 @@ evaluateMissionCompletion(mission, messages, roleRuns, workerSessions, taskSpec?
                     fail past cause-gated budget → typed terminal with closeout.
 ```
 
-Step 3 + "fail closed" is the spine: **no self-reported, verifier-passed
-completion ⇒ never `done`.**
+Step 3 + "fail closed" is the spine: **`done` requires a typed `completed`
+self-report plus either a passing verifier or passing evidence coverage.**
 
 ---
 
