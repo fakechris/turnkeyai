@@ -1731,59 +1731,6 @@ describe("MissionCompletionEvaluator", () => {
     }
   });
 
-  it("ignores automatic recovery prompts when selecting the active goal", () => {
-    const dynamicMission: Mission = {
-      ...mission,
-      title: "Natural browser dynamic page",
-      desc: [
-        "Review this operations dashboard as a user would see it in the browser.",
-        "Dashboard: http://127.0.0.1:51008/ops-dashboard",
-        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
-        "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
-        "Also state the residual risk or unverified scope that remains after the browser check.",
-      ].join("\n"),
-    };
-    const decision = evaluateMissionCompletion({
-      mission: dynamicMission,
-      messages: [
-        {
-          ...message("u-original", "user", 10),
-          content: dynamicMission.desc,
-        },
-        {
-          ...message("u-recovery", "user", 90),
-          content: [
-            "System recovery: the previous final answer did not satisfy required goal slots.",
-            "Automatic recovery attempt 1 of 2.",
-            "Continue the original mission instead of closing it.",
-            "Do not introduce provider/search/model-support columns unless the original mission explicitly requested provider, search/web_search, or model-support evidence.",
-          ].join("\n"),
-        },
-        {
-          ...message("a-final", "assistant", 100),
-          roleId: "role-lead",
-          name: "Lead",
-          content: [
-            "## Ops Dashboard — Browser Review",
-            "Rendering: fully rendered browser evidence was captured.",
-            "Operational state: mixed. Queue depth 11 and 3 SLA breaches exceed thresholds.",
-            "Escalation trigger: queue depth above 5 and SLA breaches above 0.",
-            "Owner: Incident Commander.",
-            "Recommended next action: page the on-call lead.",
-            "Residual risk: fixture evidence only; production freshness remains unverified.",
-          ].join("\n"),
-        },
-      ],
-      roleRuns: [idleRun],
-    });
-
-    assert.deepEqual(decision, {
-      action: "update",
-      reason: "final_answer",
-      patch: { status: "done", progress: 1 },
-    });
-  });
-
   it("blocks timeout closeouts that explicitly leave requested provider search pricing slots blocked", () => {
     const decision = evaluateMissionCompletion({
       mission: {

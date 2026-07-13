@@ -17,7 +17,9 @@ export type ActivityEventId = string;
 export type ArtifactId = string;
 export type ApprovalRequestId = string;
 
-// Lifecycle states — matches the design's status-dot CSS classes.
+// Product lifecycle projection used by Mission APIs and UI. This is not the
+// authoritative state of a role run, flow, worker, or effect, and changing it
+// must never wake execution. Those runtimes own their own durable state.
 export type MissionStatus =
   | "draft"
   | "planning"
@@ -64,6 +66,7 @@ export interface Mission {
   /** Optional English title — useful in bilingual settings. */
   titleEn?: string;
   desc: string;
+  /** Product/UI lifecycle projection; never an execution command or planner signal. */
   status: MissionStatus;
   mode: MissionMode;
   modeLabel: string;
