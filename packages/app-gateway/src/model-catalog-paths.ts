@@ -14,11 +14,18 @@ export async function resolveModelCatalogPaths(input: {
     : input.explicitPath?.trim();
   if (explicit) {
     const candidate = path.resolve(cwd, explicit);
-    await access(candidate);
-    return {
-      currentModelCatalogPath: candidate,
-      editableModelCatalogPath: candidate,
-    };
+    try {
+      await access(candidate);
+      return {
+        currentModelCatalogPath: candidate,
+        editableModelCatalogPath: candidate,
+      };
+    } catch {
+      return {
+        currentModelCatalogPath: null,
+        editableModelCatalogPath: candidate,
+      };
+    }
   }
 
   const candidates = [

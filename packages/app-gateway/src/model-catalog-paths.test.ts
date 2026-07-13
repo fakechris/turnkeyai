@@ -31,3 +31,16 @@ test("model catalog editing falls back to models.local.json when no catalog exis
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("a missing explicit catalog remains editable without blocking daemon startup", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "tk-model-paths-"));
+  const explicitPath = path.join(cwd, "config", "models.custom.json");
+  try {
+    assert.deepEqual(await resolveModelCatalogPaths({ cwd, explicitPath }), {
+      currentModelCatalogPath: null,
+      editableModelCatalogPath: explicitPath,
+    });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
