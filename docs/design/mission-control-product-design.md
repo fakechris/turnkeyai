@@ -602,7 +602,21 @@ Goal: broaden the product beyond browser.
 - Define desktop context/controller contract.
 - Start read-only first, then approval-gated writes/actions.
 
-### K6. Desktop Shell
+### K6. Structured Model Configuration
+
+Goal: turn Models from a read-only/runtime-oriented surface into a complete, safe product workflow.
+
+- Replace the read-only Model overview and JSON-only workflow with structured provider, endpoint, model name, and routing controls.
+- Add a default model selector and primary/ordered-fallback selectors for every model chain.
+- Add provider presets plus `Fetch models` and `Test connection` actions with field-level error recovery.
+- Treat API keys as write-only secrets stored by the daemon with restrictive permissions; never return them to the browser or diagnostics.
+- Keep the JSON catalog editor under Advanced as an operator escape hatch.
+- Require admin scope for mutations while allowing lower scopes to inspect redacted readiness.
+- Validate and write catalog changes atomically, then surface live-reload or restart state explicitly.
+
+Acceptance details and security gates are tracked in `docs/design/future-work-master-plan.md` §3.H.
+
+### K7. Desktop Shell
 
 Goal: move from local web app to a friendlier product entry.
 

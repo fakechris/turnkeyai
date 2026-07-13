@@ -1,6 +1,6 @@
 # Future Work Master Plan
 
-> 更新日期：2026-04-22
+> 更新日期：2026-07-13
 > 目的：把当前项目从“Phase 1 核心机制已完成”推进到“发布闭环、长期验证、operator 值班、Phase 2 准备”四条主线上的统一执行计划。
 
 ## 1. 当前判断
@@ -181,6 +181,43 @@
 - relay transport 可以作为明确配置被选中
 - relay 尚未完整实现时，会以可诊断方式失败，而不是隐式退回 local
 
+### H. Product TODO: Structured Model Configuration
+
+状态：**待开发**。当前 Settings 只在 `Advanced local setup` 中提供 admin-scoped model catalog JSON 编辑器；顶部 Model 卡片、default selection 和 model chains 都是只读展示。这个入口可用于 operator 兜底，但不能作为正常产品配置体验。
+
+目标：
+
+- 用户无需编辑 JSON 或本地环境文件，即可在 Web 中完成 provider、endpoint、API key、model name、默认模型和 model chain 配置
+- API key 保持 write-only：可更新、可替换，但永不通过 GET、日志、诊断包或页面状态回显
+- 保留 catalog JSON 编辑器作为高级 escape hatch，而不是唯一入口
+
+产品范围：
+
+1. Model 卡片进入结构化模型设置页，并展示当前默认模型、provider、endpoint 健康和 key readiness
+2. 支持新增、编辑、删除模型条目：label、provider、protocol、endpoint URL、model name、max output tokens
+3. 提供 MiniMax 中国区 / 全球区、OpenAI-compatible、Anthropic-compatible provider presets
+4. 提供 write-only API key 输入；密钥写入 daemon-owned secret/env storage（0600），catalog 只保存 env 引用
+5. 提供 `Fetch models` / `Test connection`，错误需区分 endpoint、认证、model 不存在、网络超时和协议不兼容
+6. 提供默认模型 selector，以及每条 model chain 的 primary / ordered fallbacks selector
+7. 保存前做 inline validation；保存采用原子写入，并明确显示 live reload 或 daemon restart 结果
+8. admin scope 才能修改；read/operator scope 可查看脱敏后的有效配置和 readiness，但不能读取 secret
+
+验收标准：
+
+- 首次配置 MiniMax-M3 可以只通过 Web 完成 endpoint、key、model、default chain 和连接测试
+- 切换默认模型后，新 mission 实际使用新 model，页面与 `/models` 读数一致
+- 页面源码、API 响应、浏览器 storage、daemon logs 和 diagnostics export 中均不出现明文 API key
+- 无效 endpoint/key/model 会在对应字段旁显示可恢复错误，失败保存不会破坏现有可用 catalog
+- 桌面与移动端均可完成配置；键盘导航、visible labels、loading/disabled/error states 完整
+- 覆盖 catalog/secret route 单测、auth scope 测试、Control Center UI smoke 和一次真实 provider connection smoke
+
+相关现状与设计来源：
+
+- `packages/control-center/src/pages/SettingsPage.tsx`
+- `packages/app-gateway/src/routes/daemon-config-routes.ts`
+- `docs/design/control-center-product-spec.md` Q4（structured per-provider form follow-up）
+- `docs/design/model-catalog-and-chain-config.md`
+
 ## 4. 推荐执行顺序
 
 当前建议严格按下面顺序推进：
@@ -229,6 +266,7 @@
 3. 为 soak 结果加失败 bucket 摘要
 4. 再补一轮 real-world runbook，优先覆盖 publish / browser research / operator escalation
 5. 把 release / soak / acceptance 的结果读数整理成一个统一 operator 入口
+6. 在 Phase 1 exit 工作之后排期 Structured Model Configuration，按 §3.H 的安全和验收边界实现
 
 ## 8. Agent Handoff
 
