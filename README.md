@@ -78,12 +78,12 @@
 - context / memory / compression v2 的完整 compiler 形态
 - 更大规模、长期运行下的 browser bridge / relay / direct-cdp real-world soak 结论
 - 更系统化的 real-world acceptance / evaluation harness
-- Electron GUI
+- 桌面壳的产品化能力（应用图标、自更新、托盘与更深的 OS 集成）
 
 一句话判断：
 
 - runtime/workbench backend：核心机制已经基本成熟，正在做产品化验收
-- 产品级协作桌面：还没开始
+- 产品级协作桌面：Electron 壳已可用，完整产品化仍在继续
 
 ## 当前优先级
 
@@ -146,6 +146,33 @@ npx @turnkeyai/cli app
 1. 检查本地 daemon 是否在运行，没有就自动启动（detached，写入 `~/.turnkeyai/logs/daemon.log`）
 2. 等待 `/health` 就绪
 3. 在浏览器打开 `http://127.0.0.1:4100/app`，并把 daemon token 通过 URL fragment 预填
+
+### Electron 桌面壳
+
+Control Center 现在也可以在 Electron App 中运行。桌面壳复用同一个 daemon-served
+Web UI，不会产生第二套前端：平时仍可用 `npm run app` 在浏览器调试，需要桌面窗口时运行：
+
+```bash
+npm run desktop:dev
+```
+
+Electron 会复用已运行的 daemon；本地 daemon 尚未启动时会自动拉起打包在 App 内的版本。
+关闭窗口不会停止 daemon，因此浏览器与桌面入口可以交替使用。
+
+macOS DMG 使用 ad-hoc 签名，无需 Apple Developer 账号：
+
+```bash
+npm run desktop:dist:mac:arm64  # 当前 Apple Silicon 版本
+npm run desktop:dist:mac        # 同时生成 arm64 + Intel x64
+npm run desktop:verify:mac      # 验证 Signature=adhoc / TeamIdentifier=not set
+npm run desktop:verify:mac:release # 发布门禁：同时要求 arm64 + x86_64
+```
+
+产物位于 `packages/desktop/dist/release/`，并附带 `SHA256SUMS.txt`。固定 Bundle ID 为
+`com.turnkeyai.desktop`，最低系统版本为 macOS 12。由于没有 Developer ID 与 Apple
+公证，用户首次启动仍需在“系统设置 → 隐私与安全性”中点击“仍要打开”。详细说明见
+`packages/desktop/README.md`。正式发布前还必须在另一台 Mac 或干净 macOS 环境中，
+从 GitHub Release 经浏览器重新下载 DMG，实际验收 quarantine 与首次手工放行流程。
 
 Control Center 现在是 Mission Control 工作台：First Run、Missions、Approvals、Agents、Context、Agent Connect、Runtime、Settings。无需额外构建步骤，daemon 直接服务静态 bundle。
 
@@ -463,7 +490,7 @@ npm run daemon
 如果把目标定义为“可日常使用的协作式 agent 桌面工作台”，当前更准确的判断是：
 
 - runtime/workbench backend 接近可用，但仍在验收
-- 桌面产品 shell 尚未开始
+- Electron 桌面壳已具备，产品化桌面能力仍待完善
 
 剩余差距主要集中在：
 
@@ -471,7 +498,7 @@ npm run daemon
 - runtime/operator 在真实排障过程里的易用性继续打磨
 - real-world failure injection 下的长期稳态
 - real-world acceptance / evaluation harness 的系统化
-- GUI
+- 桌面壳产品化（应用图标、自更新、托盘与 OS 集成）
 
 ## 开源阶段说明
 

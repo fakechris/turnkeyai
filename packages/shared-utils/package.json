@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     "./async-mutex": "./src/async-mutex.ts",
+    "./desktop-daemon-proof": "./src/desktop-daemon-proof.ts",
     "./file-store-utils": "./src/file-store-utils.ts"
   }
 }

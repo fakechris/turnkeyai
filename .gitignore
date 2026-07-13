@@ -3,6 +3,7 @@ node_modules/
 .daemon-data/
 .artifacts/
 dist/
+packages/desktop/dist/
 models.local.json
 docs/reverse/
 docs/review/

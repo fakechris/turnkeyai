@@ -1,0 +1,56 @@
+name: Build Desktop DMGs
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+
+jobs:
+  macos:
+    name: macOS ad-hoc DMGs
+    if: ${{ github.event_name != 'release' || startsWith(github.event.release.tag_name, 'desktop-v') }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release tag matches desktop version
+        if: ${{ github.event_name == 'release' }}
+        run: npm run verify:release-tag --workspace @turnkeyai/desktop -- "${{ github.event.release.tag_name }}"
+
+      - name: Build arm64 and x64 DMGs
+        run: npm run desktop:dist:mac
+
+      - name: Verify ad-hoc signatures and both architectures
+        run: npm run desktop:verify:mac:release
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: turnkeyai-macos-dmgs
+          if-no-files-found: error
+          path: |
+            packages/desktop/dist/release/*.dmg
+            packages/desktop/dist/release/SHA256SUMS.txt
+
+      - name: Upload DMGs to GitHub Release
+        if: ${{ github.event_name == 'release' }}
+        run: gh release upload "${{ github.event.release.tag_name }}" packages/desktop/dist/release/*.dmg packages/desktop/dist/release/SHA256SUMS.txt --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

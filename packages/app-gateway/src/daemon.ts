@@ -32,6 +32,12 @@ import type {
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+import {
+  createDesktopDaemonProof,
+  isDesktopDaemonChallenge,
+  isDesktopDaemonProofScope,
+  type DesktopDaemonProofScope,
+} from "@turnkeyai/shared-utils/desktop-daemon-proof";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import { FileBrowserArtifactStore } from "@turnkeyai/browser-bridge/artifacts/file-browser-artifact-store";
 import {
@@ -161,6 +167,14 @@ const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
 const PROCESS_STARTED_AT_MS = Date.now();
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 const RUNTIME_RECONCILIATION_INTERVAL_MS = 60_000;
+
+function resolveDesktopHealthProofToken(scope: DesktopDaemonProofScope): string | null {
+  if (scope === "operator") return DAEMON_AUTH.operatorToken;
+  if (scope === "admin") return DAEMON_AUTH.adminToken;
+  if (scope === "read") return DAEMON_AUTH.readToken;
+  if (scope === "unknown") return TOKEN_BOOTSTRAP.token;
+  return null;
+}
 
 const clock: Clock = {
   now: () => Date.now(),
@@ -603,11 +617,26 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
+      const desktopChallenge = url.searchParams.get("desktopChallenge");
+      const desktopScope = url.searchParams.get("desktopScope");
+      const proofToken =
+        desktopScope && isDesktopDaemonProofScope(desktopScope)
+          ? resolveDesktopHealthProofToken(desktopScope)
+          : null;
+      const desktopProof =
+        desktopChallenge &&
+        isDesktopDaemonChallenge(desktopChallenge) &&
+        desktopScope &&
+        isDesktopDaemonProofScope(desktopScope) &&
+        proofToken
+          ? createDesktopDaemonProof(proofToken, desktopChallenge, desktopScope, PORT)
+          : null;
       return sendJson(res, 200, {
         ok: true,
         port: PORT,
         dataDir: DATA_DIR,
         modelCatalogPath,
+        ...(desktopProof ? { desktopProof } : {}),
       });
     }
 

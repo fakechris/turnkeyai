@@ -1,0 +1,98 @@
+{
+  "name": "@turnkeyai/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell for the daemon-served TurnkeyAI Control Center",
+  "author": "TurnkeyAI Contributors",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/app/main.js",
+  "dependencies": {
+    "@turnkeyai/shared-utils": "*"
+  },
+  "scripts": {
+    "build:main": "tsup --config tsup.config.ts",
+    "build:runtime": "npm run build --workspace @turnkeyai/control-center && tsup --config tsup.runtime.config.ts && node scripts/copy-control-center.mjs",
+    "build": "npm run build:main && npm run build:runtime",
+    "dev": "npm run build && electron .",
+    "clean:release": "node scripts/clean-release.mjs",
+    "pack:mac": "npm run build && npm run clean:release && electron-builder --mac dir",
+    "dist:mac": "npm run build && npm run clean:release && electron-builder --mac dmg --arm64 --x64 && node scripts/write-checksums.mjs",
+    "dist:mac:arm64": "npm run build && npm run clean:release && electron-builder --mac dmg --arm64 && node scripts/write-checksums.mjs",
+    "dist:mac:x64": "npm run build && npm run clean:release && electron-builder --mac dmg --x64 && node scripts/write-checksums.mjs",
+    "verify:mac": "node scripts/verify-macos-signature.mjs",
+    "verify:mac:release": "node scripts/verify-macos-signature.mjs --require-arch=arm64 --require-arch=x86_64",
+    "verify:release-tag": "node scripts/verify-release-version.mjs",
+    "test": "tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "electron": "43.1.0",
+    "electron-builder": "26.15.3"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "build": {
+    "appId": "com.turnkeyai.desktop",
+    "productName": "TurnkeyAI",
+    "asar": true,
+    "forceCodeSigning": true,
+    "artifactName": "${productName}-v${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist/release"
+    },
+    "files": [
+      "dist/app/main.js",
+      "dist/app/main.js.map",
+      "package.json",
+      "!node_modules/@turnkeyai/shared-utils"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*",
+          "!node_modules/**/*"
+        ]
+      },
+      {
+        "from": "dist/runtime/node_modules/playwright-core",
+        "to": "runtime/node_modules/playwright-core",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools",
+      "identity": "-",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "notarize": false,
+      "minimumSystemVersion": "12.0",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "LSMultipleInstancesProhibited": true
+      }
+    },
+    "dmg": {
+      "title": "TurnkeyAI ${version}",
+      "contents": [
+        {
+          "x": 140,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  }
+}
