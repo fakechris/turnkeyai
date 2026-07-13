@@ -35,11 +35,6 @@ import {
   findSessionContinuationDirective,
 } from "./runtime-facts/text-fallback-readers";
 import { createTerminalFinalSynthesisRunner } from "./terminal-final-synthesis";
-import {
-  buildToolDefinitionFilterMessageContext,
-  buildToolDefinitionFilterTaskContext,
-  filterToolDefinitionsForTask,
-} from "./tool-definition-filter";
 import { throwIfAborted } from "./tool-protocol";
 import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 import {
@@ -202,10 +197,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       ? findSessionContinuationDirective(input.packet.taskPrompt)
       : null;
     const toolDefinitions = activeToolLoop
-      ? filterToolDefinitionsForTask(
-        activeToolLoop.executor.definitions(),
-        buildToolDefinitionFilterTaskContext(input.activation, input.packet.taskPrompt),
-      )
+      ? activeToolLoop.executor.definitions()
       : undefined;
     const declaredContinuationWorkerRunKey =
       input.packet.continuityMode === "resume-existing" &&
@@ -219,7 +211,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       throw new Error("explicit worker continuation requires the sessions_send tool");
     }
 
-    let initialGatewayInput = buildGatewayInput({
+    const initialGatewayInput = buildGatewayInput({
       activation: input.activation,
       packet: input.packet,
       ...(selection.modelId ? { modelId: selection.modelId } : {}),
@@ -238,22 +230,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         ? { sessionContinuationDirective: baseSessionContinuationDirective }
         : {}),
     });
-    if (activeToolLoop && initialGatewayInput.tools?.length) {
-      const filteredTools = filterToolDefinitionsForTask(
-        initialGatewayInput.tools,
-        [
-          buildToolDefinitionFilterTaskContext(input.activation, input.packet.taskPrompt),
-          buildToolDefinitionFilterMessageContext(initialGatewayInput.messages),
-        ].join("\n"),
-      );
-      if (filteredTools && filteredTools !== initialGatewayInput.tools) {
-        initialGatewayInput = {
-          ...initialGatewayInput,
-          tools: filteredTools,
-        };
-      }
-    }
-
     const modelCallTrace: ModelCallBoundaryTrace[] = [];
     return await this.runEngine({
       input: { ...input, signal: runDeadline.signal },
