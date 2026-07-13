@@ -12,9 +12,8 @@ steps, inspect evidence, and understand why a task is done or needs attention.
 
 ## Product Mental Model
 
-The UI follows the same high-level product logic observed in the installed
-Accio Work reference: users should see work, teams, permissions, context, and
-replay first; prompt harnesses, tool schemas, browser relay, and daemon
+The UI follows a product-first information hierarchy: users should see work,
+teams, permissions, context, and replay first; prompt harnesses, tool schemas, browser relay, and daemon
 diagnostics are supporting runtime layers. The Control Center must not expose
 implementation modules as if they were peer user choices.
 

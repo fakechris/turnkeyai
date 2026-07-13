@@ -1,6 +1,6 @@
 # TurnkeyAI Spec — Personas, Capabilities, User Stories
 
-> 更新日期：2026-05-20
+> 更新日期：2026-07-13
 > 范围：当前 `main` 真实可用的能力面 + 已经写进 README/MILESTONES 但仍在验收的能力面 + 明确的非目标
 > 与 `docs/VISION.md` / `docs/MILESTONES.md` 的关系：Vision 讲为什么、Milestones 讲什么时候、本文档讲谁、用什么、做完什么算可用
 > 产品入口方向：`docs/design/mission-control-product-design.md` 定义下一阶段用户端产品叙事。TurnkeyAI 的用户入口应收敛为 Mission Control：多 agent 围绕用户任务协同，browser bridge 只是 context/tool surface 之一。
@@ -29,12 +29,12 @@
 - 通过 daemon HTTP `bridge/*` 把浏览器当工具用
 - 不感知 daemon 内部的 team/role/worker 分层；只面对一组稳定的 `command / advanced / expert / batch` 工具
 
-### 1.4 Mission Control 终端用户（当前 web workbench）
+### 1.4 Mission Control 终端用户
 
 - 期望：通过友好的本地工作台创建任务、观察多 agent 协同、审批高风险动作、查看证据和最终结果
-- 当前入口：`turnkeyai app` / 双击 Mission Control launcher / daemon-served Control Center
+- 当前入口：macOS Desktop App / `turnkeyai app` / daemon-served Control Center
 - 当前能力：First Run、Missions、Mission Detail、Approvals、Agents、Context、Agent Connect、Runtime、Settings
-- 边界：这是 daemon-served web workbench，不是 native Electron/Tauri shell；native desktop shell 仍是后续产品包装，不应提前冻结更多 OS 桌面能力契约
+- 边界：Desktop App 与 Web Control Center 共享同一个本地 Runtime；自动更新、托盘和更深的 OS 集成仍在演进
 
 ## 2. Capability Map
 

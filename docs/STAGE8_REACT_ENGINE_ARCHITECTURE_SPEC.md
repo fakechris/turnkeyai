@@ -14,7 +14,7 @@ The current engine path has accumulated hooks that mirror slices of `LLMRoleResp
 - session continuation is distributed across empty-round injection, post-execute continuation, timeout repair, and closeout synthesis
 - final-answer repairs depend on subtle cascade order and round-specific evidence formulas
 
-The architecture issue is not that deterministic rules exist. Claude Code also has many deterministic harness rules. The issue is that TurnkeyAI has too many host-specific policies concentrated in one response-generator hot path, and too many facts are recovered with regex rather than carried as typed state.
+The architecture issue is not that deterministic rules exist. The issue is that TurnkeyAI has too many host-specific policies concentrated in one response-generator hot path, and too many facts are recovered with regex rather than carried as typed state.
 
 Stage 8 must turn this into a layered harness without making the final parity run a big-bang discovery step.
 
@@ -32,13 +32,11 @@ The layered T0-T11 design is the north star. The flip gate is not "all layers ar
 
 This is intentionally stricter than "clean while porting": when a missing normalizer or repair is blocking convergence, first make the engine behave correctly in the smallest reviewed slice, then move that behavior behind the proper policy boundary.
 
-## Claude Code Reference Model
+## Runtime Layering Requirements
 
-Claude Code is not a thin ReAct loop. It is a layered harness. The useful pattern to copy is not the exact implementation; it is the separation of authority.
+TurnkeyAI's runtime requires an explicit separation of authority between conversation state, context assembly, model orchestration, tool execution, and memory maintenance.
 
 ### Layer C0: Conversation Controller
-
-Reference: `/Users/chris/source/claude-code/src/QueryEngine.ts`.
 
 Authority:
 
@@ -79,13 +77,6 @@ Design lesson for TurnkeyAI:
 
 ### Layer C1: Context Prefix Builder
 
-References:
-
-- `/Users/chris/source/claude-code/src/utils/queryContext.ts`
-- `/Users/chris/source/claude-code/src/context.ts`
-- `/Users/chris/source/claude-code/src/utils/claudemd.ts`
-- `/Users/chris/source/claude-code/src/memdir/memdir.ts`
-
 Authority:
 
 - owns system prompt parts
@@ -97,7 +88,7 @@ Authority:
 Responsibilities:
 
 - gather default system prompt, user context, and system context in parallel
-- load CLAUDE.md/rules/memory from managed, user, project, local, auto, and team sources
+- load rules and memory from managed, user, project, local, automatic, and team sources
 - capture environment facts such as git status
 - return prompt-prefix content that is not treated as ordinary chat history
 
@@ -128,8 +119,6 @@ Design lesson for TurnkeyAI:
 Prompt packet assembly, role memory, mission context, current date, selected tool definitions, and continuation hints should be produced by a dedicated context assembler. They should not be recomputed ad hoc inside every repair/normalizer.
 
 ### Layer C2: Generic ReAct Orchestrator
-
-Reference: `/Users/chris/source/claude-code/src/query.ts`.
 
 Authority:
 
@@ -173,8 +162,6 @@ Design lesson for TurnkeyAI:
 `@turnkeyai/agent-core` should stay host-agnostic. It may expose lifecycle hooks, but it must not import role-runtime concepts. Host policy must live outside agent-core.
 
 ### Layer C3: Tool Capability Contract
-
-Reference: `/Users/chris/source/claude-code/src/Tool.ts`.
 
 Authority:
 
@@ -224,13 +211,6 @@ TurnkeyAI's current `ToolResult.raw?: unknown` is too weak for Stage 8. Browser 
 
 ### Layer C4: Tool Execution Lifecycle
 
-References:
-
-- `/Users/chris/source/claude-code/src/services/tools/toolExecution.ts`
-- `/Users/chris/source/claude-code/src/services/tools/toolHooks.ts`
-- `/Users/chris/source/claude-code/src/services/tools/toolOrchestration.ts`
-- `/Users/chris/source/claude-code/src/services/tools/StreamingToolExecutor.ts`
-
 Authority:
 
 - owns the execution lifecycle for one tool call or one executable batch
@@ -272,12 +252,6 @@ Design lesson for TurnkeyAI:
 Approval and side-effect gating should be enforced before execution, as a permission decision. It should not depend on a later repair prompt after the model already asked for the wrong tool.
 
 ### Layer C5: Memory And Compaction Services
-
-References:
-
-- `/Users/chris/source/claude-code/src/services/SessionMemory/sessionMemory.ts`
-- `/Users/chris/source/claude-code/src/services/compact/autoCompact.ts`
-- `/Users/chris/source/claude-code/src/services/compact/compact.ts`
 
 Authority:
 
@@ -589,7 +563,7 @@ Permission ordering:
 6. observe permission result facts
 7. post-execute continuation if approval state demands it
 
-This mirrors Claude Code's permission lifecycle: policy decision must happen before side-effect execution.
+The invariant is simple: policy decisions must happen before side-effect execution.
 
 ### T5: Continuation Policy
 

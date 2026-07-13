@@ -34,9 +34,9 @@ The last parity work fixed the symptoms but also exposed why the system was hard
 
 The cleanup target is not "remove every regex in one shot." The target is "no policy spaghetti": every rule has an owner module, a phase, an order, an input contract, an output contract, and tests. Regex that remains must be isolated in detector/fact modules and cannot authorize side effects.
 
-## Claude Code Alignment
+## Authority Separation
 
-This cleanup copies Claude Code's separation of authority, not its source code:
+This cleanup enforces a product-owned separation of authority:
 
 - Conversation/run controller owns mutable run state and resume/progress plumbing.
 - Context construction is separate from ordinary history.
@@ -1307,7 +1307,7 @@ Use this checklist during code review:
 - Are typed facts used when present, with detector fallback isolated when not present?
 - Are completed-closeout repairs and natural-finish repairs still distinguishable?
 
-## Implementation Notes For Claude Code
+## Implementation Notes
 
 - Work on one branch and use multiple sequential commits.
 - Run full parity after each batch, not only at the end.

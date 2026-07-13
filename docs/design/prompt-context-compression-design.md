@@ -575,7 +575,7 @@ interface WorkerEvidenceDigestStore {
   "threadId": "thread-001",
   "summaryVersion": 3,
   "updatedAt": 1774600000000,
-  "userGoal": "收集目标站点的竞品信息并给出行动建议",
+  "userGoal": "收集目标站点的公开信息并给出行动建议",
   "stableFacts": ["目标站点已登录", "需要 browser worker"],
   "decisions": ["先由 operator 抓页面，再由 analyst 汇总"],
   "openQuestions": ["是否需要进一步抓定价页"]
