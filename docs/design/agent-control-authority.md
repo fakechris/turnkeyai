@@ -42,8 +42,12 @@ The active planner may:
 - declare its work complete;
 - consume a typed external event.
 
-In model mode, the planner communicates only through native model responses and
-native tool calls. A valid tool-free response completes the turn.
+In model mode, the planner communicates through native model responses and
+declared proposal protocols. Native tool calls are the preferred effect
+protocol. The current structured `@{roleId}` handoff syntax is also a model
+proposal, not a kernel inference from business language. A valid tool-free
+response completes the turn after every attached child resolves, detaches, or
+causes the run to suspend.
 
 ### Kernel
 
@@ -104,9 +108,12 @@ An evaluator failure is data for the caller. It is never a runtime transition.
 | Compaction/checkpoint/externalization | Kernel projection | Correct contract; real long-context evidence is still limited | Retain and measure |
 | Worker-result inbox | External event delivered on a later user turn | Correct | Retain as transcript fact |
 | Mission goal-slot evaluator | Observer plus hidden planner | Violation | Observation only |
-| Incomplete-final automatic follow-up | Evaluator result is posted through `handleUserPost` | Violation | Remove from standard agent control flow |
-| Late worker completion fallback follow-up | Optional callback is not wired in production; durable inbox is used | Correct production composition | Keep callback unwired or remove it |
+| Incomplete-final automatic follow-up | Evaluator result is posted through `handleUserPost` | Violation | Product disposition required; remove from standard agent control flow |
+| Late worker completion fallback follow-up | Dead compatibility path: the only production composition always injects a durable inbox and does not wire the callback | No active violation, but dead authority surface | Remove with the semantic recovery unit |
 | Role repair/continuation/permission product policies | Production factories return no-op; old actions are test-only characterization | No active violation, but a large regression surface | Move characterization out of production composition and prevent reactivation |
+| Tool-call normalizer | Protocol aliases, handles, and schema normalization remain; product rewrites are retired | Correct | Retain syntax normalization; prohibit business rewrites |
+| Handoff planner | Validates structured `@{roleId}` proposals emitted by the model and applies hop limits | Model-mode proposal adapter, despite the `planner` name | Retain as declared proposal protocol; do not infer delegation from unstructured text |
+| Scheduled/cron dispatch | Caller creates a typed durable schedule; a due trigger dispatches the predeclared target | Explicit caller input, not a hidden planner | Retain |
 | Kernel closeouts for deadline, round limit, cancellation, and model error | Kernel | Correct when they return typed outcomes rather than inventing work | Retain |
 | `ExplicitWorkflowRuntime` | Instantiated but has no production consumer | Unproven optional subsystem | Do not connect to ordinary agent runs; keep only if a real caller explicitly selects workflow mode |
 
@@ -120,11 +127,42 @@ An evaluator failure is data for the caller. It is never a runtime transition.
   `createPermissionPolicy()` returns `NO_ACTION_PERMISSION_POLICY`.
 - Product closeouts are disabled except typed kernel outcomes:
   `createCloseoutPolicyRegistry()` disables automatic product closeouts.
-- The active semantic violation is in app-gateway:
-  mission completion classifies answer text, builds `System recovery` content,
-  and the daemon submits it through `coordinationEngine.handleUserPost()`.
+- The active semantic violation is in app-gateway: mission completion classifies
+  answer text, builds incomplete-final `System recovery` content, and the daemon
+  submits it through `coordinationEngine.handleUserPost()`.
+- app-gateway contains a second `System recovery` generator for late worker
+  completion, but it is unreachable in the current production composition:
+  the daemon is the only non-test bridge composition, always supplies the
+  concrete durable inbox, the inbox branch returns before the fallback callback,
+  and no non-test caller wires `postLateWorkerCompletionFollowUp`.
 - The explicit workflow runtime is constructed in composition foundations, but
   no non-test production code calls its transition methods.
+
+## Product Disposition Required
+
+Removing incomplete-final `System recovery` changes visible behavior: a mission
+will no longer silently create another model turn when an evaluator considers
+the answer incomplete. The value must have an explicit destination before a
+migration is approved.
+
+Choose exactly one:
+
+- **A. Observer and caller control:** expose unmet goal slots and quality status
+  in mission APIs/UI. The caller or user decides whether to submit a follow-up.
+  This is the recommended disposition because it preserves standard model-mode
+  authority and adds no new runtime mechanism.
+- **B. Explicit workflow control:** only missions created in
+  `explicit_workflow` mode may predeclare a bounded quality-remediation step.
+  Standard model-mode missions never enter it. This option is not approved merely
+  because `ExplicitWorkflowRuntime` exists; it requires a real product owner and
+  workflow contract.
+
+Product signature: **pending**.
+
+The associated acceptance contract changes with either choice. Existing E2E
+tests must no longer require an automatic recovery turn in model mode. Under A,
+they verify that diagnostics are surfaced and no new turn is created. Under B,
+automatic remediation is tested only for an explicitly declared workflow.
 
 ## Claude Code Reference Shape
 
@@ -153,7 +191,9 @@ feature gate.
 4. If the response contains native tool calls, let the kernel validate,
    persist, execute, and append receipts.
 5. Repeat from step 2.
-6. If the response is valid and tool-free, complete the turn.
+6. If the response is valid and tool-free, resolve the attached-child invariant:
+   finish, explicitly detach, cancel, or suspend with a durable handle. Then
+   complete the turn.
 7. On cancellation, deadline, exhausted retry, or unrecoverable protocol error,
    return a typed terminal or suspended outcome.
 
@@ -179,7 +219,8 @@ existence.
 2. Observer output cannot cause a model call, tool call, user message, workflow
    transition, or completion veto.
 3. Kernel code cannot derive a new effect from free-form task or answer text.
-4. In model mode, a valid tool-free response is terminal for the turn.
+4. In model mode, a valid tool-free response is terminal after attached children
+   finish, detach, cancel, or cause a typed suspension.
 5. A retry repeats the same operation and consumes one owner-level allowance.
 6. A background result is delivered once as a typed transcript event.
 7. Resume reconstructs the same planner, transcript identity, durable handles,
@@ -210,7 +251,11 @@ semantics and do not authorize scenario-specific patches.
 Any future implementation plan must reduce control surfaces:
 
 1. prevent new observer-to-execution dependencies;
-2. remove semantic automatic follow-up from the standard agent path;
+2. after product disposition is signed, remove semantic automatic follow-up
+   from the standard agent path as one atomic unit: both `System recovery`
+   generators, both prefix detectors in completion/observability, callback
+   surfaces and daemon wiring, and acceptance assertions that require the
+   synthetic turn;
 3. narrow or retire generic ReAct hooks that can inject calls, rewrite messages,
    or re-arm completion when production has no legitimate owner for them;
 4. keep explicit workflow outside standard agent composition unless an explicit
