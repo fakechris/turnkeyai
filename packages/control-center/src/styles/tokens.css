@@ -1,49 +1,69 @@
 /*
- * Design tokens — Mission Control design system (PR K1).
+ * Design tokens — aligned to the **Lumen Design System** (Atelier / Vault).
  *
- * Translated from the claude.ai/design handoff under
- * /tmp/design-extract/turnkeyai/project/styles.css (kept locally during
- * implementation; not committed). Two themes (light/dark) ship in K1;
- * "calm modern" direction is the default. The "terminal" direction from
- * the design mock is intentionally NOT shipped — single direction in K1
- * keeps the surface small. We can add it later by data-attribute swap.
+ * Mission Control now shares the Lumen family's visual language: IBM Plex
+ * type, the warm "Atelier" light theme (parchment + terracotta) and the
+ * "Vault" dark theme (near-black + deep blue), and the quiet-utility ethos —
+ * 1px hairline borders do the structural work, cards carry no shadow, no
+ * gradients / blur / emoji, hover = tint / opacity / underline (never
+ * movement). Colour, radius, and font values are lifted from the Lumen
+ * tokens (tokens/colors.css · spacing.css · typography.css).
+ *
+ * Every component style reads these variables — nothing hardcodes colour —
+ * so this file is the single source of truth for the whole skin.
  *
  * Token convention:
- *   --color-{semantic}   semantic surfaces + content (bg, surface, text, …)
- *   --color-state-{ok|warn|bad|accent|info}  state-conveying colors
- *   --color-{state}-soft soft / fill variants for tags + banners
- *   --r-{sm|md|lg|xl}    radius scale
- *   --space-{n}          spacing (4px base)
- *   --shadow-{xs|sm|md|lg}
- *   --font-{sans|display|mono}
- *   --density-*          row height / padding / gap / text size
- *   --letter-label       label letter-spacing (controlled by direction)
- *   --case               text-transform for labels
- *   --h-weight           heading font-weight
+ *   --color surfaces + ink   (bg, surface, text, muted, …)
+ *   --accent / --accent-2    terracotta brand + blue secondary
+ *   --{state} / --{state}-soft  semantic status fills
+ *   --c-1 … --c-8            categorical palette (charts, chips, tags)
+ *   --r-{sm|md|lg|xl} + --radius-*  radius scale (10 / 12 / 16 / 20 / 999)
+ *   --space-{n}              spacing (4px base)
+ *   --shadow-shell|pop       the only two elevations (shell + popover)
+ *   --font-{sans|serif|mono} IBM Plex Sans · system serif · IBM Plex Mono
  *
- * Theme switching: set data-theme="dark" on <html> to flip.
+ * Theme switching: set data-theme="dark" on <html> to flip to Vault.
  */
 
 :root {
-  /* Fonts */
+  /* ── Fonts — IBM Plex (UI + CJK share one family) · system reading serif ── */
   --font-sans:
-    "IBM Plex Sans", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
-  --font-display:
-    "Source Serif 4", "Noto Serif SC", ui-serif, Georgia, serif;
+    "IBM Plex Sans", "IBM Plex Sans SC", "Noto Sans SC",
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono:
-    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-serif:
+    "Iowan Old Style", "Songti SC", "Source Han Serif SC", Georgia,
+    "Times New Roman", serif;
+  /* --font-display kept for back-compat: reading serif, not a display face */
+  --font-display: var(--font-serif);
 
-  /* Radius */
-  --r-sm: 4px;
-  --r-md: 6px;
-  --r-lg: 10px;
-  --r-xl: 14px;
+  /* ── Radius — the Lumen scale (controls 10 · panels 12 · cards 16 · shell 20) ── */
+  --r-sm: 8px;   /* tags, small chips, tight inputs */
+  --r-md: 10px;  /* buttons, inputs, controls        */
+  --r-lg: 16px;  /* cards                            */
+  --r-xl: 20px;  /* outer shells, large panels       */
+  --radius-input: 10px;
+  --radius-md: 12px;
+  --radius-card: 16px;
+  --radius-shell: 20px;
+  --radius-pill: 999px;
 
-  /* Shadows */
-  --shadow-xs: 0 1px 0 rgba(0, 0, 0, 0.04);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 1px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 6px 24px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.18), 0 6px 12px rgba(0, 0, 0, 0.06);
+  /* ── Elevation — only two, used sparingly (shell + popover). Cards use
+     borders, never shadow. Per-theme values override below. ── */
+  --shadow-shell: 0 12px 36px rgba(31, 26, 23, 0.06);
+  --shadow-pop: 0 16px 48px rgba(31, 26, 23, 0.12);
+  /* back-compat aliases so existing rules resolve */
+  --shadow-soft: var(--shadow-shell);
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow-md: var(--shadow-shell);
+  --shadow-lg: var(--shadow-pop);
+
+  /* ── Motion — restrained; color/opacity/width only, 120–180ms ── */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-normal: 180ms;
 
   /* Density — "regular" defaults */
   --density-row: 32px;
@@ -53,7 +73,7 @@
   --density-text: 13px;
   --density-label: 11px;
 
-  /* Spacing scale (used for layouts that need explicit dimensions) */
+  /* Spacing scale (4px grid) */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -63,95 +83,136 @@
   --space-7: 28px;
   --space-8: 32px;
 
-  /* Direction-controlled type knobs (calm modern defaults) */
+  /* Type knobs — headings are IBM Plex Sans SemiBold (Lumen reserves the
+     serif for long-form reading only, via .serif / .reading). */
   --font-body: var(--font-sans);
-  --font-h: var(--font-display);
-  --h-weight: 500;
+  --font-h: var(--font-sans);
+  --h-weight: 600;
   --case: none;
   --letter-label: 0.04em;
 
-  /* Overlay scrim — used by thumbnail tag chips that sit ON TOP of an
-     image / preview. Black/white because they need to be legible against
-     arbitrary content regardless of theme. Codex K1 nit: keep these as
-     tokens so future theme tweaks (e.g. high-contrast mode) override
-     them in one place. */
+  /* Overlay scrim for chips that sit on top of arbitrary preview content —
+     black/white on purpose so they stay legible regardless of theme. */
   --overlay-scrim: rgba(0, 0, 0, 0.6);
   --overlay-scrim-fg: #fff;
 }
 
-/* ── CALM MODERN, LIGHT (default) ─────────────────────────────────────── */
+/* ── ATELIER — light (default) ────────────────────────────────────────── */
 :root,
 [data-theme="light"] {
-  --bg: #f6f4ef;
-  --bg-2: #efece5;
-  --surface: #ffffff;
-  --surface-2: #faf8f3;
-  --surface-sunken: #f0ede6;
-  --border: #e6e1d6;
-  --border-strong: #d3cdbe;
-  --border-faint: #efebe1;
-  --text: #1a1a18;
-  --text-muted: #5e5b53;
-  --text-faint: #918d83;
-  --text-inv: #fdfcf8;
+  color-scheme: light;
 
-  --accent: #b3541e;
-  --accent-2: #d8804a;
-  --accent-fg: #fdfcf8;
-  --accent-soft: #f6e6da;
+  --bg: #f7f6f2;            /* warm parchment page */
+  --bg-2: #efece5;          /* canvas behind shells */
+  --bg-deep: #efece5;
+  --surface: #fffdfa;       /* cards, panels, raised UI */
+  --surface-2: #fbf7f0;     /* raised tier, subtle fills */
+  --surface-sunken: #efece5;
+  --surface-hover: #f2ede4;
+  --sidebar: #efece5;
+  --border: #e7e1d8;        /* hairline separators */
+  --border-strong: #cdc4b6; /* input borders, emphasised edges */
+  --border-faint: #efeae1;
+  --text: #1f1a17;          /* primary ink */
+  --text-soft: #443a32;     /* secondary ink */
+  --text-muted: #6f655b;    /* secondary body / metadata */
+  --text-faint: #948b80;    /* tertiary / faint */
+  --text-inv: #fffdfa;
+  --muted: #71675d;
 
-  --info: #1f5bd3;
-  --info-soft: #e3ecfb;
-  --success: #1f6f4a;
-  --success-soft: #dfeee6;
-  --warning: #a45a07;
-  --warning-soft: #fcecd2;
-  --danger: #a31818;
-  --danger-soft: #f7dada;
-  --muted-soft: #ecebe5;
+  --accent: #9f4f24;        /* terracotta — primary brand accent */
+  --accent-2: #843c15;      /* accent hover / pressed (darker) */
+  --accent-strong: #843c15;
+  --accent-fg: #fffdfa;
+  --on-accent: #fffdfa;
+  --accent-soft: #f4dfd2;
+  --accent-blue: #2563bb;   /* secondary accent — links, charts */
+  --accent-blue-soft: #dbe7f7;
+
+  --info: #2563bb;
+  --info-soft: #dbe7f7;
+  --success: #2f7d52;
+  --success-soft: #e4f0e8;
+  --warning: #a85e10;
+  --warning-soft: #f6e4c6;
+  --danger: #b04545;
+  --danger-soft: #f6ddd9;
+  --muted-soft: #eae6dd;
+
+  /* knowledge-truth states (semantic, not decorative) */
+  --durable: #2f7d52;
+  --caveated: #b8862e;
+  --blocked: #b04545;
+
+  --code-bg: #f4f1ea;
+  --code-text: #1f1a17;
+
+  /* categorical palette (8) — charts, speaker chips, tags */
+  --c-1: #9f4f24;  --c-2: #2563bb;  --c-3: #2f7d52;  --c-4: #b8862e;
+  --c-5: #6c4dab;  --c-6: #b04545;  --c-7: #2d6e87;  --c-8: #645a52;
+
+  --shadow-shell: 0 12px 36px rgba(31, 26, 23, 0.06);
+  --shadow-pop: 0 16px 48px rgba(31, 26, 23, 0.12);
 }
 
-/* ── CALM MODERN, DARK ────────────────────────────────────────────────── */
+/* ── VAULT — dark ─────────────────────────────────────────────────────── */
 [data-theme="dark"] {
-  --bg: #161513;
-  --bg-2: #100f0d;
-  --surface: #1d1c19;
-  --surface-2: #232220;
-  --surface-sunken: #110f0d;
-  --border: #2e2c28;
-  --border-strong: #45423c;
-  --border-faint: #26241f;
-  --text: #ecead8;
-  --text-muted: #9b988b;
-  --text-faint: #6c6960;
-  --text-inv: #161513;
+  color-scheme: dark;
 
-  --accent: #e09563;
-  --accent-2: #f1ad7e;
-  --accent-fg: #1a130c;
-  --accent-soft: #3a2b1d;
+  --bg: #0a0e16;
+  --bg-2: #05080d;
+  --bg-deep: #05080d;
+  --surface: #11161f;
+  --surface-2: #161c27;
+  --surface-sunken: #05080d;
+  --surface-hover: #1c2432;
+  --sidebar: #0c1119;
+  --border: #1f2937;
+  --border-strong: #2c3a4f;
+  --border-faint: #171e29;
+  --text: #e6edf5;
+  --text-soft: #c2cfde;
+  --text-muted: #9aa6b6;
+  --text-faint: #7d8aa0;
+  --text-inv: #0a0e16;
+  --muted: #7d8aa0;
 
-  --info: #6c9dff;
-  --info-soft: #1c2a48;
-  --success: #5cb389;
-  --success-soft: #1c2f25;
-  --warning: #e0a55a;
-  --warning-soft: #3a2d18;
-  --danger: #e8736a;
-  --danger-soft: #3a201d;
-  --muted-soft: #25231f;
+  --accent: #3b82f6;        /* deep blue */
+  --accent-2: #5b98f8;      /* accent hover (lighter in dark) */
+  --accent-strong: #5b98f8;
+  --accent-fg: #081120;
+  --on-accent: #081120;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --accent-blue: #06b6d4;   /* cyan secondary */
+  --accent-blue-soft: rgba(6, 182, 212, 0.16);
+
+  --info: #06b6d4;
+  --info-soft: rgba(6, 182, 212, 0.16);
+  --success: #22c55e;
+  --success-soft: rgba(34, 197, 94, 0.15);
+  --warning: #fbbf24;
+  --warning-soft: rgba(245, 158, 11, 0.14);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.15);
+  --muted-soft: #1c2432;
+
+  --durable: #22c55e;
+  --caveated: #eab308;
+  --blocked: #f87171;
+
+  --code-bg: #0e1420;
+  --code-text: #e6edf5;
+
+  --c-1: #3b82f6;  --c-2: #06b6d4;  --c-3: #22c55e;  --c-4: #eab308;
+  --c-5: #a78bfa;  --c-6: #f472b6;  --c-7: #14b8a6;  --c-8: #94a3b8;
+
+  --shadow-shell: 0 12px 36px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 18px 52px rgba(0, 0, 0, 0.7);
 }
 
 /*
- * Density variants (data-attribute on <html>) — kept identical to the
- * design tokens so a future Tweaks panel can drive them.
- *
- * Coverage in K1 (codex nit): density-pad-x/y + density-label are wired
- * through .card-hd, .card-bd, .label. body font-size uses --density-text.
- * High-traffic controls like .btn and form .field still ship fixed
- * sizing — translating those to density tokens is a follow-up before
- * K2 ships an actual density toggle. For now switching data-density
- * only affects card-level chrome.
+ * Density variants (data-density on <html>) — unchanged; a future Tweaks
+ * panel can drive these. Only affects card-level chrome today.
  */
 [data-density="compact"] {
   --density-row: 26px;

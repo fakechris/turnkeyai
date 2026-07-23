@@ -5,11 +5,25 @@ import { App } from "./App";
 import { AppStateProvider } from "./state/AppState";
 import "./styles/app.css";
 
-// Default to the "calm modern" light theme. data-theme="dark" can be
-// toggled by user setting later (K3 Settings page). We set it here once
-// so CSS variables resolve before first paint and the user never sees
-// an unstyled flash.
-document.documentElement.setAttribute("data-theme", "light");
+// No-flash theme boot (Lumen pattern). Resolve the saved theme — or the OS
+// preference on first run — before first paint so CSS variables settle and
+// the user never sees an unstyled flash. Default is Atelier (light); Vault
+// (dark) is opt-in. ThemeToggle persists the choice to localStorage.
+(function bootTheme() {
+  let theme: string | null = null;
+  try {
+    theme =
+      localStorage.getItem("turnkey-theme") ?? localStorage.getItem("lumen-theme");
+  } catch {
+    theme = null;
+  }
+  if (theme !== "light" && theme !== "dark") {
+    theme = window.matchMedia?.("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+  document.documentElement.setAttribute("data-theme", theme);
+})();
 
 const rootEl = document.getElementById("root");
 if (!rootEl) {
