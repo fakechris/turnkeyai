@@ -1113,6 +1113,9 @@ async function runHumanProductSmoke(browserPath: string): Promise<void> {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector(".start-brief");
+    // Design-baseline screenshot (only when an artifact dir is set — no-op in
+    // plain CI smoke). Captures the Chat entry before the composer is filled.
+    await captureBaseline(page, "chat-entry-desktop");
     assert(
       await page.locator(".chat-message", { hasText: "Tell me what you want done" }).isVisible(),
       "chat should be the product entry"
@@ -1138,6 +1141,7 @@ async function runHumanProductSmoke(browserPath: string): Promise<void> {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=Team");
+    await captureBaseline(page, "team-desktop");
     assert(await page.locator(".team-choice-card", { hasText: "Auto" }).isVisible(), "team page should offer Auto");
     assert(
       await page.locator(".team-choice-card", { hasText: "Use websites" }).isVisible(),
@@ -1203,6 +1207,7 @@ async function runHumanProductSmoke(browserPath: string): Promise<void> {
       waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=Settings");
+    await captureBaseline(page, "settings-desktop");
     assert(await page.locator(".settings-overview-card", { hasText: "Model" }).isVisible(), "settings should lead with Model");
     assert(await page.locator(".settings-overview-card", { hasText: "Team" }).isVisible(), "settings should expose Team");
     assert(await page.locator(".settings-overview-card", { hasText: "Browser" }).isVisible(), "settings should expose Browser");
@@ -2278,6 +2283,14 @@ async function newSmokePage(browser: Browser, options: BrowserContextOptions): P
     });
   });
   return page;
+}
+
+/** Save a full-page design-baseline screenshot when an artifact dir is set.
+ *  No-op otherwise, so the default CI smoke run stays screenshot-free. Used by
+ *  scripts/control-center-screenshots.ts to capture every main surface. */
+async function captureBaseline(page: Page, name: string): Promise<void> {
+  if (!smokeArtifactDir) return;
+  await page.screenshot({ path: path.join(smokeArtifactDir, `${name}.png`), fullPage: true });
 }
 
 function workerSessionsFixture() {

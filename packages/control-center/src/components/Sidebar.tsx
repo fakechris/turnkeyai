@@ -1,6 +1,7 @@
 // Left rail navigation. Labels are user-facing jobs, not internal runtime nouns.
 
 import { Icon, type IconName } from "./Icon";
+import { ThemeToggle } from "./ThemeToggle";
 import { useAppState } from "../state/AppState";
 import type { Route } from "../state/types";
 
@@ -108,6 +109,7 @@ export function Sidebar({
           <b>Ready</b>
           <span>Local workspace</span>
         </div>
+        <ThemeToggle />
       </div>
     </aside>
   );

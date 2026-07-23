@@ -222,7 +222,8 @@ function ApprovalRowView({
               className={"tag " + (decision === "approved" ? "success" : "danger")}
               style={{ alignSelf: "stretch", justifyContent: "center", padding: "6px 10px" }}
             >
-              {decision === "approved" ? "✓ approved" : "✕ denied"} · just now
+              <span className="dot" />
+              {decision === "approved" ? "approved" : "denied"} · just now
             </span>
             <button type="button" className="btn ghost" onClick={onOpenMission}>
               View timeline ↗

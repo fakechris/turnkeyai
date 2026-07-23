@@ -56,7 +56,8 @@
     "daemon:status": "tsx packages/cli/src/cli.ts daemon status",
     "daemon:stop": "tsx packages/cli/src/cli.ts daemon stop",
     "daemon": "tsx packages/app-gateway/src/daemon.ts",
-    "tui": "tsx packages/cli/src/cli.ts tui"
+    "tui": "tsx packages/cli/src/cli.ts tui",
+    "control-center:screenshots": "tsx scripts/control-center-screenshots.ts"
   },
   "engines": {
     "node": ">=24"
