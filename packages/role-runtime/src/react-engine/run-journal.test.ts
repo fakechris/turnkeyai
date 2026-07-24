@@ -563,13 +563,21 @@ test("RunJournal returns the prior receipt for a re-proposed terminal effect", a
     ],
   });
 
-  const prior = await journal.effectLedger.admit({ round: 2, call });
+  // Same-round re-proposal (e.g. executor retry after a timeout) replays
+  // the durable receipt instead of dispatching twice.
+  const prior = await journal.effectLedger.admit({ round: 1, call });
 
   assert.deepEqual(prior, {
     toolCallId: call.id,
     toolName: call.name,
     content: "prior receipt",
   });
+
+  // A later round reusing the id over a terminal effect (providers with
+  // deterministic per-turn ids like call_0) admits fresh work — a
+  // legitimate re-poll must re-execute, not spin on the stale receipt.
+  const fresh = await journal.effectLedger.admit({ round: 2, call });
+  assert.equal(fresh, null);
 });
 
 test("a rejected ledger transition does not poison later transitions", async () => {

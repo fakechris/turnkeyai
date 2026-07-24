@@ -238,18 +238,15 @@ export function createRunJournal(input: {
     effectLedger: {
       admit: (effect) =>
         enqueueEffectTransition(async () => {
-          const existing = effectLedger.get(effect.call.id);
-          if (existing) {
+          const disposition = effectLedger.admitDisposition(effect);
+          if (disposition === "replay") {
             const record = effectLedger.admit(effect);
-            if (
-              record.status === "committed" ||
-              record.status === "failed" ||
-              record.status === "indeterminate"
-            ) {
-              return readDurableEffectReceipt(record, latestState);
-            }
+            return readDurableEffectReceipt(record, latestState);
+          }
+          if (disposition === "active") {
+            const record = effectLedger.get(effect.call.id);
             throw new Error(
-              `effect already has an active admission: ${record.effectId}:${record.status}`,
+              `effect already has an active admission: ${effect.call.id}:${record?.status ?? "unknown"}`,
             );
           }
           return persistLedgerTransition(() => {

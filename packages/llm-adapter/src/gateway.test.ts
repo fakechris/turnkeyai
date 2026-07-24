@@ -343,7 +343,7 @@ test("llm gateway retries through configured model fallbacks", async () => {
   }
 });
 
-test("llm gateway uses one retry allowance across primary and fallback models", async () => {
+test("llm gateway bounds retries per model and fails over after the primary's allowance", async () => {
   const previousPrimaryKey = process.env.TEST_PRIMARY_KEY;
   const previousFallbackKey = process.env.TEST_FALLBACK_KEY;
   process.env.TEST_PRIMARY_KEY = "primary-key";
@@ -390,16 +390,18 @@ test("llm gateway uses one retry allowance across primary and fallback models", 
       retrySleep: async () => undefined,
     });
 
-    await assert.rejects(
-      () => gateway.generate({
-        modelChainId: "bounded_chain",
-        messages: [{ role: "user", content: "Use one bounded allowance." }],
-      }),
-      /primary unavailable/,
-    );
+    // A retryable primary failure must exhaust only the primary's own
+    // bounded allowance and then fail over — not consume the whole
+    // chain's budget and skip the fallback.
+    const result = await gateway.generate({
+      modelChainId: "bounded_chain",
+      messages: [{ role: "user", content: "Use one bounded allowance." }],
+    });
+    assert.equal(result.modelId, "fallback-model");
     assert.deepEqual(client.attemptedModelIds, [
       "primary-model",
       "primary-model",
+      "fallback-model",
     ]);
   } finally {
     if (previousPrimaryKey == null) delete process.env.TEST_PRIMARY_KEY;

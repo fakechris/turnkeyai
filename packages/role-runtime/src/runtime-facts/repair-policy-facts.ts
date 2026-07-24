@@ -286,7 +286,11 @@ function memorySearchReturnedCandidate(
             ),
           );
         } catch {
-          return false;
+          // Trace content is capped (8KB) and rich memory_search results
+          // exceed it; a truncated JSON payload must still count as
+          // returning candidates or the durable-get repair silently
+          // disables exactly when memory content is rich.
+          return /"memory_id"\s*:\s*"[^"]+/.test(result.content);
         }
       }),
     ),

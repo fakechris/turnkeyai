@@ -725,7 +725,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               activation,
             );
           }
-          return round === initialRound && declaredContinuationWorkerRunKey
+          // On a crash-resume the restored transcript may already contain
+          // the forced continuation send; re-forcing it would re-run a
+          // worker action (possible duplicate side effect).
+          const continuationSendAlreadyRecorded = messages.some(
+            (message) =>
+              message.role === "tool" && message.name === "sessions_send",
+          );
+          return round === initialRound &&
+              declaredContinuationWorkerRunKey &&
+              !continuationSendAlreadyRecorded
             ? { ...planned, forceToolChoice: { name: "sessions_send" } }
             : planned;
         },
