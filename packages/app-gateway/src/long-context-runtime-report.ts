@@ -20,7 +20,8 @@ import { buildPromptConsoleReport } from "@turnkeyai/qc-runtime/prompt-inspectio
 import {
   DEFAULT_PROMPT_SECTION_REGISTRY,
   PROMPT_REGISTRY_PROTOCOL,
-  auditDefaultPromptRegistry,
+  type PromptRegistryAudit,
+  resolveActivePromptRouteIds,
 } from "@turnkeyai/role-runtime/prompt-registry";
 
 // deferred-hardening-plan §4a — kept as a standalone import line so the
@@ -71,7 +72,7 @@ export interface LongContextRuntimeReport {
   generatedAt: number;
   promptRegistry: {
     protocol: typeof PROMPT_REGISTRY_PROTOCOL;
-    audit: ReturnType<typeof auditDefaultPromptRegistry>;
+    audit: PromptRegistryAudit;
     activeToolSectionIds: string[];
     definitions: ReturnType<
       typeof DEFAULT_PROMPT_SECTION_REGISTRY.definitions
@@ -219,8 +220,18 @@ export async function buildLongContextRuntimeReport(
   for (const record of memory.records) {
     planeCounts[record.plane] = (planeCounts[record.plane] ?? 0) + 1;
   }
-  const promptAudit = auditDefaultPromptRegistry();
+  // Audit the registry against the *live* runtime configuration — the tool
+  // sections actually enabled plus the always-on lifecycle routes — rather than
+  // a hardcoded constant. This is what makes `prompt_registry_invalid` able to
+  // fire in production when the enabled capabilities drift from the registry.
+  const promptAudit = DEFAULT_PROMPT_SECTION_REGISTRY.audit(
+    resolveActivePromptRouteIds(deps.activeToolPromptSectionIds),
+  );
   const promptRuntime = buildPromptConsoleReport(progressEvents, 20);
+  const promptSectionOverBudget = promptRuntime.latestBoundaries.some(
+    (boundary) =>
+      (boundary.sectionReceipts ?? []).some((receipt) => receipt.overBudget),
+  );
   const sessionReport = buildSessionReport(sessions);
   const governanceReport = buildGovernanceReport(permissions);
   const effectReport = buildEffectReport(messages);
@@ -250,6 +261,9 @@ export async function buildLongContextRuntimeReport(
   }
   if (promptRuntime.latestBoundaries[0]?.tokenEstimate?.overBudget) {
     attention.push("prompt_context_over_budget");
+  }
+  if (promptSectionOverBudget) {
+    attention.push("prompt_section_over_budget");
   }
   if (governanceReport.pendingApprovalCount > 0) {
     attention.push("pending_approval");

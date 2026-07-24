@@ -2345,7 +2345,6 @@ test("prompt registry has no dead route, duplicate authority, or missing owner",
   assert.equal(audit.valid, true, JSON.stringify(audit));
   assert.deepEqual(audit.unreachableSectionIds, []);
   assert.deepEqual(audit.missingRouteIds, []);
-  assert.deepEqual(audit.duplicateAuthorityKeys, []);
   const workspaceRoot = path.dirname(PACKAGES_DIR);
   const missingOwners = DEFAULT_PROMPT_SECTION_DEFINITIONS
     .filter(

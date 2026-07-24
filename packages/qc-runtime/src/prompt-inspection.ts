@@ -204,7 +204,8 @@ function isPromptSectionRuntimeReceipt(
     isPromptSectionRuntimeState(value.state) &&
     typeof value.estimatedTokens === "number" &&
     Number.isFinite(value.estimatedTokens) &&
-    (value.reason === undefined || typeof value.reason === "string");
+    (value.reason === undefined || typeof value.reason === "string") &&
+    (value.overBudget === undefined || typeof value.overBudget === "boolean");
 }
 
 function isPromptSectionAuthority(
