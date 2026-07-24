@@ -363,6 +363,8 @@ const runtimeServices = await composeDaemonRuntimeServices({
   runtimeReconciliationIntervalMs: RUNTIME_RECONCILIATION_INTERVAL_MS,
   toolPermissionService,
   taskToolService,
+  missionStore: missionDeps.missionStore,
+  workItemStore: missionDeps.workItemStore,
 });
 const {
   workerRuntime,

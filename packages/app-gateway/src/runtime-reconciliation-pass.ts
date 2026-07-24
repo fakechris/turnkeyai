@@ -2,8 +2,10 @@ import type {
   Clock,
   FlowLedgerStore,
   FlowRecoveryStartupReconcileResult,
+  OrphanedWorkItemReconcileResult,
   RecoveryRun,
   RecoveryRunStore,
+  RoleRunStore,
   RuntimeReconciliationSnapshot,
   RuntimeChainArtifactStartupReconcileResult,
   RuntimeChainEventStore,
@@ -13,12 +15,22 @@ import type {
   RuntimeChainStore,
   TeamThreadStore,
 } from "@turnkeyai/core-types/team";
+import type { MissionStore, WorkItemStore } from "@turnkeyai/core-types/mission";
 import { FileBatchOutbox, type OutboxInspectionResult } from "@turnkeyai/team-runtime/file-batch-outbox";
 import { truthRemediation } from "@turnkeyai/qc-runtime/truth-alignment";
 
 import { reconcileFlowRecoveryOnStartup } from "./flow-recovery-startup-reconcile";
+import { reconcileOrphanedWorkItemsOnStartup } from "./mission-work-item-startup-reconcile";
 import { reconcileRuntimeChainArtifactsOnStartup } from "./runtime-chain-artifact-startup-reconcile";
 import { reconcileRuntimeChainsOnStartup } from "./runtime-chain-startup-reconcile";
+
+const EMPTY_ORPHANED_WORK_ITEM_RESULT: OrphanedWorkItemReconcileResult = {
+  scannedMissions: 0,
+  scannedWorkItems: 0,
+  orphanedWorkItems: 0,
+  affectedWorkItemIds: [],
+  affectedMissionIds: [],
+};
 
 export type RuntimeReconciliationPassResult = RuntimeReconciliationSnapshot;
 
@@ -31,6 +43,9 @@ export async function runRuntimeReconciliationPass(input: {
   runtimeChainStatusStore: RuntimeChainStatusStore;
   runtimeChainSpanStore: RuntimeChainSpanStore;
   runtimeChainEventStore: RuntimeChainEventStore;
+  roleRunStore?: RoleRunStore;
+  missionStore?: MissionStore;
+  workItemStore?: WorkItemStore;
   syncRecoveryRuntime(threadId: string): Promise<{ runs: RecoveryRun[] }>;
   recoveryRunStaleAfterMs: number;
   flowStartOutboxRootDir?: string;
@@ -38,7 +53,8 @@ export async function runRuntimeReconciliationPass(input: {
   roleOutcomeOutboxRootDir?: string;
 }): Promise<RuntimeReconciliationPassResult> {
   const threads = await input.teamThreadStore.list();
-  const [flowRecovery, runtimeChains, runtimeChainArtifacts, recoverySnapshots, crossStoreSafety] = await Promise.all([
+  const [flowRecovery, runtimeChains, runtimeChainArtifacts, orphanedWorkItems, recoverySnapshots, crossStoreSafety] =
+    await Promise.all([
     reconcileFlowRecoveryOnStartup({
       clock: input.clock,
       teamThreadStore: input.teamThreadStore,
@@ -57,6 +73,21 @@ export async function runRuntimeReconciliationPass(input: {
       runtimeChainSpanStore: input.runtimeChainSpanStore,
       runtimeChainEventStore: input.runtimeChainEventStore,
     }),
+    input.missionStore && input.workItemStore && input.roleRunStore
+      ? reconcileOrphanedWorkItemsOnStartup({
+          clock: input.clock,
+          missionStore: input.missionStore,
+          workItemStore: input.workItemStore,
+          flowLedgerStore: input.flowLedgerStore,
+          roleRunStore: input.roleRunStore,
+          onError: (error, missionId) => {
+            console.error("orphaned work item reconcile failed", {
+              missionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        })
+      : Promise.resolve(EMPTY_ORPHANED_WORK_ITEM_RESULT),
     Promise.all(threads.map((thread) => input.syncRecoveryRuntime(thread.threadId))),
     inspectCrossStoreSafety(input),
   ]);
@@ -76,11 +107,13 @@ export async function runRuntimeReconciliationPass(input: {
     flowRecovery,
     runtimeChains,
     runtimeChainArtifacts,
+    orphanedWorkItems,
     crossStoreSafety,
     remediation: buildRuntimeReconciliationRemediation({
       flowRecovery,
       runtimeChains,
       runtimeChainArtifacts,
+      orphanedWorkItems,
       staleRecoveryRuns,
       crossStoreSafety,
     }),
@@ -91,11 +124,22 @@ function buildRuntimeReconciliationRemediation(input: {
   flowRecovery: FlowRecoveryStartupReconcileResult;
   runtimeChains: RuntimeChainStartupReconcileResult;
   runtimeChainArtifacts: RuntimeChainArtifactStartupReconcileResult;
+  orphanedWorkItems: OrphanedWorkItemReconcileResult;
   staleRecoveryRuns: number;
   crossStoreSafety: RuntimeReconciliationPassResult["crossStoreSafety"];
 }): RuntimeReconciliationPassResult["remediation"] {
   const remediation: RuntimeReconciliationPassResult["remediation"] = [];
 
+  if (input.orphanedWorkItems.orphanedWorkItems > 0) {
+    remediation.push(
+      truthRemediation({
+        action: "inspect_orphaned_work_items",
+        scope: "work_item",
+        summary:
+          "Re-verify work items reconciled to blocked after a daemon restart left their owning flow unrecoverable.",
+      })
+    );
+  }
   if (input.flowRecovery.failedRecoveryRuns > 0) {
     remediation.push(
       truthRemediation({

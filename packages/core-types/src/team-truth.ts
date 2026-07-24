@@ -1,5 +1,6 @@
 import type {
   FlowRecoveryStartupReconcileResult,
+  OrphanedWorkItemReconcileResult,
   RuntimeChainArtifactStartupReconcileResult,
   RuntimeChainStartupReconcileResult,
 } from "./team-startup-reconcile";
@@ -28,6 +29,7 @@ export type TruthRemediationAction =
   | "inspect_recovery_run"
   | "inspect_recovery_failure"
   | "inspect_flow_recovery_drift"
+  | "inspect_orphaned_work_items"
   | "retry_same_layer"
   | "fallback_transport"
   | "resume_from_checkpoint"
@@ -46,6 +48,7 @@ export type TruthRemediationScope =
   | "replay"
   | "transport"
   | "flow_recovery"
+  | "work_item"
   | "cross_store_safety";
 
 export interface TruthRemediation {
@@ -84,6 +87,7 @@ export interface RuntimeReconciliationSnapshot {
   flowRecovery: FlowRecoveryStartupReconcileResult;
   runtimeChains: RuntimeChainStartupReconcileResult;
   runtimeChainArtifacts: RuntimeChainArtifactStartupReconcileResult;
+  orphanedWorkItems: OrphanedWorkItemReconcileResult;
   crossStoreSafety: {
     flowStartOutbox: RuntimeReconciliationOutboxSnapshot;
     dispatchOutbox: RuntimeReconciliationOutboxSnapshot;

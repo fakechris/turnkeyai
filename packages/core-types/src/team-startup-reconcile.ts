@@ -52,6 +52,14 @@ export interface RuntimeChainStartupReconcileResult {
   affectedChainIds: RunKey[];
 }
 
+export interface OrphanedWorkItemReconcileResult {
+  scannedMissions: number;
+  scannedWorkItems: number;
+  orphanedWorkItems: number;
+  affectedWorkItemIds: string[];
+  affectedMissionIds: string[];
+}
+
 export interface RuntimeChainArtifactStartupReconcileResult {
   orphanedStatuses: number;
   crossThreadStatuses: number;

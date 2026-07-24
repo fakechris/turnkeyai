@@ -1329,6 +1329,13 @@ test("runtime query service attaches latest runtime reconciliation guidance when
         crossChainEvents: 0,
         affectedChainIds: ["chain-1"],
       },
+      orphanedWorkItems: {
+        scannedMissions: 0,
+        scannedWorkItems: 0,
+        orphanedWorkItems: 0,
+        affectedWorkItemIds: [],
+        affectedMissionIds: [],
+      },
       crossStoreSafety: {
         flowStartOutbox: {
           totalBatches: 0,

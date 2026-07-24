@@ -23,6 +23,11 @@ import {
   auditDefaultPromptRegistry,
 } from "@turnkeyai/role-runtime/prompt-registry";
 
+// deferred-hardening-plan §4a — kept as a standalone import line so the
+// orphaned-work-item attention signal does not collide with concurrent edits
+// to the prompt-registry audit / tokenPolicy imports above.
+import { ORPHANED_WORK_ITEM_BLOCKER_MARKER } from "./mission-work-item-startup-reconcile";
+
 export const LONG_CONTEXT_RUNTIME_REPORT_PROTOCOL =
   "turnkeyai.long_context_runtime_report.v1" as const;
 
@@ -272,6 +277,9 @@ export async function buildLongContextRuntimeReport(
         `dynamic_context_baseline_missing:${scope.scope.flowId}:${scope.scope.roleId}`,
       );
     }
+  }
+  if (hasOrphanedWorkItems(taskReport.items)) {
+    attention.push("orphaned_work_items");
   }
 
   return {
@@ -582,4 +590,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" &&
     value !== null &&
     !Array.isArray(value);
+}
+
+// deferred-hardening-plan §4a: a work item flipped to `blocked` by the startup
+// reconcile carries the runtime-orphan marker in its blocker breadcrumb. Only
+// looks at the already-materialized task snapshot, so it stays isolated from
+// the prompt-registry audit / tokenPolicy attention signals.
+function hasOrphanedWorkItems(items: Record<string, unknown>[]): boolean {
+  return items.some(
+    (item) =>
+      item["status"] === "blocked" &&
+      typeof item["blocker"] === "string" &&
+      item["blocker"].includes(ORPHANED_WORK_ITEM_BLOCKER_MARKER),
+  );
 }

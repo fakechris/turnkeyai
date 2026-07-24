@@ -18,6 +18,8 @@ import type {
 } from "@turnkeyai/role-runtime/task-tool-service";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 
+import { isOrphanedWorkItemBlocker } from "./mission-work-item-startup-reconcile";
+
 interface MissionTaskToolServiceOptions {
   missionStore: MissionStore;
   workItemStore: WorkItemStore;
@@ -50,10 +52,20 @@ export function createMissionTaskToolService(options: MissionTaskToolServiceOpti
         const existing = await options.workItemStore.listByMission(mission.id);
         const duplicate = existing.find((item) => normalizeWorkItemTitle(item.title) === normalizeWorkItemTitle(input.title));
         if (duplicate) {
+          const orphaned =
+            duplicate.status === "blocked" &&
+            isOrphanedWorkItemBlocker(duplicate.blocker);
           return {
             mission_id: mission.id,
             task: serializeWorkItem(duplicate),
             deduped: true,
+            // A crash-orphaned work item was flipped to `blocked` by the
+            // startup reconcile. Surface it as needing re-verification instead
+            // of letting the dedup hand it back as if it were live in-flight
+            // work (deferred-hardening-plan §4a).
+            ...(orphaned
+              ? { orphaned: true, note: "orphaned, needs re-verification" }
+              : {}),
           };
         }
         const now = options.clock.now();
