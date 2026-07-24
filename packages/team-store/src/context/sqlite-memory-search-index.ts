@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -37,41 +37,26 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
     forceLexicalFallback?: boolean;
   }) {
     mkdirSync(path.dirname(options.dbPath), { recursive: true });
-    this.db = new DatabaseSync(options.dbPath);
     this.embeddingAdapter = options.embeddingAdapter;
-    this.fts5Available =
-      !options.forceLexicalFallback && supportsFts5(this.db);
+    let opened: { db: DatabaseSync; fts5Available: boolean };
+    try {
+      opened = openIndexDatabase(options);
+    } catch (error) {
+      // The index is derived state rebuilt from JSON snapshots; a corrupt
+      // db file must never block startup.
+      if (options.dbPath === ":memory:") throw error;
+      console.error("memory search index open failed; recreating db", {
+        dbPath: options.dbPath,
+        error,
+      });
+      removeIndexDatabaseFiles(options.dbPath);
+      opened = openIndexDatabase(options);
+    }
+    this.db = opened.db;
+    this.fts5Available = opened.fts5Available;
     this.tableName = this.fts5Available
       ? "memory_fts"
       : "memory_records";
-    if (this.fts5Available) {
-      this.db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-          memory_id UNINDEXED,
-          workspace_id UNINDEXED,
-          thread_id UNINDEXED,
-          role_id UNINDEXED,
-          content,
-          record_json UNINDEXED,
-          embedding_json UNINDEXED,
-          tokenize = 'unicode61'
-        );
-      `);
-    } else {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS memory_records(
-          memory_id TEXT PRIMARY KEY,
-          workspace_id TEXT NOT NULL,
-          thread_id TEXT NOT NULL,
-          role_id TEXT NOT NULL,
-          content TEXT NOT NULL,
-          record_json TEXT NOT NULL,
-          embedding_json TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS memory_records_scope_idx
-          ON memory_records(workspace_id, thread_id, role_id);
-      `);
-    }
   }
 
   async replaceWorkspace(
@@ -358,7 +343,9 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
         workspaceId,
         item.record.scope.threadId ?? "",
         item.record.scope.roleId ?? "",
-        item.record.content,
+        this.fts5Available
+          ? ftsIndexText(item.record.content)
+          : item.record.content,
         JSON.stringify(item.record),
         item.embedding ? JSON.stringify(item.embedding) : "",
       );
@@ -427,37 +414,118 @@ function scopeClause(scope: MemoryScope): {
   return { where: clauses.join(" AND "), args };
 }
 
+// unicode61 tokenizes an unbroken CJK run as ONE token, so substring
+// queries (the normal case for Chinese) can never match raw content. We
+// therefore index CJK runs as space-separated bigrams alongside the raw
+// text and expand CJK query terms into consecutive-bigram phrases.
+const CJK_RANGE =
+  "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uac00-\\ud7af";
+const TERM_PATTERN = new RegExp(
+  `[a-z0-9]{2,}|[${CJK_RANGE}]{2,}`,
+  "g",
+);
+const CJK_TERM_PATTERN = new RegExp(`^[${CJK_RANGE}]+$`);
+const CJK_RUN_PATTERN = new RegExp(`[${CJK_RANGE}]{3,}`, "g");
+
+function cjkBigrams(term: string): string[] {
+  return Array.from(
+    { length: term.length - 1 },
+    (_, index) => term.slice(index, index + 2),
+  );
+}
+
+function ftsIndexText(content: string): string {
+  const bigrams = (content.match(CJK_RUN_PATTERN) ?? [])
+    .flatMap((run) => cjkBigrams(run));
+  return bigrams.length > 0
+    ? `${content}\n${bigrams.join(" ")}`
+    : content;
+}
+
 function ftsQuery(query: string): string {
   return [
-    ...new Set(
-      query
-        .toLowerCase()
-        .match(/[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}/g) ?? [],
-    ),
+    ...new Set(query.toLowerCase().match(TERM_PATTERN) ?? []),
   ]
+    .flatMap((term) =>
+      CJK_TERM_PATTERN.test(term) && term.length > 2
+        ? [term, ...cjkBigrams(term)]
+        : [term]
+    )
     .map((term) => `"${term.replaceAll('"', '""')}"`)
     .join(" OR ");
 }
 
 function lexicalTerms(query: string): string[] {
-  const terms = query
-    .toLowerCase()
-    .match(/[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}/g) ?? [];
+  const terms = query.toLowerCase().match(TERM_PATTERN) ?? [];
   return [
     ...new Set(
       terms.flatMap((term) =>
-        /^[\u4e00-\u9fff]+$/.test(term) && term.length > 2
-          ? [
-              term,
-              ...Array.from(
-                { length: term.length - 1 },
-                (_, index) => term.slice(index, index + 2),
-              ),
-            ]
+        CJK_TERM_PATTERN.test(term) && term.length > 2
+          ? [term, ...cjkBigrams(term)]
           : [term]
       ),
     ),
   ];
+}
+
+function openIndexDatabase(options: {
+  dbPath: string;
+  forceLexicalFallback?: boolean;
+}): { db: DatabaseSync; fts5Available: boolean } {
+  const db = new DatabaseSync(options.dbPath);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    try {
+      db.exec("PRAGMA journal_mode = WAL");
+    } catch {
+      // WAL is unavailable on some filesystems; the default journal works.
+    }
+    const fts5Available =
+      !options.forceLexicalFallback && supportsFts5(db);
+    if (fts5Available) {
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+          memory_id UNINDEXED,
+          workspace_id UNINDEXED,
+          thread_id UNINDEXED,
+          role_id UNINDEXED,
+          content,
+          record_json UNINDEXED,
+          embedding_json UNINDEXED,
+          tokenize = 'unicode61'
+        );
+      `);
+      db.exec("SELECT count(*) FROM memory_fts");
+    } else {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_records(
+          memory_id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          role_id TEXT NOT NULL,
+          content TEXT NOT NULL,
+          record_json TEXT NOT NULL,
+          embedding_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS memory_records_scope_idx
+          ON memory_records(workspace_id, thread_id, role_id);
+      `);
+    }
+    return { db, fts5Available };
+  } catch (error) {
+    try {
+      db.close();
+    } catch {
+      // The open failure is authoritative.
+    }
+    throw error;
+  }
+}
+
+function removeIndexDatabaseFiles(dbPath: string): void {
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    rmSync(`${dbPath}${suffix}`, { force: true });
+  }
 }
 
 function supportsFts5(db: DatabaseSync): boolean {

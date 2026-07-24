@@ -24,7 +24,18 @@ export const MAX_REPAIR_ROUNDS = 32;
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
-    throw signal.reason instanceof Error ? signal.reason : new Error("react loop aborted");
+    if (signal.reason instanceof Error) {
+      throw signal.reason;
+    }
+    // Preserve the abort reason (e.g. a wall-clock budget message) and mark
+    // the error as an abort so downstream isAbortError labeling holds.
+    const error = new Error(
+      typeof signal.reason === "string" && signal.reason.trim().length > 0
+        ? signal.reason
+        : "react loop aborted",
+    );
+    error.name = "AbortError";
+    throw error;
   }
 }
 

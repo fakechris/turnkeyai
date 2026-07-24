@@ -34,6 +34,12 @@ const MAX_CHECKPOINT_ITEMS = 20;
 const MAX_CHECKPOINT_ITEM_CHARS = 1_000;
 const MAX_CHECKPOINT_SUMMARY_CHARS = 4_000;
 const MAX_CHECKPOINT_TASK_CHARS = 2_000;
+// Plan items are serialized JSON and the plan itself is bounded at 50
+// items upstream; they get JSON-aware bounding, not blind truncation.
+const MAX_CHECKPOINT_PLAN_ITEMS = 50;
+const FAILURE_CIRCUIT_THRESHOLD = 3;
+const FAILURE_CIRCUIT_HALF_OPEN_ROUNDS = 8;
+const TRUNCATION_MARKER = "…[truncated]";
 
 export interface RuntimeCheckpointDraft {
   task?: string;
@@ -140,7 +146,8 @@ export interface CompactionLifecycleEvent {
     | "failure_circuit_open"
     | "protocol_unsafe"
     | "insufficient_history"
-    | "summarizer_failed";
+    | "summarizer_failed"
+    | "pending_forced_discarded";
 }
 
 export function createCompactionController(
@@ -165,6 +172,7 @@ export function createCompactionController(
     | undefined;
   let consecutiveFailures = 0;
   let failureCircuitOpen = false;
+  let lastFailureRound = Number.NEGATIVE_INFINITY;
 
   const compact = async (
     messages: LLMMessage[],
@@ -201,6 +209,16 @@ export function createCompactionController(
             : {}),
         };
       }
+      // A discarded pending forced checkpoint means the persisted record is
+      // orphaned and the summarizer work is repeated — surface it.
+      input.onCompactionLifecycle?.({
+        kind: "skipped",
+        round,
+        forced: false,
+        consecutiveFailures,
+        microcompactedToolResults: 0,
+        reason: "pending_forced_discarded",
+      });
     }
     const budget = input.estimateTokenBudget({
       messages,
@@ -240,6 +258,15 @@ export function createCompactionController(
       recentProtocolUnits,
     });
     const workingMessages = microcompaction.messages;
+    if (
+      !force &&
+      failureCircuitOpen &&
+      round - lastFailureRound >= FAILURE_CIRCUIT_HALF_OPEN_ROUNDS
+    ) {
+      // Half-open: a transient summarizer outage must not disable
+      // compaction for the remainder of a long run.
+      failureCircuitOpen = false;
+    }
     if (!force && failureCircuitOpen) {
       input.onCompactionLifecycle?.({
         kind: "skipped",
@@ -321,7 +348,10 @@ export function createCompactionController(
         round,
         version: checkpointVersion,
       });
-      const createdAt = now();
+      // Crash-replay converges on the same content-addressed id; reuse the
+      // stored createdAt so the store's identity check stays satisfied.
+      const existingRecord = await input.checkpointStore?.get(checkpointId);
+      const createdAt = existingRecord?.createdAt ?? now();
       const workingSet = input.captureWorkingSet
         ? await input.captureWorkingSet(messages)
         : emptyContextCheckpointWorkingSet();
@@ -436,7 +466,8 @@ export function createCompactionController(
       return compacted;
     } catch (error) {
       consecutiveFailures += 1;
-      failureCircuitOpen = consecutiveFailures >= 3;
+      failureCircuitOpen = consecutiveFailures >= FAILURE_CIRCUIT_THRESHOLD;
+      lastFailureRound = round;
       input.onError?.(error);
       input.onCompactionLifecycle?.({
         kind: "failed",
@@ -466,11 +497,16 @@ export function createCompactionController(
         throw new Error(`context checkpoint not found: ${checkpointId}`);
       }
       assertStoredCheckpointIdentity(record);
+      // Never regress the pointer, but CAS against the *current* active,
+      // not the checkpoint's parent: requiring exact-parent activation
+      // wedges the chain forever after a single missed activation.
+      if (active && active.version >= record.version) {
+        return;
+      }
       await input.checkpointStore.activate({
         scope: input.checkpointScope,
         checkpointId,
-        expectedActiveCheckpointId:
-          record.source.previousCheckpointId ?? null,
+        expectedActiveCheckpointId: active?.checkpointId ?? null,
         activatedAt: now(),
       });
     },
@@ -497,26 +533,28 @@ export function createCompactionController(
         return;
       }
       assertStoredCheckpointIdentity(record);
-      const canonicalProjection = buildRuntimeCheckpointMessage(record);
-      const journaledProjection = [...messages]
-        .reverse()
-        .find((message) =>
-          readRuntimeCheckpoint(message)?.checkpointId === record.checkpointId
-        );
+      // Compare the journaled projection through the parser rather than
+      // byte-for-byte: field-level equality still rejects tampering, but a
+      // serialization-format evolution (key order, whitespace) no longer
+      // breaks every restore of a pre-upgrade journal.
+      const canonical = readRuntimeCheckpoint(
+        buildRuntimeCheckpointMessage(record),
+      );
       if (
-        !journaledProjection ||
-        JSON.stringify(journaledProjection) !==
-          JSON.stringify(canonicalProjection)
+        !canonical ||
+        JSON.stringify(checkpoint) !== JSON.stringify(canonical)
       ) {
         throw new Error(
           `context checkpoint projection mismatch: ${record.checkpointId}`,
         );
       }
+      if (active && active.version >= record.version) {
+        return;
+      }
       await input.checkpointStore.activate({
         scope: input.checkpointScope,
         checkpointId: record.checkpointId,
-        expectedActiveCheckpointId:
-          record.source.previousCheckpointId ?? null,
+        expectedActiveCheckpointId: active?.checkpointId ?? null,
         activatedAt: now(),
       });
     },
@@ -605,7 +643,7 @@ export function readRuntimeCheckpoint(
       evidence: normalizeItems(parsed.evidence),
       artifacts: normalizeItems(parsed.artifacts),
       openQuestions: normalizeItems(parsed.openQuestions),
-      planState: normalizeItems(parsed.planState),
+      planState: normalizePlanItems(parsed.planState),
     };
   } catch {
     return undefined;
@@ -640,7 +678,7 @@ function readContextCheckpointProjection(
       evidence: normalizeItems(parsed["evidence"]),
       artifacts: normalizeItems(parsed["artifacts"]),
       openQuestions: normalizeItems(parsed["openQuestions"]),
-      planState: normalizeItems(parsed["planState"]),
+      planState: normalizePlanItems(parsed["planState"]),
       errorsAndFixes: normalizeItems(parsed["errorsAndFixes"]),
       ...(isContextCheckpointWorkingSet(parsed["workingSet"])
         ? {
@@ -681,8 +719,8 @@ function buildContextCheckpointRecord(input: {
   const normalizedDraft = input.draft;
   const planState =
     input.planState.length > 0
-      ? normalizeItems(input.planState)
-      : normalizeItems(
+      ? normalizePlanItems(input.planState)
+      : normalizePlanItems(
           normalizedDraft?.planState ??
             input.previousCheckpoint?.planState ??
             [],
@@ -878,6 +916,57 @@ function normalizeItems(value: unknown): string[] {
     .slice(0, MAX_CHECKPOINT_ITEMS);
 }
 
+// Plan items are serialized task JSON. Blind character truncation corrupts
+// them into unparseable strings (which downstream readers then either drop
+// — losing the task — or misread as nonterminal, resurrecting done work).
+// Bound them by shedding heavy fields while keeping the JSON valid.
+function normalizePlanItems(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => boundPlanItem(item.trim()))
+    .filter((item) => item.length > 0)
+    .slice(0, MAX_CHECKPOINT_PLAN_ITEMS);
+}
+
+function boundPlanItem(item: string): string {
+  if (item.length <= MAX_CHECKPOINT_ITEM_CHARS) {
+    return item;
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    const candidate = JSON.parse(item) as unknown;
+    if (!isRecord(candidate)) {
+      return truncate(item, MAX_CHECKPOINT_ITEM_CHARS);
+    }
+    parsed = candidate;
+  } catch {
+    return truncate(item, MAX_CHECKPOINT_ITEM_CHARS);
+  }
+  const withoutSpecification = { ...parsed };
+  delete withoutSpecification["specification"];
+  const slimmed = JSON.stringify(withoutSpecification);
+  if (slimmed.length <= MAX_CHECKPOINT_ITEM_CHARS) {
+    return slimmed;
+  }
+  const essential: Record<string, unknown> = {};
+  for (const key of ["id", "n", "title", "status", "progress", "blocker"]) {
+    if (parsed[key] !== undefined) {
+      essential[key] =
+        typeof parsed[key] === "string"
+          ? truncate(parsed[key] as string, 200)
+          : parsed[key];
+    }
+  }
+  return JSON.stringify(essential);
+}
+
 function truncate(value: string, maxChars: number): string {
-  return value.length <= maxChars ? value : value.slice(0, maxChars);
+  if (value.length <= maxChars) {
+    return value;
+  }
+  // Mark the cut so readers (and the model) can tell content was shed.
+  return `${value.slice(0, Math.max(0, maxChars - TRUNCATION_MARKER.length))}${TRUNCATION_MARKER}`;
 }

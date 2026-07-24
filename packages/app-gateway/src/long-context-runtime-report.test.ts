@@ -340,6 +340,123 @@ test("long-context runtime report joins prompt, checkpoint, memory, index, and t
   ]);
 });
 
+test("long-context runtime report caps effect records and session nodes while keeping full-set counts", async () => {
+  const report = await buildLongContextRuntimeReport(
+    {
+      now: () => 900,
+      teamThreadStore: {
+        async get() {
+          return {
+            threadId: "thread-1",
+            teamId: "team-1",
+            teamName: "Team",
+            leadRoleId: "role-lead",
+            roles: [{
+              roleId: "role-lead",
+              name: "Lead",
+              seat: "lead",
+              runtime: "local",
+            }],
+            participantLinks: [],
+            metadataVersion: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          };
+        },
+      },
+      flowLedgerStore: {
+        async listByThread() {
+          return [];
+        },
+      },
+      teamMessageStore: {
+        async list() {
+          return [{
+            metadata: {
+              runtimeRunJournal: true,
+              runJournal: {
+                status: "in_flight",
+                runKey: "role:role-lead:thread:thread-1",
+                taskId: "task-1",
+                updatedAt: 890,
+                effectLedger: {
+                  protocol: "turnkeyai.effect_ledger.v1",
+                  records: Array.from({ length: 250 }, (_, index) => ({
+                    effectId: `effect-${index + 1}`,
+                    round: index + 1,
+                    status: "completed",
+                    call: { id: `effect-${index + 1}`, name: "publish", input: {} },
+                  })),
+                },
+              },
+            },
+            updatedAt: 890,
+          }] as never;
+        },
+      },
+      runtimeProgressStore: {
+        async listByThread() {
+          return [];
+        },
+      },
+      workerSessionStore: {
+        async listByThread() {
+          return Array.from({ length: 250 }, (_, index) => ({
+            workerRunKey: `worker:explore:${index + 1}`,
+            executionToken: 1,
+            state: {
+              workerRunKey: `worker:explore:${index + 1}`,
+              workerType: "explore",
+              status: "running",
+              createdAt: 100,
+              updatedAt: 100 + index,
+            },
+            context: {
+              threadId: "thread-1",
+              flowId: "flow-1",
+            },
+          })) as never;
+        },
+      },
+      permissionCacheStore: {
+        async listByThread() {
+          return [];
+        },
+      },
+      contextCheckpointStore: {} as never,
+      dynamicContextBaselineStore: {} as never,
+      workspaceMemoryStore: {
+        async getSnapshot() {
+          return {
+            workspaceId: "thread-1",
+            records: [],
+            cursor: {
+              workspaceId: "thread-1",
+              lastSequence: 0,
+              updatedAt: 0,
+            },
+            audits: [],
+          };
+        },
+      } as never,
+      memorySearchIndex: {} as never,
+      activeToolPromptSectionIds: [],
+    },
+    "thread-1",
+  );
+
+  assert.ok(report);
+  assert.equal(report.sessions.total, 250);
+  assert.equal(report.sessions.activeCount, 250);
+  assert.equal(report.sessions.truncated, true);
+  assert.equal(report.sessions.nodes.length, 200);
+  assert.equal(report.sessions.nodes[0]?.workerRunKey, "worker:explore:250");
+  assert.equal(report.effects.journalCount, 1);
+  assert.equal(report.effects.statusCounts.completed, 250);
+  assert.equal(report.effects.truncated, true);
+  assert.equal(report.effects.records.length, 200);
+});
+
 test("long-context runtime report returns null for an unknown thread", async () => {
   const report = await buildLongContextRuntimeReport(
     {

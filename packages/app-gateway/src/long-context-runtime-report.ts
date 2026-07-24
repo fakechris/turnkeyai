@@ -26,6 +26,9 @@ import {
 export const LONG_CONTEXT_RUNTIME_REPORT_PROTOCOL =
   "turnkeyai.long_context_runtime_report.v1" as const;
 
+const MAX_SESSION_NODES = 200;
+const MAX_EFFECT_RECORDS = 200;
+
 interface LongContextReportDeps {
   now(): number;
   teamThreadStore: {
@@ -99,6 +102,7 @@ export interface LongContextRuntimeReport {
   sessions: {
     total: number;
     activeCount: number;
+    truncated?: boolean;
     nodes: Array<{
       workerRunKey: string;
       workerType: string;
@@ -131,6 +135,7 @@ export interface LongContextRuntimeReport {
     journalCount: number;
     statusCounts: Record<string, number>;
     indeterminateCount: number;
+    truncated?: boolean;
     records: Array<{
       runKey: string;
       taskId: string;
@@ -333,7 +338,8 @@ function buildSessionReport(
       (session) =>
         !["done", "failed", "cancelled"].includes(session.status),
     ).length,
-    nodes,
+    ...(nodes.length > MAX_SESSION_NODES ? { truncated: true } : {}),
+    nodes: nodes.slice(0, MAX_SESSION_NODES),
   };
 }
 
@@ -431,7 +437,8 @@ function buildEffectReport(
     journalCount,
     statusCounts,
     indeterminateCount: statusCounts["indeterminate"] ?? 0,
-    records,
+    ...(records.length > MAX_EFFECT_RECORDS ? { truncated: true } : {}),
+    records: records.slice(0, MAX_EFFECT_RECORDS),
   };
 }
 

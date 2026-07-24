@@ -125,12 +125,20 @@ function captureAssistantBlocks(
   }
 }
 
+// Bounded so a degenerate/hostile deeply nested tool result cannot blow
+// the stack and fail compaction on every retry of the same transcript.
+const MAX_CAPTURE_DEPTH = 32;
+
 function captureStructuredValue(
   value: unknown,
   workingSet: ContextCheckpointWorkingSet,
+  depth = 0,
 ): void {
+  if (depth > MAX_CAPTURE_DEPTH) return;
   if (Array.isArray(value)) {
-    for (const item of value) captureStructuredValue(item, workingSet);
+    for (const item of value) {
+      captureStructuredValue(item, workingSet, depth + 1);
+    }
     return;
   }
   if (!isRecord(value)) return;
@@ -143,7 +151,7 @@ function captureStructuredValue(
 
   for (const child of Object.values(value)) {
     if (typeof child === "object" && child !== null) {
-      captureStructuredValue(child, workingSet);
+      captureStructuredValue(child, workingSet, depth + 1);
     }
   }
 }

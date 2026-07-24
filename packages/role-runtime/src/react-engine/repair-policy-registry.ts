@@ -434,7 +434,13 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
     return {
       messages: [
         ...input.messages,
-        { role: "assistant", content: input.resultText },
+        {
+          role: "assistant",
+          // Some providers reject an empty assistant turn.
+          content: input.resultText.trim().length > 0
+            ? input.resultText
+            : "(no interim answer)",
+        },
         recordRepairPrompt(input.repairMarkers, decision.repairPrompt),
       ],
       forceToolChoice: decision.forceToolChoice,

@@ -106,12 +106,14 @@ function normalizeTaskPlanItem(value: unknown): TaskPlanItem | null {
 function boundTaskSpecification(
   specification: Record<string, unknown>,
 ): Record<string, unknown> {
+  // Prioritize before capping so essential fields (objective, acceptance
+  // criteria) survive even when they appear late in an oversized spec.
   const entries = Object.entries(specification)
-    .slice(0, MAX_TASK_SPECIFICATION_CONTAINER_ITEMS)
     .sort((left, right) =>
       specificationFieldPriority(left[0]) -
         specificationFieldPriority(right[0])
-    );
+    )
+    .slice(0, MAX_TASK_SPECIFICATION_CONTAINER_ITEMS);
   const bounded: Record<string, unknown> = {};
   for (const [key, value] of entries) {
     const keyJson = JSON.stringify(key);

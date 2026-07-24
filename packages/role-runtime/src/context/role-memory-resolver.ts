@@ -1,4 +1,5 @@
 import type {
+  DurableMemoryRecord,
   RoleId,
   MemorySearchIndex,
   RoleScratchpadRecord,
@@ -28,6 +29,12 @@ export interface MemoryHit {
   score: number;
   content: string;
   rationale?: string;
+  /**
+   * True when the memory content did not originate from the user (e.g.
+   * inferred from runtime/worker output). Untrusted hits must be rendered
+   * as data, never as instructions.
+   */
+  untrusted?: boolean;
 }
 
 interface MemoryRecord {
@@ -114,8 +121,10 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
   async retrieveMemory(input: { threadId: ThreadId; roleId: RoleId; queryText: string }): Promise<MemoryHit[]> {
     const records = await this.loadMemoryRecords({ threadId: input.threadId, roleId: input.roleId });
     const query = analyzeQuery(input.queryText);
-    const indexed = this.memorySearchIndex
-      ? await this.memorySearchIndex.recall({
+    let indexed: Awaited<ReturnType<MemorySearchIndex["recall"]>> = [];
+    if (this.memorySearchIndex) {
+      try {
+        indexed = await this.memorySearchIndex.recall({
           scope: {
             workspaceId: input.threadId,
             threadId: input.threadId,
@@ -124,18 +133,20 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
           limit: query.explicitRecall
             ? EXPLICIT_RECALL_HITS
             : DEFAULT_RECALL_HITS,
-        })
-      : [];
-    const indexedHits: MemoryHit[] = indexed.map((hit) => ({
-      memoryId: hit.record.memoryId,
-      source:
-        hit.record.confidence === "authoritative"
-          ? "user-preference"
-          : "thread-memory",
-      score: 1 + hit.score,
-      content: hit.record.content,
-      rationale: `${hit.rationale}; typed ${hit.record.plane} memory (${hit.record.confidence})`,
-    }));
+        });
+      } catch (error) {
+        // Indexed recall is an enhancement over legacy memory; an unhealthy
+        // index must degrade recall, not fail the role activation.
+        console.error("memory search index recall failed", {
+          threadId: input.threadId,
+          error,
+        });
+        indexed = [];
+      }
+    }
+    const indexedHits: MemoryHit[] = indexed.map((hit) =>
+      buildIndexedMemoryHit(hit.record, `${hit.rationale}; typed ${hit.record.plane} memory (${hit.record.confidence})`, hit.score)
+    );
     const legacyHits = records
       .filter((record) => !record.evidenceDigest || shouldIncludeEvidenceDigest(record.evidenceDigest, query))
       .map((record) => buildMemoryHit(record, query))
@@ -155,16 +166,10 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
       (typed.scope.threadId === undefined ||
         typed.scope.threadId === input.threadId)
     ) {
-      return {
-        memoryId: typed.memoryId,
-        source:
-          typed.confidence === "authoritative"
-            ? "user-preference"
-            : "thread-memory",
-        score: 1,
-        content: typed.content,
-        rationale: `direct typed ${typed.plane} memory lookup`,
-      };
+      return buildIndexedMemoryHit(
+        typed,
+        `direct typed ${typed.plane} memory lookup`,
+      );
     }
     const records = await this.loadMemoryRecords({ threadId: input.threadId, roleId: input.roleId });
     const record = records.find((item) => item.memoryId === input.memoryId);
@@ -352,6 +357,26 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
   }
 }
 
+function buildIndexedMemoryHit(
+  record: DurableMemoryRecord,
+  rationale: string,
+  rrfScore = 0,
+): MemoryHit {
+  const userAuthored =
+    record.createdBy === "user" && record.confidence === "authoritative";
+  return {
+    memoryId: record.memoryId,
+    // Only user-authored authoritative records may present as preferences;
+    // inferred/runtime-derived memory stays competitive but never outranks
+    // by construction, and is flagged untrusted for prompt rendering.
+    source: userAuthored ? "user-preference" : "thread-memory",
+    score: (userAuthored ? 1 : 0.6) + rrfScore,
+    content: record.content,
+    rationale,
+    ...(userAuthored ? {} : { untrusted: true }),
+  };
+}
+
 function stableLegacyMemoryId(scopeId: string, kind: string, content: string): string {
   const digest = createHash("sha256")
     .update(kind)
@@ -368,7 +393,16 @@ function dedupeHits(hits: MemoryHit[]): MemoryHit[] {
     const current = byId.get(hit.memoryId);
     if (!current || hit.score > current.score) byId.set(hit.memoryId, hit);
   }
-  return [...byId.values()].sort((left, right) =>
+  // The same fact can exist under unrelated ids in the typed and legacy
+  // planes; collapse by normalized content so duplicates never consume
+  // more than one prompt slot.
+  const byContent = new Map<string, MemoryHit>();
+  for (const hit of byId.values()) {
+    const key = normalizeContent(hit.content);
+    const current = byContent.get(key);
+    if (!current || hit.score > current.score) byContent.set(key, hit);
+  }
+  return [...byContent.values()].sort((left, right) =>
     right.score - left.score ||
     left.memoryId.localeCompare(right.memoryId)
   );
@@ -388,6 +422,9 @@ function buildMemoryHit(
     score,
     content: input.content,
     ...(input.rationale ? { rationale: input.rationale } : {}),
+    // Knowledge notes carry worker/browser-derived text; they must render
+    // as observations, never as instructions.
+    ...(input.source === "knowledge-note" ? { untrusted: true } : {}),
   };
 }
 

@@ -34,6 +34,7 @@ export class DefaultWorkspaceMemoryWriter implements WorkspaceMemoryWriter {
   private readonly loadEvents: (input: {
     workspaceId: string;
     afterSequence: number;
+    afterEventId?: string;
     limit: number;
   }) => Promise<WorkspaceMemorySourceEvent[]>;
   private readonly propose: (input: {
@@ -95,7 +96,9 @@ export class DefaultWorkspaceMemoryWriter implements WorkspaceMemoryWriter {
       workspaceId: input.workspaceId,
       trigger: strongerTrigger(current?.trigger, input.trigger),
       force: Boolean(current?.force || input.force),
-      attemptCount: 0,
+      // Preserve the retry count so a steady trigger stream cannot keep a
+      // failing batch retrying forever without reaching the skip path.
+      attemptCount: current?.attemptCount ?? 0,
     });
     if (input.trigger !== "idle") {
       this.scheduleIdle(input.workspaceId);
@@ -190,6 +193,9 @@ export class DefaultWorkspaceMemoryWriter implements WorkspaceMemoryWriter {
         await this.loadEvents({
           workspaceId: job.workspaceId,
           afterSequence: snapshot.cursor.lastSequence,
+          ...(snapshot.cursor.lastEventId !== undefined
+            ? { afterEventId: snapshot.cursor.lastEventId }
+            : {}),
           limit: this.maxSourceEvents,
         })
       )
@@ -207,15 +213,30 @@ export class DefaultWorkspaceMemoryWriter implements WorkspaceMemoryWriter {
       }
       const startedAt = this.now();
       try {
-        const mutations = (
-          await this.propose({
+        const proposed = await this.propose({
+          workspaceId: job.workspaceId,
+          events,
+          existing: snapshot.records,
+          now: startedAt,
+        });
+        // When proposals exceed the mutation budget, only advance the
+        // cursor through events whose proposals were fully applied — the
+        // remainder is re-proposed on the next drain instead of being
+        // silently dropped.
+        const bounded = boundProposalsToBudget(
+          proposed,
+          events,
+          this.maxMutations,
+        );
+        if (bounded.deferredEventCount > 0) {
+          console.warn("workspace memory writer deferring events over mutation budget", {
             workspaceId: job.workspaceId,
-            events,
-            existing: snapshot.records,
-            now: startedAt,
-          })
-        ).slice(0, this.maxMutations);
-        const last = events.at(-1)!;
+            deferredEvents: bounded.deferredEventCount,
+            deferredMutations: bounded.deferredMutationCount,
+          });
+          this.jobs.set(job.workspaceId, { ...job, attemptCount: 0 });
+        }
+        const last = bounded.coveredEvents.at(-1)!;
         await this.store.commit({
           workspaceId: job.workspaceId,
           expectedLastSequence: snapshot.cursor.lastSequence,
@@ -226,37 +247,125 @@ export class DefaultWorkspaceMemoryWriter implements WorkspaceMemoryWriter {
             updatedAt: this.now(),
           },
           audit: {
-            auditId: buildAuditId(job.workspaceId, events, startedAt),
+            auditId: buildAuditId(job.workspaceId, bounded.coveredEvents, startedAt),
             workspaceId: job.workspaceId,
             trigger: job.trigger,
-            sourceEventIds: events.map((event) => event.eventId),
-            mutations,
+            sourceEventIds: bounded.coveredEvents.map((event) => event.eventId),
+            mutations: bounded.mutations,
             rejectedMutations: [],
             beforeDigest: memoryDigest(snapshot.records),
             afterDigest: "",
             startedAt,
             completedAt: this.now(),
-            status: mutations.length > 0 ? "written" : "noop",
+            status: bounded.mutations.length > 0 ? "written" : "noop",
           },
-          mutations,
+          mutations: bounded.mutations,
         });
       } catch (error) {
+        const finalAttempt = job.attemptCount >= this.maxRetries;
+        const lastEvent = events.at(-1)!;
         await recordFailedAuditSafely({
           store: this.store,
           workspaceId: job.workspaceId,
           expectedLastSequence: snapshot.cursor.lastSequence,
-          cursor: snapshot.cursor,
+          // A batch that keeps failing after all retries would wedge this
+          // workspace's memory pipeline forever; skip past it with an
+          // auditable failure record instead.
+          cursor: finalAttempt
+            ? {
+                workspaceId: job.workspaceId,
+                lastSequence: lastEvent.sequence,
+                lastEventId: lastEvent.eventId,
+                updatedAt: this.now(),
+              }
+            : snapshot.cursor,
           trigger: job.trigger,
           events,
           records: snapshot.records,
           startedAt,
           completedAt: this.now(),
-          error,
+          error: finalAttempt
+            ? new Error(
+                `skipped batch after ${job.attemptCount + 1} attempts: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              )
+            : error,
         });
+        if (finalAttempt) {
+          console.error("workspace memory writer skipping poison batch", {
+            workspaceId: job.workspaceId,
+            trigger: job.trigger,
+            skippedEvents: events.length,
+            error,
+          });
+          return;
+        }
         throw error;
       }
     });
   }
+}
+
+function mutationSourceRefs(mutation: WorkspaceMemoryMutation): string[] {
+  return mutation.kind === "delete"
+    ? mutation.sourceRefs
+    : mutation.record.sourceRefs;
+}
+
+export function boundProposalsToBudget(
+  proposed: WorkspaceMemoryMutation[],
+  events: WorkspaceMemorySourceEvent[],
+  maxMutations: number,
+): {
+  mutations: WorkspaceMemoryMutation[];
+  coveredEvents: WorkspaceMemorySourceEvent[];
+  deferredEventCount: number;
+  deferredMutationCount: number;
+} {
+  if (proposed.length <= maxMutations) {
+    return {
+      mutations: proposed,
+      coveredEvents: events,
+      deferredEventCount: 0,
+      deferredMutationCount: 0,
+    };
+  }
+  const eventIndex = new Map(
+    events.map((event, index) => [event.eventId, index]),
+  );
+  const withLastEventIndex = proposed.map((mutation) => {
+    const indices = mutationSourceRefs(mutation)
+      .map((ref) => eventIndex.get(ref))
+      .filter((index): index is number => index !== undefined);
+    return {
+      mutation,
+      lastEventIndex: indices.length > 0 ? Math.max(...indices) : -1,
+    };
+  });
+  const baseCount = withLastEventIndex
+    .filter((item) => item.lastEventIndex === -1).length;
+  let cut = events.length;
+  while (cut > 1) {
+    const count =
+      baseCount +
+      withLastEventIndex
+        .filter((item) => item.lastEventIndex >= 0 && item.lastEventIndex < cut)
+        .length;
+    if (count <= maxMutations) break;
+    cut -= 1;
+  }
+  // At cut === 1 the first event alone may exceed the budget; apply its
+  // proposals anyway (never stall the cursor on a single event).
+  const mutations = withLastEventIndex
+    .filter((item) => item.lastEventIndex < cut)
+    .map((item) => item.mutation);
+  return {
+    mutations,
+    coveredEvents: events.slice(0, cut),
+    deferredEventCount: events.length - cut,
+    deferredMutationCount: proposed.length - mutations.length,
+  };
 }
 
 export function deterministicWorkspaceMemoryProposals(input: {

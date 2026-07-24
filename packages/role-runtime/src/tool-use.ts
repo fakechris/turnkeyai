@@ -1,3 +1,4 @@
+import { lookup as dnsLookup } from "node:dns/promises";
 import type { LLMMessage, LLMToolCall, LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import {
@@ -704,6 +705,17 @@ export function createWorkerSessionToolExecutor(options: {
       if (existing) return existing;
       const pending = launch();
       backgroundSpawnByToolCall.set(key, pending);
+      // The executor is daemon-lifetime; expire dedupe entries after the
+      // retry window or the map grows one entry per spawn forever.
+      void pending
+        .catch(() => undefined)
+        .finally(() => {
+          const timer = setTimeout(
+            () => backgroundSpawnByToolCall.delete(key),
+            BACKGROUND_SPAWN_DEDUP_TTL_MS,
+          );
+          timer.unref?.();
+        });
       return pending;
     }),
     roleTool("sessions_send", (input) =>
@@ -718,7 +730,22 @@ export function createWorkerSessionToolExecutor(options: {
     ),
     roleTool("sessions_list", (input) => executeSessionsList(workerRuntime, input)),
     roleTool("sessions_history", (input) => executeSessionsHistory(workerRuntime, input)),
-    roleTool("web_fetch", (input) => executeWebFetch(input, options.fetchFn ?? fetch)),
+    roleTool("web_fetch", (input) =>
+      // Every other handler fails closed on a missing service; web_fetch
+      // must fail closed on its capability flag too, so a dispatch path
+      // that skips definition-level gating cannot reach the network.
+      // DNS-resolution validation runs only with the real fetch (an
+      // injected fetchFn implies a test/proxy environment).
+      options.webFetchEnabled === true
+        ? executeWebFetch(
+            input,
+            options.fetchFn ?? fetch,
+            options.fetchFn === undefined,
+          )
+        : Promise.resolve(
+            errorResult(input.call, "web_fetch is not enabled for this role"),
+          )
+    ),
     roleTool("artifacts_read", (input) =>
       executeArtifactRead(input, options.toolResultArtifactStore)
     ),
@@ -801,9 +828,42 @@ export async function executeToolResultArtifactRead(
   }
 }
 
+const BACKGROUND_SPAWN_DEDUP_TTL_MS = 10 * 60_000;
+// Bound how much of a response body web_fetch will buffer: the extracted
+// excerpt is capped far lower, so an unbounded/adversarial body must not
+// balloon daemon memory.
+const MAX_WEB_FETCH_BODY_BYTES = 512 * 1024;
+
+async function readWebFetchBodyBounded(response: Response): Promise<string> {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const text = await response.text();
+    return text.length > MAX_WEB_FETCH_BODY_BYTES
+      ? text.slice(0, MAX_WEB_FETCH_BODY_BYTES)
+      : text;
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(Buffer.from(value));
+    total += value.byteLength;
+    if (total >= MAX_WEB_FETCH_BODY_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+  }
+  return Buffer.concat(chunks)
+    .subarray(0, MAX_WEB_FETCH_BODY_BYTES)
+    .toString("utf8");
+}
+
 async function executeWebFetch(
   input: RoleToolExecutionInput,
-  fetchFn: typeof fetch
+  fetchFn: typeof fetch,
+  validateDnsResolution = false
 ): Promise<RoleToolExecutionResult> {
   const rawUrl = requiredString(input.call.input.url);
   if (!rawUrl) {
@@ -819,9 +879,15 @@ async function executeWebFetch(
 
   try {
     const startedAt = Date.now();
-    const { response, finalUrl } = await webFetchWithRedirects(fetchFn, safeUrl, input.signal);
+    const { response, finalUrl } = await webFetchWithRedirects(
+      fetchFn,
+      safeUrl,
+      input.signal,
+      0,
+      validateDnsResolution
+    );
     const contentType = response.headers.get("content-type") ?? "";
-    const body = await response.text();
+    const body = await readWebFetchBodyBounded(response);
     const page = parseFetchedPage({
       requestedUrl: safeUrl,
       finalUrl,
@@ -1383,6 +1449,30 @@ function classifyBrowserSideEffect(
   }
   if (isReadOnlySourceUrlTaskWithoutExplicitPublishIntent(normalized)) {
     return null;
+  }
+  // The verb lists below are English; the product's primary instruction
+  // language is Chinese. A CJK mutating instruction must not fall through
+  // this gate unclassified (fail-open would dispatch un-approved actions).
+  if (/(?:发布|上线|发表|发帖)/.test(instruction)) {
+    return {
+      action: "browser.publish",
+      scope: "publish",
+      title: "Publish from browser",
+      risk: "May publish externally visible content or make a public change.",
+    };
+  }
+  if (
+    /(?:提交|下单|购买|支付|付款|结账|结算|预订|预定|转账|注册|审批|批准|删除|移除)/.test(instruction) ||
+    /(?<!截图)保存(?!截图)/.test(instruction)
+  ) {
+    return {
+      action: /提交/.test(instruction)
+        ? "browser.form.submit"
+        : "browser.mutate",
+      scope: "mutate",
+      title: "Approve browser mutation",
+      risk: "May change account state, submit data, or trigger an external action.",
+    };
   }
   if (
     /\b(post publicly|go live)\b/.test(normalized) ||
@@ -3785,10 +3875,14 @@ async function webFetchWithRedirects(
   fetchFn: typeof fetch,
   inputUrl: string,
   signal: AbortSignal | undefined,
-  redirectCount = 0
+  redirectCount = 0,
+  validateDnsResolution = false
 ): Promise<{ response: Response; finalUrl: string }> {
   if (signal?.aborted) {
     throw new Error(typeof signal.reason === "string" ? signal.reason : "web_fetch cancelled");
+  }
+  if (validateDnsResolution) {
+    await assertPublicWebFetchDnsResolution(inputUrl);
   }
   const response = await fetchFn(inputUrl, {
     redirect: "manual",
@@ -3807,7 +3901,13 @@ async function webFetchWithRedirects(
       throw new Error(`redirect without location for ${inputUrl}`);
     }
     const nextUrl = validatePublicWebFetchUrl(new URL(location, inputUrl).toString());
-    return webFetchWithRedirects(fetchFn, nextUrl, signal, redirectCount + 1);
+    return webFetchWithRedirects(
+      fetchFn,
+      nextUrl,
+      signal,
+      redirectCount + 1,
+      validateDnsResolution
+    );
   }
   return { response, finalUrl: inputUrl };
 }
@@ -3872,11 +3972,18 @@ function validatePublicWebFetchUrl(inputUrl: string): string {
   }
 
   const hostname = normalizeWebFetchHostname(parsed.hostname);
-  if (
-    hostname === "localhost" ||
+  if (isBlockedWebFetchHost(hostname)) {
+    throw new Error(`blocked web_fetch URL host: ${hostname}`);
+  }
+  return parsed.toString();
+}
+
+function isBlockedWebFetchHost(hostname: string): boolean {
+  return hostname === "localhost" ||
     hostname === "::1" ||
     hostname.startsWith("127.") ||
     hostname.endsWith(".local") ||
+    hostname.endsWith(".internal") ||
     hostname === "0.0.0.0" ||
     hostname === "169.254.169.254" ||
     hostname.startsWith("10.") ||
@@ -3885,11 +3992,37 @@ function validatePublicWebFetchUrl(inputUrl: string): string {
     hostname.startsWith("169.254.") ||
     hostname.startsWith("fe80:") ||
     hostname.startsWith("fc") ||
-    hostname.startsWith("fd")
-  ) {
-    throw new Error(`blocked web_fetch URL host: ${hostname}`);
+    hostname.startsWith("fd");
+}
+
+function isIpLiteralWebFetchHost(hostname: string): boolean {
+  return /^\d+\.\d+\.\d+\.\d+$/.test(hostname) || hostname.includes(":");
+}
+
+// A public DNS name can point at a private address (e.g. 127.0.0.1.nip.io
+// or an attacker-controlled record targeting the metadata service); the
+// literal blocklist alone cannot see that. Best-effort: validate what the
+// name resolves to before fetching. A racing rebind between this check and
+// the connect is out of scope for this layer.
+async function assertPublicWebFetchDnsResolution(
+  inputUrl: string,
+): Promise<void> {
+  const hostname = normalizeWebFetchHostname(new URL(inputUrl).hostname);
+  if (isIpLiteralWebFetchHost(hostname)) return;
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await dnsLookup(hostname, { all: true });
+  } catch {
+    // Resolution failures surface through fetch with a clearer error.
+    return;
   }
-  return parsed.toString();
+  for (const entry of addresses) {
+    if (isBlockedWebFetchHost(normalizeWebFetchHostname(entry.address))) {
+      throw new Error(
+        `blocked web_fetch URL host: ${hostname} resolves to a private address`,
+      );
+    }
+  }
 }
 
 function normalizeWebFetchHostname(hostname: string): string {

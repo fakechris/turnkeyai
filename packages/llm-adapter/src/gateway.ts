@@ -92,19 +92,13 @@ export class LLMGateway {
       this.retryPolicy.transientMaxAttempts,
       this.retryPolicy.timeoutMaxAttempts,
     );
-    const retryAllowance = createRetryAllowance({
-      allowanceId: `model-transport:${selection.chainId ?? selection.primaryModelId}`,
-      ownerScopeId: selection.chainId ?? selection.primaryModelId,
-      failureDomain: "model_transport",
-      maxAttempts: maxTransportAttempts,
-    });
     const deadline = Math.min(
       Date.now() + this.generateWallClockMs,
       input.deadlineAt ?? Number.POSITIVE_INFINITY,
     );
     let lastError: unknown;
 
-    modelChain: for (const modelId of candidateModelIds) {
+    for (const modelId of candidateModelIds) {
       attemptedModelIds.push(modelId);
       const modelDiagnostics: ModelRetryDiagnostics = {
         modelId,
@@ -113,10 +107,19 @@ export class LLMGateway {
         errors: [],
       };
       retryModels.push(modelDiagnostics);
+      // Per-model allowance: a rate-limited primary must not consume the
+      // whole chain's attempts and skip every fallback — failover on
+      // retryable errors is exactly what the chain exists for.
+      const retryAllowance = createRetryAllowance({
+        allowanceId: `model-transport:${modelId}`,
+        ownerScopeId: selection.chainId ?? selection.primaryModelId,
+        failureDomain: "model_transport",
+        maxAttempts: maxTransportAttempts,
+      });
 
       for (let attempt = 1; ; attempt += 1) {
         if (!retryAllowance.claimAttempt()) {
-          break modelChain;
+          break;
         }
         if (input.signal?.aborted) {
           throw input.signal.reason ?? new Error("LLM request aborted");

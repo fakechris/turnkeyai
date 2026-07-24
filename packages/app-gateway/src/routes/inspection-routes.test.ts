@@ -151,6 +151,28 @@ test("inspection routes reject blank required thread ids", async () => {
   assert.deepEqual(response.json, { error: "threadId is required" });
 });
 
+test("inspection routes clamp the events limit", async () => {
+  const receivedLimits: number[] = [];
+  const deps = createDeps({
+    async listRecentEvents(_threadId, limit) {
+      receivedLimits.push(limit);
+      return [];
+    },
+  });
+  for (const query of ["?limit=5000", "?limit=abc", "?limit=-3", ""]) {
+    const response = createResponse();
+    const handled = await handleInspectionRoutes({
+      req: createRequest({ method: "GET", url: `/events${query}` }),
+      res: response.res,
+      url: new URL(`http://127.0.0.1/events${query}`),
+      deps,
+    });
+    assert.equal(handled, true);
+    assert.equal(response.res.statusCode, 200);
+  }
+  assert.deepEqual(receivedLimits, [1000, 50, 50, 50]);
+});
+
 test("inspection routes expose the long-context runtime report", async () => {
   const response = createResponse();
   const handled = await handleInspectionRoutes({

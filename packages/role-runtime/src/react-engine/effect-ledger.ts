@@ -51,8 +51,9 @@ export class RunEffectLedger {
 
   admit(input: { round: number; call: LLMToolCall }): RunEffectRecord {
     const signature = effectSignature(input.call);
+    const round = Math.max(0, Math.floor(input.round));
     const existing = this.records.get(input.call.id);
-    if (existing) {
+    if (existing && !effectIdReusable(existing, round, signature)) {
       if (existing.signature !== signature) {
         throw new Error(
           `effect id reused with a different proposal: ${input.call.id}`,
@@ -60,15 +61,45 @@ export class RunEffectLedger {
       }
       return structuredClone(existing);
     }
+    // Either a fresh id, or a provider recycled a tool-call id from an
+    // earlier round over a terminal effect (some OpenAI-compatible
+    // providers emit deterministic per-turn ids like call_0): admit fresh
+    // work so a legitimate later call is neither replayed from a stale
+    // receipt nor rejected as a proposal conflict.
     const record: RunEffectRecord = {
       effectId: input.call.id,
       signature,
-      round: Math.max(0, Math.floor(input.round)),
+      round,
       call: structuredClone(input.call),
       status: "admitted",
     };
     this.records.set(record.effectId, record);
     return structuredClone(record);
+  }
+
+  /**
+   * Classifies what admit() would do for this call without mutating the
+   * ledger, so callers can persist fresh admissions transactionally.
+   * Throws on a same-id/different-proposal conflict that admit() would
+   * also reject.
+   */
+  admitDisposition(input: {
+    round: number;
+    call: LLMToolCall;
+  }): "fresh" | "replay" | "active" {
+    const signature = effectSignature(input.call);
+    const round = Math.max(0, Math.floor(input.round));
+    const existing = this.records.get(input.call.id);
+    if (!existing) return "fresh";
+    if (effectIdReusable(existing, round, signature)) return "fresh";
+    if (existing.signature !== signature) {
+      throw new Error(
+        `effect id reused with a different proposal: ${input.call.id}`,
+      );
+    }
+    return existing.status === "admitted" || existing.status === "started"
+      ? "active"
+      : "replay";
   }
 
   start(effectId: string): RunEffectRecord {
@@ -233,6 +264,24 @@ function parseEffectRecord(value: unknown): RunEffectRecord | null {
     ...(result === undefined ? {} : { result: structuredClone(result) }),
   };
   return parsed.signature === effectSignature(parsed.call) ? parsed : null;
+}
+
+function effectIdReusable(
+  existing: RunEffectRecord,
+  round: number,
+  signature: string,
+): boolean {
+  if (existing.round === round) return false;
+  if (existing.status === "committed" || existing.status === "failed") {
+    return true;
+  }
+  // An indeterminate effect may have executed; the same proposal must
+  // replay its receipt (never auto-redispatch). Different work under a
+  // recycled id is admissible.
+  if (existing.status === "indeterminate") {
+    return existing.signature !== signature;
+  }
+  return false;
 }
 
 function effectSignature(call: LLMToolCall): string {
