@@ -26,6 +26,9 @@ export function produceTaskIntentEnvelope(
       providerSupportSchemaRequested: taskAndContext.some(
         explicitlyRequestsProviderSupportSchema,
       ),
+      durableMemoryLookupProtocol: readDurableMemoryLookupProtocol(
+        input.taskPrompt,
+      ),
       browserVisibleEvidenceRequired:
         taskFactRequiresBrowserVisibleEvidence(taskAndContextText),
       productSignalDashboardEvidenceRequested:
@@ -142,6 +145,21 @@ function buildTaskFactTextContext(input: TaskIntentInput): string[] {
     ...buildRequestedTableColumnActivationContext(input.activation),
     ...requestedTableColumnMessageContext(input.messages),
   ].filter((text) => text.trim().length > 0);
+}
+
+function readDurableMemoryLookupProtocol(
+  taskPrompt: string,
+): TaskIntentFacts["durableMemoryLookupProtocol"] {
+  const lookupRequested =
+    /\b(?:memory_search|durable memory lookup)\b|\b(?:use|check|search|query|retrieve|consult|look up|read)\b[\s\S]{0,40}\b(?:durable|long[- ]term) memory\b|\b(?:durable|long[- ]term) memory\b[\s\S]{0,40}\b(?:lookup|search|query|retrieval)\b|(?:使用|查询|检索|检查|读取|查看)[^\n。]{0,24}(?:持久化记忆|持久记忆|长期记忆|长程记忆)|(?:持久化记忆|持久记忆|长期记忆|长程记忆)(?:查询|检索)/i.test(
+      taskPrompt,
+    );
+  if (!lookupRequested) return "none";
+  const candidateInspectionRequested =
+    /\b(?:memory_get|inspect (?:any|the|a) candidate memory(?: entry)?|inspect (?:the )?(?:matching|selected|specific) memory(?: entry)?|fetch (?:the )?(?:matching|selected|specific) memory(?: entry)?|verify (?:the )?(?:candidate|matching|selected) memory(?: entry)?)\b|(?:检查|查看|读取|核验)(?:候选|匹配|选中|具体)?(?:的)?(?:持久化|长期|长程)?记忆(?:条目)?/i.test(
+      taskPrompt,
+    );
+  return candidateInspectionRequested ? "search_and_get" : "search";
 }
 
 function taskFactRequestsProductSignalDashboardEvidence(text: string): boolean {

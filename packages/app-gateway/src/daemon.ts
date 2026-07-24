@@ -383,6 +383,7 @@ const inspectionDeps = createInspectionRouteDeps({
   foundations,
   runtimeServices,
   modelCatalogPath,
+  taskToolService,
 });
 
 const recoveryDeps = createRecoveryRouteDeps({

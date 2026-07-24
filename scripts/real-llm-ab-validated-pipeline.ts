@@ -21,10 +21,10 @@ import { buildRealLlmAbSpec, type RealLlmAbSpecBuildSuite } from "./real-llm-ab-
 import { buildRealLlmAbFairnessReportForSpec } from "./real-llm-ab-fairness";
 import { buildRealLlmAbAcceptanceReport } from "./real-llm-ab-report-build";
 
-const ACCIO_WORK_REFERENCE_APP = "accio-work-app-asar";
-const ACCIO_WORK_APP_ASAR_PATH = "/Applications/Accio.app/Contents/Resources/app.asar";
-const ACCIO_WORK_REFERENCE_RUNTIME_ROOT = "artifacts/reference-runtimes/accio-work-0.4.5";
-const ACCIO_WORK_REFERENCE_VERSION = "0.4.5";
+const REFERENCE_RUNTIME_WORK_REFERENCE_APP = "reference-desktop-app-asar";
+const REFERENCE_RUNTIME_WORK_APP_ASAR_PATH = "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar";
+const REFERENCE_RUNTIME_WORK_REFERENCE_RUNTIME_ROOT = "artifacts/reference-runtimes/reference-desktop-0.4.5";
+const REFERENCE_RUNTIME_WORK_REFERENCE_VERSION = "0.4.5";
 
 interface ValidatedPipelineOptions {
   naturalReportPath: string;
@@ -34,9 +34,9 @@ interface ValidatedPipelineOptions {
   referenceBaseUrl?: string;
   referenceToken?: string;
   referenceVariant: string;
-  accioWs?: boolean;
-  accioAgentId?: string;
-  accioWorkspacePath?: string;
+  referenceRuntimeWs?: boolean;
+  referenceRuntimeAgentId?: string;
+  referenceRuntimeWorkspacePath?: string;
   referenceTimeoutMs: number;
   referencePollMs: number;
   referenceApp: string;
@@ -114,9 +114,9 @@ export function parseRealLlmAbValidatedPipelineArgs(
   let referenceBaseUrl: string | undefined;
   let referenceToken: string | undefined;
   let referenceVariant = "operator";
-  let accioWs = false;
-  let accioAgentId: string | undefined;
-  let accioWorkspacePath: string | undefined;
+  let referenceRuntimeWs = false;
+  let referenceRuntimeAgentId: string | undefined;
+  let referenceRuntimeWorkspacePath: string | undefined;
   let referenceTimeoutMs = 180_000;
   let referencePollMs = 2_000;
   let referenceApp = "reference-workbench";
@@ -173,17 +173,17 @@ export function parseRealLlmAbValidatedPipelineArgs(
       index += 1;
       continue;
     }
-    if (arg === "--accio-ws") {
-      accioWs = true;
+    if (arg === "--reference-ws") {
+      referenceRuntimeWs = true;
       continue;
     }
-    if (arg === "--accio-agent-id") {
-      accioAgentId = readValue(args, index, arg);
+    if (arg === "--reference-agent-id") {
+      referenceRuntimeAgentId = readValue(args, index, arg);
       index += 1;
       continue;
     }
-    if (arg === "--accio-workspace-path") {
-      accioWorkspacePath = readValue(args, index, arg);
+    if (arg === "--reference-workspace-path") {
+      referenceRuntimeWorkspacePath = readValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -247,19 +247,19 @@ export function parseRealLlmAbValidatedPipelineArgs(
   if (!referenceDir) throw new Error("missing required --reference-dir <dir>");
   if (!workDir) throw new Error("missing required --work-dir <dir>");
   if (!suite) throw new Error("missing required --suite core");
-  const resolvedReferenceApp = accioWs && !referenceAppExplicit ? ACCIO_WORK_REFERENCE_APP : referenceApp;
+  const resolvedReferenceApp = referenceRuntimeWs && !referenceAppExplicit ? REFERENCE_RUNTIME_WORK_REFERENCE_APP : referenceApp;
   const resolvedReferenceBinary =
-    accioWs && !referenceBinaryExplicit ? ACCIO_WORK_APP_ASAR_PATH : referenceBinary;
+    referenceRuntimeWs && !referenceBinaryExplicit ? REFERENCE_RUNTIME_WORK_APP_ASAR_PATH : referenceBinary;
   const resolvedReferenceRuntimeRoot =
-    accioWs && !referenceRuntimeRootExplicit
-      ? path.resolve(ACCIO_WORK_REFERENCE_RUNTIME_ROOT)
+    referenceRuntimeWs && !referenceRuntimeRootExplicit
+      ? path.resolve(REFERENCE_RUNTIME_WORK_REFERENCE_RUNTIME_ROOT)
       : referenceRuntimeRoot
         ? path.resolve(referenceRuntimeRoot)
         : undefined;
   const resolvedReferenceVersion =
-    accioWs && !referenceVersionExplicit ? ACCIO_WORK_REFERENCE_VERSION : referenceVersion;
+    referenceRuntimeWs && !referenceVersionExplicit ? REFERENCE_RUNTIME_WORK_REFERENCE_VERSION : referenceVersion;
   const resolvedReferenceCommit =
-    accioWs && !referenceCommitExplicit ? readAccioWorkAppAsarCommit() : referenceCommit;
+    referenceRuntimeWs && !referenceCommitExplicit ? readReferenceRuntimeWorkAppAsarCommit() : referenceCommit;
   return {
     naturalReportPath,
     referenceDir,
@@ -268,9 +268,9 @@ export function parseRealLlmAbValidatedPipelineArgs(
     ...(referenceBaseUrl ? { referenceBaseUrl } : {}),
     ...(referenceToken ? { referenceToken } : {}),
     referenceVariant,
-    ...(accioWs ? { accioWs } : {}),
-    ...(accioAgentId ? { accioAgentId } : {}),
-    ...(accioWs || accioWorkspacePath ? { accioWorkspacePath: accioWorkspacePath ?? process.cwd() } : {}),
+    ...(referenceRuntimeWs ? { referenceRuntimeWs } : {}),
+    ...(referenceRuntimeAgentId ? { referenceRuntimeAgentId } : {}),
+    ...(referenceRuntimeWs || referenceRuntimeWorkspacePath ? { referenceRuntimeWorkspacePath: referenceRuntimeWorkspacePath ?? process.cwd() } : {}),
     referenceTimeoutMs,
     referencePollMs,
     referenceApp: resolvedReferenceApp,
@@ -290,7 +290,7 @@ export function buildRealLlmAbValidatedPipelineHelpText(): string {
     "",
     "Usage:",
     "  npm run acceptance:ab:validated -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability|full-natural|report-scenarios> --work-dir <dir> [--reference-base-url <url>] [--reference-token <token>] [--model-difference-note <text>] [--check]",
-    "  npm run acceptance:ab:validated -- --natural-report <path> --reference-dir <dir> --suite core --work-dir <dir> --reference-base-url http://127.0.0.1:4097 --accio-ws --accio-workspace-path <repo> --reference-app accio-work-app-asar --reference-binary /Applications/Accio.app/Contents/Resources/app.asar --reference-runtime-root <persistent-runtime-root> --reference-commit app.asar:<sha> [--check]",
+    "  npm run acceptance:ab:validated -- --natural-report <path> --reference-dir <dir> --suite core --work-dir <dir> --reference-base-url http://127.0.0.1:4097 --reference-ws --reference-workspace-path <repo> --reference-app reference-desktop-app-asar --reference-binary /Applications/ReferenceRuntime.app/Contents/Resources/app.asar --reference-runtime-root <persistent-runtime-root> --reference-commit app.asar:<sha> [--check]",
     "",
     "The pipeline runs reference audit, optional reference collection, reference runtime health, same-scenario fairness, and A/B report validation in order.",
     "It writes local evidence artifacts into --work-dir. A failed result means capability comparison remains unproven.",
@@ -349,9 +349,9 @@ export async function runRealLlmAbValidatedPipeline(
       baseUrl: options.referenceBaseUrl,
       ...(options.referenceToken ? { referenceToken: options.referenceToken } : {}),
       variant: options.referenceVariant,
-      ...(options.accioWs ? { accioWs: options.accioWs } : {}),
-      ...(options.accioAgentId ? { accioAgentId: options.accioAgentId } : {}),
-      ...(options.accioWorkspacePath ? { accioWorkspacePath: options.accioWorkspacePath } : {}),
+      ...(options.referenceRuntimeWs ? { referenceRuntimeWs: options.referenceRuntimeWs } : {}),
+      ...(options.referenceRuntimeAgentId ? { referenceRuntimeAgentId: options.referenceRuntimeAgentId } : {}),
+      ...(options.referenceRuntimeWorkspacePath ? { referenceRuntimeWorkspacePath: options.referenceRuntimeWorkspacePath } : {}),
       timeoutMs: Math.min(options.referenceTimeoutMs, 60_000),
       pollMs: options.referencePollMs,
     });
@@ -377,9 +377,9 @@ export async function runRealLlmAbValidatedPipeline(
         baseUrl: options.referenceBaseUrl,
         ...(options.referenceToken ? { referenceToken: options.referenceToken } : {}),
         variant: options.referenceVariant,
-        ...(options.accioWs ? { accioWs: options.accioWs } : {}),
-        ...(options.accioAgentId ? { accioAgentId: options.accioAgentId } : {}),
-        ...(options.accioWorkspacePath ? { accioWorkspacePath: options.accioWorkspacePath } : {}),
+        ...(options.referenceRuntimeWs ? { referenceRuntimeWs: options.referenceRuntimeWs } : {}),
+        ...(options.referenceRuntimeAgentId ? { referenceRuntimeAgentId: options.referenceRuntimeAgentId } : {}),
+        ...(options.referenceRuntimeWorkspacePath ? { referenceRuntimeWorkspacePath: options.referenceRuntimeWorkspacePath } : {}),
         timeoutMs: options.referenceTimeoutMs,
         pollMs: options.referencePollMs,
         referenceApp: options.referenceApp,
@@ -609,9 +609,9 @@ function isRealLlmAbSpecBuildSuite(value: string): value is RealLlmAbSpecBuildSu
   );
 }
 
-function readAccioWorkAppAsarCommit(): string | undefined {
-  if (!existsSync(ACCIO_WORK_APP_ASAR_PATH)) return undefined;
-  const hash = createHash("sha256").update(readFileSync(ACCIO_WORK_APP_ASAR_PATH)).digest("hex");
+function readReferenceRuntimeWorkAppAsarCommit(): string | undefined {
+  if (!existsSync(REFERENCE_RUNTIME_WORK_APP_ASAR_PATH)) return undefined;
+  const hash = createHash("sha256").update(readFileSync(REFERENCE_RUNTIME_WORK_APP_ASAR_PATH)).digest("hex");
   return `app.asar:${hash}`;
 }
 

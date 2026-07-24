@@ -3,6 +3,8 @@
   "rows": {
     "repair": [
       { "id": "final_recovery_budget_closeout_repair", "status": "migrated", "targetOwner": "attempt budget signal and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
+      { "id": "missing_durable_memory_search", "status": "retained", "targetOwner": "explicit read-only durable-memory evidence workflow", "evidence": "production RepairPolicyRegistry enforces an explicitly requested durable-memory evidence protocol" },
+      { "id": "missing_durable_memory_get", "status": "retained", "targetOwner": "explicit read-only durable-memory evidence workflow", "evidence": "production RepairPolicyRegistry enforces an explicitly requested durable-memory evidence protocol" },
       { "id": "missing_browser_evidence", "status": "migrated", "targetOwner": "quality evaluator and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
       { "id": "missing_product_signal_browser_evidence", "status": "migrated", "targetOwner": "quality evaluator and model guidance", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },
       { "id": "missing_approval_gate", "status": "migrated", "targetOwner": "permission admission", "evidence": "production RepairPolicyRegistry never manufactures work or rewrites a terminal answer" },

@@ -10,6 +10,7 @@ export * from "./policy-role-runtime";
 export * from "./pre-compaction-memory-flusher";
 export * from "./prompt/prompt-assembler";
 export * from "./prompt-policy";
+export * from "./prompt-registry";
 export * from "./role-profile";
 export * from "./run-deadline";
 export * from "./sub-agent-worker-handler";

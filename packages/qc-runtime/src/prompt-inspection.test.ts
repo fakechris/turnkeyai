@@ -41,6 +41,28 @@ test("prompt inspection summarizes prompt compaction and reduction boundaries", 
         assemblyFingerprint: "fp-1",
         sectionOrder: ["task-brief", "recent-turns", "worker-evidence"],
         compactedSegments: ["recent-turns", "worker-evidence"],
+        sectionReceipts: [
+          {
+            sectionId: "prompt.assembly.task-brief",
+            version: "1.0.0",
+            owner: "packages/role-runtime/src/prompt/prompt-assembler.ts",
+            authority: "context-projection",
+            requiredCapability: "always",
+            baselineBehavior: "rehydrate-full",
+            state: "included",
+            estimatedTokens: 200,
+          },
+          {
+            sectionId: "prompt.assembly.worker-evidence",
+            version: "1.0.0",
+            owner: "packages/role-runtime/src/prompt/prompt-assembler.ts",
+            authority: "untrusted-evidence",
+            requiredCapability: "sessions",
+            baselineBehavior: "full-delta",
+            state: "compacted",
+            estimatedTokens: 100,
+          },
+        ],
         usedArtifacts: ["artifact-1", "artifact-2"],
         tokenEstimate: {
           inputTokens: 9_000,
@@ -184,6 +206,16 @@ test("prompt inspection summarizes prompt compaction and reduction boundaries", 
   assert.equal(report.roleCounts["role-lead"], 2);
   assert.equal(report.compactedSegmentCounts["recent-turns"], 2);
   assert.equal(report.compactedSegmentCounts["worker-evidence"], 1);
+  assert.equal(report.promptSectionStateCounts.included, 1);
+  assert.equal(report.promptSectionStateCounts.compacted, 1);
+  assert.equal(report.promptSectionAuthorityCounts["context-projection"], 1);
+  assert.equal(report.promptSectionAuthorityCounts["untrusted-evidence"], 1);
+  assert.equal(
+    report.promptSectionVersionCounts[
+      "prompt.assembly.worker-evidence@1.0.0"
+    ],
+    1,
+  );
   assert.equal(report.uniqueAssemblyFingerprintCount, 1);
   assert.equal(report.totalRecentTurnsSelected, 10);
   assert.equal(report.totalRecentTurnsPacked, 5);

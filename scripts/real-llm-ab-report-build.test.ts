@@ -619,7 +619,7 @@ test("real LLM A/B report builder accepts recovered browser fallback after local
   }
 });
 
-test("real LLM A/B report builder accepts completed Accio browser session fallback without rendered markers", () => {
+test("real LLM A/B report builder accepts completed ReferenceRuntime browser session fallback without rendered markers", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
@@ -730,7 +730,7 @@ test("real LLM A/B report builder accepts completed Accio browser session fallba
   }
 });
 
-test("real LLM A/B report builder explains unrecovered Accio localhost source failures", () => {
+test("real LLM A/B report builder explains unrecovered ReferenceRuntime localhost source failures", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
@@ -845,7 +845,7 @@ test("real LLM A/B report builder explains unrecovered Accio localhost source fa
   }
 });
 
-test("real LLM A/B report builder accepts successful Accio direct web_fetch fallback for loopback sources", () => {
+test("real LLM A/B report builder accepts successful ReferenceRuntime direct web_fetch fallback for loopback sources", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
@@ -909,7 +909,7 @@ test("real LLM A/B report builder accepts successful Accio direct web_fetch fall
       rawToolCalls: [toolCall],
       rawToolResults: [toolResult],
       rawBrowserEvidence: [],
-      exactRequestPayload: { transport: "accio-work-websocket-sendQuery", content: prompt },
+      exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", content: prompt },
     };
     writeFileSync(referencePath, JSON.stringify(reference));
 
@@ -1296,7 +1296,7 @@ test("real LLM A/B report builder classifies unsupported reference scenario driv
     reference.artifactAdapterMappingSource = "scripts/real-llm-ab-reference-collect.ts";
     reference.exitStatus = "error";
     reference.errorReason =
-      "unsupported_reference_scenario_driver:accio_ws_reference_does_not_expose_active_cancellation_driver";
+      "unsupported_reference_scenario_driver:reference_ws_reference_does_not_expose_active_cancellation_driver";
     if (reference.first?.summary) {
       reference.first.summary.toolCallCount = 0;
       reference.first.summary.toolResultCount = 0;
@@ -1318,7 +1318,7 @@ test("real LLM A/B report builder classifies unsupported reference scenario driv
         supported: false,
         missionThread: false,
         missionMode: "custom",
-        unsupportedReason: "accio_ws_reference_does_not_expose_active_cancellation_driver",
+        unsupportedReason: "reference_ws_reference_does_not_expose_active_cancellation_driver",
       };
     }
     writeFileSync(referencePath, JSON.stringify(reference));
@@ -1345,7 +1345,7 @@ test("real LLM A/B report builder classifies unsupported reference scenario driv
     assert.equal(report.scenarios[0]?.referenceAudit?.adapterStatus, "failed");
     assert.ok(
       report.scenarios[0]?.referenceAudit?.findings.includes(
-        "reference scenario driver unsupported: accio_ws_reference_does_not_expose_active_cancellation_driver"
+        "reference scenario driver unsupported: reference_ws_reference_does_not_expose_active_cancellation_driver"
       )
     );
   } finally {
@@ -1353,11 +1353,11 @@ test("real LLM A/B report builder classifies unsupported reference scenario driv
   }
 });
 
-test("real LLM A/B report builder reads late Accio session-file tool results", () => {
+test("real LLM A/B report builder reads late ReferenceRuntime session-file tool results", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
-    const sessionPath = path.join(dir, "accio-session.messages.jsonl");
+    const sessionPath = path.join(dir, "referenceRuntime-session.messages.jsonl");
     const referencePath = path.join(dir, "reference-browser.json");
     const reference = JSON.parse(readFileSync(referencePath, "utf8")) as {
       timedOut?: boolean;
@@ -1417,7 +1417,7 @@ test("real LLM A/B report builder reads late Accio session-file tool results", (
       reference.provenance.rawToolCalls = reference.rawToolCalls;
       reference.provenance.rawToolResults = [];
       reference.provenance.rawBrowserEvidence = [];
-      reference.provenance.rawFlowEvidence = [{ source: "accio_ws_session_file", sessionPath }];
+      reference.provenance.rawFlowEvidence = [{ source: "reference_ws_session_file", sessionPath }];
       reference.provenance.exitStatus = "timeout";
       reference.provenance.errorReason = "timeout waiting for assistant response";
     }
@@ -1492,7 +1492,7 @@ test("real LLM A/B report builder downgrades reference artifacts without provena
   }
 });
 
-test("real LLM A/B report builder rejects non-Accio app.asar reference sources", () => {
+test("real LLM A/B report builder rejects non-ReferenceRuntime app.asar reference sources", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
@@ -1510,8 +1510,8 @@ test("real LLM A/B report builder rejects non-Accio app.asar reference sources",
     if (reference.provenance) {
       reference.provenance.referenceApp = "reference-workbench";
       reference.provenance.referenceBinary = "/tmp/reference-daemon";
-      reference.provenance.referenceRepoPath = "/Users/chris/workspace/accio";
-      reference.provenance.referenceRuntimeRoot = "/tmp/accio-reference";
+      reference.provenance.referenceRepoPath = "/Users/chris/workspace/referenceRuntime";
+      reference.provenance.referenceRuntimeRoot = "/tmp/referenceRuntime-reference";
       reference.provenance.apiEndpoint = "/messages";
       reference.provenance.exactRequestPayload = { transport: "http-json" };
     }
@@ -1539,19 +1539,19 @@ test("real LLM A/B report builder rejects non-Accio app.asar reference sources",
     assert.equal(report.scenarios[0]?.comparisonClassification, "adapter_unproven");
     assert.equal(report.scenarios[0]?.referenceAudit?.provenanceStatus, "failed");
     assert.equal(report.scenarios[0]?.referenceAudit?.adapterStatus, "failed");
-    assert.ok(findings.some((finding) => finding.includes("reference source must be accio-work-app-asar")));
-    assert.ok(findings.some((finding) => finding.includes("reference binary must be /Applications/Accio.app/Contents/Resources/app.asar")));
-    assert.ok(findings.some((finding) => finding.includes("reference runtime path must be the persistent Accio runtime")));
+    assert.ok(findings.some((finding) => finding.includes("reference source must be reference-desktop-app-asar")));
+    assert.ok(findings.some((finding) => finding.includes("reference binary must be /Applications/ReferenceRuntime.app/Contents/Resources/app.asar")));
+    assert.ok(findings.some((finding) => finding.includes("reference runtime path must be the persistent ReferenceRuntime runtime")));
     assert.ok(findings.some((finding) => finding.includes("reference runtime path must not be under /tmp")));
-    assert.ok(findings.some((finding) => finding.includes("deprecated /Users/chris/workspace/accio source")));
+    assert.ok(findings.some((finding) => finding.includes("deprecated /Users/chris/workspace/referenceRuntime source")));
     assert.ok(findings.some((finding) => finding.includes("reference api endpoint must be /websocket/connect")));
-    assert.ok(findings.some((finding) => finding.includes("reference request transport must be accio-work-websocket-sendQuery")));
+    assert.ok(findings.some((finding) => finding.includes("reference request transport must be reference-desktop-websocket-sendQuery")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("real LLM A/B report builder accepts relative persistent Accio runtime paths", () => {
+test("real LLM A/B report builder accepts relative persistent ReferenceRuntime runtime paths", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
@@ -1563,8 +1563,8 @@ test("real LLM A/B report builder accepts relative persistent Accio runtime path
       };
     };
     if (reference.provenance) {
-      reference.provenance.referenceRepoPath = "artifacts/reference-runtimes/accio-work-0.4.5";
-      reference.provenance.referenceRuntimeRoot = "artifacts/reference-runtimes/accio-work-0.4.5";
+      reference.provenance.referenceRepoPath = "artifacts/reference-runtimes/reference-desktop-0.4.5";
+      reference.provenance.referenceRuntimeRoot = "artifacts/reference-runtimes/reference-desktop-0.4.5";
     }
     writeFileSync(referencePath, JSON.stringify(reference));
 
@@ -1590,7 +1590,7 @@ test("real LLM A/B report builder accepts relative persistent Accio runtime path
     assert.equal(report.scenarios[0]?.referenceAudit?.provenanceStatus, "passed");
     assert.ok(
       !(report.scenarios[0]?.referenceAudit?.findings ?? []).some((finding) =>
-        finding.includes("reference runtime path must be the persistent Accio runtime")
+        finding.includes("reference runtime path must be the persistent ReferenceRuntime runtime")
       )
     );
   } finally {
@@ -1691,7 +1691,7 @@ test("real LLM A/B report builder rejects reference artifacts with pending tool 
   }
 });
 
-test("real LLM A/B report builder reports orphaned Accio workspace artifacts without crediting browser success", () => {
+test("real LLM A/B report builder reports orphaned ReferenceRuntime workspace artifacts without crediting browser success", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
@@ -1728,7 +1728,7 @@ test("real LLM A/B report builder reports orphaned Accio workspace artifacts wit
     const rawToolCalls = [{ id: "call-browser", name: "sessions_spawn", arguments: { agent_id: "browser" } }];
     const rawFlowEvidence = [
       {
-        source: "accio_ws_workspace_artifact_after_prompt",
+        source: "reference_ws_workspace_artifact_after_prompt",
         status: "orphaned_workspace_artifact",
         kind: "screenshot",
         relativePath: "ops-dashboard-1.png",
@@ -1791,7 +1791,7 @@ test("real LLM A/B report builder reports orphaned Accio workspace artifacts wit
     assert.equal(scenario?.referenceAudit?.runtimeHealthStatus, "failed");
     assert.ok(
       findings.some((finding) =>
-        finding.includes("reference Accio workspace artifact orphaned from transcript: count=1 screenshot:ops-dashboard-1.png:36801b")
+        finding.includes("reference runtime workspace artifact orphaned from transcript: count=1 screenshot:ops-dashboard-1.png:36801b")
       ),
       JSON.stringify(findings, null, 2)
     );
@@ -1802,7 +1802,7 @@ test("real LLM A/B report builder reports orphaned Accio workspace artifacts wit
   }
 });
 
-test("real LLM A/B report builder explains Accio websocket browser worker runtime failures from sdk logs", () => {
+test("real LLM A/B report builder explains ReferenceRuntime websocket browser worker runtime failures from sdk logs", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
@@ -1863,7 +1863,7 @@ test("real LLM A/B report builder explains Accio websocket browser worker runtim
     reference.rawToolCalls = [{ id: "call-browser", name: "sessions_spawn", arguments: { agent_id: "browser" } }];
     reference.rawToolResults = [];
     reference.rawBrowserEvidence = [];
-    reference.rawFlowEvidence = [{ source: "accio_ws_sdk_log", conversationId, sdkLogPath: logPath }];
+    reference.rawFlowEvidence = [{ source: "reference_ws_sdk_log", conversationId, sdkLogPath: logPath }];
     reference.provenance = {
       ...reference.provenance,
       rawTranscript: transcript,
@@ -1906,26 +1906,26 @@ test("real LLM A/B report builder explains Accio websocket browser worker runtim
 
     const findings = report.scenarios[0]?.referenceAudit?.findings ?? [];
     assert.equal(report.scenarios[0]?.comparisonClassification, "reference_env_failed");
-    assert.ok(findings.includes("reference Accio browser sub-agent exceeded native timeout before usable closeout: 1080s"));
-    assert.ok(findings.includes("reference Accio browser worker attempted unsupported browser action: wait"));
-    assert.ok(findings.includes("reference Accio browser worker attempted console script before writing a readable scriptPath"));
-    assert.ok(findings.includes("reference Accio image handoff failed because screenshot CDN upload failed"));
-    assert.ok(findings.includes("reference Accio web_fetch fallback for loopback URL went through external search proxy and failed auth"));
-    assert.ok(findings.includes("reference Accio browser worker attempted /tmp delivery outside the configured persistent workspace"));
-    assert.ok(findings.includes("reference Accio permission query had no desktop client to answer, leaving worker progress unobservable"));
-    assert.ok(findings.includes("reference Accio channel adapter was missing for reference-collector permission routing"));
+    assert.ok(findings.includes("reference runtime browser sub-agent exceeded native timeout before usable closeout: 1080s"));
+    assert.ok(findings.includes("reference runtime browser worker attempted unsupported browser action: wait"));
+    assert.ok(findings.includes("reference runtime browser worker attempted console script before writing a readable scriptPath"));
+    assert.ok(findings.includes("reference runtime image handoff failed because screenshot CDN upload failed"));
+    assert.ok(findings.includes("reference runtime web_fetch fallback for loopback URL went through external search proxy and failed auth"));
+    assert.ok(findings.includes("reference runtime browser worker attempted /tmp delivery outside the configured persistent workspace"));
+    assert.ok(findings.includes("reference runtime permission query had no desktop client to answer, leaving worker progress unobservable"));
+    assert.ok(findings.includes("reference runtime channel adapter was missing for reference-collector permission routing"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("real LLM A/B report builder derives Accio sdk logs from websocket session evidence", () => {
+test("real LLM A/B report builder derives ReferenceRuntime sdk logs from websocket session evidence", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
     const referencePath = path.join(dir, "reference-browser.json");
-    const accioHome = path.join(dir, "home", ".accio");
-    const logDir = path.join(accioHome, "logs");
+    const referenceRuntimeHome = path.join(dir, "home", ".reference-runtime");
+    const logDir = path.join(referenceRuntimeHome, "logs");
     mkdirSync(logDir, { recursive: true });
     const conversationId = "CID-natural-browser-dynamic-page-derived-log";
     writeFileSync(
@@ -1969,7 +1969,7 @@ test("real LLM A/B report builder derives Accio sdk logs from websocket session 
     reference.rawToolCalls = [{ id: "call-browser", name: "sessions_spawn", arguments: { agent_id: "browser" } }];
     reference.rawToolResults = [];
     reference.rawBrowserEvidence = [];
-    reference.rawFlowEvidence = [{ source: "accio_ws_session_file", accioHome, conversationId }];
+    reference.rawFlowEvidence = [{ source: "reference_ws_session_file", referenceRuntimeHome, conversationId }];
     reference.provenance = {
       ...reference.provenance,
       rawTranscript: transcript,
@@ -2012,7 +2012,7 @@ test("real LLM A/B report builder derives Accio sdk logs from websocket session 
 
     const findings = report.scenarios[0]?.referenceAudit?.findings ?? [];
     assert.equal(report.scenarios[0]?.comparisonClassification, "reference_env_failed");
-    assert.ok(findings.includes("reference Accio browser sub-agent exceeded native timeout before usable closeout: 1080s"));
+    assert.ok(findings.includes("reference runtime browser sub-agent exceeded native timeout before usable closeout: 1080s"));
     assert.ok(findings.includes("reference pending tool detail: pending=1, calls=1, results=0: sessions_spawn(browser)"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -2288,7 +2288,7 @@ test("real LLM A/B report builder validates mission-linked approval reference ar
     reference.provenance = {
       ...buildReferenceProvenance(prompt),
       missionId: "msn.reference.1",
-      exactRequestPayload: { transport: "accio-work-websocket-sendQuery", title: prompt, desc: "", mode: "browser" },
+      exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", title: prompt, desc: "", mode: "browser" },
       rawApprovalEvidence,
       rawBrowserEvidence,
     };
@@ -2404,7 +2404,7 @@ test("real LLM A/B report builder penalizes approval reference artifacts without
     reference.provenance = {
       ...buildReferenceProvenance(prompt),
       missionId: "msn.reference.no-approval",
-      exactRequestPayload: { transport: "accio-work-websocket-sendQuery", title: prompt, desc: "", mode: "browser" },
+      exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", title: prompt, desc: "", mode: "browser" },
       rawBrowserEvidence,
       rawApprovalEvidence: [],
       referenceScenarioDriver: { approvalDecisionPolicy: "approved" },
@@ -2531,7 +2531,7 @@ test("real LLM A/B report builder validates approval wait-timeout baseline loss 
       provenance: {
         ...buildReferenceProvenance(prompt),
         missionId: "msn.reference.timeout",
-        exactRequestPayload: { transport: "accio-work-websocket-sendQuery", title: prompt, desc: "", mode: "browser" },
+        exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", title: prompt, desc: "", mode: "browser" },
         rawResponse: {
           id: "msn.reference.timeout",
           status: "needs_approval",
@@ -2694,7 +2694,7 @@ test("real LLM A/B report builder penalizes approval wait-timeout reference subm
       provenance: {
         ...buildReferenceProvenance(prompt),
         missionId: "msn.reference.wait-timeout",
-        exactRequestPayload: { transport: "accio-work-websocket-sendQuery", title: prompt, desc: "", mode: "browser" },
+        exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", title: prompt, desc: "", mode: "browser" },
         rawResponse: { id: "msn.reference.wait-timeout", status: "done", threadId: "THREAD-reference-wait-timeout" },
         rawTranscript: {
           messages: [
@@ -2788,7 +2788,7 @@ test("real LLM A/B report builder penalizes approval wait-timeout reference subm
   }
 });
 
-test("real LLM A/B report builder accepts Accio direct timeout evidence for slow loopback sources", () => {
+test("real LLM A/B report builder accepts ReferenceRuntime direct timeout evidence for slow loopback sources", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
     writeFixtureFiles(dir);
@@ -2897,7 +2897,7 @@ test("real LLM A/B report builder accepts Accio direct timeout evidence for slow
           missionThread: true,
           missionMode: "research",
         },
-        exactRequestPayload: { transport: "accio-work-websocket-sendQuery", prompt },
+        exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", prompt },
         rawResponse: { finalText },
         rawTranscript: transcript,
         rawToolCalls: [toolCall, secondToolCall],
@@ -3028,7 +3028,7 @@ test("real LLM A/B report builder validates timeout-partial native-work baseline
       provenance: {
         ...buildReferenceProvenance(prompt),
         missionId: "msn.reference.timeout-partial",
-        exactRequestPayload: { transport: "accio-work-websocket-sendQuery", title: prompt, desc: "", mode: "research" },
+        exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", title: prompt, desc: "", mode: "research" },
         rawResponse: {
           id: "msn.reference.timeout-partial",
           status: "working",
@@ -3860,10 +3860,10 @@ function writeBrowserFocusedFixtureFiles(
 
 function buildReferenceProvenance(prompt: string): Record<string, unknown> {
   return {
-    referenceApp: "accio-work-app-asar",
-    referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-    referenceRepoPath: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
-    referenceRuntimeRoot: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
+    referenceApp: "reference-desktop-app-asar",
+    referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+    referenceRepoPath: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/reference-desktop-0.4.5",
+    referenceRuntimeRoot: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/reference-desktop-0.4.5",
     referenceVersion: "0.4.5",
     referenceCommit: "app.asar:test-sha",
     daemonUrl: "http://127.0.0.1:1",
@@ -3873,7 +3873,7 @@ function buildReferenceProvenance(prompt: string): Record<string, unknown> {
     },
     provider: "minimax",
     modelId: "MiniMax-M2.7-highspeed",
-    exactRequestPayload: { transport: "accio-work-websocket-sendQuery", content: prompt },
+    exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", content: prompt },
     rawResponse: { finalText: "Reference completed the scenario." },
     rawTranscript: { messages: [{ role: "user", content: prompt }] },
     rawToolCalls: [{ name: "browser_open" }],

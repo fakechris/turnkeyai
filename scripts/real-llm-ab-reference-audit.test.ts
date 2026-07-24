@@ -398,10 +398,10 @@ function promptForScenario(scenario: string): string {
 function buildReferenceProvenance(prompt: string): Record<string, unknown> {
   return {
     provenance: {
-      referenceApp: "accio-work-app-asar",
-      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-      referenceRepoPath: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
-      referenceRuntimeRoot: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
+      referenceApp: "reference-desktop-app-asar",
+      referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+      referenceRepoPath: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/reference-desktop-0.4.5",
+      referenceRuntimeRoot: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/reference-desktop-0.4.5",
       referenceVersion: "0.4.5",
       referenceCommit: "app.asar:test-sha",
       daemonUrl: "http://127.0.0.1:1",
@@ -411,7 +411,7 @@ function buildReferenceProvenance(prompt: string): Record<string, unknown> {
       },
       provider: "minimax",
       modelId: "MiniMax-M2.7-highspeed",
-      exactRequestPayload: { transport: "accio-work-websocket-sendQuery", prompt },
+      exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", prompt },
       rawResponse: { finalText: "Reference completed the browser task with rendered evidence." },
       rawTranscript: { messages: [{ role: "user", content: prompt }] },
       rawToolCalls: [{ name: "browser_open" }],

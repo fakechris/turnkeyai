@@ -12,6 +12,10 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript";
+import {
+  DEFAULT_PROMPT_SECTION_DEFINITIONS,
+  auditDefaultPromptRegistry,
+} from "../prompt-registry";
 
 const ENGINE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROLE_RUNTIME_DIR = path.dirname(ENGINE_DIR);
@@ -2333,6 +2337,40 @@ test("retired policy characterization cannot be enabled by production compositio
     offenders,
     [],
     `only the isolated characterization harness may expose retired policy behavior:\n${offenders.join("\n")}`,
+  );
+});
+
+test("prompt registry has no dead route, duplicate authority, or missing owner", () => {
+  const audit = auditDefaultPromptRegistry();
+  assert.equal(audit.valid, true, JSON.stringify(audit));
+  assert.deepEqual(audit.unreachableSectionIds, []);
+  assert.deepEqual(audit.missingRouteIds, []);
+  assert.deepEqual(audit.duplicateAuthorityKeys, []);
+  const workspaceRoot = path.dirname(PACKAGES_DIR);
+  const missingOwners = DEFAULT_PROMPT_SECTION_DEFINITIONS
+    .filter(
+      (definition) =>
+        !existsSync(path.join(workspaceRoot, definition.owner)),
+    )
+    .map((definition) => definition.owner);
+  assert.deepEqual(
+    missingOwners,
+    [],
+    `prompt registry owners must exist:\n${missingOwners.join("\n")}`,
+  );
+  assert.match(
+    readFileSync(
+      path.join(ROLE_RUNTIME_DIR, "prompt", "prompt-assembler.ts"),
+      "utf8",
+    ),
+    /PROMPT_ASSEMBLY_SECTION_IDS/,
+  );
+  assert.match(
+    readFileSync(
+      path.join(ROLE_RUNTIME_DIR, "tool-capability-registry.ts"),
+      "utf8",
+    ),
+    /TOOL_PROMPT_GROUP_SECTION_IDS/,
   );
 });
 

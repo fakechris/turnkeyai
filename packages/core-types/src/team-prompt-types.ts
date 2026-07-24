@@ -1,7 +1,38 @@
 import type { FlowId, RoleId, TaskId, ThreadId } from "./team-core";
 
-export type PromptBoundaryKind = "prompt_compaction" | "request_envelope_reduction";
+export type PromptBoundaryKind =
+  | "prompt_assembly"
+  | "prompt_compaction"
+  | "request_envelope_reduction";
 export type PromptBoundaryReductionLevel = "compact" | "minimal" | "reference-only";
+export type PromptSectionAuthority =
+  | "instruction"
+  | "context-projection"
+  | "untrusted-evidence"
+  | "model-advisory";
+export type PromptSectionBaselineBehavior =
+  | "static"
+  | "full-delta"
+  | "rehydrate-full"
+  | "ephemeral";
+export type PromptSectionRuntimeState =
+  | "included"
+  | "compacted"
+  | "omitted"
+  | "inactive";
+
+export interface PromptSectionRuntimeReceipt {
+  sectionId: string;
+  version: string;
+  owner: string;
+  authority: PromptSectionAuthority;
+  requiredCapability: string;
+  baselineBehavior: PromptSectionBaselineBehavior;
+  state: PromptSectionRuntimeState;
+  estimatedTokens: number;
+  reason?: string;
+}
+
 export type PromptContextRiskSignal =
   | "missing_continuation_context"
   | "missing_pending_work"
@@ -87,6 +118,7 @@ export interface PromptBoundaryEntry {
   sectionOrder?: string[];
   compactedSegments?: string[];
   omittedSections?: string[];
+  sectionReceipts?: PromptSectionRuntimeReceipt[];
   usedArtifacts?: string[];
   reductionLevel?: PromptBoundaryReductionLevel;
   tokenEstimate?: {
@@ -119,6 +151,9 @@ export interface PromptConsoleReport {
   modelChainCounts: Record<string, number>;
   roleCounts: Record<string, number>;
   compactedSegmentCounts: Record<string, number>;
+  promptSectionStateCounts: Partial<Record<PromptSectionRuntimeState, number>>;
+  promptSectionAuthorityCounts: Partial<Record<PromptSectionAuthority, number>>;
+  promptSectionVersionCounts: Record<string, number>;
   uniqueAssemblyFingerprintCount: number;
   totalRecentTurnsSelected: number;
   totalRecentTurnsPacked: number;

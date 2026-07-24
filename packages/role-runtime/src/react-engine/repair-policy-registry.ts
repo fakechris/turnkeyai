@@ -15,6 +15,8 @@ import {
   buildMissingBrowserEvidenceRepairPrompt,
   buildMissingBrowserEvidenceDimensionsRepairPrompt,
   buildMissingApprovalGateRepairPrompt,
+  buildMissingDurableMemoryGetRepairPrompt,
+  buildMissingDurableMemorySearchRepairPrompt,
   buildMissingProductSignalBrowserEvidenceRepairPrompt,
   buildMissingRequestedNextActionRepairPrompt,
   buildMissingRequiredFinalDeliverablesRepairPrompt,
@@ -57,10 +59,11 @@ import {
 import type { LLMMessage, ReActToolChoice } from "./types";
 
 export const REPAIR_POLICY_REGISTRY_MODULE = "repair-policy-registry" as const;
-export const ENGINE_ACTIVE_REPAIR_POLICY_IDS = [] as const;
 
 export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "final_recovery_budget_closeout_repair",
+  "missing_durable_memory_search",
+  "missing_durable_memory_get",
   "missing_browser_evidence",
   "missing_product_signal_browser_evidence",
   "missing_approval_gate",
@@ -79,6 +82,11 @@ export const ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
 
 export type EngineNaturalFinishRepairPolicyId =
   (typeof ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER)[number];
+
+export const ENGINE_ACTIVE_REPAIR_POLICY_IDS = [
+  "missing_durable_memory_search",
+  "missing_durable_memory_get",
+] as const satisfies readonly EngineNaturalFinishRepairPolicyId[];
 
 export const ENGINE_COMPLETED_SYNTHESIS_REPAIR_POLICY_ORDER = [
   "timeout_followup_final_guidance",
@@ -164,6 +172,22 @@ export type NaturalFinishRepairDecision =
       repairPrompt: string;
       forceToolChoice: ReActToolChoice;
       consumesRound?: false;
+    }
+  | {
+      kind: "force_tool_round";
+      policyId: "missing_durable_memory_search";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: { name: "memory_search" };
+      consumesRound: true;
+    }
+  | {
+      kind: "force_tool_round";
+      policyId: "missing_durable_memory_get";
+      evidenceFormula: "candidate_final";
+      repairPrompt: string;
+      forceToolChoice: { name: "memory_get" };
+      consumesRound: true;
     }
   | {
       kind: "force_tool_round";
@@ -332,25 +356,16 @@ export interface RepairPolicyRegistry {
   ): CompletedSynthesisRepairDecision | null;
 }
 
-const NO_ACTION_REPAIR_POLICY_REGISTRY: RepairPolicyRegistry = {
-  applyNaturalFinishRepairHook() {
-    return null;
-  },
-  applyNaturalFinishRepair() {
-    return null;
-  },
-  evaluateNaturalFinish() {
-    return null;
-  },
-  applyNaturalFinishRepairDecision() {
-    return null;
-  },
-  evaluateCompletedSynthesis() {
-    return null;
-  },
-};
-
 class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
+  constructor(
+    private readonly enabledNaturalPolicies:
+      | readonly EngineNaturalFinishRepairPolicyId[]
+      | undefined = undefined,
+    private readonly enabledCompletedPolicies:
+      | readonly EngineCompletedSynthesisRepairPolicyId[]
+      | undefined = undefined,
+  ) {}
+
   applyNaturalFinishRepairHook(
     input: NaturalFinishRepairHookInput,
   ): NaturalFinishRepairApplication | null {
@@ -434,9 +449,10 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
     return renderNaturalFinishRepairDecision(
       selectNaturalFinishRepairPolicy({
         facts,
-        ...(input.enabledPolicies === undefined
-          ? {}
-          : { enabledPolicies: input.enabledPolicies }),
+        ...resolveEnabledPolicyOption(
+          input.enabledPolicies,
+          this.enabledNaturalPolicies,
+        ),
       }),
       input,
       facts,
@@ -450,9 +466,10 @@ class DefaultRepairPolicyRegistry implements RepairPolicyRegistry {
     return renderCompletedSynthesisRepairDecision(
       selectCompletedSynthesisRepairPolicy({
         facts,
-        ...(input.enabledPolicies === undefined
-          ? {}
-          : { enabledPolicies: input.enabledPolicies }),
+        ...resolveEnabledPolicyOption(
+          input.enabledPolicies,
+          this.enabledCompletedPolicies,
+        ),
       }),
       input,
       facts,
@@ -476,6 +493,24 @@ function renderNaturalFinishRepairDecision(
           input.finalRecoveryBudget?.maxToolCalls ?? 0,
         ),
         forceToolChoice: "none",
+      };
+    case "missing_durable_memory_search":
+      return {
+        kind: "force_tool_round",
+        policyId: "missing_durable_memory_search",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildMissingDurableMemorySearchRepairPrompt(),
+        forceToolChoice: { name: "memory_search" },
+        consumesRound: true,
+      };
+    case "missing_durable_memory_get":
+      return {
+        kind: "force_tool_round",
+        policyId: "missing_durable_memory_get",
+        evidenceFormula: "candidate_final",
+        repairPrompt: buildMissingDurableMemoryGetRepairPrompt(),
+        forceToolChoice: { name: "memory_get" },
+        consumesRound: true,
       };
     case "missing_browser_evidence":
       return {
@@ -680,10 +715,27 @@ function renderCompletedSynthesisRepairDecision(
 }
 
 export function createRepairPolicyRegistry(): RepairPolicyRegistry {
-  return NO_ACTION_REPAIR_POLICY_REGISTRY;
+  return new DefaultRepairPolicyRegistry(ENGINE_ACTIVE_REPAIR_POLICY_IDS, []);
 }
 
 /** Test-only characterization of the retired automatic policy actions. */
 export function createRepairPolicyCharacterizationRegistry(): RepairPolicyRegistry {
   return new DefaultRepairPolicyRegistry();
+}
+
+function resolveEnabledPolicyOption<T extends string>(
+  requested: readonly T[] | undefined,
+  allowed: readonly T[] | undefined,
+): { enabledPolicies?: readonly T[] } {
+  if (allowed === undefined) {
+    return requested === undefined ? {} : { enabledPolicies: requested };
+  }
+  if (requested === undefined) {
+    return { enabledPolicies: allowed };
+  }
+  return {
+    enabledPolicies: allowed.filter((policyId) =>
+      requested.includes(policyId),
+    ),
+  };
 }

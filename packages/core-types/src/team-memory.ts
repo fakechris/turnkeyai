@@ -127,3 +127,167 @@ export interface ThreadJournalStore {
   put(record: ThreadJournalRecord): Promise<void>;
   listByThread(threadId: string, limit?: number): Promise<ThreadJournalRecord[]>;
 }
+
+export type MemoryPlane =
+  | "profile"
+  | "workspace"
+  | "session"
+  | "evidence"
+  | "transcript-index";
+
+export interface MemoryScope {
+  workspaceId: string;
+  threadId?: string;
+  roleId?: string;
+}
+
+export type DurableMemoryConfidence =
+  | "authoritative"
+  | "confirmed"
+  | "inferred";
+
+export interface DurableMemoryRecord {
+  memoryId: string;
+  plane: MemoryPlane;
+  scope: MemoryScope;
+  content: string;
+  sourceRefs: string[];
+  createdBy: "user" | "runtime" | "memory-writer";
+  confidence: DurableMemoryConfidence;
+  createdAt: number;
+  lastConfirmedAt: number;
+  supersedes: string[];
+  invalidationKeys: string[];
+  expiresAt?: number;
+}
+
+export interface WorkspaceMemorySourceEvent {
+  eventId: string;
+  workspaceId: string;
+  threadId: string;
+  sequence: number;
+  kind: "user-message" | "runtime-message" | "task-change" | "evidence";
+  content: string;
+  sourceRefs: string[];
+  occurredAt: number;
+  authoritative: boolean;
+}
+
+export type WorkspaceMemoryMutation =
+  | {
+      kind: "add";
+      record: DurableMemoryRecord;
+    }
+  | {
+      kind: "supersede";
+      record: DurableMemoryRecord;
+      supersedes: string[];
+    }
+  | {
+      kind: "delete";
+      memoryId: string;
+      reason: string;
+      sourceRefs: string[];
+    };
+
+export interface WorkspaceMemoryWriterCursor {
+  workspaceId: string;
+  lastSequence: number;
+  lastEventId?: string;
+  updatedAt: number;
+}
+
+export interface WorkspaceMemoryAuditRecord {
+  auditId: string;
+  workspaceId: string;
+  trigger:
+    | "turn-interval"
+    | "high-value-event"
+    | "idle"
+    | "pre-compaction"
+    | "mission-close"
+    | "manual";
+  sourceEventIds: string[];
+  mutations: WorkspaceMemoryMutation[];
+  rejectedMutations: Array<{
+    mutation: WorkspaceMemoryMutation;
+    reason: string;
+  }>;
+  beforeDigest: string;
+  afterDigest: string;
+  startedAt: number;
+  completedAt: number;
+  status: "written" | "noop" | "failed";
+  error?: string;
+}
+
+export interface WorkspaceMemorySnapshot {
+  workspaceId: string;
+  records: DurableMemoryRecord[];
+  cursor: WorkspaceMemoryWriterCursor;
+  audits: WorkspaceMemoryAuditRecord[];
+}
+
+export interface WorkspaceMemoryStore {
+  getSnapshot(workspaceId: string): Promise<WorkspaceMemorySnapshot>;
+  get(memoryId: string): Promise<DurableMemoryRecord | null>;
+  list(scope: MemoryScope, plane?: MemoryPlane): Promise<DurableMemoryRecord[]>;
+  commit(input: {
+    workspaceId: string;
+    expectedLastSequence: number;
+    cursor: WorkspaceMemoryWriterCursor;
+    audit: WorkspaceMemoryAuditRecord;
+    mutations: WorkspaceMemoryMutation[];
+  }): Promise<WorkspaceMemorySnapshot>;
+}
+
+export interface MemoryIndexCandidate {
+  memoryId: string;
+  channel: "fts" | "vector";
+  rawScore: number;
+  rank: number;
+}
+
+export interface HybridMemoryRecallHit {
+  record: DurableMemoryRecord;
+  score: number;
+  rationale: string;
+  channels: {
+    fts?: { rank: number; rawScore: number };
+    vector?: { rank: number; rawScore: number };
+  };
+}
+
+export interface MemoryEmbeddingAdapter {
+  embed(text: string): Promise<number[]>;
+}
+
+export interface MemorySearchIndex {
+  replaceWorkspace(
+    workspaceId: string,
+    records: DurableMemoryRecord[],
+  ): Promise<void>;
+  get(memoryId: string): Promise<DurableMemoryRecord | null>;
+  recall(input: {
+    scope: MemoryScope;
+    query: string;
+    ftsCandidates?: number;
+    vectorCandidates?: number;
+    limit?: number;
+  }): Promise<HybridMemoryRecallHit[]>;
+  rebuild(records: DurableMemoryRecord[]): Promise<void>;
+  diagnostics?(scope?: MemoryScope): Promise<{
+    backend: string;
+    indexedRecords: number;
+    vectorRecords: number;
+    channels: Array<"fts" | "vector">;
+    defaults: {
+      ftsCandidates: number;
+      vectorCandidates: number;
+      hits: number;
+      rrfK: number;
+      ftsWeight: number;
+      vectorWeight: number;
+    };
+  }>;
+}

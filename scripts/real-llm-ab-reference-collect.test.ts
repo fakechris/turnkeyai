@@ -8,7 +8,7 @@ import path from "node:path";
 
 import {
   buildRealLlmAbReferenceCollectHelpText,
-  collectAccioWorkspaceArtifacts,
+  collectReferenceRuntimeWorkspaceArtifacts,
   collectReferenceArtifacts,
   parseRealLlmAbReferenceCollectArgs,
   readReferenceCompletion,
@@ -65,16 +65,16 @@ test("real LLM A/B reference collector parses args and help", () => {
   );
 });
 
-test("real LLM A/B reference collector parses Accio Work websocket mode", () => {
+test("real LLM A/B reference collector parses reference desktop runtime websocket mode", () => {
   const parsed = parseRealLlmAbReferenceCollectArgs([
     "--tasks",
     "/tmp/tasks.json",
     "--base-url",
     "http://127.0.0.1:4097",
-    "--accio-ws",
-    "--accio-agent-id",
+    "--reference-ws",
+    "--reference-agent-id",
     "DID-F456DA-2B0D4C",
-    "--accio-workspace-path",
+    "--reference-workspace-path",
     "/Users/chris/workspace/turnkeyai",
   ]);
   assert.deepEqual(
@@ -86,29 +86,29 @@ test("real LLM A/B reference collector parses Accio Work websocket mode", () => 
       tasksPath: "/tmp/tasks.json",
       baseUrl: "http://127.0.0.1:4097",
       variant: "operator",
-      accioWs: true,
-      accioAgentId: "DID-F456DA-2B0D4C",
-      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceRuntimeWs: true,
+      referenceRuntimeAgentId: "DID-F456DA-2B0D4C",
+      referenceRuntimeWorkspacePath: "/Users/chris/workspace/turnkeyai",
       timeoutMs: 180_000,
       pollMs: 2_000,
-      referenceApp: "accio-work-app-asar",
-      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-      referenceRuntimeRoot: path.resolve("artifacts/reference-runtimes/accio-work-0.4.5"),
+      referenceApp: "reference-desktop-app-asar",
+      referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: path.resolve("artifacts/reference-runtimes/reference-desktop-0.4.5"),
       referenceVersion: "0.4.5",
       referenceCommit: undefined,
       check: false,
     }
   );
-  if (existsSync("/Applications/Accio.app/Contents/Resources/app.asar")) {
+  if (existsSync("/Applications/ReferenceRuntime.app/Contents/Resources/app.asar")) {
     assert.match(
       "help" in parsed ? "" : (parsed.referenceCommit ?? ""),
       /^app\.asar:[a-f0-9]{64}$/
     );
   }
-  assert.match(buildRealLlmAbReferenceCollectHelpText(), /--accio-ws/);
+  assert.match(buildRealLlmAbReferenceCollectHelpText(), /--reference-ws/);
 });
 
-test("real LLM A/B reference collector treats Accio pending approval final as ready only for pending policy", () => {
+test("real LLM A/B reference collector treats ReferenceRuntime pending approval final as ready only for pending policy", () => {
   const finalText = [
     "**Approval Form Snapshot**",
     "Status: Dry-run has not been submitted.",
@@ -142,7 +142,7 @@ test("real LLM A/B reference collector treats Accio pending approval final as re
   });
 });
 
-test("real LLM A/B reference collector records orphaned Accio workspace artifacts after prompt send", () => {
+test("real LLM A/B reference collector records orphaned ReferenceRuntime workspace artifacts after prompt send", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-workspace-"));
   try {
     const stalePath = path.join(dir, "old-dashboard.png");
@@ -156,7 +156,7 @@ test("real LLM A/B reference collector records orphaned Accio workspace artifact
     writeFileSync(screenshotPath, "new screenshot bytes");
     writeFileSync(path.join(nestedDir, "summary.md"), "new rendered dashboard summary");
 
-    const artifacts = collectAccioWorkspaceArtifacts({
+    const artifacts = collectReferenceRuntimeWorkspaceArtifacts({
       workspacePath: dir,
       sinceMs,
       maxFiles: 10,
@@ -174,7 +174,7 @@ test("real LLM A/B reference collector records orphaned Accio workspace artifact
     );
     const screenshot = artifacts.find((artifact) => artifact.relativePath === "ops-dashboard-1.png");
     const note = artifacts.find((artifact) => artifact.relativePath === "notes/summary.md");
-    assert.equal(screenshot?.source, "accio_ws_workspace_artifact_after_prompt");
+    assert.equal(screenshot?.source, "reference_ws_workspace_artifact_after_prompt");
     assert.equal(screenshot?.status, "orphaned_workspace_artifact");
     assert.equal(screenshot?.kind, "screenshot");
     assert.match(screenshot?.sha256 ?? "", /^sha256:[a-f0-9]{64}$/);
@@ -184,7 +184,7 @@ test("real LLM A/B reference collector records orphaned Accio workspace artifact
   }
 });
 
-test("real LLM A/B reference collector marks Accio websocket cancellation scenarios as unsupported", async () => {
+test("real LLM A/B reference collector marks ReferenceRuntime websocket cancellation scenarios as unsupported", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-collect-"));
   try {
     const tasksPath = path.join(dir, "tasks.json");
@@ -219,13 +219,13 @@ test("real LLM A/B reference collector marks Accio websocket cancellation scenar
       variant: "operator",
       timeoutMs: 1_000,
       pollMs: 10,
-      referenceApp: "accio-work-app-asar",
-      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-      referenceRuntimeRoot: path.join(dir, "accio-work-0.4.5"),
+      referenceApp: "reference-desktop-app-asar",
+      referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: path.join(dir, "reference-desktop-0.4.5"),
       referenceVersion: "0.4.5",
       referenceCommit: "app.asar:test",
-      accioWs: true,
-      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceRuntimeWs: true,
+      referenceRuntimeWorkspacePath: "/Users/chris/workspace/turnkeyai",
       check: true,
     });
 
@@ -250,7 +250,7 @@ test("real LLM A/B reference collector marks Accio websocket cancellation scenar
       assert.equal(artifact.exitStatus, "error");
       assert.equal(
         artifact.errorReason,
-        "unsupported_reference_scenario_driver:accio_ws_reference_does_not_expose_active_cancellation_driver"
+        "unsupported_reference_scenario_driver:reference_ws_reference_does_not_expose_active_cancellation_driver"
       );
       assert.equal(artifact.provenance?.apiEndpoint, "not_run");
       assert.equal(artifact.provenance?.rawResponse, null);
@@ -258,7 +258,7 @@ test("real LLM A/B reference collector marks Accio websocket cancellation scenar
       assert.equal(artifact.provenance?.referenceScenarioDriver?.supported, false);
       assert.equal(
         artifact.provenance?.referenceScenarioDriver?.unsupportedReason,
-        "accio_ws_reference_does_not_expose_active_cancellation_driver"
+        "reference_ws_reference_does_not_expose_active_cancellation_driver"
       );
       assert.equal(artifact.first?.summary?.toolCallCount, 0);
       assert.equal(artifact.first?.summary?.toolResultCount, 0);
@@ -271,7 +271,7 @@ test("real LLM A/B reference collector marks Accio websocket cancellation scenar
   }
 });
 
-test("real LLM A/B reference collector fails fast when Accio websocket loopback fixtures are unreachable", async () => {
+test("real LLM A/B reference collector fails fast when ReferenceRuntime websocket loopback fixtures are unreachable", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-collect-"));
   const server = createMockReferenceDaemon();
   try {
@@ -302,14 +302,14 @@ test("real LLM A/B reference collector fails fast when Accio websocket loopback 
       variant: "operator",
       timeoutMs: 60_000,
       pollMs: 10,
-      referenceApp: "accio-work-app-asar",
-      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-      referenceRuntimeRoot: path.join(dir, "accio-work-0.4.5"),
+      referenceApp: "reference-desktop-app-asar",
+      referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: path.join(dir, "reference-desktop-0.4.5"),
       referenceVersion: "0.4.5",
       referenceCommit: "app.asar:test",
-      accioWs: true,
-      accioAgentId: "DID-F456DA-2B0D4C",
-      accioWorkspacePath: path.join(dir, "workspace"),
+      referenceRuntimeWs: true,
+      referenceRuntimeAgentId: "DID-F456DA-2B0D4C",
+      referenceRuntimeWorkspacePath: path.join(dir, "workspace"),
       check: true,
     });
 
@@ -353,11 +353,11 @@ test("real LLM A/B reference collector fails fast when Accio websocket loopback 
 
 test("real LLM A/B reference collector allows intentional slow fixture timeout preflight", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-collect-"));
-  const accioHome = path.join(dir, "accio-home");
+  const referenceRuntimeHome = path.join(dir, "referenceRuntime-home");
   const agentId = "DID-F456DA-2B0D4C";
   const accountId = "reference-account";
-  const referenceServer = createMockAccioWsReferenceDaemon({
-    accioHome,
+  const referenceServer = createMockReferenceRuntimeWsReferenceDaemon({
+    referenceRuntimeHome,
     accountId,
     agentId,
   });
@@ -402,14 +402,14 @@ test("real LLM A/B reference collector allows intentional slow fixture timeout p
       variant: "operator",
       timeoutMs: 2_000,
       pollMs: 10,
-      referenceApp: "accio-work-app-asar",
-      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-      referenceRuntimeRoot: path.join(dir, "accio-work-0.4.5"),
+      referenceApp: "reference-desktop-app-asar",
+      referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: path.join(dir, "reference-desktop-0.4.5"),
       referenceVersion: "0.4.5",
       referenceCommit: "app.asar:test",
-      accioWs: true,
-      accioAgentId: agentId,
-      accioWorkspacePath: path.join(dir, "workspace"),
+      referenceRuntimeWs: true,
+      referenceRuntimeAgentId: agentId,
+      referenceRuntimeWorkspacePath: path.join(dir, "workspace"),
       check: true,
     });
     const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as {
@@ -448,7 +448,7 @@ test("real LLM A/B reference collector allows intentional slow fixture timeout p
   }
 });
 
-test("real LLM A/B reference completion waits for pending Accio tool calls", () => {
+test("real LLM A/B reference completion waits for pending ReferenceRuntime tool calls", () => {
   const messages: unknown[] = [
     {
       role: "assistant",
@@ -505,13 +505,13 @@ test("real LLM A/B reference completion waits for pending Accio tool calls", () 
   });
 });
 
-test("real LLM A/B Accio websocket collector keeps the desktop socket open after acceptance", async () => {
+test("real LLM A/B ReferenceRuntime websocket collector keeps the desktop socket open after acceptance", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-collect-"));
-  const accioHome = path.join(dir, "accio-home");
+  const referenceRuntimeHome = path.join(dir, "referenceRuntime-home");
   const agentId = "DID-F456DA-2B0D4C";
   const accountId = "reference-account";
-  const server = createMockAccioWsReferenceDaemon({
-    accioHome,
+  const server = createMockReferenceRuntimeWsReferenceDaemon({
+    referenceRuntimeHome,
     accountId,
     agentId,
   });
@@ -542,14 +542,14 @@ test("real LLM A/B Accio websocket collector keeps the desktop socket open after
       variant: "operator",
       timeoutMs: 2_000,
       pollMs: 10,
-      referenceApp: "accio-work-app-asar",
-      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-      referenceRuntimeRoot: path.join(dir, "accio-work-0.4.5"),
+      referenceApp: "reference-desktop-app-asar",
+      referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: path.join(dir, "reference-desktop-0.4.5"),
       referenceVersion: "0.4.5",
       referenceCommit: "app.asar:test",
-      accioWs: true,
-      accioAgentId: agentId,
-      accioWorkspacePath: path.join(dir, "workspace"),
+      referenceRuntimeWs: true,
+      referenceRuntimeAgentId: agentId,
+      referenceRuntimeWorkspacePath: path.join(dir, "workspace"),
       check: true,
     });
     const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as {
@@ -1578,11 +1578,11 @@ test("real LLM A/B reference collector maps rendered browser evidence from sessi
   }
 });
 
-test("real LLM A/B reference collector maps Accio text browser session tool results as rendered evidence", async () => {
+test("real LLM A/B reference collector maps ReferenceRuntime text browser session tool results as rendered evidence", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-collect-"));
   const server = createMockReferenceDaemon({
     emptyBrowserSessions: true,
-    accioTextBrowserToolResultTranscript: true,
+    referenceRuntimeTextBrowserToolResultTranscript: true,
   });
   try {
     const baseUrl = await listen(server);
@@ -1868,7 +1868,7 @@ function createMockReferenceDaemon(
     authToken?: string;
     emptyBrowserSessions?: boolean;
     browserToolResultTranscript?: boolean;
-    accioTextBrowserToolResultTranscript?: boolean;
+    referenceRuntimeTextBrowserToolResultTranscript?: boolean;
     failedBrowserToolResultTranscript?: boolean;
     failMessagePostAfterAccept?: boolean;
     pendingWithoutAssistantFinal?: boolean;
@@ -2413,7 +2413,7 @@ function createMockReferenceDaemon(
               },
             ]
           : []),
-        ...(options.accioTextBrowserToolResultTranscript
+        ...(options.referenceRuntimeTextBrowserToolResultTranscript
           ? [
               {
                 role: "tool",
@@ -2478,8 +2478,8 @@ function createMockReferenceDaemon(
   });
 }
 
-function createMockAccioWsReferenceDaemon(input: {
-  accioHome: string;
+function createMockReferenceRuntimeWsReferenceDaemon(input: {
+  referenceRuntimeHome: string;
   accountId: string;
   agentId: string;
 }) {
@@ -2500,11 +2500,11 @@ function createMockAccioWsReferenceDaemon(input: {
     if (req.method === "GET" && url.pathname === "/reference/health") {
       return writeJson(res, {
         ok: true,
-        source: "accio-work-app-asar",
+        source: "reference-desktop-app-asar",
         provider: "minimax",
         model: "MiniMax-M2.7-highspeed",
-        accioHome: input.accioHome,
-        electronUserDataDir: path.join(path.dirname(input.accioHome), "electron-user-data"),
+        referenceRuntimeHome: input.referenceRuntimeHome,
+        electronUserDataDir: path.join(path.dirname(input.referenceRuntimeHome), "electron-user-data"),
       });
     }
     if (req.method === "GET" && url.pathname === "/agents") {
@@ -2565,8 +2565,8 @@ function createMockAccioWsReferenceDaemon(input: {
         });
       }, 20);
       setTimeout(() => {
-        writeAccioWsSessionMessages({
-          accioHome: input.accioHome,
+        writeReferenceRuntimeWsSessionMessages({
+          referenceRuntimeHome: input.referenceRuntimeHome,
           accountId: input.accountId,
           agentId: input.agentId,
           conversationId,
@@ -2585,14 +2585,14 @@ function createMockAccioWsReferenceDaemon(input: {
   return server;
 }
 
-function writeAccioWsSessionMessages(input: {
-  accioHome: string;
+function writeReferenceRuntimeWsSessionMessages(input: {
+  referenceRuntimeHome: string;
   accountId: string;
   agentId: string;
   conversationId: string;
   messages: unknown[];
 }): void {
-  const sessionDir = path.join(input.accioHome, "accounts", input.accountId, "agents", input.agentId, "sessions");
+  const sessionDir = path.join(input.referenceRuntimeHome, "accounts", input.accountId, "agents", input.agentId, "sessions");
   mkdirSync(sessionDir, { recursive: true });
   const sessionPath = path.join(sessionDir, `${input.agentId}_${input.conversationId}.messages.jsonl`);
   writeFileSync(sessionPath, `${input.messages.map((message) => JSON.stringify(message)).join("\n")}\n`);

@@ -29,6 +29,7 @@ export interface InspectionRouteDeps {
   listRuntimeProgressByChain(chainId: string, limit: number): Promise<unknown>;
   listRoleRuns(threadId: string): Promise<unknown>;
   getSessionMemory(threadId: string): Promise<unknown | null>;
+  buildLongContextRuntime(threadId: string): Promise<unknown | null>;
   listModels(): Promise<unknown>;
   inspectCapabilities(threadId: string, roleId: string, requestedCapabilities: string[]): Promise<unknown>;
   listGovernancePermissions(threadId: string): Promise<unknown>;
@@ -291,6 +292,23 @@ export async function handleInspectionRoutes(input: {
       return true;
     }
     sendJson(res, 200, record);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/context/long-runtime") {
+    const threadId = parseRequiredNonEmptyString(
+      url.searchParams.get("threadId"),
+    );
+    if (!threadId) {
+      sendJson(res, 400, { error: "threadId is required" });
+      return true;
+    }
+    const report = await deps.buildLongContextRuntime(threadId);
+    if (!report) {
+      sendJson(res, 404, { error: "thread not found" });
+      return true;
+    }
+    sendJson(res, 200, report);
     return true;
   }
 

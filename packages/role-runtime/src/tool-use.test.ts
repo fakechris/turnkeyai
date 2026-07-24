@@ -7976,16 +7976,20 @@ test("memory_search and memory_get expose durable thread memory to the role", as
 
 test("task tools expose mission work-item list, create, and update operations", async () => {
   const calls: string[] = [];
+  let createdInput: Parameters<TaskToolService["create"]>[0] | undefined;
+  let updatedInput: Parameters<TaskToolService["update"]>[0] | undefined;
   const taskToolService: TaskToolService = {
     async list(input) {
       calls.push(`list:${input.threadId}:${input.status ?? "all"}`);
       return { mission_id: input.missionId ?? "msn.1", tasks: [] };
     },
     async create(input) {
+      createdInput = input;
       calls.push(`create:${input.title}:${input.agentId ?? input.roleId}`);
       return { mission_id: input.missionId ?? "msn.1", task: { id: "wi.task-1", title: input.title } };
     },
     async update(input) {
+      updatedInput = input;
       calls.push(`update:${input.workItemId}:${input.status ?? "same"}`);
       return { mission_id: input.missionId ?? "msn.1", task: { id: input.workItemId, status: input.status } };
     },
@@ -8015,12 +8019,41 @@ test("task tools expose mission work-item list, create, and update operations", 
     packet,
   });
   const create = await executor.execute({
-    call: { id: "call-tasks-create", name: "tasks_create", input: { title: "Verify browser evidence", agent_id: "role-lead" } },
+    call: {
+      id: "call-tasks-create",
+      name: "tasks_create",
+      input: {
+        title: "Verify browser evidence",
+        agent_id: "role-lead",
+        objective: "Verify browser evidence with a durable artifact",
+        input_refs: ["artifact://capture"],
+        blocked_by: [],
+        acceptance_criteria: [{
+          id: "evidence-readable",
+          description: "The evidence artifact is readable",
+          required: true,
+        }],
+      },
+    },
     activation,
     packet,
   });
   const update = await executor.execute({
-    call: { id: "call-tasks-update", name: "tasks_update", input: { work_item_id: "wi.task-1", status: "done", progress: 1 } },
+    call: {
+      id: "call-tasks-update",
+      name: "tasks_update",
+      input: {
+        work_item_id: "wi.task-1",
+        status: "done",
+        progress: 1,
+        verification_receipts: [{
+          criterion_id: "evidence-readable",
+          kind: "artifact",
+          ref: "artifact://capture",
+          result: "passed",
+        }],
+      },
+    },
     activation,
     packet,
   });
@@ -8029,6 +8062,17 @@ test("task tools expose mission work-item list, create, and update operations", 
   assert.equal(JSON.parse(create.content).task.id, "wi.task-1");
   assert.equal(JSON.parse(update.content).task.status, "done");
   assert.deepEqual(calls, ["list:thread-1:working", "create:Verify browser evidence:role-lead", "update:wi.task-1:done"]);
+  assert.deepEqual(createdInput?.blockedBy, []);
+  assert.equal(
+    createdInput?.acceptanceCriteria?.[0]?.id,
+    "evidence-readable",
+  );
+  assert.deepEqual(updatedInput?.verificationReceipts, [{
+    criterionId: "evidence-readable",
+    kind: "artifact",
+    ref: "artifact://capture",
+    result: "passed",
+  }]);
   assert.equal(update.progress?.[0]?.phase, "completed");
 });
 

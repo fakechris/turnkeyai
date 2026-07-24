@@ -1233,6 +1233,7 @@ const GENERIC_SOURCE_LABEL_TOKENS = new Set([
   "pre",
   "product",
   "pull",
+  "read",
   "re",
   "recheck",
   "rechecked",

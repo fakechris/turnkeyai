@@ -17,6 +17,7 @@ interface TaskPlanItem {
   progress?: number;
   blocker?: string;
   output?: string;
+  specification?: Record<string, unknown>;
 }
 
 export function readTaskPlanState(
@@ -91,6 +92,9 @@ function normalizeTaskPlanItem(value: unknown): TaskPlanItem | null {
       : {}),
     ...(typeof value["output"] === "string" && value["output"].length > 0
       ? { output: value["output"] }
+      : {}),
+    ...(isRecord(value["specification"])
+      ? { specification: structuredClone(value["specification"]) }
       : {}),
   };
 }

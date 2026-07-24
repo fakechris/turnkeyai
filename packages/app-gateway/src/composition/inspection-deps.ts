@@ -38,9 +38,11 @@ import {
 } from "@turnkeyai/qc-runtime/replay-inspection";
 import type { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import type { RelayControlPlane } from "@turnkeyai/browser-bridge/transport/transport-adapter";
+import type { TaskToolService } from "@turnkeyai/role-runtime/task-tool-service";
 
 import type { DaemonFoundations } from "./foundations";
 import type { DaemonRuntimeServices } from "./runtime-services";
+import { buildLongContextRuntimeReport } from "../long-context-runtime-report";
 
 /**
  * Snapshot of the relay gateway's current peer/target/action state. Consumed
@@ -85,6 +87,7 @@ export interface InspectionDepsInputs {
    * listModels returns the corresponding shape.
    */
   modelCatalogPath: string | null;
+  taskToolService?: TaskToolService;
 }
 
 export function createInspectionRouteDeps(
@@ -97,9 +100,14 @@ export function createInspectionRouteDeps(
       teamRouteMap,
       teamEventBus,
       flowLedgerStore,
+      workerSessionStore,
       roleRunStore,
       runtimeProgressStore,
       threadSessionMemoryStore,
+      contextCheckpointStore,
+      dynamicContextBaselineStore,
+      workspaceMemoryStore,
+      memorySearchIndex,
       permissionCacheStore,
       replayRecorder,
       capabilityDiscoveryService,
@@ -135,6 +143,38 @@ export function createInspectionRouteDeps(
     listRuntimeProgressByChain: (chainId, limit) => runtimeProgressStore.listByChain(chainId, limit),
     listRoleRuns: (threadId) => roleRunStore.listByThread(threadId),
     getSessionMemory: (threadId) => threadSessionMemoryStore.get(threadId),
+    buildLongContextRuntime: (threadId) =>
+      buildLongContextRuntimeReport(
+        {
+          now: () => Date.now(),
+          teamThreadStore,
+          flowLedgerStore,
+          teamMessageStore,
+          runtimeProgressStore,
+          workerSessionStore: {
+            listByThread: (threadId) =>
+              workerSessionStore.listByThread(threadId),
+          },
+          permissionCacheStore,
+          contextCheckpointStore,
+          dynamicContextBaselineStore,
+          workspaceMemoryStore,
+          memorySearchIndex,
+          activeToolPromptSectionIds:
+            toolCapabilityRegistry.activePromptSectionIds(),
+          ...(inputs.taskToolService?.snapshot
+            ? {
+                taskSnapshotProvider: ({ threadId, roleId }) =>
+                  inputs.taskToolService!.snapshot!({
+                    threadId,
+                    roleId,
+                    limit: 50,
+                  }),
+              }
+            : {}),
+        },
+        threadId,
+      ),
     listModels: () => buildModelsReport(llmGateway, modelCatalogPath),
     inspectCapabilities: async (threadId, roleId, requestedCapabilities) => {
       const inspection = await capabilityDiscoveryService.inspect({

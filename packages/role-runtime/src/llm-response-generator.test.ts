@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type {
+ContextCheckpointRecord,
+ContextCheckpointScope,
+ContextCheckpointStore,
+DynamicContextBaseline,
+DynamicContextBaselineStore,
+DynamicContextScope,
 RoleActivationInput,
 ReplayRecord,
 TeamMessage,
@@ -3750,6 +3756,135 @@ test("llm role response generator does not suppress memory tools for follow-up r
   assert.match(result.content, /Tuesday 09:30/);
 });
 
+test("llm role response generator repairs an explicit durable-memory lookup into search then get", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: string[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "Aurora-19 launches Friday 14:15 with the Field Ops Lead.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "memory_search",
+      });
+      return toolCallResult("toolu-memory-search", "memory_search", {
+        query: "Aurora-19 launch window owner constraint residual risk",
+      });
+    }
+    if (gatewayInputs.length === 3) {
+      return {
+        text: "The search result already confirms the Aurora-19 details.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 4) {
+      assert.deepEqual(input.toolChoice, {
+        type: "tool",
+        name: "memory_get",
+      });
+      return toolCallResult("toolu-memory-get", "memory_get", {
+        memory_id: "memory-aurora-19",
+      });
+    }
+    return {
+      text: [
+        "Durable memory verified Aurora-19.",
+        "Launch window: Friday 14:15.",
+        "Owner: Field Ops Lead.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "memory_search",
+          description: "Search durable memory",
+          inputSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+          },
+        },
+        {
+          name: "memory_get",
+          description: "Inspect durable memory",
+          inputSchema: {
+            type: "object",
+            properties: { memory_id: { type: "string" } },
+          },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call.name);
+      if (input.call.name === "memory_search") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            memories: [
+              {
+                memory_id: "memory-aurora-19",
+                content: "Aurora-19 launch handoff",
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          memory: {
+            memory_id: "memory-aurora-19",
+            content:
+              "Aurora-19 launches Friday 14:15 with the Field Ops Lead.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 8 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Use durable memory lookup for Aurora-19 rather than the visible summary.",
+        "Inspect any candidate memory entry before relying on it.",
+      ].join("\n"),
+    },
+  });
+
+  assert.deepEqual(executedCalls, ["memory_search", "memory_get"]);
+  assert.equal(gatewayInputs.length, 5);
+  assert.match(result.content, /Friday 14:15/);
+  assert.match(result.content, /Field Ops Lead/);
+});
+
 test("llm role response generator preserves non-memory tools for focused durable memory recall turns", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -5268,6 +5403,10 @@ test("llm role response generator prunes a newest tool result that alone exceeds
 
 test("llm role response generator creates typed checkpoints from calibrated token pressure", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
+  const runJournalStore = new MemoryRunJournalMessageStore();
+  const contextCheckpointStore = new MemoryContextCheckpointStore();
+  const dynamicContextBaselineStore =
+    new MemoryDynamicContextBaselineStore();
   let mainCalls = 0;
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -5282,6 +5421,7 @@ test("llm role response generator creates typed checkpoints from calibrated toke
           artifacts: [],
           openQuestions: [],
           planState: ["Continue fetching the remaining sources."],
+          errorsAndFixes: [],
         }),
         modelId: "claude-test",
         providerId: "anthropic",
@@ -5333,6 +5473,9 @@ test("llm role response generator creates typed checkpoints from calibrated toke
         content: JSON.stringify({
           status: "completed",
           source: input.call.input.task,
+          session_key: `worker:${input.call.id}`,
+          resumable: false,
+          artifact_id: `artifact:${input.call.id}`,
         }),
       };
     },
@@ -5341,6 +5484,9 @@ test("llm role response generator creates typed checkpoints from calibrated toke
     testOnlyCharacterizeRetiredPolicies: true,
     gateway,
     toolLoop: { executor, maxRounds: 9 },
+    runJournalStore,
+    contextCheckpointStore,
+    dynamicContextBaselineStore,
   });
 
   const result = await generator.generate({
@@ -5360,7 +5506,7 @@ test("llm role response generator creates typed checkpoints from calibrated toke
   assert.equal(finalMainInput.messages[2]?.role, "user");
   assert.match(
     readToolContent(finalMainInput.messages[2]!.content),
-    /TurnkeyAI runtime checkpoint v1/,
+    /TurnkeyAI context checkpoint v2/,
   );
   assert.doesNotMatch(
     readToolContent(finalMainInput.messages[2]!.content),
@@ -5381,6 +5527,34 @@ test("llm role response generator creates typed checkpoints from calibrated toke
   };
   assert.equal(runTrace.compactions?.length, checkpointCalls.length);
   assert.equal(replay.modelResponses?.length, gatewayInputs.length);
+  const activeCheckpoint = await contextCheckpointStore.getActive({
+    threadId: "thread-1",
+    roleId: "role-lead",
+    flowId: "flow-1",
+  });
+  assert.equal(activeCheckpoint?.state, "activated");
+  assert.ok(
+    activeCheckpoint?.workingSet.sessions.length,
+    JSON.stringify(activeCheckpoint?.workingSet),
+  );
+  assert.ok(
+    activeCheckpoint?.workingSet.artifacts.length,
+    JSON.stringify(activeCheckpoint?.workingSet),
+  );
+  assert.equal(
+    activeCheckpoint?.dynamicContext?.baselineId,
+    (await dynamicContextBaselineStore.get({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      flowId: "flow-1",
+    }))?.baselineId,
+  );
+  assert.match(
+    finalMainInput.messages
+      .map((message) => readToolContent(message.content))
+      .join("\n"),
+    /TurnkeyAI dynamic context full v1/,
+  );
 });
 
 test("llm role response generator preserves early evidence through a forty-round checkpointed loop", async () => {
@@ -5401,6 +5575,7 @@ test("llm role response generator preserves early evidence through a forty-round
           artifacts: [],
           openQuestions: [],
           planState: ["Continue the remaining source rounds."],
+          errorsAndFixes: [],
         }),
         modelId: "claude-test",
         providerId: "anthropic",
@@ -21272,6 +21447,8 @@ test("llm role response generator externalizes oversized tool history while pres
 
 test("llm role response generator resumes from the last durable round without repeating tools", async () => {
   const store = new MemoryRunJournalMessageStore();
+  const dynamicContextBaselineStore =
+    new MemoryDynamicContextBaselineStore();
   const controller = new AbortController();
   const executedCallIds: string[] = [];
   let firstCalls = 0;
@@ -21310,6 +21487,7 @@ test("llm role response generator resumes from the last durable round without re
     gateway: firstGateway,
     toolLoop: { executor, maxRounds: 6 },
     runJournalStore: store,
+    dynamicContextBaselineStore,
   });
 
   await assert.rejects(
@@ -21332,11 +21510,14 @@ test("llm role response generator resumes from the last durable round without re
     gateway: resumedGateway,
     toolLoop: { executor, maxRounds: 6 },
     runJournalStore: store,
+    dynamicContextBaselineStore,
   });
 
+  const resumedPacket = buildPacket();
+  resumedPacket.taskPrompt = `${resumedPacket.taskPrompt}\n\nUpdated runtime constraint.`;
   const result = await resumedGenerator.generate({
     activation: buildActivation(),
-    packet: buildPacket(),
+    packet: resumedPacket,
   });
 
   assert.equal(result.content, "Resumed final answer.");
@@ -21346,6 +21527,11 @@ test("llm role response generator resumes from the last durable round without re
     .join("\n") ?? "";
   assert.match(resumedHistory, /durable evidence tool-resume-1/);
   assert.match(resumedHistory, /durable evidence tool-resume-2/);
+  assert.match(resumedHistory, /TurnkeyAI dynamic context delta v1/);
+  assert.equal(
+    resumedHistory.match(/Updated runtime constraint\./g)?.length,
+    1,
+  );
   assert.equal(
     (
       result.metadata?.engineRunReplay as
@@ -21493,6 +21679,91 @@ class MemoryRunJournalMessageStore implements TeamMessageStore {
   async get(messageId: string): Promise<TeamMessage | null> {
     return this.messages.get(messageId) ?? null;
   }
+}
+
+class MemoryContextCheckpointStore implements ContextCheckpointStore {
+  private readonly records = new Map<string, ContextCheckpointRecord>();
+  private readonly active = new Map<string, string>();
+
+  async get(checkpointId: string): Promise<ContextCheckpointRecord | null> {
+    return this.records.get(checkpointId) ?? null;
+  }
+
+  async put(record: ContextCheckpointRecord): Promise<void> {
+    this.records.set(record.checkpointId, structuredClone(record));
+  }
+
+  async getActive(
+    scope: ContextCheckpointScope,
+  ): Promise<ContextCheckpointRecord | null> {
+    const checkpointId = this.active.get(checkpointScopeKey(scope));
+    return checkpointId ? this.records.get(checkpointId) ?? null : null;
+  }
+
+  async activate(input: {
+    scope: ContextCheckpointScope;
+    checkpointId: string;
+    expectedActiveCheckpointId?: string | null;
+    activatedAt: number;
+  }): Promise<ContextCheckpointRecord> {
+    const record = this.records.get(input.checkpointId);
+    if (!record) throw new Error("missing checkpoint");
+    const scopeKey = checkpointScopeKey(input.scope);
+    const current = this.active.get(scopeKey) ?? null;
+    if (
+      input.expectedActiveCheckpointId !== undefined &&
+      current !== input.expectedActiveCheckpointId
+    ) {
+      throw new Error("active pointer conflict");
+    }
+    const activated: ContextCheckpointRecord = {
+      ...record,
+      state: "activated",
+      updatedAt: input.activatedAt,
+    };
+    this.records.set(activated.checkpointId, activated);
+    this.active.set(scopeKey, activated.checkpointId);
+    return activated;
+  }
+
+  async listByScope(
+    scope: ContextCheckpointScope,
+    limit?: number,
+  ): Promise<ContextCheckpointRecord[]> {
+    const values = [...this.records.values()]
+      .filter((record) =>
+        checkpointScopeKey(record.scope) === checkpointScopeKey(scope)
+      )
+      .sort((left, right) => right.version - left.version);
+    return limit === undefined ? values : values.slice(0, limit);
+  }
+}
+
+class MemoryDynamicContextBaselineStore
+  implements DynamicContextBaselineStore
+{
+  private readonly baselines = new Map<string, DynamicContextBaseline>();
+
+  async get(
+    scope: DynamicContextScope,
+  ): Promise<DynamicContextBaseline | null> {
+    return this.baselines.get(dynamicContextScopeKey(scope)) ?? null;
+  }
+
+  async put(baseline: DynamicContextBaseline): Promise<void> {
+    this.baselines.set(
+      dynamicContextScopeKey(baseline.scope),
+      structuredClone(baseline),
+    );
+  }
+}
+
+function checkpointScopeKey(scope: ContextCheckpointScope): string {
+  return `${scope.threadId}:${scope.roleId}:${scope.flowId}`;
+}
+
+function dynamicContextScopeKey(scope: DynamicContextScope): string {
+  return `${scope.threadId}:${scope.roleId}:${scope.flowId}`;
 }
 function toolCallResult(
   id: string,

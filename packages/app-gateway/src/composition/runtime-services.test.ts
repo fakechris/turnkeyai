@@ -49,6 +49,10 @@ test("daemon composition shares one tool-result artifact store across writers an
   assert.match(source, /createNativeToolCapabilityRegistry\(\{[\s\S]*?artifactsEnabled: true,/);
   assert.match(source, /new LLMRoleResponseGenerator\(\{[\s\S]*?toolResultArtifactStore,/);
   assert.match(source, /new LLMRoleResponseGenerator\(\{[\s\S]*?runJournalStore: teamMessageStore,/);
+  assert.match(source, /new LLMRoleResponseGenerator\(\{[\s\S]*?contextCheckpointStore,/);
+  assert.match(source, /new LLMRoleResponseGenerator\(\{[\s\S]*?dynamicContextBaselineStore,/);
+  assert.match(source, /new LLMRoleResponseGenerator\(\{[\s\S]*?taskPlanStateProvider:/);
+  assert.match(source, /createWorkspaceAwarePreCompactionMemoryFlusher\(\{[\s\S]*?workspaceMemoryWriter:/);
   assert.match(source, /createWorkerSessionToolExecutor\(\{[\s\S]*?toolResultArtifactStore,/);
   assert.match(source, /startupStep\("worker-session-hygiene",[\s\S]*?sweepOrphanWorkerSessions\(\{/);
   assert.ok(

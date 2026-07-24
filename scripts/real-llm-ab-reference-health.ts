@@ -880,7 +880,7 @@ function extractBrowserEvidenceFromTranscript(messages: unknown[]): unknown[] {
     if (readString(record.role) !== "tool" || toolName !== "sessions_spawn") return [];
     const content = readString(record.content);
     if (!content || !/^tool_chain:\s*.*\bbrowser\b/im.test(content) && !/^task_id:\s*.*:sub:browser:/im.test(content)) return [];
-    const status = readAccioTextHeader(content, "status") ?? "completed";
+    const status = readReferenceRuntimeTextHeader(content, "status") ?? "completed";
     return [
       {
         source: "session_tool_result",
@@ -892,7 +892,7 @@ function extractBrowserEvidenceFromTranscript(messages: unknown[]): unknown[] {
   });
 }
 
-function readAccioTextHeader(content: string, key: string): string | null {
+function readReferenceRuntimeTextHeader(content: string, key: string): string | null {
   const escaped = escapeRegExp(key);
   const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, "im"));
   return readString(match?.[1]);

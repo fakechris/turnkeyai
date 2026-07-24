@@ -1,5 +1,8 @@
 import type {
   Clock,
+  ContextCheckpointStore,
+  DynamicContextBaselineStore,
+  DynamicContextScope,
   RoleActivationInput,
   RuntimeProgressRecorder,
   TeamMessageStore,
@@ -11,6 +14,12 @@ import type {
   GeneratedRoleReply,
   RoleResponseGenerator,
 } from "./deterministic-response-generator";
+import {
+  buildDynamicContextSnapshot,
+  buildFullDynamicContextMessage,
+  prepareDynamicContext,
+  type DynamicContextSnapshot,
+} from "./context/dynamic-context-baseline";
 import {
   generateWithEnvelopeRetry,
   type GenerateWithEnvelopeRetryInput,
@@ -56,6 +65,7 @@ import {
   applyToolArgumentValidationBeforeAdmission,
   attachEngineRunDiagnostics,
   buildRunTrace,
+  captureContextWorkingSetFromMessages,
   classifyRunFailure,
   createCloseoutPolicyCharacterizationRegistry,
   createCloseoutPolicyRegistry,
@@ -85,6 +95,7 @@ import {
   createToolArgumentValidator,
   enginePolicyTraceDebugEnabled,
   fingerprintRunJournalTask,
+  readRuntimeCheckpoint,
   recordEngineReductionBoundary,
   traceEngineHooks,
   type EngineCloseoutReason,
@@ -97,6 +108,7 @@ import {
 } from "./react-engine";
 import { buildTaskFacts } from "./task-facts-shared";
 import { readTaskPlanState } from "./task-plan-state";
+import type { TaskPlanStateProvider } from "./task-tool-service";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
@@ -108,8 +120,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly runJournalStore:
     | Pick<TeamMessageStore, "append" | "get" | "list">
     | undefined;
+  private readonly contextCheckpointStore:
+    | ContextCheckpointStore
+    | undefined;
+  private readonly dynamicContextBaselineStore:
+    | DynamicContextBaselineStore
+    | undefined;
   private readonly preCompactionMemoryFlusher:
     | PreCompactionMemoryFlusher
+    | undefined;
+  private readonly taskPlanStateProvider:
+    | TaskPlanStateProvider
     | undefined;
   private readonly toolResultHistoryExternalizer:
     | ToolResultHistoryExternalizer
@@ -124,7 +145,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     toolLoop?: RoleToolLoopOptions;
     nativeToolMessageStore?: Pick<TeamMessageStore, "append">;
     runJournalStore?: Pick<TeamMessageStore, "append" | "get" | "list">;
+    contextCheckpointStore?: ContextCheckpointStore;
+    dynamicContextBaselineStore?: DynamicContextBaselineStore;
     preCompactionMemoryFlusher?: PreCompactionMemoryFlusher;
+    taskPlanStateProvider?: TaskPlanStateProvider;
     toolResultArtifactStore?: ToolResultArtifactStore;
     clock?: Clock;
     deferToolObservability?: boolean;
@@ -135,7 +159,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     this.toolLoop = options.toolLoop;
     this.nativeToolMessageStore = options.nativeToolMessageStore;
     this.runJournalStore = options.runJournalStore;
+    this.contextCheckpointStore = options.contextCheckpointStore;
+    this.dynamicContextBaselineStore = options.dynamicContextBaselineStore;
     this.preCompactionMemoryFlusher = options.preCompactionMemoryFlusher;
+    this.taskPlanStateProvider = options.taskPlanStateProvider;
     this.toolResultHistoryExternalizer = options.toolResultArtifactStore
       ? createToolResultHistoryExternalizer({
           store: options.toolResultArtifactStore,
@@ -191,6 +218,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       activation: input.activation,
       packet: input.packet,
       runtimeProgressRecorder: this.runtimeProgressRecorder,
+      defer: this.deferToolObservability,
       selection,
     });
     const baseSessionContinuationDirective = activeToolLoop
@@ -335,7 +363,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           planState: restoredJournal.planState,
         })
       : undefined;
-    const engineInitialMessages =
+    let engineInitialMessages =
       restoredJournal?.messages ?? initialGatewayInput.messages;
     const initialRound = restoredJournal?.nextRound ?? 0;
 
@@ -358,6 +386,55 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
 
     const toolDefinitions = initialGatewayInput.tools ?? [];
+    const dynamicContextScope = {
+      threadId: activation.thread.threadId,
+      roleId: activation.runState.roleId,
+      flowId: activation.flow.flowId,
+    };
+    const dynamicContextSnapshot = this.dynamicContextBaselineStore
+      ? buildDynamicContextSnapshot({
+          scope: dynamicContextScope,
+          packet,
+          selection: {
+            ...(selection.modelId
+              ? { modelId: selection.modelId }
+              : {}),
+            ...(selection.modelChainId
+              ? { modelChainId: selection.modelChainId }
+              : {}),
+          },
+          tools: toolDefinitions,
+          now: runStartedAt,
+        })
+      : undefined;
+    if (restoredJournal && dynamicContextSnapshot) {
+      const previousBaseline = await loadDynamicContextBaselineSafely(
+        this.dynamicContextBaselineStore!,
+        dynamicContextScope,
+        activation,
+      );
+      const restoredCheckpoint = [...engineInitialMessages]
+        .reverse()
+        .map((message) => readRuntimeCheckpoint(message))
+        .find((checkpoint) =>
+          checkpoint?.protocol === "turnkeyai.context_checkpoint.v2"
+        );
+      const preparedDynamicContext = prepareDynamicContext({
+        previous: previousBaseline,
+        current: dynamicContextSnapshot,
+        forceFull: Boolean(
+          restoredCheckpoint &&
+            restoredCheckpoint.dynamicContext?.baselineId !==
+              dynamicContextSnapshot.baseline.baselineId,
+        ),
+      });
+      if (preparedDynamicContext.message) {
+        engineInitialMessages = [
+          ...engineInitialMessages,
+          preparedDynamicContext.message,
+        ];
+      }
+    }
     const toolkit = createEngineRoleToolkit({
       toolDefinitions,
       activeToolLoop,
@@ -410,6 +487,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         restoredJournal?.planState ?? [],
       ),
     };
+    let dynamicContextBaselineWriteAttempted = false;
     const runEvidence = evidenceLedger.forRun({
       taskPrompt: packet.taskPrompt,
       toolTrace,
@@ -522,8 +600,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           flowId: activation.flow.flowId,
         },
       }),
-      readPlanState: (messages, previousPlanState) =>
-        readTaskPlanState(messages, previousPlanState),
+      readPlanState: async (messages, previousPlanState) =>
+        this.taskPlanStateProvider
+          ? this.taskPlanStateProvider({
+              threadId: activation.thread.threadId,
+              roleId: activation.runState.roleId,
+            })
+          : readTaskPlanState(messages, previousPlanState),
+      ...(this.contextCheckpointStore
+        ? {
+            checkpointStore: this.contextCheckpointStore,
+            checkpointScope: {
+              threadId: activation.thread.threadId,
+              roleId: activation.runState.roleId,
+              flowId: activation.flow.flowId,
+            },
+            captureWorkingSet: (
+              messages: GenerateTextInput["messages"],
+            ) => captureContextWorkingSetFromMessages(messages),
+            now: runNow,
+          }
+        : {}),
+      ...(dynamicContextSnapshot
+        ? {
+            dynamicContext: checkpointDynamicContext(
+              dynamicContextSnapshot,
+            ),
+            postCompactionMessages: [
+              buildFullDynamicContextMessage(dynamicContextSnapshot),
+            ],
+          }
+        : {}),
       ...(initialGatewayInput.tools === undefined
         ? {}
         : { tools: initialGatewayInput.tools }),
@@ -549,6 +656,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         });
       },
     });
+    await reconcileContextCheckpointSafely(
+      compactionController,
+      engineInitialMessages,
+      activation,
+    );
     const runAgent = createRoleEngineAgentRunner<RoleToolContext>({
       model: engineModel.model,
       toolkit,
@@ -586,10 +698,30 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolTrace,
             planState,
           };
-          if (runJournal) {
-            await checkpointRunJournalSafely(
+          const journalCommitted = runJournal
+            ? await checkpointRunJournalSafely(
               runJournal,
               latestJournalState,
+              activation,
+            )
+            : true;
+          if (journalCommitted && compacted.pendingCheckpointId) {
+            await activateContextCheckpointSafely(
+              compactionController,
+              compacted.pendingCheckpointId,
+              activation,
+            );
+          }
+          if (
+            journalCommitted &&
+            dynamicContextSnapshot &&
+            this.dynamicContextBaselineStore &&
+            !dynamicContextBaselineWriteAttempted
+          ) {
+            dynamicContextBaselineWriteAttempted = true;
+            await persistDynamicContextBaselineSafely(
+              this.dynamicContextBaselineStore,
+              dynamicContextSnapshot,
               activation,
             );
           }
@@ -1173,18 +1305,110 @@ async function loadRunJournalSafely(
   }
 }
 
+function checkpointDynamicContext(
+  snapshot: DynamicContextSnapshot,
+): {
+  baselineId: string;
+  sectionDigests: Record<string, string>;
+} {
+  return {
+    baselineId: snapshot.baseline.baselineId,
+    sectionDigests: Object.fromEntries(
+      snapshot.baseline.sections.map((section) => [
+        section.name,
+        section.digest,
+      ]),
+    ),
+  };
+}
+
+async function loadDynamicContextBaselineSafely(
+  store: DynamicContextBaselineStore,
+  scope: DynamicContextScope,
+  activation: RoleActivationInput,
+) {
+  try {
+    return await store.get(scope);
+  } catch (error) {
+    console.error("runtime dynamic context baseline restore failed", {
+      threadId: activation.thread.threadId,
+      runKey: activation.runState.runKey,
+      error,
+    });
+    return null;
+  }
+}
+
+async function persistDynamicContextBaselineSafely(
+  store: DynamicContextBaselineStore,
+  snapshot: DynamicContextSnapshot,
+  activation: RoleActivationInput,
+): Promise<void> {
+  try {
+    await store.put(snapshot.baseline);
+  } catch (error) {
+    console.error("runtime dynamic context baseline persistence failed", {
+      threadId: activation.thread.threadId,
+      runKey: activation.runState.runKey,
+      baselineId: snapshot.baseline.baselineId,
+      error,
+    });
+  }
+}
+
 async function checkpointRunJournalSafely(
   journal: RunJournal,
   state: RunJournalState,
   activation: RoleActivationInput,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await journal.checkpoint(state);
+    return true;
   } catch (error) {
     console.error("runtime run journal checkpoint failed", {
       threadId: activation.thread.threadId,
       runKey: activation.runState.runKey,
       nextRound: state.nextRound,
+      error,
+    });
+    return false;
+  }
+}
+
+async function activateContextCheckpointSafely(
+  controller: Pick<
+    ReturnType<typeof createCompactionController>,
+    "activateCheckpoint"
+  >,
+  checkpointId: string,
+  activation: RoleActivationInput,
+): Promise<void> {
+  try {
+    await controller.activateCheckpoint(checkpointId);
+  } catch (error) {
+    console.error("runtime context checkpoint activation failed", {
+      threadId: activation.thread.threadId,
+      runKey: activation.runState.runKey,
+      checkpointId,
+      error,
+    });
+  }
+}
+
+async function reconcileContextCheckpointSafely(
+  controller: Pick<
+    ReturnType<typeof createCompactionController>,
+    "reconcileFromMessages"
+  >,
+  messages: GenerateTextInput["messages"],
+  activation: RoleActivationInput,
+): Promise<void> {
+  try {
+    await controller.reconcileFromMessages(messages);
+  } catch (error) {
+    console.error("runtime context checkpoint reconciliation failed", {
+      threadId: activation.thread.threadId,
+      runKey: activation.runState.runKey,
       error,
     });
   }

@@ -183,7 +183,148 @@ describe("FileWorkItemStore", () => {
       t.cleanup();
     }
   });
+
+  it("persists one authoritative bidirectional dependency graph", async () => {
+    const t = tmp();
+    try {
+      const store = new FileWorkItemStore({ rootDir: t.dir });
+      const dependency = graphItem("wi.1", 1, "done", [], ["wi.2"]);
+      const dependent = graphItem("wi.2", 2, "planning", ["wi.1"], []);
+      await store.putGraph("msn.test", [dependent, dependency]);
+
+      const reloaded = await store.listByMission("msn.test");
+      assert.deepEqual(reloaded.map((item) => item.id), ["wi.1", "wi.2"]);
+      assert.deepEqual(
+        reloaded[0]?.specification?.blocks,
+        ["wi.2"],
+      );
+      assert.deepEqual(
+        reloaded[1]?.specification?.blockedBy,
+        ["wi.1"],
+      );
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("rejects dependency cycles and activation while dependencies are open", async () => {
+    const t = tmp();
+    try {
+      const store = new FileWorkItemStore({ rootDir: t.dir });
+      const valid = [
+        graphItem("wi.1", 1, "planning", [], ["wi.2"]),
+        graphItem("wi.2", 2, "planning", ["wi.1"], []),
+      ];
+      await store.putGraph("msn.test", valid);
+      await assert.rejects(
+        store.putGraph("msn.test", [
+          graphItem("wi.1", 1, "planning", ["wi.2"], ["wi.2"]),
+          graphItem("wi.2", 2, "planning", ["wi.1"], ["wi.1"]),
+        ]),
+        /dependency cycle/,
+      );
+      await assert.rejects(
+        store.putGraph("msn.test", [
+          graphItem("wi.1", 1, "planning", [], ["wi.2"]),
+          graphItem("wi.2", 2, "working", ["wi.1"], []),
+        ]),
+        /blocked work item cannot be working/,
+      );
+      const restarted = new FileWorkItemStore({ rootDir: t.dir });
+      assert.deepEqual(
+        await restarted.listByMission("msn.test"),
+        valid,
+        "rejected graph mutations must not replace the last valid snapshot",
+      );
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("requires receipts for completion and operator receipts for waivers", async () => {
+    const t = tmp();
+    try {
+      const store = new FileWorkItemStore({ rootDir: t.dir });
+      const incomplete = graphItem("wi.1", 1, "done", [], []);
+      incomplete.specification!.acceptanceCriteria = [{
+        id: "criterion-1",
+        description: "Report exists",
+        required: true,
+        state: "unverified",
+      }];
+      await assert.rejects(
+        store.putGraph("msn.test", [incomplete]),
+        /required acceptance criterion is not satisfied/,
+      );
+
+      const invalidWaiver = structuredClone(incomplete);
+      invalidWaiver.specification!.acceptanceCriteria[0]!.state = "waived";
+      invalidWaiver.specification!.verificationReceipts = [{
+        receiptId: "receipt.1",
+        criterionId: "criterion-1",
+        kind: "artifact",
+        ref: "artifact://report",
+        verifier: "role-lead",
+        result: "waived",
+        verifiedAt: 1,
+      }];
+      await assert.rejects(
+        store.putGraph("msn.test", [invalidWaiver]),
+        /waived criterion requires operator decision/,
+      );
+
+      const completed = structuredClone(incomplete);
+      completed.specification!.acceptanceCriteria[0]!.state = "passed";
+      completed.specification!.verificationReceipts = [{
+        receiptId: "receipt.2",
+        criterionId: "criterion-1",
+        kind: "artifact",
+        ref: "artifact://report",
+        verifier: "role-lead",
+        result: "passed",
+        verifiedAt: 2,
+      }];
+      await store.putGraph("msn.test", [completed]);
+      assert.equal(
+        (await store.listByMission("msn.test"))[0]?.status,
+        "done",
+      );
+    } finally {
+      t.cleanup();
+    }
+  });
 });
+
+function graphItem(
+  id: string,
+  n: number,
+  status: WorkItem["status"],
+  blockedBy: string[],
+  blocks: string[],
+): WorkItem {
+  return {
+    id,
+    missionId: "msn.test",
+    n,
+    title: `Item ${n}`,
+    agent: "agent.a",
+    status,
+    started: "—",
+    duration: "—",
+    contextRefs: [],
+    output: "",
+    specification: {
+      objective: `Complete item ${n}`,
+      inputRefs: [],
+      outputRefs: [],
+      constraints: [],
+      blockedBy,
+      blocks,
+      acceptanceCriteria: [],
+      verificationReceipts: [],
+    },
+  };
+}
 
 describe("FileActivityEventStore", () => {
   const e = (id: string, missionId: string, tMs: number, kind: ActivityEvent["kind"]): ActivityEvent => ({

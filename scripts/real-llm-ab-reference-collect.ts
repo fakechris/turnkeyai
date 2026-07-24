@@ -4,10 +4,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const ACCIO_WORK_REFERENCE_APP = "accio-work-app-asar";
-const ACCIO_WORK_APP_ASAR_PATH = "/Applications/Accio.app/Contents/Resources/app.asar";
-const ACCIO_WORK_REFERENCE_RUNTIME_ROOT = "artifacts/reference-runtimes/accio-work-0.4.5";
-const ACCIO_WORK_REFERENCE_VERSION = "0.4.5";
+const REFERENCE_RUNTIME_WORK_REFERENCE_APP = "reference-desktop-app-asar";
+const REFERENCE_RUNTIME_WORK_APP_ASAR_PATH = "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar";
+const REFERENCE_RUNTIME_WORK_REFERENCE_RUNTIME_ROOT = "artifacts/reference-runtimes/reference-desktop-0.4.5";
+const REFERENCE_RUNTIME_WORK_REFERENCE_VERSION = "0.4.5";
 
 type ReferenceCollectionAction = "collect_reference_artifact" | "recollect_reference_artifact";
 
@@ -30,9 +30,9 @@ interface ReferenceCollectOptions {
   baseUrl: string;
   referenceToken?: string;
   variant: string;
-  accioWs?: boolean;
-  accioAgentId?: string;
-  accioWorkspacePath?: string;
+  referenceRuntimeWs?: boolean;
+  referenceRuntimeAgentId?: string;
+  referenceRuntimeWorkspacePath?: string;
   timeoutMs: number;
   pollMs: number;
   referenceApp: string;
@@ -139,9 +139,9 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
   let baseUrl: string | undefined;
   let referenceToken: string | undefined;
   let variant = "operator";
-  let accioWs = false;
-  let accioAgentId: string | undefined;
-  let accioWorkspacePath: string | undefined;
+  let referenceRuntimeWs = false;
+  let referenceRuntimeAgentId: string | undefined;
+  let referenceRuntimeWorkspacePath: string | undefined;
   let timeoutMs = 180_000;
   let pollMs = 2_000;
   let referenceApp = "reference-workbench";
@@ -177,17 +177,17 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
       index += 1;
       continue;
     }
-    if (arg === "--accio-ws") {
-      accioWs = true;
+    if (arg === "--reference-ws") {
+      referenceRuntimeWs = true;
       continue;
     }
-    if (arg === "--accio-agent-id") {
-      accioAgentId = readValue(args, index, arg);
+    if (arg === "--reference-agent-id") {
+      referenceRuntimeAgentId = readValue(args, index, arg);
       index += 1;
       continue;
     }
-    if (arg === "--accio-workspace-path") {
-      accioWorkspacePath = readValue(args, index, arg);
+    if (arg === "--reference-workspace-path") {
+      referenceRuntimeWorkspacePath = readValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -243,26 +243,26 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
   }
   if (!tasksPath) throw new Error("missing required --tasks <path>");
   if (!baseUrl) throw new Error("missing required --base-url <url>");
-  const resolvedReferenceApp = accioWs && !referenceAppExplicit ? ACCIO_WORK_REFERENCE_APP : referenceApp;
+  const resolvedReferenceApp = referenceRuntimeWs && !referenceAppExplicit ? REFERENCE_RUNTIME_WORK_REFERENCE_APP : referenceApp;
   const resolvedReferenceBinary =
-    accioWs && !referenceBinaryExplicit ? ACCIO_WORK_APP_ASAR_PATH : referenceBinary;
+    referenceRuntimeWs && !referenceBinaryExplicit ? REFERENCE_RUNTIME_WORK_APP_ASAR_PATH : referenceBinary;
   const resolvedReferenceRuntimeRoot =
-    accioWs && !referenceRuntimeRootExplicit
-      ? path.resolve(ACCIO_WORK_REFERENCE_RUNTIME_ROOT)
+    referenceRuntimeWs && !referenceRuntimeRootExplicit
+      ? path.resolve(REFERENCE_RUNTIME_WORK_REFERENCE_RUNTIME_ROOT)
       : referenceRuntimeRoot
         ? path.resolve(referenceRuntimeRoot)
         : undefined;
-  const resolvedReferenceVersion = accioWs && !referenceVersion ? ACCIO_WORK_REFERENCE_VERSION : referenceVersion;
+  const resolvedReferenceVersion = referenceRuntimeWs && !referenceVersion ? REFERENCE_RUNTIME_WORK_REFERENCE_VERSION : referenceVersion;
   const resolvedReferenceCommit =
-    accioWs && !referenceCommitExplicit ? readAccioWorkAppAsarCommit() : referenceCommit;
+    referenceRuntimeWs && !referenceCommitExplicit ? readReferenceRuntimeWorkAppAsarCommit() : referenceCommit;
   return {
     tasksPath,
     baseUrl,
     ...(referenceToken ? { referenceToken } : {}),
     variant,
-    ...(accioWs ? { accioWs } : {}),
-    ...(accioAgentId ? { accioAgentId } : {}),
-    ...(accioWs || accioWorkspacePath ? { accioWorkspacePath: accioWorkspacePath ?? process.cwd() } : {}),
+    ...(referenceRuntimeWs ? { referenceRuntimeWs } : {}),
+    ...(referenceRuntimeAgentId ? { referenceRuntimeAgentId } : {}),
+    ...(referenceRuntimeWs || referenceRuntimeWorkspacePath ? { referenceRuntimeWorkspacePath: referenceRuntimeWorkspacePath ?? process.cwd() } : {}),
     timeoutMs,
     pollMs,
     referenceApp: resolvedReferenceApp,
@@ -275,9 +275,9 @@ export function parseRealLlmAbReferenceCollectArgs(args: string[]): ReferenceCol
   };
 }
 
-function readAccioWorkAppAsarCommit(): string | undefined {
-  if (!existsSync(ACCIO_WORK_APP_ASAR_PATH)) return undefined;
-  const hash = createHash("sha256").update(readFileSync(ACCIO_WORK_APP_ASAR_PATH)).digest("hex");
+function readReferenceRuntimeWorkAppAsarCommit(): string | undefined {
+  if (!existsSync(REFERENCE_RUNTIME_WORK_APP_ASAR_PATH)) return undefined;
+  const hash = createHash("sha256").update(readFileSync(REFERENCE_RUNTIME_WORK_APP_ASAR_PATH)).digest("hex");
   return `app.asar:${hash}`;
 }
 
@@ -287,7 +287,7 @@ export function buildRealLlmAbReferenceCollectHelpText(): string {
     "",
     "Usage:",
     "  npm run acceptance:ab:reference-collect -- --tasks <task-manifest.json> --base-url <reference-daemon-url> [--reference-token <token>] [--variant operator] [--timeout-ms 180000] [--poll-ms 2000] [--reference-repo-path <path>] [--reference-runtime-root <path>] [--reference-version <version>] [--check]",
-    "  npm run acceptance:ab:reference-collect -- --tasks <task-manifest.json> --base-url http://127.0.0.1:4097 --accio-ws [--accio-agent-id DID-...] [--accio-workspace-path <path>] --reference-runtime-root artifacts/reference-runtimes/accio-work-0.4.5 [--check]",
+    "  npm run acceptance:ab:reference-collect -- --tasks <task-manifest.json> --base-url http://127.0.0.1:4097 --reference-ws [--reference-agent-id DID-...] [--reference-workspace-path <path>] --reference-runtime-root artifacts/reference-runtimes/reference-desktop-0.4.5 [--check]",
     "",
     "The collector sends each natural prompt to a compatible reference daemon and writes provenance-complete artifacts to each task's expectedReferenceArtifactPath.",
     "The reference audit remains responsible for deciding whether collected artifacts are valid comparison evidence.",
@@ -363,8 +363,8 @@ async function collectOneReferenceArtifact(input: {
   const baseUrl = normalizeBaseUrl(input.options.baseUrl);
   const requestAuth = buildReferenceRequestAuth(input.options.referenceToken);
   const scenarioDriver = referenceScenarioDriverFor(input.task.scenarioId);
-  const accioWsUnsupportedReason = input.options.accioWs ? unsupportedAccioWsScenarioReason(scenarioDriver) : null;
-  if (accioWsUnsupportedReason) {
+  const referenceRuntimeWsUnsupportedReason = input.options.referenceRuntimeWs ? unsupportedReferenceRuntimeWsScenarioReason(scenarioDriver) : null;
+  if (referenceRuntimeWsUnsupportedReason) {
     return buildUnsupportedReferenceArtifact({
       task: input.task,
       options: input.options,
@@ -372,7 +372,7 @@ async function collectOneReferenceArtifact(input: {
       baseUrl,
       scenarioDriver: unsupportedScenarioDriver(
         scenarioDriver.kind,
-        accioWsUnsupportedReason,
+        referenceRuntimeWsUnsupportedReason,
         scenarioDriver.envRequirements
       ),
       startedAt,
@@ -420,8 +420,8 @@ async function collectOneReferenceArtifact(input: {
     const modelInfo = inferReferenceModelInfo(modelCatalog);
     provider = modelInfo.provider;
     modelId = modelInfo.modelId;
-    if (input.options.accioWs) {
-      loopbackFixtureProbe = await probeLoopbackFixturesForAccioWsPrompt(input.task.prompt, input.task.scenarioId);
+    if (input.options.referenceRuntimeWs) {
+      loopbackFixtureProbe = await probeLoopbackFixturesForReferenceRuntimeWsPrompt(input.task.prompt, input.task.scenarioId);
       if (loopbackFixtureProbe.unreachable.length > 0) {
         return buildFixtureUnavailableReferenceArtifact({
           task: input.task,
@@ -438,9 +438,9 @@ async function collectOneReferenceArtifact(input: {
         });
       }
     }
-    if (input.options.accioWs) {
-      const accioResult = scenarioDriver.kind === "memory_thread"
-        ? await driveAccioWsMemoryRecallReferenceScenario({
+    if (input.options.referenceRuntimeWs) {
+      const referenceRuntimeResult = scenarioDriver.kind === "memory_thread"
+        ? await driveReferenceRuntimeWsMemoryRecallReferenceScenario({
             task: input.task,
             options: input.options,
             baseUrl,
@@ -448,35 +448,35 @@ async function collectOneReferenceArtifact(input: {
             modelInfo,
           })
         : scenarioDriver.kind === "followup_thread" || scenarioDriver.kind === "timeout_followup"
-          ? await driveAccioWsFollowupReferenceScenario({
+          ? await driveReferenceRuntimeWsFollowupReferenceScenario({
               task: input.task,
               options: input.options,
               baseUrl,
               modelCatalog,
               modelInfo,
             })
-        : await driveAccioWsReferenceScenario({
+        : await driveReferenceRuntimeWsReferenceScenario({
         task: input.task,
         options: input.options,
         baseUrl,
         modelCatalog,
         modelInfo,
       });
-      exactRequestPayload = accioResult.exactRequestPayload;
-      apiEndpoint = accioResult.apiEndpoint;
-      rawResponse = accioResult.rawResponse;
-      threadId = accioResult.threadId;
-      rawTranscript = accioResult.rawTranscript;
-      rawToolCalls = accioResult.rawToolCalls;
-      rawToolResults = accioResult.rawToolResults;
-      rawBrowserEvidence = accioResult.rawBrowserEvidence;
-      rawMemoryEvidence = accioResult.rawMemoryEvidence ?? [];
-      rawFlowEvidence = accioResult.rawFlowEvidence;
-      finalText = accioResult.finalText;
-      timedOut = accioResult.timedOut;
-      firstSummaryToolCallCount = accioResult.firstSummaryToolCallCount;
-      firstSummaryToolResultCount = accioResult.firstSummaryToolResultCount;
-      followupSummary = accioResult.followupSummary;
+      exactRequestPayload = referenceRuntimeResult.exactRequestPayload;
+      apiEndpoint = referenceRuntimeResult.apiEndpoint;
+      rawResponse = referenceRuntimeResult.rawResponse;
+      threadId = referenceRuntimeResult.threadId;
+      rawTranscript = referenceRuntimeResult.rawTranscript;
+      rawToolCalls = referenceRuntimeResult.rawToolCalls;
+      rawToolResults = referenceRuntimeResult.rawToolResults;
+      rawBrowserEvidence = referenceRuntimeResult.rawBrowserEvidence;
+      rawMemoryEvidence = referenceRuntimeResult.rawMemoryEvidence ?? [];
+      rawFlowEvidence = referenceRuntimeResult.rawFlowEvidence;
+      finalText = referenceRuntimeResult.finalText;
+      timedOut = referenceRuntimeResult.timedOut;
+      firstSummaryToolCallCount = referenceRuntimeResult.firstSummaryToolCallCount;
+      firstSummaryToolResultCount = referenceRuntimeResult.firstSummaryToolResultCount;
+      followupSummary = referenceRuntimeResult.followupSummary;
     } else if (
       scenarioDriver.kind === "memory_thread" ||
       scenarioDriver.kind === "memory_pressure_flush" ||
@@ -546,7 +546,7 @@ async function collectOneReferenceArtifact(input: {
       }
     }
     if (
-      !input.options.accioWs &&
+      !input.options.referenceRuntimeWs &&
       scenarioDriver.kind !== "memory_pressure_flush" &&
       scenarioDriver.kind !== "memory_invalidation"
     ) {
@@ -648,7 +648,7 @@ async function collectOneReferenceArtifact(input: {
       }
     }
 
-    if (!input.options.accioWs) {
+    if (!input.options.referenceRuntimeWs) {
       rawBrowserEvidence = [
         ...(await readBrowserEvidence(baseUrl, threadId, requestAuth)),
         ...extractBrowserEvidenceFromTranscript(Array.isArray(rawTranscript) ? rawTranscript : []),
@@ -875,7 +875,7 @@ function buildFixtureUnavailableReferenceArtifact(input: {
     modelId: input.modelId,
     modelCatalog: input.modelCatalog,
     exactRequestPayload: {
-      transport: "accio-work-websocket-sendQuery",
+      transport: "reference-desktop-websocket-sendQuery",
       prompt: input.task.prompt,
       blockedBeforeSend: true,
       loopbackFixtureProbe: input.probe,
@@ -937,7 +937,7 @@ interface LoopbackFixtureProbeResult {
   unreachable: Array<{ url: string; reason: string }>;
 }
 
-async function probeLoopbackFixturesForAccioWsPrompt(
+async function probeLoopbackFixturesForReferenceRuntimeWsPrompt(
   prompt: string,
   scenarioId?: string
 ): Promise<LoopbackFixtureProbeResult> {
@@ -1019,7 +1019,7 @@ async function probeLoopbackUrl(url: string): Promise<string | null> {
   }
 }
 
-async function driveAccioWsReferenceScenario(input: {
+async function driveReferenceRuntimeWsReferenceScenario(input: {
   task: ReferenceCollectionTask;
   options: ReferenceCollectOptions;
   baseUrl: string;
@@ -1043,20 +1043,20 @@ async function driveAccioWsReferenceScenario(input: {
 }> {
   const health = await getJson(input.baseUrl, "/reference/health");
   const agents = await getJson(input.baseUrl, "/agents");
-  const selectedAgent = selectAccioAgent(agents, input.options.accioAgentId);
-  const agentId = selectedAgent?.id ?? input.options.accioAgentId ?? "DID-F456DA-2B0D4C";
+  const selectedAgent = selectReferenceRuntimeAgent(agents, input.options.referenceRuntimeAgentId);
+  const agentId = selectedAgent?.id ?? input.options.referenceRuntimeAgentId ?? "DID-F456DA-2B0D4C";
   const accountId = selectedAgent?.accountId ?? "reference-account";
-  const accioHome =
-    readString((health as { accioHome?: unknown } | null)?.accioHome) ??
-    resolveAccioHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
+  const referenceRuntimeHome =
+    readString((health as { referenceRuntimeHome?: unknown } | null)?.referenceRuntimeHome) ??
+    resolveReferenceRuntimeHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
   const electronUserDataDir = readString((health as { electronUserDataDir?: unknown } | null)?.electronUserDataDir);
-  if (!accioHome) {
-    throw new Error("Accio WS collection requires /reference/health.accioHome or --reference-runtime-root");
+  if (!referenceRuntimeHome) {
+    throw new Error("reference websocket collection requires /reference/health.referenceRuntimeHome or --reference-runtime-root");
   }
-  const workspacePath = input.options.accioWorkspacePath ?? process.cwd();
+  const workspacePath = input.options.referenceRuntimeWorkspacePath ?? process.cwd();
   const promptStartedAtMs = Date.now();
   const scenarioDriver = referenceScenarioDriverFor(input.task.scenarioId);
-  const probe = await sendAccioWsPrompt({
+  const probe = await sendReferenceRuntimeWsPrompt({
     baseUrl: input.baseUrl,
     agentId,
     workspacePath,
@@ -1064,10 +1064,10 @@ async function driveAccioWsReferenceScenario(input: {
     timeoutMs: Math.min(input.options.timeoutMs, 45_000),
     conversationLabel: input.task.scenarioId,
   });
-  let pollResult: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+  let pollResult: Awaited<ReturnType<typeof pollReferenceRuntimeSessionMessages>>;
   try {
-    pollResult = await pollAccioSessionMessages({
-      accioHome,
+    pollResult = await pollReferenceRuntimeSessionMessages({
+      referenceRuntimeHome,
       accountId,
       agentId,
       conversationId: probe.conversationId,
@@ -1088,7 +1088,7 @@ async function driveAccioWsReferenceScenario(input: {
     isApprovalDecisionRequestFinal(finalText)
   ) {
     const followupPrompt = buildReferenceApprovalDeniedFollowupPrompt();
-    const followupProbe = await sendAccioWsPrompt({
+    const followupProbe = await sendReferenceRuntimeWsPrompt({
       baseUrl: input.baseUrl,
       agentId,
       workspacePath,
@@ -1097,10 +1097,10 @@ async function driveAccioWsReferenceScenario(input: {
       conversationLabel: input.task.scenarioId,
       conversationId: probe.conversationId,
     });
-    let followupPoll: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+    let followupPoll: Awaited<ReturnType<typeof pollReferenceRuntimeSessionMessages>>;
     try {
-      followupPoll = await pollAccioSessionMessages({
-        accioHome,
+      followupPoll = await pollReferenceRuntimeSessionMessages({
+        referenceRuntimeHome,
         accountId,
         agentId,
         conversationId: probe.conversationId,
@@ -1136,14 +1136,14 @@ async function driveAccioWsReferenceScenario(input: {
   }
   const toolCalls = dedupeReferenceToolCalls(extractToolCalls(transcript));
   const toolResults = extractToolResults(transcript);
-  const workspaceArtifacts = collectAccioWorkspaceArtifacts({
+  const workspaceArtifacts = collectReferenceRuntimeWorkspaceArtifacts({
     workspacePath,
     sinceMs: promptStartedAtMs,
   });
   return {
     apiEndpoint: "/websocket/connect",
     exactRequestPayload: {
-      transport: "accio-work-websocket-sendQuery",
+      transport: "reference-desktop-websocket-sendQuery",
       conversationId: probe.conversationId,
       agentId,
       accountId,
@@ -1162,22 +1162,22 @@ async function driveAccioWsReferenceScenario(input: {
     rawMemoryEvidence: [],
     rawFlowEvidence: [
       {
-        source: "accio_ws_session_file",
-        accioHome,
+        source: "reference_ws_session_file",
+        referenceRuntimeHome,
         accountId,
         agentId,
         conversationId: probe.conversationId,
-        sessionPath: accioSessionMessagesPath({ accioHome, accountId, agentId, conversationId: probe.conversationId }),
+        sessionPath: referenceRuntimeSessionMessagesPath({ referenceRuntimeHome, accountId, agentId, conversationId: probe.conversationId }),
       },
       {
-        source: "accio_ws_sdk_log",
+        source: "reference_ws_sdk_log",
         conversationId: probe.conversationId,
-        sdkLogPath: path.join(accioHome, "logs", "sdk.log"),
+        sdkLogPath: path.join(referenceRuntimeHome, "logs", "sdk.log"),
       },
       ...(electronUserDataDir
         ? [
             {
-              source: "accio_ws_sdk_log",
+              source: "reference_ws_sdk_log",
               conversationId: probe.conversationId,
               sdkLogPath: path.join(electronUserDataDir, "logs", "sdk.log"),
             },
@@ -1193,7 +1193,7 @@ async function driveAccioWsReferenceScenario(input: {
   };
 }
 
-async function driveAccioWsMemoryRecallReferenceScenario(input: {
+async function driveReferenceRuntimeWsMemoryRecallReferenceScenario(input: {
   task: ReferenceCollectionTask;
   options: ReferenceCollectOptions;
   baseUrl: string;
@@ -1218,28 +1218,28 @@ async function driveAccioWsMemoryRecallReferenceScenario(input: {
 }> {
   const health = await getJson(input.baseUrl, "/reference/health");
   const agents = await getJson(input.baseUrl, "/agents");
-  const selectedAgent = selectAccioAgent(agents, input.options.accioAgentId);
-  const agentId = selectedAgent?.id ?? input.options.accioAgentId ?? "DID-F456DA-2B0D4C";
+  const selectedAgent = selectReferenceRuntimeAgent(agents, input.options.referenceRuntimeAgentId);
+  const agentId = selectedAgent?.id ?? input.options.referenceRuntimeAgentId ?? "DID-F456DA-2B0D4C";
   const accountId = selectedAgent?.accountId ?? "reference-account";
-  const accioHome =
-    readString((health as { accioHome?: unknown } | null)?.accioHome) ??
-    resolveAccioHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
-  if (!accioHome) {
-    throw new Error("Accio WS memory recall collection requires /reference/health.accioHome or --reference-runtime-root");
+  const referenceRuntimeHome =
+    readString((health as { referenceRuntimeHome?: unknown } | null)?.referenceRuntimeHome) ??
+    resolveReferenceRuntimeHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
+  if (!referenceRuntimeHome) {
+    throw new Error("reference websocket memory recall collection requires /reference/health.referenceRuntimeHome or --reference-runtime-root");
   }
-  const memorySeed = writeAccioAgentCoreMemorySeed({ accioHome, accountId, agentId });
-  const probe = await sendAccioWsPrompt({
+  const memorySeed = writeReferenceRuntimeAgentCoreMemorySeed({ referenceRuntimeHome, accountId, agentId });
+  const probe = await sendReferenceRuntimeWsPrompt({
     baseUrl: input.baseUrl,
     agentId,
-    workspacePath: input.options.accioWorkspacePath ?? process.cwd(),
+    workspacePath: input.options.referenceRuntimeWorkspacePath ?? process.cwd(),
     prompt: input.task.prompt,
     timeoutMs: Math.min(input.options.timeoutMs, 45_000),
     conversationLabel: input.task.scenarioId,
   });
-  let pollResult: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+  let pollResult: Awaited<ReturnType<typeof pollReferenceRuntimeSessionMessages>>;
   try {
-    pollResult = await pollAccioSessionMessages({
-      accioHome,
+    pollResult = await pollReferenceRuntimeSessionMessages({
+      referenceRuntimeHome,
       accountId,
       agentId,
       conversationId: probe.conversationId,
@@ -1256,7 +1256,7 @@ async function driveAccioWsMemoryRecallReferenceScenario(input: {
   return {
     apiEndpoint: "/websocket/connect",
     exactRequestPayload: {
-      transport: "accio-work-websocket-sendQuery",
+      transport: "reference-desktop-websocket-sendQuery",
       conversationId: probe.conversationId,
       agentId,
       accountId,
@@ -1266,7 +1266,7 @@ async function driveAccioWsMemoryRecallReferenceScenario(input: {
       prompt: input.task.prompt,
       memorySeed: {
         path: memorySeed.path,
-        source: "accio_agent_core_memory",
+        source: "referenceRuntime_agent_core_memory",
       },
     },
     rawResponse: {
@@ -1280,13 +1280,13 @@ async function driveAccioWsMemoryRecallReferenceScenario(input: {
     rawBrowserEvidence: extractBrowserEvidenceFromTranscript(transcript),
     rawMemoryEvidence: [
       {
-        source: "accio_agent_core_memory",
+        source: "referenceRuntime_agent_core_memory",
         phase: "seed",
         memoryPath: memorySeed.path,
         content: memorySeed.content,
       },
       {
-        source: "accio_ws_session_file",
+        source: "reference_ws_session_file",
         phase: "final_recall",
         timedOut: pollResult.timedOut,
         finalText,
@@ -1294,12 +1294,12 @@ async function driveAccioWsMemoryRecallReferenceScenario(input: {
     ],
     rawFlowEvidence: [
       {
-        source: "accio_ws_session_file",
-        accioHome,
+        source: "reference_ws_session_file",
+        referenceRuntimeHome,
         accountId,
         agentId,
         conversationId: probe.conversationId,
-        sessionPath: accioSessionMessagesPath({ accioHome, accountId, agentId, conversationId: probe.conversationId }),
+        sessionPath: referenceRuntimeSessionMessagesPath({ referenceRuntimeHome, accountId, agentId, conversationId: probe.conversationId }),
       },
     ],
     finalText,
@@ -1309,7 +1309,7 @@ async function driveAccioWsMemoryRecallReferenceScenario(input: {
   };
 }
 
-async function driveAccioWsFollowupReferenceScenario(input: {
+async function driveReferenceRuntimeWsFollowupReferenceScenario(input: {
   task: ReferenceCollectionTask;
   options: ReferenceCollectOptions;
   baseUrl: string;
@@ -1334,27 +1334,27 @@ async function driveAccioWsFollowupReferenceScenario(input: {
 }> {
   const health = await getJson(input.baseUrl, "/reference/health");
   const agents = await getJson(input.baseUrl, "/agents");
-  const selectedAgent = selectAccioAgent(agents, input.options.accioAgentId);
-  const agentId = selectedAgent?.id ?? input.options.accioAgentId ?? "DID-F456DA-2B0D4C";
+  const selectedAgent = selectReferenceRuntimeAgent(agents, input.options.referenceRuntimeAgentId);
+  const agentId = selectedAgent?.id ?? input.options.referenceRuntimeAgentId ?? "DID-F456DA-2B0D4C";
   const accountId = selectedAgent?.accountId ?? "reference-account";
-  const accioHome =
-    readString((health as { accioHome?: unknown } | null)?.accioHome) ??
-    resolveAccioHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
-  if (!accioHome) {
-    throw new Error("Accio WS follow-up collection requires /reference/health.accioHome or --reference-runtime-root");
+  const referenceRuntimeHome =
+    readString((health as { referenceRuntimeHome?: unknown } | null)?.referenceRuntimeHome) ??
+    resolveReferenceRuntimeHomeFromRuntimeRoot(input.options.referenceRuntimeRoot);
+  if (!referenceRuntimeHome) {
+    throw new Error("reference websocket follow-up collection requires /reference/health.referenceRuntimeHome or --reference-runtime-root");
   }
-  const firstProbe = await sendAccioWsPrompt({
+  const firstProbe = await sendReferenceRuntimeWsPrompt({
     baseUrl: input.baseUrl,
     agentId,
-    workspacePath: input.options.accioWorkspacePath ?? process.cwd(),
+    workspacePath: input.options.referenceRuntimeWorkspacePath ?? process.cwd(),
     prompt: input.task.prompt,
     timeoutMs: Math.min(input.options.timeoutMs, 45_000),
     conversationLabel: input.task.scenarioId,
   });
-  let firstPoll: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+  let firstPoll: Awaited<ReturnType<typeof pollReferenceRuntimeSessionMessages>>;
   try {
-    firstPoll = await pollAccioSessionMessages({
-      accioHome,
+    firstPoll = await pollReferenceRuntimeSessionMessages({
+      referenceRuntimeHome,
       accountId,
       agentId,
       conversationId: firstProbe.conversationId,
@@ -1368,19 +1368,19 @@ async function driveAccioWsFollowupReferenceScenario(input: {
     referenceScenarioDriverFor(input.task.scenarioId).kind === "timeout_followup"
       ? buildReferenceTimeoutFollowupPrompt(input.task.prompt)
       : buildReferenceFollowupContinuationPrompt(input.task.scenarioId);
-  const followupProbe = await sendAccioWsPrompt({
+  const followupProbe = await sendReferenceRuntimeWsPrompt({
     baseUrl: input.baseUrl,
     agentId,
-    workspacePath: input.options.accioWorkspacePath ?? process.cwd(),
+    workspacePath: input.options.referenceRuntimeWorkspacePath ?? process.cwd(),
     prompt: followupPrompt,
     timeoutMs: Math.min(input.options.timeoutMs, 45_000),
     conversationLabel: input.task.scenarioId,
     conversationId: firstProbe.conversationId,
   });
-  let followupPoll: Awaited<ReturnType<typeof pollAccioSessionMessages>>;
+  let followupPoll: Awaited<ReturnType<typeof pollReferenceRuntimeSessionMessages>>;
   try {
-    followupPoll = await pollAccioSessionMessages({
-      accioHome,
+    followupPoll = await pollReferenceRuntimeSessionMessages({
+      referenceRuntimeHome,
       accountId,
       agentId,
       conversationId: firstProbe.conversationId,
@@ -1403,7 +1403,7 @@ async function driveAccioWsFollowupReferenceScenario(input: {
   return {
     apiEndpoint: "/websocket/connect",
     exactRequestPayload: {
-      transport: "accio-work-websocket-sendQuery",
+      transport: "reference-desktop-websocket-sendQuery",
       conversationId: firstProbe.conversationId,
       agentId,
       accountId,
@@ -1425,12 +1425,12 @@ async function driveAccioWsFollowupReferenceScenario(input: {
     rawMemoryEvidence: [],
     rawFlowEvidence: [
       {
-        source: "accio_ws_session_file",
-        accioHome,
+        source: "reference_ws_session_file",
+        referenceRuntimeHome,
         accountId,
         agentId,
         conversationId: firstProbe.conversationId,
-        sessionPath: accioSessionMessagesPath({ accioHome, accountId, agentId, conversationId: firstProbe.conversationId }),
+        sessionPath: referenceRuntimeSessionMessagesPath({ referenceRuntimeHome, accountId, agentId, conversationId: firstProbe.conversationId }),
       },
     ],
     finalText,
@@ -1448,13 +1448,13 @@ async function driveAccioWsFollowupReferenceScenario(input: {
   };
 }
 
-interface AccioWsPromptProbe {
+interface ReferenceRuntimeWsPromptProbe {
   conversationId: string;
   close(): void;
   readRawResponse(): Record<string, unknown>;
 }
 
-async function sendAccioWsPrompt(input: {
+async function sendReferenceRuntimeWsPrompt(input: {
   baseUrl: string;
   agentId: string;
   workspacePath: string;
@@ -1462,7 +1462,7 @@ async function sendAccioWsPrompt(input: {
   timeoutMs: number;
   conversationLabel: string;
   conversationId?: string;
-}): Promise<AccioWsPromptProbe> {
+}): Promise<ReferenceRuntimeWsPromptProbe> {
   const safeLabel = input.conversationLabel.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 48) || "reference";
   const conversationId = input.conversationId ?? `CID-${safeLabel}-${Date.now().toString(36)}`;
   const clientId = `desktop-reference-collect-${Date.now().toString(36)}`;
@@ -1483,13 +1483,13 @@ async function sendAccioWsPrompt(input: {
   };
   const readRawResponse = (): Record<string, unknown> => ({
     route: "/websocket/connect",
-    transport: "accio-work-websocket-sendQuery",
+    transport: "reference-desktop-websocket-sendQuery",
     accepted,
     keptOpenAfterAccept: true,
     conversationId,
     clientId,
     messageCount: messages.length,
-    messages: parseAccioWsMessages(messages),
+    messages: parseReferenceRuntimeWsMessages(messages),
   });
   await new Promise<void>((resolve, reject) => {
     ws = new WebSocket(wsUrl);
@@ -1531,7 +1531,7 @@ async function sendAccioWsPrompt(input: {
     ws.addEventListener("message", (event) => {
       const text = String(event.data);
       messages.push(text);
-      if (isAcceptedAccioWsMessage(text, conversationId)) {
+      if (isAcceptedReferenceRuntimeWsMessage(text, conversationId)) {
         accepted = true;
         clearTimeout(timer);
         resolve();
@@ -1546,7 +1546,7 @@ async function sendAccioWsPrompt(input: {
     errorMessage = error instanceof Error ? error.message : String(error);
   });
   if (!accepted) {
-    throw new Error(`Accio WS sendQuery was not accepted${errorMessage ? `: ${errorMessage}` : ""}`);
+    throw new Error(`reference websocket sendQuery was not accepted${errorMessage ? `: ${errorMessage}` : ""}`);
   }
   return {
     conversationId,
@@ -1555,7 +1555,7 @@ async function sendAccioWsPrompt(input: {
   };
 }
 
-function parseAccioWsMessages(messages: string[]): unknown[] {
+function parseReferenceRuntimeWsMessages(messages: string[]): unknown[] {
   return messages.flatMap((message) => {
     try {
       return [JSON.parse(message) as unknown];
@@ -1565,7 +1565,7 @@ function parseAccioWsMessages(messages: string[]): unknown[] {
   });
 }
 
-function isAcceptedAccioWsMessage(text: string, conversationId: string): boolean {
+function isAcceptedReferenceRuntimeWsMessage(text: string, conversationId: string): boolean {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -1577,8 +1577,8 @@ function isAcceptedAccioWsMessage(text: string, conversationId: string): boolean
   return readString(record.payload?.conversationId) === conversationId && (record.payload?.success === true || readString(record.type) === "ack");
 }
 
-async function pollAccioSessionMessages(input: {
-  accioHome: string;
+async function pollReferenceRuntimeSessionMessages(input: {
+  referenceRuntimeHome: string;
   accountId: string;
   agentId: string;
   conversationId: string;
@@ -1587,7 +1587,7 @@ async function pollAccioSessionMessages(input: {
   afterUserContent?: string;
   approvalDecisionPolicy?: ReferenceApprovalDecisionPolicy;
 }): Promise<{ messages: unknown[]; completion: { finalText: string; ready: boolean }; timedOut: boolean }> {
-  const sessionPath = accioSessionMessagesPath(input);
+  const sessionPath = referenceRuntimeSessionMessagesPath(input);
   const startedAt = Date.now();
   let lastCompletion = { finalText: "", ready: false };
   while (Date.now() - startedAt <= input.timeoutMs) {
@@ -1612,14 +1612,14 @@ async function pollAccioSessionMessages(input: {
   };
 }
 
-function accioSessionMessagesPath(input: {
-  accioHome: string;
+function referenceRuntimeSessionMessagesPath(input: {
+  referenceRuntimeHome: string;
   accountId: string;
   agentId: string;
   conversationId: string;
 }): string {
   return path.join(
-    input.accioHome,
+    input.referenceRuntimeHome,
     "accounts",
     input.accountId,
     "agents",
@@ -1629,7 +1629,7 @@ function accioSessionMessagesPath(input: {
   );
 }
 
-const ACCIO_WORKSPACE_ARTIFACT_EXTENSIONS = new Set([
+const REFERENCE_RUNTIME_WORKSPACE_ARTIFACT_EXTENSIONS = new Set([
   ".png",
   ".jpg",
   ".jpeg",
@@ -1642,7 +1642,7 @@ const ACCIO_WORKSPACE_ARTIFACT_EXTENSIONS = new Set([
   ".json",
 ]);
 
-export function collectAccioWorkspaceArtifacts(input: {
+export function collectReferenceRuntimeWorkspaceArtifacts(input: {
   workspacePath: string;
   sinceMs: number;
   maxFiles?: number;
@@ -1675,7 +1675,7 @@ export function collectAccioWorkspaceArtifacts(input: {
       }
       if (!entry.isFile()) continue;
       const ext = path.extname(entry.name).toLowerCase();
-      if (!ACCIO_WORKSPACE_ARTIFACT_EXTENSIONS.has(ext)) continue;
+      if (!REFERENCE_RUNTIME_WORKSPACE_ARTIFACT_EXTENSIONS.has(ext)) continue;
       let stat;
       try {
         stat = statSync(absolutePath);
@@ -1691,9 +1691,9 @@ export function collectAccioWorkspaceArtifacts(input: {
         continue;
       }
       artifacts.push({
-        source: "accio_ws_workspace_artifact_after_prompt",
+        source: "reference_ws_workspace_artifact_after_prompt",
         status: "orphaned_workspace_artifact",
-        kind: classifyAccioWorkspaceArtifactKind(ext),
+        kind: classifyReferenceRuntimeWorkspaceArtifactKind(ext),
         workspacePath: root,
         path: absolutePath,
         relativePath: path.relative(root, absolutePath),
@@ -1709,7 +1709,7 @@ export function collectAccioWorkspaceArtifacts(input: {
     .slice(0, maxFiles);
 }
 
-function classifyAccioWorkspaceArtifactKind(ext: string): string {
+function classifyReferenceRuntimeWorkspaceArtifactKind(ext: string): string {
   if ([".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)) return "screenshot";
   if (ext === ".html" || ext === ".htm") return "html";
   if (ext === ".json") return "json";
@@ -1734,8 +1734,8 @@ function readJsonlMessages(filePath: string): unknown[] {
   }
 }
 
-function selectAccioAgent(value: unknown, requestedAgentId: string | undefined): { id: string; accountId: string } | null {
-  const agents = readAccioAgentRecords(value);
+function selectReferenceRuntimeAgent(value: unknown, requestedAgentId: string | undefined): { id: string; accountId: string } | null {
+  const agents = readReferenceRuntimeAgentRecords(value);
   const selected =
     agents.find((agent) => requestedAgentId && agent.id === requestedAgentId) ??
     agents.find((agent) => agent.modelName === "MiniMax-M2.7-highspeed") ??
@@ -1743,7 +1743,7 @@ function selectAccioAgent(value: unknown, requestedAgentId: string | undefined):
   return selected ? { id: selected.id, accountId: selected.accountId } : null;
 }
 
-function readAccioAgentRecords(value: unknown): Array<{ id: string; accountId: string; modelName?: string }> {
+function readReferenceRuntimeAgentRecords(value: unknown): Array<{ id: string; accountId: string; modelName?: string }> {
   if (typeof value !== "object" || value === null) return [];
   const record = value as { data?: unknown };
   const data = Array.isArray(record.data) ? record.data : Array.isArray(value) ? value : [];
@@ -1758,9 +1758,9 @@ function readAccioAgentRecords(value: unknown): Array<{ id: string; accountId: s
   });
 }
 
-function resolveAccioHomeFromRuntimeRoot(runtimeRoot: string | undefined): string | null {
+function resolveReferenceRuntimeHomeFromRuntimeRoot(runtimeRoot: string | undefined): string | null {
   if (!runtimeRoot) return null;
-  return path.join(runtimeRoot, "home", ".accio");
+  return path.join(runtimeRoot, "home", ".reference-runtime");
 }
 
 function buildPendingApprovalPausedStateSummary(approvalEvidence: unknown[]): string {
@@ -2301,12 +2301,12 @@ function seedReferenceMemoryRecallFixture(input: { runtimeRoot: string; threadId
   });
 }
 
-function writeAccioAgentCoreMemorySeed(input: {
-  accioHome: string;
+function writeReferenceRuntimeAgentCoreMemorySeed(input: {
+  referenceRuntimeHome: string;
   accountId: string;
   agentId: string;
 }): { path: string; content: string } {
-  const memoryDir = path.join(input.accioHome, "accounts", input.accountId, "agents", input.agentId, "agent-core");
+  const memoryDir = path.join(input.referenceRuntimeHome, "accounts", input.accountId, "agents", input.agentId, "agent-core");
   const memoryPath = path.join(memoryDir, "MEMORY.md");
   const content = [
     "## Reference A/B durable memory seed",
@@ -2505,9 +2505,9 @@ export function referenceScenarioDriverFor(scenarioId: string): ReferenceScenari
   return singlePrompt;
 }
 
-function unsupportedAccioWsScenarioReason(driver: ReferenceScenarioDriver): string | null {
+function unsupportedReferenceRuntimeWsScenarioReason(driver: ReferenceScenarioDriver): string | null {
   if (driver.kind === "cancel_active" || driver.kind === "cancel_followup") {
-    return "accio_ws_reference_does_not_expose_active_cancellation_driver";
+    return "reference_ws_reference_does_not_expose_active_cancellation_driver";
   }
   return null;
 }
@@ -2538,10 +2538,10 @@ function inferReferenceModelInfo(modelCatalog: unknown): { provider: string; mod
     return { provider: "unknown", modelId: "unknown" };
   }
   const catalog = modelCatalog as { defaultModelId?: unknown; models?: unknown };
-  const accioProviders = readArray((modelCatalog as { data?: unknown }).data).filter(
+  const referenceRuntimeProviders = readArray((modelCatalog as { data?: unknown }).data).filter(
     (provider): provider is Record<string, unknown> => typeof provider === "object" && provider !== null
   );
-  for (const provider of accioProviders) {
+  for (const provider of referenceRuntimeProviders) {
     const providerId = readString(provider.provider);
     const models = readArray(provider.modelList).filter(
       (model): model is Record<string, unknown> => typeof model === "object" && model !== null
@@ -3224,7 +3224,7 @@ function extractBrowserEvidenceFromTranscript(messages: unknown[]): unknown[] {
 function extractBrowserEvidenceFromSessionToolContent(content: string | null, fallbackStatus: string | null): unknown[] {
   const envelope = parseToolResultEnvelope(content);
   if (envelope) return extractBrowserEvidenceFromJsonEnvelope(envelope, fallbackStatus);
-  return extractBrowserEvidenceFromAccioTextSessionToolResult(content, fallbackStatus);
+  return extractBrowserEvidenceFromReferenceRuntimeTextSessionToolResult(content, fallbackStatus);
 }
 
 function extractBrowserEvidenceFromJsonEnvelope(envelope: Record<string, unknown>, fallbackStatus: string | null): unknown[] {
@@ -3254,12 +3254,12 @@ function extractBrowserEvidenceFromJsonEnvelope(envelope: Record<string, unknown
   ];
 }
 
-function extractBrowserEvidenceFromAccioTextSessionToolResult(content: string | null, fallbackStatus: string | null): unknown[] {
-  if (!content || !isAccioTextBrowserSessionToolResult(content)) return [];
-  const status = readAccioTextHeader(content, "status") ?? fallbackStatus ?? "completed";
-  const taskId = readAccioTextHeader(content, "task_id");
-  const toolChain = readAccioTextHeader(content, "tool_chain");
-  const taskResult = readAccioTaskResult(content) ?? content;
+function extractBrowserEvidenceFromReferenceRuntimeTextSessionToolResult(content: string | null, fallbackStatus: string | null): unknown[] {
+  if (!content || !isReferenceRuntimeTextBrowserSessionToolResult(content)) return [];
+  const status = readReferenceRuntimeTextHeader(content, "status") ?? fallbackStatus ?? "completed";
+  const taskId = readReferenceRuntimeTextHeader(content, "task_id");
+  const toolChain = readReferenceRuntimeTextHeader(content, "tool_chain");
+  const taskResult = readReferenceRuntimeTaskResult(content) ?? content;
   const screenshotPaths = extractMarkdownImageTargets(taskResult);
   const urls = extractHttpUrls(taskResult);
   const evidenceText = compactEvidenceText([
@@ -3283,17 +3283,17 @@ function extractBrowserEvidenceFromAccioTextSessionToolResult(content: string | 
   ];
 }
 
-function isAccioTextBrowserSessionToolResult(content: string): boolean {
+function isReferenceRuntimeTextBrowserSessionToolResult(content: string): boolean {
   return /^tool_chain:\s*.*\bbrowser\b/im.test(content) || /^task_id:\s*.*:sub:browser:/im.test(content);
 }
 
-function readAccioTextHeader(content: string, key: string): string | null {
+function readReferenceRuntimeTextHeader(content: string, key: string): string | null {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, "im"));
   return readString(match?.[1]);
 }
 
-function readAccioTaskResult(content: string): string | null {
+function readReferenceRuntimeTaskResult(content: string): string | null {
   const match = content.match(/<task_result>\s*([\s\S]*?)\s*<\/task_result>/i);
   return readString(match?.[1]);
 }

@@ -54,6 +54,8 @@ export interface NaturalFinishRepairFactInput {
 
 export interface NaturalFinishRepairPolicyFacts {
   finalRecoveryBudgetCloseoutRepair: boolean;
+  missingDurableMemorySearch: boolean;
+  missingDurableMemoryGet: boolean;
   missingBrowserEvidence: boolean;
   missingProductSignalBrowserEvidence: boolean;
   missingApprovalGate: boolean;
@@ -97,6 +99,10 @@ export function buildNaturalFinishRepairPolicyFacts(
   return {
     finalRecoveryBudgetCloseoutRepair:
       shouldSelectFinalRecoveryBudgetCloseoutRepair(input),
+    missingDurableMemorySearch:
+      shouldSelectMissingDurableMemorySearch(input),
+    missingDurableMemoryGet:
+      shouldSelectMissingDurableMemoryGet(input),
     missingBrowserEvidence: shouldSelectMissingBrowserEvidence(input),
     missingProductSignalBrowserEvidence:
       shouldSelectMissingProductSignalBrowserEvidence(input),
@@ -191,6 +197,100 @@ export function buildCompletedSynthesisRepairPolicyFacts(
       }),
     missingRequiredDeliverables,
   };
+}
+
+const DURABLE_MEMORY_SEARCH_REPAIR_MARKER =
+  "Runtime correction: the explicit durable-memory lookup is incomplete";
+const DURABLE_MEMORY_GET_REPAIR_MARKER =
+  "Runtime correction: the selected durable-memory candidate was not inspected";
+
+function shouldSelectMissingDurableMemorySearch(
+  input: NaturalFinishRepairFactInput,
+): boolean {
+  const taskFacts = resolveRepairTaskFacts(input);
+  return (
+    taskFacts.durableMemoryLookupProtocol !== "none" &&
+    hasToolDefinition(input.tools, "memory_search") &&
+    !hasSuccessfulToolResult(input.toolTrace, "memory_search") &&
+    !hasNaturalFinishRepairMarker(
+      input.repairMarkers,
+      DURABLE_MEMORY_SEARCH_REPAIR_MARKER,
+    )
+  );
+}
+
+function shouldSelectMissingDurableMemoryGet(
+  input: NaturalFinishRepairFactInput,
+): boolean {
+  const taskFacts = resolveRepairTaskFacts(input);
+  return (
+    taskFacts.durableMemoryLookupProtocol === "search_and_get" &&
+    hasToolDefinition(input.tools, "memory_get") &&
+    memorySearchReturnedCandidate(input.toolTrace) &&
+    !hasSuccessfulToolResult(input.toolTrace, "memory_get") &&
+    !hasNaturalFinishRepairMarker(
+      input.repairMarkers,
+      DURABLE_MEMORY_GET_REPAIR_MARKER,
+    )
+  );
+}
+
+function hasToolDefinition(
+  tools: NaturalFinishRepairFactInput["tools"],
+  name: string,
+): boolean {
+  return Boolean(tools?.some((tool) => tool.name === name));
+}
+
+function hasSuccessfulToolResult(
+  toolTrace: NativeToolRoundTrace[] | undefined,
+  toolName: string,
+): boolean {
+  return Boolean(
+    toolTrace?.some((round) =>
+      round.results.some(
+        (result) =>
+          result.toolName === toolName &&
+          !result.isError &&
+          !result.cancelled &&
+          !result.skipped,
+      ),
+    ),
+  );
+}
+
+function memorySearchReturnedCandidate(
+  toolTrace: NativeToolRoundTrace[] | undefined,
+): boolean {
+  return Boolean(
+    toolTrace?.some((round) =>
+      round.results.some((result) => {
+        if (
+          result.toolName !== "memory_search" ||
+          result.isError ||
+          result.cancelled ||
+          result.skipped ||
+          !result.content
+        ) {
+          return false;
+        }
+        try {
+          const parsed = JSON.parse(result.content) as {
+            memories?: Array<{ memory_id?: unknown }>;
+          };
+          return Boolean(
+            parsed.memories?.some(
+              (memory) =>
+                typeof memory.memory_id === "string" &&
+                memory.memory_id.trim().length > 0,
+            ),
+          );
+        } catch {
+          return false;
+        }
+      }),
+    ),
+  );
 }
 
 function shouldSelectFinalRecoveryBudgetCloseoutRepair(

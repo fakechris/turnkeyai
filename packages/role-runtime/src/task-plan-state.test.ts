@@ -85,6 +85,47 @@ test("readTaskPlanState ignores malformed and unrelated tool results", () => {
   );
 });
 
+test("readTaskPlanState preserves authoritative dependency and acceptance detail", () => {
+  const specification = {
+    objective: "Write the report",
+    blocked_by: ["wi.1"],
+    blocks: [],
+    acceptance_criteria: [{
+      id: "report-exists",
+      description: "Report is readable",
+      required: true,
+      state: "passed",
+    }],
+    verification_receipts: [{
+      receipt_id: "receipt.1",
+      criterion_id: "report-exists",
+      kind: "artifact",
+      ref: "artifact://report",
+      verifier: "role-lead",
+      result: "passed",
+      verified_at: 1,
+    }],
+  };
+  const state = readTaskPlanState([
+    taskResult("tasks_list", {
+      total: 1,
+      showing: 1,
+      tasks: [{
+        id: "wi.2",
+        n: 2,
+        title: "Write report",
+        status: "done",
+        specification,
+      }],
+    }),
+  ]);
+
+  assert.deepEqual(
+    (JSON.parse(state[0]!) as { specification: unknown }).specification,
+    specification,
+  );
+});
+
 function taskResult(name: string, value: unknown): LLMMessage {
   return {
     role: "tool",

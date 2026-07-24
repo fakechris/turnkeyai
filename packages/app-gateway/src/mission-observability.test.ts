@@ -2183,6 +2183,65 @@ test("buildMissionObservabilitySnapshot accepts natural source-label stems witho
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot treats source-label read verbs as collection actions", () => {
+  const orchestrationResult = tool(
+    "result-orchestration-read",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-orchestration-read",
+    "Orchestration source returned evidence.",
+  );
+  const bridgeResult = tool(
+    "result-bridge-read",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-bridge-read",
+    "Bridge source returned evidence.",
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...orchestrationResult,
+        runtime: {
+          ...orchestrationResult.runtime,
+          sourceLabel: "Read product-orchestration (research source)",
+        },
+      },
+      {
+        ...bridgeResult,
+        runtime: {
+          ...bridgeResult.runtime,
+          sourceLabel: "Read product-bridge (capability source)",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "The /product-orchestration evidence identifies the product-lead workflow.",
+          "The /product-bridge evidence identifies the browser-only capability boundary.",
+          "Residual risk is the source-bounded local fixture.",
+        ].join(" "),
+      ),
+    ],
+  });
+
+  const sourceCoverage = snapshot.qualityGate.checks.find(
+    (check) => check.name === "source_coverage",
+  );
+  assert.equal(sourceCoverage?.status, "pass");
+  assert.equal(
+    sourceCoverage?.detail,
+    "Final answer covers 2/2 visible source label(s).",
+  );
+});
+
 test("buildMissionObservabilitySnapshot accepts independent researcher labels when final answer names role and URL", () => {
   const researcherA = tool(
     "result-researcher-a",

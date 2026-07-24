@@ -51,9 +51,10 @@ export function createRuntimeCheckpointSummarizer(
           content: [
             "You compact an agent tool loop into a durable runtime checkpoint.",
             "Return one JSON object only. Do not use markdown.",
-            "Required keys: task, summary, decisions, evidence, artifacts, openQuestions, planState.",
+            "Required keys: task, summary, decisions, evidence, artifacts, openQuestions, planState, errorsAndFixes.",
             "task and summary are strings. Every other key is an array of concise strings.",
             "Preserve concrete evidence, URLs, artifact identifiers, decisions, unresolved questions, and next actions.",
+            "Record material errors and their verified fixes in errorsAndFixes.",
             "Merge the previous checkpoint when supplied. Do not invent or strengthen claims.",
           ].join("\n"),
         },
@@ -113,6 +114,7 @@ export function parseRuntimeCheckpointDraft(
         artifacts: parsed["artifacts"],
         openQuestions: parsed["openQuestions"],
         planState: parsed["planState"],
+        errorsAndFixes: parsed["errorsAndFixes"] as string[],
       };
     } catch {
       // Try the next bounded JSON candidate.
@@ -131,7 +133,8 @@ function isRuntimeCheckpointDraft(
     isStringArray(value["evidence"]) &&
     isStringArray(value["artifacts"]) &&
     isStringArray(value["openQuestions"]) &&
-    isStringArray(value["planState"])
+    isStringArray(value["planState"]) &&
+    isStringArray(value["errorsAndFixes"])
   );
 }
 

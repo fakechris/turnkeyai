@@ -15,9 +15,9 @@ import {
 const SCENARIOS = ["natural-browser-external-page-review", "natural-browser-complex-page-review"] as const;
 const FIXTURE_URL = "http://127.0.0.1:8765/dashboard?case=validated-pipeline";
 const FIXTURE_CONTENT_HASH = "sha256-validated-pipeline-fixture";
-const REFERENCE_APP = "accio-work-app-asar";
-const REFERENCE_BINARY = "/Applications/Accio.app/Contents/Resources/app.asar";
-const REFERENCE_RUNTIME_ROOT = "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5";
+const REFERENCE_APP = "reference-desktop-app-asar";
+const REFERENCE_BINARY = "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar";
+const REFERENCE_RUNTIME_ROOT = "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/reference-desktop-0.4.5";
 const REFERENCE_VERSION = "0.4.5";
 const REFERENCE_COMMIT = "app.asar:test-sha";
 const MODEL_PROVIDER = "minimax";
@@ -61,7 +61,7 @@ test("real LLM A/B validated pipeline parses args and help", () => {
   assert.deepEqual(parseRealLlmAbValidatedPipelineArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbValidatedPipelineHelpText(), /validated evidence pipeline/);
   assert.match(buildRealLlmAbValidatedPipelineHelpText(), /full-natural/);
-  assert.match(buildRealLlmAbValidatedPipelineHelpText(), /--accio-ws/);
+  assert.match(buildRealLlmAbValidatedPipelineHelpText(), /--reference-ws/);
   assert.throws(
     () =>
       parseRealLlmAbValidatedPipelineArgs([
@@ -78,7 +78,7 @@ test("real LLM A/B validated pipeline parses args and help", () => {
   );
 });
 
-test("real LLM A/B validated pipeline parses Accio Work app.asar reference mode", () => {
+test("real LLM A/B validated pipeline parses reference desktop runtime app.asar reference mode", () => {
   assert.deepEqual(
     parseRealLlmAbValidatedPipelineArgs([
       "--natural-report",
@@ -102,7 +102,7 @@ test("real LLM A/B validated pipeline parses Accio Work app.asar reference mode"
       check: false,
     }
   );
-  const accioDefaults = parseRealLlmAbValidatedPipelineArgs([
+  const referenceRuntimeDefaults = parseRealLlmAbValidatedPipelineArgs([
     "--natural-report",
     "/tmp/natural.json",
     "--reference-dir",
@@ -113,14 +113,14 @@ test("real LLM A/B validated pipeline parses Accio Work app.asar reference mode"
     "/tmp/work",
     "--reference-base-url",
     "http://127.0.0.1:4097",
-    "--accio-ws",
-    "--accio-workspace-path",
+    "--reference-ws",
+    "--reference-workspace-path",
     "/Users/chris/workspace/turnkeyai",
   ]);
   assert.deepEqual(
     {
-      ...accioDefaults,
-      ...(typeof accioDefaults === "object" && !("help" in accioDefaults) ? { referenceCommit: undefined } : {}),
+      ...referenceRuntimeDefaults,
+      ...(typeof referenceRuntimeDefaults === "object" && !("help" in referenceRuntimeDefaults) ? { referenceCommit: undefined } : {}),
     },
     {
       naturalReportPath: "/tmp/natural.json",
@@ -129,21 +129,21 @@ test("real LLM A/B validated pipeline parses Accio Work app.asar reference mode"
       workDir: "/tmp/work",
       referenceBaseUrl: "http://127.0.0.1:4097",
       referenceVariant: "operator",
-      accioWs: true,
-      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceRuntimeWs: true,
+      referenceRuntimeWorkspacePath: "/Users/chris/workspace/turnkeyai",
       referenceTimeoutMs: 180000,
       referencePollMs: 2000,
-      referenceApp: "accio-work-app-asar",
-      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-      referenceRuntimeRoot: path.resolve("artifacts/reference-runtimes/accio-work-0.4.5"),
+      referenceApp: "reference-desktop-app-asar",
+      referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: path.resolve("artifacts/reference-runtimes/reference-desktop-0.4.5"),
       referenceVersion: "0.4.5",
       referenceCommit: undefined,
       check: false,
     }
   );
-  if (existsSync("/Applications/Accio.app/Contents/Resources/app.asar")) {
+  if (existsSync("/Applications/ReferenceRuntime.app/Contents/Resources/app.asar")) {
     assert.match(
-      "help" in accioDefaults ? "" : (accioDefaults.referenceCommit ?? ""),
+      "help" in referenceRuntimeDefaults ? "" : (referenceRuntimeDefaults.referenceCommit ?? ""),
       /^app\.asar:[a-f0-9]{64}$/
     );
   }
@@ -159,17 +159,17 @@ test("real LLM A/B validated pipeline parses Accio Work app.asar reference mode"
       "/tmp/work",
       "--reference-base-url",
       "http://127.0.0.1:4097",
-      "--accio-ws",
-      "--accio-agent-id",
+      "--reference-ws",
+      "--reference-agent-id",
       "DID-F456DA-2B0D4C",
-      "--accio-workspace-path",
+      "--reference-workspace-path",
       "/Users/chris/workspace/turnkeyai",
       "--reference-app",
-      "accio-work-app-asar",
+      "reference-desktop-app-asar",
       "--reference-binary",
-      "/Applications/Accio.app/Contents/Resources/app.asar",
+      "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
       "--reference-runtime-root",
-      "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
+      "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/reference-desktop-0.4.5",
       "--reference-version",
       "0.4.5",
       "--reference-commit",
@@ -182,14 +182,14 @@ test("real LLM A/B validated pipeline parses Accio Work app.asar reference mode"
       workDir: "/tmp/work",
       referenceBaseUrl: "http://127.0.0.1:4097",
       referenceVariant: "operator",
-      accioWs: true,
-      accioAgentId: "DID-F456DA-2B0D4C",
-      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceRuntimeWs: true,
+      referenceRuntimeAgentId: "DID-F456DA-2B0D4C",
+      referenceRuntimeWorkspacePath: "/Users/chris/workspace/turnkeyai",
       referenceTimeoutMs: 180000,
       referencePollMs: 2000,
-      referenceApp: "accio-work-app-asar",
-      referenceBinary: "/Applications/Accio.app/Contents/Resources/app.asar",
-      referenceRuntimeRoot: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/accio-work-0.4.5",
+      referenceApp: "reference-desktop-app-asar",
+      referenceBinary: "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar",
+      referenceRuntimeRoot: "/Users/chris/workspace/turnkeyai/artifacts/reference-runtimes/reference-desktop-0.4.5",
       referenceVersion: "0.4.5",
       referenceCommit: "app.asar:eba7d3bad65cd35ac4c5ec37dafdfa70dc2e9a2d9a92cc163b32ace10828d1a9",
       check: false,
@@ -618,7 +618,7 @@ function writeFixture(
           },
           provider: MODEL_PROVIDER,
           modelId: referenceModelId,
-          exactRequestPayload: { transport: "accio-work-websocket-sendQuery", prompt },
+          exactRequestPayload: { transport: "reference-desktop-websocket-sendQuery", prompt },
           timeout: { timeoutMs: 180_000, pollMs: 2_000 },
           rawResponse: { finalText: referenceFinalText(scenario) },
           rawTranscript: { messages: [{ role: "user", content: prompt }, { role: "assistant", content: referenceFinalText(scenario) }] },

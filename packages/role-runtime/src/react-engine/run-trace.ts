@@ -14,6 +14,7 @@ import { isAttemptDeadlineExceeded } from "../run-deadline";
 import type { EngineCloseoutReason, EnginePolicyTraceEntry } from "./types";
 import type { RunJournalState } from "./run-journal";
 import type { RunLifecycleSnapshot } from "./run-lifecycle";
+import type { ContextSourceGuardSnapshot } from "./context-source-guard";
 import { TOOL_ARGUMENT_ERROR_PROTOCOL } from "./tool-argument-validator";
 
 export const RUN_TRACE_PROTOCOL = "turnkeyai.run_trace.v1" as const;
@@ -52,6 +53,11 @@ export interface RunTraceCompactionEvent {
   messageCountBefore: number;
   messageCountAfter: number;
   sourceMessageCount: number;
+  messageBytesBefore?: number;
+  messageBytesAfter?: number;
+  checkpointId?: string;
+  checkpointProtocol?: string;
+  sourceGuard?: ContextSourceGuardSnapshot;
 }
 
 export interface RunTracePruningEvent {

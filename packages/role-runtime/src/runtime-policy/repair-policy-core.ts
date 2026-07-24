@@ -7,6 +7,8 @@ import type { RuntimeRepairDecision } from "./types";
 
 export const RUNTIME_NATURAL_FINISH_REPAIR_POLICY_ORDER = [
   "final_recovery_budget_closeout_repair",
+  "missing_durable_memory_search",
+  "missing_durable_memory_get",
   "missing_browser_evidence",
   "missing_product_signal_browser_evidence",
   "missing_approval_gate",
@@ -90,6 +92,10 @@ function naturalPolicyActive(
   switch (policyId) {
     case "final_recovery_budget_closeout_repair":
       return facts.finalRecoveryBudgetCloseoutRepair;
+    case "missing_durable_memory_search":
+      return facts.missingDurableMemorySearch;
+    case "missing_durable_memory_get":
+      return facts.missingDurableMemoryGet;
     case "missing_browser_evidence":
       return facts.missingBrowserEvidence;
     case "missing_product_signal_browser_evidence":
@@ -143,6 +149,26 @@ function buildNaturalDecision(
   policyId: RuntimeNaturalFinishRepairPolicyId,
 ): RuntimeRepairDecision {
   switch (policyId) {
+    case "missing_durable_memory_search":
+      return {
+        kind: "force_tool_round",
+        policyId,
+        reasonCode: policyId,
+        evidenceFormula: "candidate_final",
+        forceToolChoice: { name: "memory_search" },
+        consumesRound: true,
+        render: buildPolicyIdRenderRequest("repair_prompt", policyId),
+      };
+    case "missing_durable_memory_get":
+      return {
+        kind: "force_tool_round",
+        policyId,
+        reasonCode: policyId,
+        evidenceFormula: "candidate_final",
+        forceToolChoice: { name: "memory_get" },
+        consumesRound: true,
+        render: buildPolicyIdRenderRequest("repair_prompt", policyId),
+      };
     case "missing_browser_evidence":
     case "missing_product_signal_browser_evidence":
     case "stale_pending_approval":

@@ -45,6 +45,62 @@ describe("evaluateMissionGoalSlotCoverage", () => {
     assert.equal(pricing.reason, "unverified");
   });
 
+  it("accepts concrete core pricing and risk while bounded sub-scopes remain unverified", () => {
+    const coverage = evaluateMissionGoalSlotCoverage({
+      goalText: "Prepare a source-backed review focused on pricing and risk.",
+      finalText: [
+        "Pricing: $19 per seat, verified from the source page.",
+        "Risk: the API integration catalog is limited, verified from the source page.",
+        "Enterprise / custom pricing: not verified from this source.",
+        "Other risk categories — not verified from this source.",
+      ].join("\n"),
+    });
+
+    assert.deepEqual(coverage.required, ["pricing", "risk_or_limitation"]);
+    assert.deepEqual(coverage.issues, []);
+  });
+
+  it("does not treat an unverified core price as a bounded pricing sub-scope", () => {
+    const coverage = evaluateMissionGoalSlotCoverage({
+      goalText: "Prepare a source-backed review focused on pricing.",
+      finalText: [
+        "Pricing is not verified; the page did not provide a concrete price.",
+        "Enterprise / custom pricing is also not verified.",
+      ].join("\n"),
+    });
+
+    assert.ok(
+      coverage.issues.some(
+        (issue) => issue.slot === "pricing" && issue.reason === "unverified",
+      ),
+    );
+  });
+
+  it("accepts verified rendered dashboard facts when one extra numeric KPI is absent", () => {
+    const coverage = evaluateMissionGoalSlotCoverage({
+      goalText:
+        "Use rendered browser evidence to report Mission Control, stuck missions, weak answer rate, and the recommended next action.",
+      finalText:
+        "Rendered browser evidence verified Stuck missions: 6, Weak answer rate: 24%, and the recommended next action: make Mission Control the default entry. No standalone numeric Mission Control tile was rendered, so that metric value is not verified.",
+    });
+
+    assert.ok(coverage.required.includes("rendered_browser"));
+    assert.equal(
+      coverage.issues.some((issue) => issue.slot === "rendered_browser"),
+      false,
+    );
+  });
+
+  it("accepts a concrete list price while comparison-only pricing dimensions remain unverified", () => {
+    const coverage = evaluateMissionGoalSlotCoverage({
+      goalText: "Review Vendor Alpha pricing and risk for a future comparison.",
+      finalText:
+        "Verified list price: $19 per seat. For comparison, anything else—annual, volume, and enterprise pricing—will be not verified until a richer source is added. Risk: the API integration catalog is limited.",
+    });
+
+    assert.equal(coverage.issues.length, 0);
+  });
+
   it("requires the delegated-research slot to meet the inferred stream count", () => {
     const goalText =
       "Delegate to two independent researchers to separately gather evidence and report back.";

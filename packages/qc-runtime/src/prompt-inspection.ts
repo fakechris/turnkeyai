@@ -4,10 +4,17 @@ import type {
   PromptBoundaryReductionLevel,
   PromptConsoleReport,
   PromptContextRiskSignal,
+  PromptSectionAuthority,
+  PromptSectionRuntimeReceipt,
+  PromptSectionRuntimeState,
   RuntimeProgressEvent,
 } from "@turnkeyai/core-types/team";
 
-const PROMPT_BOUNDARY_KINDS = new Set<PromptBoundaryKind>(["prompt_compaction", "request_envelope_reduction"]);
+const PROMPT_BOUNDARY_KINDS = new Set<PromptBoundaryKind>([
+  "prompt_assembly",
+  "prompt_compaction",
+  "request_envelope_reduction",
+]);
 
 export function buildPromptConsoleReport(events: RuntimeProgressEvent[], limit = 10): PromptConsoleReport {
   const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : 10;
@@ -17,6 +24,13 @@ export function buildPromptConsoleReport(events: RuntimeProgressEvent[], limit =
   const modelChainCounts: PromptConsoleReport["modelChainCounts"] = {};
   const roleCounts: PromptConsoleReport["roleCounts"] = {};
   const compactedSegmentCounts: PromptConsoleReport["compactedSegmentCounts"] = {};
+  const promptSectionStateCounts: Partial<
+    Record<PromptSectionRuntimeState, number>
+  > = {};
+  const promptSectionAuthorityCounts: Partial<
+    Record<PromptSectionAuthority, number>
+  > = {};
+  const promptSectionVersionCounts: Record<string, number> = {};
   const contextRiskCounts: PromptConsoleReport["contextRiskCounts"] = {};
   const continuityCarryForwardCounts: PromptConsoleReport["continuityCarryForwardCounts"] = {
     continuationContext: 0,
@@ -66,6 +80,15 @@ export function buildPromptConsoleReport(events: RuntimeProgressEvent[], limit =
     for (const segment of boundary.compactedSegments ?? []) {
       compactedSegmentCounts[segment] = (compactedSegmentCounts[segment] ?? 0) + 1;
     }
+    for (const receipt of boundary.sectionReceipts ?? []) {
+      promptSectionStateCounts[receipt.state] =
+        (promptSectionStateCounts[receipt.state] ?? 0) + 1;
+      promptSectionAuthorityCounts[receipt.authority] =
+        (promptSectionAuthorityCounts[receipt.authority] ?? 0) + 1;
+      const versionKey = `${receipt.sectionId}@${receipt.version}`;
+      promptSectionVersionCounts[versionKey] =
+        (promptSectionVersionCounts[versionKey] ?? 0) + 1;
+    }
     for (const signal of boundary.contextRiskSignals ?? []) {
       contextRiskCounts[signal] = (contextRiskCounts[signal] ?? 0) + 1;
     }
@@ -104,6 +127,9 @@ export function buildPromptConsoleReport(events: RuntimeProgressEvent[], limit =
     modelChainCounts,
     roleCounts,
     compactedSegmentCounts,
+    promptSectionStateCounts,
+    promptSectionAuthorityCounts,
+    promptSectionVersionCounts,
     uniqueAssemblyFingerprintCount: fingerprints.size,
     totalRecentTurnsSelected,
     totalRecentTurnsPacked,
@@ -150,12 +176,62 @@ function mapPromptBoundaryEntry(event: RuntimeProgressEvent): PromptBoundaryEntr
     ...(Array.isArray(metadata.sectionOrder) ? { sectionOrder: metadata.sectionOrder.filter(isString) } : {}),
     ...(Array.isArray(metadata.compactedSegments) ? { compactedSegments: metadata.compactedSegments.filter(isString) } : {}),
     ...(Array.isArray(metadata.omittedSections) ? { omittedSections: metadata.omittedSections.filter(isString) } : {}),
+    ...(Array.isArray(metadata.sectionReceipts)
+      ? {
+          sectionReceipts: metadata.sectionReceipts.filter(
+            isPromptSectionRuntimeReceipt,
+          ),
+        }
+      : {}),
     ...(Array.isArray(metadata.usedArtifacts) ? { usedArtifacts: metadata.usedArtifacts.filter(isString) } : {}),
     ...(isTokenEstimate(metadata.tokenEstimate) ? { tokenEstimate: metadata.tokenEstimate } : {}),
     ...(contextDiagnostics ? { contextDiagnostics } : {}),
     ...(contextRiskSignals.length > 0 ? { contextRiskSignals } : {}),
     ...(isEnvelopeHint(metadata.envelopeHint) ? { envelopeHint: metadata.envelopeHint } : {}),
   };
+}
+
+function isPromptSectionRuntimeReceipt(
+  value: unknown,
+): value is PromptSectionRuntimeReceipt {
+  if (!isRecord(value)) return false;
+  return typeof value.sectionId === "string" &&
+    typeof value.version === "string" &&
+    typeof value.owner === "string" &&
+    isPromptSectionAuthority(value.authority) &&
+    typeof value.requiredCapability === "string" &&
+    isPromptSectionBaselineBehavior(value.baselineBehavior) &&
+    isPromptSectionRuntimeState(value.state) &&
+    typeof value.estimatedTokens === "number" &&
+    Number.isFinite(value.estimatedTokens) &&
+    (value.reason === undefined || typeof value.reason === "string");
+}
+
+function isPromptSectionAuthority(
+  value: unknown,
+): value is PromptSectionAuthority {
+  return value === "instruction" ||
+    value === "context-projection" ||
+    value === "untrusted-evidence" ||
+    value === "model-advisory";
+}
+
+function isPromptSectionBaselineBehavior(
+  value: unknown,
+): value is PromptSectionRuntimeReceipt["baselineBehavior"] {
+  return value === "static" ||
+    value === "full-delta" ||
+    value === "rehydrate-full" ||
+    value === "ephemeral";
+}
+
+function isPromptSectionRuntimeState(
+  value: unknown,
+): value is PromptSectionRuntimeState {
+  return value === "included" ||
+    value === "compacted" ||
+    value === "omitted" ||
+    value === "inactive";
 }
 
 function derivePromptContextRiskSignals(
@@ -203,6 +279,12 @@ function derivePromptContextRiskSignals(
 
 function isString(value: unknown): value is string {
   return typeof value === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value);
 }
 
 function isTokenEstimate(
