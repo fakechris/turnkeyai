@@ -37,6 +37,7 @@ export class FileWorkspaceMemoryStore implements WorkspaceMemoryStore {
     return (
       await readJsonFile<WorkspaceMemorySnapshot>(
         this.snapshotPath(workspaceId),
+        { onCorruption: "quarantine" },
       )
     ) ?? emptySnapshot(workspaceId);
   }
@@ -44,7 +45,11 @@ export class FileWorkspaceMemoryStore implements WorkspaceMemoryStore {
   async get(memoryId: string): Promise<DurableMemoryRecord | null> {
     const files = await listJsonFiles(this.rootDir);
     for (const file of files) {
-      const snapshot = await readJsonFile<WorkspaceMemorySnapshot>(file);
+      // One corrupt workspace file must not fail lookups across every
+      // other workspace; quarantine it and keep scanning.
+      const snapshot = await readJsonFile<WorkspaceMemorySnapshot>(file, {
+        onCorruption: "quarantine",
+      });
       const record = snapshot?.records.find(
         (candidate) => candidate.memoryId === memoryId,
       );
@@ -68,7 +73,9 @@ export class FileWorkspaceMemoryStore implements WorkspaceMemoryStore {
     if (!this.index) return;
     const records: DurableMemoryRecord[] = [];
     for (const file of await listJsonFiles(this.rootDir)) {
-      const snapshot = await readJsonFile<WorkspaceMemorySnapshot>(file);
+      const snapshot = await readJsonFile<WorkspaceMemorySnapshot>(file, {
+        onCorruption: "quarantine",
+      });
       if (snapshot) records.push(...snapshot.records);
     }
     await this.index.rebuild(records);
@@ -133,9 +140,12 @@ export class FileWorkspaceMemoryStore implements WorkspaceMemoryStore {
         cursor: structuredClone(input.cursor),
         audits: [...current.audits, audit].slice(-MAX_AUDITS),
       };
+      // Authoritative memory: fsync so a power loss cannot silently reset
+      // a workspace's records and cursor to empty.
       await writeJsonFileAtomic(
         this.snapshotPath(input.workspaceId),
         next,
+        { durability: "strict" },
       );
       try {
         await this.index?.replaceWorkspace(
