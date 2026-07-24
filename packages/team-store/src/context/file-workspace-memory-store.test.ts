@@ -137,6 +137,73 @@ test("workspace memory store enforces cursor compare-and-set", async () => {
   );
 });
 
+async function storeWithOptions(options: {
+  now?: () => number;
+  maxRecordsPerWorkspace?: number;
+}) {
+  const rootDir = await mkdtemp(
+    path.join(os.tmpdir(), "turnkeyai-workspace-memory-"),
+  );
+  return new FileWorkspaceMemoryStore({ rootDir, ...options });
+}
+
+test("workspace memory store drops expired records on commit", async () => {
+  const memoryStore = await storeWithOptions({ now: () => 1_000 });
+  const snapshot = await memoryStore.commit({
+    workspaceId: "workspace-1",
+    expectedLastSequence: 0,
+    cursor: { workspaceId: "workspace-1", lastSequence: 1, updatedAt: 101 },
+    audit: audit("audit-1"),
+    mutations: [
+      { kind: "add", record: { ...record("live", "inferred"), expiresAt: 5_000 } },
+      { kind: "add", record: { ...record("stale", "inferred", "old note"), expiresAt: 500 } },
+    ],
+  });
+
+  assert.deepEqual(snapshot.records.map((r) => r.memoryId), ["live"]);
+  assert.deepEqual(snapshot.audits.at(-1)?.expired, ["stale"]);
+});
+
+test("workspace memory store evicts lowest-value records over the cap and never authoritative", async () => {
+  const memoryStore = await storeWithOptions({
+    now: () => 1_000,
+    maxRecordsPerWorkspace: 2,
+  });
+  const snapshot = await memoryStore.commit({
+    workspaceId: "workspace-1",
+    expectedLastSequence: 0,
+    cursor: { workspaceId: "workspace-1", lastSequence: 1, updatedAt: 101 },
+    audit: audit("audit-1"),
+    mutations: [
+      { kind: "add", record: { ...record("auth", "authoritative", "a"), invalidationKeys: ["k-auth"] } },
+      { kind: "add", record: { ...record("old", "inferred", "b"), lastConfirmedAt: 10, invalidationKeys: ["k-old"] } },
+      { kind: "add", record: { ...record("new", "inferred", "c"), lastConfirmedAt: 90, invalidationKeys: ["k-new"] } },
+    ],
+  });
+
+  const ids = snapshot.records.map((r) => r.memoryId).sort();
+  assert.deepEqual(ids, ["auth", "new"]);
+  assert.deepEqual(snapshot.audits.at(-1)?.evicted, ["old"]);
+});
+
+test("workspace memory store folds near-duplicate content into a re-confirmed survivor", async () => {
+  const memoryStore = await storeWithOptions({ now: () => 1_000 });
+  const snapshot = await memoryStore.commit({
+    workspaceId: "workspace-1",
+    expectedLastSequence: 0,
+    cursor: { workspaceId: "workspace-1", lastSequence: 1, updatedAt: 101 },
+    audit: audit("audit-1"),
+    mutations: [
+      { kind: "add", record: { ...record("first", "inferred", "Report must use Chinese."), lastConfirmedAt: 10, invalidationKeys: ["lang"] } },
+      { kind: "add", record: { ...record("second", "inferred", "report   must use chinese."), lastConfirmedAt: 90, invalidationKeys: ["lang"] } },
+    ],
+  });
+
+  assert.equal(snapshot.records.length, 1);
+  assert.equal(snapshot.records[0]?.lastConfirmedAt, 90);
+  assert.equal(snapshot.audits.at(-1)?.deduped?.length, 1);
+});
+
 test("workspace memory store reconciles its index from durable snapshots", async () => {
   const rootDir = await mkdtemp(
     path.join(os.tmpdir(), "turnkeyai-workspace-memory-reconcile-"),

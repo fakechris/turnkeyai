@@ -219,6 +219,12 @@ export interface WorkspaceMemoryAuditRecord {
   completedAt: number;
   status: "written" | "noop" | "failed";
   error?: string;
+  /** Memory ids removed because their expiresAt elapsed. */
+  expired?: string[];
+  /** Memory ids evicted to keep the workspace within its record cap. */
+  evicted?: string[];
+  /** Memory ids folded into an equivalent record as a re-confirmation. */
+  deduped?: string[];
 }
 
 export interface WorkspaceMemorySnapshot {
