@@ -20,6 +20,11 @@ import {
   type RunEffectRecord,
   type RunEffectLedgerSnapshot,
 } from "./effect-ledger";
+import {
+  replayEffectWal,
+  type EffectWalEntry,
+  type RunEffectWalStore,
+} from "./effect-wal";
 
 export {
   RUN_EFFECT_INDETERMINATE_PROTOCOL,
@@ -79,6 +84,13 @@ interface StoredRunJournal extends RunJournalState {
   taskFingerprint: string;
   updatedAt: number;
   effectLedger?: RunEffectLedgerSnapshot | undefined;
+  /**
+   * Highest effect-WAL seq folded into `effectLedger` at this checkpoint.
+   * Recovery replays only WAL entries above this watermark, so a crash
+   * between this snapshot write and the WAL truncation re-applies nothing.
+   * Absent for journals written without a WAL store (full-write mode).
+   */
+  walWatermark?: number | undefined;
 }
 
 export function createRunJournal(input: {
@@ -86,14 +98,21 @@ export function createRunJournal(input: {
   activation: RoleActivationInput;
   taskFingerprint: string;
   now: () => number;
+  effectWalStore?: RunEffectWalStore | undefined;
   reconcileEffect?: (
     effect: RunEffectRecord,
   ) => Promise<ToolResult | null>;
 }): RunJournal {
   const journalId = `runtime-journal:${input.activation.runState.runKey}`;
+  const runKey = input.activation.runState.runKey;
+  const walStore = input.effectWalStore;
   let effectLedger = new RunEffectLedger();
   let latestState: RunJournalState | null = null;
   let effectTransitionQueue: Promise<void> = Promise.resolve();
+  // Monotonic across the whole run (never reset on truncation): the
+  // checkpoint watermark equals the current walSeq, and later appends carry
+  // strictly larger seqs so replay above the watermark stays correct.
+  let walSeq = 0;
 
   const writeAt = async (
     status: StoredRunJournal["status"],
@@ -103,6 +122,9 @@ export function createRunJournal(input: {
     assertProtocolSafeJournalState(state);
     latestState = cloneState(state);
     effectLedger.releaseDurableResults(readTranscriptResultIds(state.messages));
+    // Capture the watermark BEFORE the durable write; anything appended
+    // after this line carries a larger seq and must survive as replayable.
+    const watermark = walSeq;
     const stored: StoredRunJournal = {
       protocol: RUN_JOURNAL_PROTOCOL,
       status,
@@ -112,6 +134,7 @@ export function createRunJournal(input: {
       updatedAt: now,
       ...cloneState(state),
       effectLedger: effectLedger.snapshot(),
+      ...(walStore ? { walWatermark: watermark } : {}),
     };
     const role = input.activation.thread.roles.find(
       (candidate) => candidate.roleId === input.activation.runState.roleId,
@@ -138,6 +161,13 @@ export function createRunJournal(input: {
         runJournal: stored,
       },
     });
+    // The snapshot now durably reflects every transition up to `watermark`,
+    // so the WAL lines for them are redundant. Truncating is a pure space
+    // optimization: if we crash before it runs, replay is gated by the
+    // watermark and re-applies none of them.
+    if (walStore) {
+      await walStore.truncate(runKey);
+    }
   };
   const write = (
     status: StoredRunJournal["status"],
@@ -162,13 +192,24 @@ export function createRunJournal(input: {
     return queued;
   };
 
-  const persistLedgerTransition = async <T>(
+  const commitLedgerTransition = async <T>(
     transition: () => T,
+    buildWalEntry: (seq: number) => EffectWalEntry,
   ): Promise<T> => {
     const before = effectLedger.snapshot();
     try {
       const value = transition();
-      await persistEffectLedger();
+      if (walStore) {
+        // WAL mode: append one small durable line instead of rewriting the
+        // whole journal. The seq advances only after the fsync'd append.
+        const seq = walSeq + 1;
+        await walStore.append(runKey, buildWalEntry(seq));
+        walSeq = seq;
+      } else {
+        // Fallback mode: preserve the historical full-journal write per
+        // transition when no WAL store is wired.
+        await persistEffectLedger();
+      }
       return value;
     } catch (error) {
       const restored = restoreRunEffectLedger(before);
@@ -198,6 +239,15 @@ export function createRunJournal(input: {
         effectLedger = restoredLedger;
       } else {
         effectLedger = new RunEffectLedger();
+      }
+      // Replay effect transitions that landed after the snapshot's
+      // watermark. Entries at or below it are already reflected in the
+      // restored ledger, so gating on the watermark keeps replay idempotent
+      // even if the WAL was not truncated before the crash.
+      if (walStore) {
+        const watermark = stored.walWatermark ?? 0;
+        const walEntries = await walStore.readAll(runKey);
+        walSeq = replayEffectWal(effectLedger, walEntries, watermark);
       }
       const state = cloneState(stored);
       latestState = cloneState(state);
@@ -249,16 +299,27 @@ export function createRunJournal(input: {
               `effect already has an active admission: ${effect.call.id}:${record?.status ?? "unknown"}`,
             );
           }
-          return persistLedgerTransition(() => {
-            effectLedger.admit(effect);
-            return null;
-          });
+          return commitLedgerTransition(
+            () => {
+              effectLedger.admit(effect);
+              return null;
+            },
+            (seq) => ({
+              seq,
+              op: "admit",
+              round: effect.round,
+              call: effect.call,
+            }),
+          );
         }),
       start: (effectId) =>
         enqueueEffectTransition(() =>
-          persistLedgerTransition(() => {
-            effectLedger.start(effectId);
-          }),
+          commitLedgerTransition(
+            () => {
+              effectLedger.start(effectId);
+            },
+            (seq) => ({ seq, op: "start", effectId }),
+          ),
         ),
       recordResult: (result) =>
         enqueueEffectTransition(async () => {
@@ -272,9 +333,12 @@ export function createRunJournal(input: {
             effectLedger.recordResult(result);
             return;
           }
-          await persistLedgerTransition(() => {
-            effectLedger.recordResult(result);
-          });
+          await commitLedgerTransition(
+            () => {
+              effectLedger.recordResult(result);
+            },
+            (seq) => ({ seq, op: "result", result }),
+          );
         }),
     },
   };

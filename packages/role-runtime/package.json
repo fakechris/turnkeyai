@@ -17,6 +17,7 @@
     "./prompt-registry": "./src/prompt-registry.ts",
     "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
     "./prompt-policy": "./src/prompt-policy.ts",
+    "./react-engine/effect-wal": "./src/react-engine/effect-wal.ts",
     "./react-model-client": "./src/react-model-client.ts",
     "./run-trace-replay": "./src/run-trace-replay.ts",
     "./react/predicates": "./src/react/predicates.ts",

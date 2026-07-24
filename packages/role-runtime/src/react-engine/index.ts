@@ -20,6 +20,7 @@ export * from "./context-source-guard";
 export * from "./context-working-set";
 export * from "./runtime-checkpoint-summarizer";
 export * from "./run-journal";
+export * from "./effect-wal";
 export * from "./run-trace";
 export * from "./run-lifecycle";
 export * from "./task-plan-controller";

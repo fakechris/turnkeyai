@@ -21,6 +21,10 @@ import {
   fingerprintRunJournalTask,
   type RunJournalState,
 } from "./run-journal";
+import {
+  InMemoryRunEffectWalStore,
+  type EffectWalEntry,
+} from "./effect-wal";
 
 test("run journal task fingerprint is stable across retry task ids", () => {
   const activation = buildActivation();
@@ -646,9 +650,178 @@ test("RunJournal ignores an in-flight snapshot for a different task fingerprint"
   assert.equal(await current.load(), null);
 });
 
+// A WAL store that never truncates — models a crash between the durable
+// checkpoint write and the WAL truncation.
+class NonTruncatingWalStore extends InMemoryRunEffectWalStore {
+  override async truncate(): Promise<void> {
+    // Intentionally a no-op.
+  }
+}
+
+// A WAL store whose append always fails — for rollback testing.
+class FailingWalStore extends InMemoryRunEffectWalStore {
+  override async append(): Promise<void> {
+    throw new Error("injected wal append failure");
+  }
+}
+
+const PUBLISH_CALL = { id: "stable-id", name: "publish", input: { value: 1 } };
+
+test("WAL mode appends transitions without rewriting the journal per transition", async () => {
+  const store = new MemoryTeamMessageStore();
+  const wal = new InMemoryRunEffectWalStore();
+  const journal = createRunJournal({
+    store,
+    effectWalStore: wal,
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 100,
+  });
+  await journal.checkpoint(emptyRunState());
+  const appendsAfterCheckpoint = store.appendCount;
+
+  await journal.effectLedger.admit({ round: 1, call: PUBLISH_CALL });
+  await journal.effectLedger.start(PUBLISH_CALL.id);
+  await journal.effectLedger.recordResult({
+    toolCallId: PUBLISH_CALL.id,
+    toolName: PUBLISH_CALL.name,
+    content: "done",
+  });
+
+  // Three transitions rewrote the full journal zero times; they only
+  // appended WAL lines.
+  assert.equal(store.appendCount, appendsAfterCheckpoint);
+  assert.deepEqual(
+    (await wal.readAll(buildActivation().runState.runKey)).map((e) => e.op),
+    ["admit", "start", "result"],
+  );
+});
+
+test("WAL mode reconstructs a started-but-unfinished effect as indeterminate on resume", async () => {
+  const store = new MemoryTeamMessageStore();
+  const wal = new InMemoryRunEffectWalStore();
+  const j1 = createRunJournal({
+    store,
+    effectWalStore: wal,
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 100,
+  });
+  await j1.checkpoint(emptyRunState());
+  await j1.effectLedger.admit({ round: 1, call: PUBLISH_CALL });
+  await j1.effectLedger.start(PUBLISH_CALL.id);
+  // Crash: no result, no further checkpoint. WAL holds admit+start.
+
+  const j2 = createRunJournal({
+    store,
+    effectWalStore: wal,
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 200,
+    reconcileEffect: async () => null,
+  });
+  const resumed = await j2.load();
+
+  const toolResult = resumed?.messages.find(
+    (message) =>
+      message.role === "tool" && message.toolCallId === PUBLISH_CALL.id,
+  );
+  assert.ok(toolResult, "resume synthesizes a result for the started effect");
+  const rawContent = toolResult?.content;
+  const content = typeof rawContent === "string"
+    ? rawContent
+    : (Array.isArray(rawContent) ? rawContent : [])
+        .map((block) =>
+          block.type === "tool_result" && typeof block.content === "string"
+            ? block.content
+            : "",
+        )
+        .join("");
+  assert.match(content, new RegExp(RUN_EFFECT_INDETERMINATE_PROTOCOL));
+});
+
+test("WAL replay is idempotent when a crash lands before truncation", async () => {
+  const store = new MemoryTeamMessageStore();
+  const wal = new NonTruncatingWalStore();
+  const j1 = createRunJournal({
+    store,
+    effectWalStore: wal,
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 100,
+  });
+  await j1.checkpoint(emptyRunState());
+  await j1.effectLedger.admit({ round: 1, call: PUBLISH_CALL });
+  await j1.effectLedger.start(PUBLISH_CALL.id);
+  await j1.effectLedger.recordResult({
+    toolCallId: PUBLISH_CALL.id,
+    toolName: PUBLISH_CALL.name,
+    content: "committed receipt",
+  });
+  // Checkpoint folds the ledger in (watermark = 3) but the WAL is NOT
+  // truncated — models a crash right after the durable snapshot write.
+  await j1.checkpoint({
+    ...emptyRunState(),
+    messages: [
+      ...emptyRunState().messages,
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: PUBLISH_CALL.id, name: PUBLISH_CALL.name, input: PUBLISH_CALL.input },
+        ],
+      },
+      {
+        role: "tool",
+        name: PUBLISH_CALL.name,
+        toolCallId: PUBLISH_CALL.id,
+        content: [
+          { type: "tool_result", toolUseId: PUBLISH_CALL.id, content: "committed receipt" },
+        ],
+      },
+    ],
+  });
+
+  const j2 = createRunJournal({
+    store,
+    effectWalStore: wal,
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 200,
+  });
+  await j2.load();
+  // Re-proposing the same call in the same round replays the durable
+  // receipt: recovery saw exactly one committed effect, not a double from
+  // re-applying the un-truncated WAL entries.
+  const receipt = await j2.effectLedger.admit({ round: 1, call: PUBLISH_CALL });
+  assert.equal(receipt?.content, "committed receipt");
+});
+
+test("WAL append failure rolls back the in-memory ledger", async () => {
+  const store = new MemoryTeamMessageStore();
+  const wal = new FailingWalStore();
+  const journal = createRunJournal({
+    store,
+    effectWalStore: wal,
+    activation: buildActivation(),
+    taskFingerprint: "task-fingerprint",
+    now: () => 100,
+  });
+  await journal.checkpoint(emptyRunState());
+
+  await assert.rejects(
+    journal.effectLedger.admit({ round: 1, call: PUBLISH_CALL }),
+    /injected wal append failure/,
+  );
+  // The failed admit did not durably admit anything, so the same id is free
+  // to admit again once the store recovers (no phantom active admission).
+  const before = await wal.readAll(buildActivation().runState.runKey);
+  assert.deepEqual(before, [] as EffectWalEntry[]);
+});
+
 class MemoryTeamMessageStore implements TeamMessageStore {
   private readonly messages = new Map<string, TeamMessage>();
   private rejectNextAppend = false;
+  appendCount = 0;
 
   failNextAppend(): void {
     this.rejectNextAppend = true;
@@ -659,6 +832,7 @@ class MemoryTeamMessageStore implements TeamMessageStore {
       this.rejectNextAppend = false;
       throw new Error("injected append failure");
     }
+    this.appendCount += 1;
     const previous = this.messages.get(message.id);
     this.messages.set(message.id, {
       ...message,
