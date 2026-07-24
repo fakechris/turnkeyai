@@ -59,6 +59,7 @@ import { DefaultRuntimeProgressRecorder } from "@turnkeyai/team-runtime/runtime-
 import { ExplicitWorkflowRuntime } from "@turnkeyai/team-runtime/explicit-workflow-runtime";
 import { DefaultWorkspaceMemoryWriter } from "@turnkeyai/team-runtime/workspace-memory-writer";
 import { FileContextCheckpointStore } from "@turnkeyai/team-store/context/file-context-checkpoint-store";
+import { FileRunEffectWalStore } from "@turnkeyai/role-runtime/react-engine/effect-wal";
 import { FileDynamicContextBaselineStore } from "@turnkeyai/team-store/context/file-dynamic-context-baseline-store";
 import { FileRoleScratchpadStore } from "@turnkeyai/team-store/context/file-role-scratchpad-store";
 import { FileSessionMemoryRefreshJobStore } from "@turnkeyai/team-store/context/file-session-memory-refresh-job-store";
@@ -138,6 +139,7 @@ export interface DaemonFoundations {
   runtimeChainStatusStore: FileRuntimeChainStatusStore;
   runtimeProgressStore: FileRuntimeProgressStore;
   contextCheckpointStore: FileContextCheckpointStore;
+  effectWalStore: FileRunEffectWalStore;
   dynamicContextBaselineStore: FileDynamicContextBaselineStore;
   workspaceMemoryStore: FileWorkspaceMemoryStore;
   memorySearchIndex: SqliteMemorySearchIndex;
@@ -239,6 +241,9 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
   });
   const contextCheckpointStore = new FileContextCheckpointStore({
     rootDir: path.join(dataDir, "context", "checkpoints"),
+  });
+  const effectWalStore = new FileRunEffectWalStore({
+    rootDir: path.join(dataDir, "context", "effect-wal"),
   });
   const dynamicContextBaselineStore = new FileDynamicContextBaselineStore({
     rootDir: path.join(dataDir, "context", "dynamic-baselines"),
@@ -544,6 +549,7 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     runtimeChainStatusStore,
     runtimeProgressStore,
     contextCheckpointStore,
+    effectWalStore,
     dynamicContextBaselineStore,
     workspaceMemoryStore,
     memorySearchIndex,

@@ -26,6 +26,7 @@ import {
 } from "./gateway-envelope-retry";
 import { buildGatewayInput } from "./gateway-input-builder";
 import type { ModelCallBoundaryTrace } from "./model-call-trace";
+import type { RunEffectWalStore } from "./react-engine";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { PreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
 import {
@@ -120,6 +121,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly runJournalStore:
     | Pick<TeamMessageStore, "append" | "get" | "list">
     | undefined;
+  private readonly effectWalStore: RunEffectWalStore | undefined;
   private readonly contextCheckpointStore:
     | ContextCheckpointStore
     | undefined;
@@ -145,6 +147,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     toolLoop?: RoleToolLoopOptions;
     nativeToolMessageStore?: Pick<TeamMessageStore, "append">;
     runJournalStore?: Pick<TeamMessageStore, "append" | "get" | "list">;
+    effectWalStore?: RunEffectWalStore;
     contextCheckpointStore?: ContextCheckpointStore;
     dynamicContextBaselineStore?: DynamicContextBaselineStore;
     preCompactionMemoryFlusher?: PreCompactionMemoryFlusher;
@@ -159,6 +162,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     this.toolLoop = options.toolLoop;
     this.nativeToolMessageStore = options.nativeToolMessageStore;
     this.runJournalStore = options.runJournalStore;
+    this.effectWalStore = options.effectWalStore;
     this.contextCheckpointStore = options.contextCheckpointStore;
     this.dynamicContextBaselineStore = options.dynamicContextBaselineStore;
     this.preCompactionMemoryFlusher = options.preCompactionMemoryFlusher;
@@ -338,6 +342,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           activation,
           taskFingerprint: fingerprintRunJournalTask(activation),
           now: runNow,
+          ...(this.effectWalStore
+            ? { effectWalStore: this.effectWalStore }
+            : {}),
           ...(this.toolLoop?.executor.reconcile
             ? {
                 reconcileEffect: (effect) =>

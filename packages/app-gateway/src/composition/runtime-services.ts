@@ -236,6 +236,7 @@ export async function composeDaemonRuntimeServices(
     runtimeChainStatusStore,
     runtimeProgressStore,
     contextCheckpointStore,
+    effectWalStore,
     dynamicContextBaselineStore,
     threadMemoryStore,
     permissionCacheStore,
@@ -359,6 +360,7 @@ export async function composeDaemonRuntimeServices(
             runtimeProgressRecorder,
             nativeToolMessageStore: teamMessageStore,
             runJournalStore: teamMessageStore,
+            effectWalStore,
             contextCheckpointStore,
             dynamicContextBaselineStore,
             ...(inputs.taskToolService?.snapshot
