@@ -135,12 +135,31 @@ export function createEngineModelClient(
         preCompactionMemoryFlusher: input.preCompactionMemoryFlusher,
         ...(input.forceCompact
           ? {
-              forceCompact: ({ messages, diagnostics }) =>
-                input.forceCompact!({
-                  messages,
+              forceCompact: async ({ messages, diagnostics }) => {
+                // Learn the token limit from the overflow diagnostics so the
+                // compaction source guard is bounded even before the first
+                // successful gateway call in this process.
+                if (
+                  inputTokenLimit === undefined &&
+                  diagnostics.inputTokenLimit !== undefined
+                ) {
+                  inputTokenLimit = diagnostics.inputTokenLimit;
+                }
+                // Compact the canonical round messages, not the pruned
+                // gateway copy: pending forced-compaction adoption compares
+                // digests against the canonical transcript, so a compaction
+                // of the pruned copy would be discarded next round.
+                const forced = await input.forceCompact!({
+                  messages: roundMessages,
                   diagnostics,
                   round: modelCallRound,
-                }),
+                });
+                // Preserve the no-op identity signal for the retry logic:
+                // an unchanged canonical array means "nothing compacted".
+                return forced.messages === roundMessages
+                  ? { messages }
+                  : forced;
+              },
             }
           : {}),
         activation: input.activation,
