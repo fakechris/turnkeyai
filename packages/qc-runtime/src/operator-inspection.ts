@@ -1333,6 +1333,7 @@ const TRUTH_REMEDIATION_PRIORITY: Record<TruthRemediationAction, number> = {
   inspect_recovery_failure: 45,
   inspect_recovery_run: 40,
   inspect_flow_recovery_drift: 35,
+  inspect_orphaned_work_items: 33,
   inspect_runtime_chain: 30,
   inspect_runtime_artifacts: 25,
   inspect_runtime_stale: 20,

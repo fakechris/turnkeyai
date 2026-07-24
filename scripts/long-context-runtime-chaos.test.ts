@@ -12,13 +12,20 @@ import {
 import {
   DYNAMIC_CONTEXT_BASELINE_PROTOCOL,
 } from "@turnkeyai/core-types/dynamic-context-baseline";
-import type { WorkItem } from "@turnkeyai/core-types/mission";
+import type { Mission, WorkItem } from "@turnkeyai/core-types/mission";
 import type {
+  FlowLedger,
   RoleActivationInput,
+  RoleRunState,
   WorkspaceMemoryAuditRecord,
 } from "@turnkeyai/core-types/team";
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 import { buildLongContextRuntimeReport } from "../packages/app-gateway/src/long-context-runtime-report";
+import { createMissionTaskToolService } from "../packages/app-gateway/src/mission-task-tool-service";
+import {
+  ORPHANED_WORK_ITEM_BLOCKER_MARKER,
+  reconcileOrphanedWorkItemsOnStartup,
+} from "../packages/app-gateway/src/mission-work-item-startup-reconcile";
 import {
   createCompactionController,
 } from "../packages/role-runtime/src/react-engine/compaction-controller";
@@ -30,8 +37,12 @@ import { FileContextCheckpointStore } from "@turnkeyai/team-store/context/file-c
 import { FileDynamicContextBaselineStore } from "@turnkeyai/team-store/context/file-dynamic-context-baseline-store";
 import { FileWorkspaceMemoryStore } from "@turnkeyai/team-store/context/file-workspace-memory-store";
 import { SqliteMemorySearchIndex } from "@turnkeyai/team-store/context/sqlite-memory-search-index";
+import { FileFlowLedgerStore } from "@turnkeyai/team-store/file-flow-ledger-store";
+import { FileRoleRunStore } from "@turnkeyai/team-store/file-role-run-store";
 import { FileTeamMessageStore } from "@turnkeyai/team-store/file-team-message-store";
 import { FilePermissionCacheStore } from "@turnkeyai/team-store/governance/file-permission-cache-store";
+import { FileActivityEventStore } from "@turnkeyai/team-store/mission/file-activity-event-store";
+import { FileMissionStore } from "@turnkeyai/team-store/mission/file-mission-store";
 import { FileWorkItemStore } from "@turnkeyai/team-store/mission/file-work-item-store";
 import { FileWorkerSessionStore } from "@turnkeyai/team-store/worker/file-worker-session-store";
 
@@ -397,6 +408,249 @@ test("long-context runtime restores task, memory, session, approval, checkpoint,
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("work item left working by a crash is reconciled to blocked after restart", async () => {
+  const rootDir = await mkdtemp(
+    path.join(os.tmpdir(), "turnkeyai-orphan-work-item-chaos-"),
+  );
+  try {
+    const roots = {
+      missions: path.join(rootDir, "missions"),
+      workItems: path.join(rootDir, "work-items"),
+      activity: path.join(rootDir, "activity"),
+      flows: path.join(rootDir, "flows"),
+      roleRuns: path.join(rootDir, "role-runs"),
+    };
+    const threadId = "thread-orphan";
+    const missionId = "msn.orphan";
+
+    // Pre-crash: a mission with a live flow and a role run driving a work item
+    // that is actively `working`.
+    const missionStore = new FileMissionStore({ rootDir: roots.missions });
+    await missionStore.putRaw(orphanMission(missionId, threadId));
+    const workItemStore = new FileWorkItemStore({ rootDir: roots.workItems });
+    await workItemStore.putGraph(missionId, [
+      { ...workItem("wi.orphan", 1, "working", [], []), missionId },
+    ]);
+    const flowStore = new FileFlowLedgerStore({ rootDir: roots.flows });
+    await flowStore.put(orphanFlow("flow-orphan", threadId, "running"));
+    const roleRunStore = new FileRoleRunStore({ rootDir: roots.roleRuns });
+    await roleRunStore.put(
+      orphanRoleRun("role:role-lead:thread:thread-orphan", threadId, "running"),
+    );
+
+    // Crash + restart: the owning flow could not be recovered (flow-recovery
+    // aborted it) and its role run terminated, leaving no active runtime. The
+    // work item is still `working`.
+    await flowStore.put(orphanFlow("flow-orphan", threadId, "aborted"), {
+      expectedVersion: 1,
+    });
+    await roleRunStore.put(
+      orphanRoleRun("role:role-lead:thread:thread-orphan", threadId, "failed"),
+      { expectedVersion: 1 },
+    );
+
+    const restartedMissionStore = new FileMissionStore({
+      rootDir: roots.missions,
+    });
+    const restartedWorkItemStore = new FileWorkItemStore({
+      rootDir: roots.workItems,
+    });
+    const restartedFlowStore = new FileFlowLedgerStore({ rootDir: roots.flows });
+    const restartedRoleRunStore = new FileRoleRunStore({
+      rootDir: roots.roleRuns,
+    });
+
+    const result = await reconcileOrphanedWorkItemsOnStartup({
+      clock: { now: () => 500 },
+      missionStore: restartedMissionStore,
+      workItemStore: restartedWorkItemStore,
+      flowLedgerStore: restartedFlowStore,
+      roleRunStore: restartedRoleRunStore,
+    });
+
+    assert.equal(result.orphanedWorkItems, 1);
+    assert.deepEqual(result.affectedWorkItemIds, ["wi.orphan"]);
+    assert.deepEqual(result.affectedMissionIds, [missionId]);
+
+    const [reconciled] = await restartedWorkItemStore.listByMission(missionId);
+    assert.equal(reconciled?.status, "blocked");
+    assert.ok(reconciled?.blocker?.includes(ORPHANED_WORK_ITEM_BLOCKER_MARKER));
+    assert.ok(reconciled?.blocker?.includes("flow-orphan"));
+
+    // Reconcile is idempotent — a second pass does not double-block.
+    const secondPass = await reconcileOrphanedWorkItemsOnStartup({
+      clock: { now: () => 600 },
+      missionStore: restartedMissionStore,
+      workItemStore: restartedWorkItemStore,
+      flowLedgerStore: restartedFlowStore,
+      roleRunStore: restartedRoleRunStore,
+    });
+    assert.equal(secondPass.orphanedWorkItems, 0);
+
+    // The report attention pass now surfaces the orphaned item.
+    const report = await buildLongContextRuntimeReport(
+      {
+        now: () => 700,
+        teamThreadStore: {
+          async get() {
+            return buildActivation().thread;
+          },
+        },
+        flowLedgerStore: {
+          async listByThread() {
+            return [{ flowId: "flow-orphan" }];
+          },
+        },
+        teamMessageStore: {
+          async list() {
+            return [];
+          },
+        },
+        runtimeProgressStore: {
+          async listByThread() {
+            return [];
+          },
+        },
+        workerSessionStore: {
+          async listByThread() {
+            return [];
+          },
+        },
+        permissionCacheStore: {
+          async listByThread() {
+            return [];
+          },
+        },
+        contextCheckpointStore: {
+          async getActive() {
+            return null;
+          },
+        } as never,
+        dynamicContextBaselineStore: {
+          async get() {
+            return null;
+          },
+        } as never,
+        workspaceMemoryStore: {
+          async getSnapshot() {
+            return {
+              records: [],
+              cursor: { lastSequence: 0, updatedAt: 0 },
+              audits: [],
+            };
+          },
+        } as never,
+        memorySearchIndex: {} as never,
+        activeToolPromptSectionIds: ["prompt.tools.tasks"],
+        taskSnapshotProvider: async () =>
+          (await restartedWorkItemStore.listByMission(missionId)).map((item) =>
+            JSON.stringify(serializeWorkItemForSnapshot(item)),
+          ),
+      },
+      threadId,
+    );
+    assert.ok(report);
+    assert.ok(report.attention.includes("orphaned_work_items"));
+
+    // tasks_create dedup surfaces the orphan as needing re-verification
+    // instead of handing it back as live in-flight work.
+    const taskTool = createMissionTaskToolService({
+      missionStore: restartedMissionStore,
+      workItemStore: restartedWorkItemStore,
+      activityStore: new FileActivityEventStore({ rootDir: roots.activity }),
+      clock: { now: () => 800 },
+      idGenerator: {
+        taskId: () => "task-new",
+        messageId: () => "msg-new",
+      },
+    });
+    const created = (await taskTool.create({
+      threadId,
+      missionId,
+      roleId: "role-lead",
+      title: "Item 1",
+    })) as Record<string, unknown>;
+    assert.equal(created["deduped"], true);
+    assert.equal(created["orphaned"], true);
+    assert.equal(created["note"], "orphaned, needs re-verification");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+function orphanMission(id: string, threadId: string): Mission {
+  return {
+    id,
+    shortId: "MSN-9999",
+    title: "Orphan mission",
+    desc: "",
+    status: "working",
+    mode: "custom",
+    modeLabel: "Custom",
+    owner: "operator",
+    ownerLabel: "Operator",
+    createdAt: "2026-07-24T00:00:00.000Z",
+    createdAtMs: 1,
+    agents: ["role-lead"],
+    progress: 0,
+    pendingApprovals: 0,
+    blockers: 0,
+    contextSummary: [],
+    threadId,
+  };
+}
+
+function orphanFlow(
+  flowId: string,
+  threadId: string,
+  status: FlowLedger["status"],
+): FlowLedger {
+  return {
+    flowId,
+    threadId,
+    rootMessageId: "root",
+    mode: "serial",
+    status,
+    currentStageIndex: 0,
+    activeRoleIds: [],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    hopCount: 1,
+    maxHops: 10,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function orphanRoleRun(
+  runKey: string,
+  threadId: string,
+  status: RoleRunState["status"],
+): RoleRunState {
+  return {
+    runKey,
+    threadId,
+    roleId: "role-lead",
+    mode: "group",
+    status,
+    iterationCount: 0,
+    maxIterations: 128,
+    inbox: [],
+    lastActiveAt: 1,
+  };
+}
+
+function serializeWorkItemForSnapshot(item: WorkItem): Record<string, unknown> {
+  return {
+    id: item.id,
+    n: item.n,
+    title: item.title,
+    status: item.status,
+    ...(item.blocker ? { blocker: item.blocker } : {}),
+  };
+}
 
 function buildHistory(rounds: number): LLMMessage[] {
   return [

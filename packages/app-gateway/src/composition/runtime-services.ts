@@ -52,6 +52,7 @@ import {
   InMemoryToolCancellationRegistry,
   type ToolCancellationRegistry,
 } from "@turnkeyai/role-runtime/tool-cancellation-registry";
+import type { MissionStore, WorkItemStore } from "@turnkeyai/core-types/mission";
 import type { TaskToolService } from "@turnkeyai/role-runtime/task-tool-service";
 import type { ToolPermissionService } from "@turnkeyai/role-runtime/tool-permission-service";
 import { FileToolResultArtifactStore } from "@turnkeyai/role-runtime/tool-result-artifact-store";
@@ -180,6 +181,8 @@ export interface DaemonRuntimeServicesInputs {
   runtimeReconciliationIntervalMs: number;
   toolPermissionService?: ToolPermissionService;
   taskToolService?: TaskToolService;
+  missionStore?: MissionStore;
+  workItemStore?: WorkItemStore;
 }
 
 export interface DaemonRuntimeServices {
@@ -537,6 +540,9 @@ export async function composeDaemonRuntimeServices(
         runtimeChainStatusStore,
         runtimeChainSpanStore,
         runtimeChainEventStore,
+        roleRunStore,
+        ...(inputs.missionStore ? { missionStore: inputs.missionStore } : {}),
+        ...(inputs.workItemStore ? { workItemStore: inputs.workItemStore } : {}),
         syncRecoveryRuntime: (threadId) => recoveryActionService.syncRecoveryRuntime(threadId),
         recoveryRunStaleAfterMs,
         flowStartOutboxRootDir: path.join(dataDir, "flow-start-outbox"),
@@ -577,6 +583,15 @@ export async function composeDaemonRuntimeServices(
     console.info(
       "runtime chain artifact startup reconcile completed",
       runtimeChainArtifactStartupReconcileResult
+    );
+  }
+  if (
+    runtimeReconciliationPassResult &&
+    runtimeReconciliationPassResult.orphanedWorkItems.orphanedWorkItems > 0
+  ) {
+    console.info(
+      "orphaned work item startup reconcile completed",
+      runtimeReconciliationPassResult.orphanedWorkItems
     );
   }
 
