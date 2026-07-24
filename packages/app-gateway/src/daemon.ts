@@ -189,7 +189,15 @@ const foundations = composeDaemonFoundations({
   clock,
   idGenerator,
 });
-await foundations.workspaceMemoryStore.reconcileIndex();
+try {
+  // The search index is derived state; reconcile failure must degrade
+  // recall, never block daemon startup.
+  await foundations.workspaceMemoryStore.reconcileIndex();
+} catch (error) {
+  console.error("workspace memory index reconcile failed at startup", {
+    error,
+  });
+}
 const {
   teamThreadStore,
   teamMessageStore,
@@ -990,6 +998,15 @@ function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
   runtimeServices.stop();
   stopMissionThreadBridge();
   stopMissionThreadEventMirror();
+  // Flush pending durable-memory extraction before the process exits; the
+  // shutdown timeout below still bounds a wedged flush.
+  const memoryWriterFlush = foundations.workspaceMemoryWriter
+    .close()
+    .catch((error) => {
+      console.error("workspace memory writer flush on shutdown failed", {
+        error,
+      });
+    });
   const closeTimeout = setTimeout(() => {
     console.error("daemon shutdown timed out, exiting");
     removePidFile(RUNTIME_PATHS, process.pid);
@@ -997,12 +1014,14 @@ function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
   }, 10_000);
   closeTimeout.unref();
   server.close((closeError) => {
-    clearTimeout(closeTimeout);
     if (closeError) {
       console.error(`daemon shutdown error: ${closeError.message}`);
     }
-    removePidFile(RUNTIME_PATHS, process.pid);
-    process.exit(0);
+    void memoryWriterFlush.finally(() => {
+      clearTimeout(closeTimeout);
+      removePidFile(RUNTIME_PATHS, process.pid);
+      process.exit(0);
+    });
   });
 }
 

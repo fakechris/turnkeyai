@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -119,6 +119,43 @@ test("sqlite memory index uses optional vectors for Chinese synonym recall", asy
 
   assert.equal(hits[0]?.record.memoryId, "budget");
   assert.ok(hits[0]?.channels.vector);
+});
+
+test("sqlite memory index recalls Chinese substrings via FTS without vectors", async () => {
+  const search = await index();
+  await search.replaceWorkspace("workspace-1", [
+    record("language", "偏好：报告必须使用中文。"),
+    record("format", "输出使用表格布局。"),
+  ]);
+  const diagnostics = await search.diagnostics();
+  if (diagnostics.backend !== "sqlite-fts5-rrf") return;
+
+  const hits = await search.recall({
+    scope: { workspaceId: "workspace-1", threadId: "thread-1" },
+    query: "之前的语言偏好是中文吗",
+  });
+
+  assert.equal(hits[0]?.record.memoryId, "language");
+  assert.ok(hits[0]?.channels.fts);
+});
+
+test("sqlite memory index recreates a corrupt database file", async () => {
+  const rootDir = await mkdtemp(
+    path.join(os.tmpdir(), "turnkeyai-memory-index-"),
+  );
+  const dbPath = path.join(rootDir, "memory.sqlite");
+  await writeFile(dbPath, "not a sqlite database at all");
+
+  const search = new SqliteMemorySearchIndex({ dbPath });
+  await search.replaceWorkspace("workspace-1", [
+    record("recovered", "identifier GAMMA-3 survives recreation"),
+  ]);
+
+  const hits = await search.recall({
+    scope: { workspaceId: "workspace-1", threadId: "thread-1" },
+    query: "GAMMA-3",
+  });
+  assert.equal(hits[0]?.record.memoryId, "recovered");
 });
 
 test("weighted RRF is deterministic across channel overlap", () => {

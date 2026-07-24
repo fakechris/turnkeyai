@@ -375,25 +375,40 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
   const contextCompressor = new DefaultContextCompressor();
   const workspaceMemoryWriter = new DefaultWorkspaceMemoryWriter({
     store: workspaceMemoryStore,
-    loadEvents: async ({ workspaceId, afterSequence, limit }) => {
+    loadEvents: async ({ workspaceId, afterSequence, afterEventId, limit }) => {
       const messages = await teamMessageStore.list(workspaceId);
-      return messages
-        .map((message, index) => ({
-          eventId: `message:${message.id}`,
-          workspaceId,
-          threadId: message.threadId,
-          sequence: index + 1,
-          kind:
-            message.role === "user"
-              ? "user-message" as const
-              : "runtime-message" as const,
-          content: message.content,
-          sourceRefs: [`message:${message.id}`],
-          occurredAt: message.createdAt,
-          authoritative: message.role === "user",
-        }))
-        .filter((event) => event.sequence > afterSequence)
-        .slice(0, limit);
+      // Order by append-stable properties only. The store's own sort
+      // includes updatedAt (mutable: journal messages are rewritten in
+      // place) and lexicographic ids (non-monotonic within one
+      // millisecond), so a positional cursor over it silently skips or
+      // re-reads events. Resume from the durable lastEventId anchor and
+      // continue the sequence monotonically from the stored cursor.
+      const ordered = [...messages].sort((left, right) =>
+        left.createdAt - right.createdAt ||
+        left.id.localeCompare(right.id, undefined, { numeric: true })
+      );
+      const anchor = afterEventId
+        ? ordered.findIndex(
+            (message) => `message:${message.id}` === afterEventId,
+          )
+        : -1;
+      // Anchor missing (e.g. pruned history): re-emit from the start —
+      // memory ids are deterministic, so reprocessing is idempotent.
+      const start = anchor >= 0 ? anchor + 1 : 0;
+      return ordered.slice(start, start + limit).map((message, index) => ({
+        eventId: `message:${message.id}`,
+        workspaceId,
+        threadId: message.threadId,
+        sequence: afterSequence + index + 1,
+        kind:
+          message.role === "user"
+            ? "user-message" as const
+            : "runtime-message" as const,
+        content: message.content,
+        sourceRefs: [`message:${message.id}`],
+        occurredAt: message.createdAt,
+        authoritative: message.role === "user",
+      }));
     },
     now: () => clock.now(),
   });
