@@ -189,6 +189,7 @@ const foundations = composeDaemonFoundations({
   clock,
   idGenerator,
 });
+await foundations.workspaceMemoryStore.reconcileIndex();
 const {
   teamThreadStore,
   teamMessageStore,
@@ -383,6 +384,7 @@ const inspectionDeps = createInspectionRouteDeps({
   foundations,
   runtimeServices,
   modelCatalogPath,
+  taskToolService,
 });
 
 const recoveryDeps = createRecoveryRouteDeps({

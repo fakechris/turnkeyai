@@ -14,6 +14,7 @@ import {
   type TeamMessageSummary,
   type WorkerKind,
 } from "@turnkeyai/core-types/team";
+import { estimateTextTokens } from "@turnkeyai/llm-adapter/token-estimator";
 import { FileRoleScratchpadStore } from "@turnkeyai/team-store/context/file-role-scratchpad-store";
 import { FileThreadJournalStore } from "@turnkeyai/team-store/context/file-thread-journal-store";
 import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread-memory-store";
@@ -104,26 +105,29 @@ test("recordPromptAssemblyBoundarySafely records compacted prompt assembly metad
     tokenEstimate: 1234,
     contextDiagnostics: { source: "test" },
     envelopeHint: { toolResultCount: 2 },
+    sectionReceipts: [],
     compactedSegments: [{ id: "segment-1", reason: "large" }],
     usedArtifacts: ["artifact-1"],
   });
 });
 
-test("recordPromptAssemblyBoundarySafely is a no-op without compacted segments", async () => {
-  const events: unknown[] = [];
+test("recordPromptAssemblyBoundarySafely records a normal assembly without compacted segments", async () => {
+  const events: Array<{ metadata?: Record<string, unknown>; summary: string }> = [];
 
   await recordPromptAssemblyBoundarySafely({
     activation: promptBoundaryActivation(),
     packet: promptBoundaryPacket([]),
     runtimeProgressRecorder: {
       async record(event) {
-        events.push(event);
+        events.push(event as (typeof events)[number]);
       },
     },
     selection: {},
   });
 
-  assert.deepEqual(events, []);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.metadata?.boundaryKind, "prompt_assembly");
+  assert.match(events[0]?.summary ?? "", /included/);
 });
 
 test("recordPromptAssemblyBoundarySafely is a no-op without recorder", async () => {
@@ -132,6 +136,25 @@ test("recordPromptAssemblyBoundarySafely is a no-op without recorder", async () 
     packet: promptBoundaryPacket(),
     selection: {},
   });
+});
+
+test("recordPromptAssemblyBoundarySafely can keep a slow observer off the model path", async () => {
+  let recordStarted = false;
+
+  await recordPromptAssemblyBoundarySafely({
+    activation: promptBoundaryActivation(),
+    packet: promptBoundaryPacket([]),
+    runtimeProgressRecorder: {
+      async record() {
+        recordStarted = true;
+        await new Promise(() => undefined);
+      },
+    },
+    defer: true,
+    selection: {},
+  });
+
+  assert.equal(recordStarted, true);
 });
 
 test("default role prompt policy assembles context from thread and worker stores", async () => {
@@ -265,6 +288,34 @@ test("default role prompt policy assembles context from thread and worker stores
       "worker-evidence",
       "recent-turns",
     ]);
+    assert.equal(packet.promptAssembly?.sectionReceipts?.length, 7);
+    const workerEvidenceSection = packet.taskPrompt.match(
+      /Worker evidence:\n[\s\S]*?(?=\n\nRecent turns:|$)/,
+    )?.[0];
+    assert.ok(workerEvidenceSection);
+    assert.deepEqual(
+      packet.promptAssembly?.sectionReceipts?.find(
+        (receipt) =>
+          receipt.sectionId === "prompt.assembly.worker-evidence",
+      ),
+      {
+        sectionId: "prompt.assembly.worker-evidence",
+        version: "1.0.0",
+        owner: "packages/role-runtime/src/prompt/prompt-assembler.ts",
+        authority: "untrusted-evidence",
+        requiredCapability: "sessions",
+        baselineBehavior: "full-delta",
+        state: "included",
+        estimatedTokens: estimateTextTokens(workerEvidenceSection),
+      },
+    );
+    assert.equal(
+      packet.promptAssembly?.sectionReceipts?.find(
+        (receipt) =>
+          receipt.sectionId === "prompt.assembly.session-memory",
+      )?.state,
+      "omitted",
+    );
     assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.hasThreadSummary, true);
     assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.hasRoleScratchpad, true);
     assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.sourceHasOpenQuestions, true);

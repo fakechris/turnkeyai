@@ -231,8 +231,8 @@ test("real LLM A/B markdown includes reference audit findings", () => {
     runtimeHealthStatus: "failed",
     adapterStatus: "failed",
     findings: [
-      "reference Accio browser sub-agent exceeded native timeout before usable closeout: 1080s",
-      "reference Accio browser worker attempted unsupported browser action: wait",
+      "reference ReferenceRuntime browser sub-agent exceeded native timeout before usable closeout: 1080s",
+      "reference ReferenceRuntime browser worker attempted unsupported browser action: wait",
     ],
   };
 
@@ -240,8 +240,8 @@ test("real LLM A/B markdown includes reference audit findings", () => {
 
   assert.match(markdown, /## Reference Audit Findings/);
   assert.match(markdown, /- browser-dynamic-page: reference_env_failed/);
-  assert.match(markdown, /reference Accio browser sub-agent exceeded native timeout before usable closeout: 1080s/);
-  assert.match(markdown, /reference Accio browser worker attempted unsupported browser action: wait/);
+  assert.match(markdown, /reference ReferenceRuntime browser sub-agent exceeded native timeout before usable closeout: 1080s/);
+  assert.match(markdown, /reference ReferenceRuntime browser worker attempted unsupported browser action: wait/);
 });
 
 test("real LLM A/B acceptance validates the full core suite when requested", () => {

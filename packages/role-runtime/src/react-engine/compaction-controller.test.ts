@@ -1,13 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  type ContextCheckpointRecord,
+  type ContextCheckpointScope,
+  type ContextCheckpointStore,
+} from "@turnkeyai/core-types/context-checkpoint";
 import type { LLMMessage } from "@turnkeyai/llm-adapter/index";
 
 import {
+  buildRuntimeCheckpointMessage,
   createCompactionController,
   readRuntimeCheckpoint,
+  RUNTIME_CHECKPOINT_PROTOCOL,
+  type RuntimeCheckpoint,
   type RuntimeCheckpointDraft,
 } from "./compaction-controller";
+import type { ContextSourceGuardSnapshot } from "./context-source-guard";
 
 function assistantToolUse(id: string): LLMMessage {
   return {
@@ -160,6 +169,55 @@ test("CompactionController microcompacts old plain tool bodies before summarizat
   );
 });
 
+test("CompactionController bounds the summarizer source while preserving the raw checkpoint count", async () => {
+  const messages = buildHistory(20).map((message) =>
+    message.role === "tool"
+      ? { ...message, content: `${message.toolCallId}:${"x".repeat(1_000)}` }
+      : message,
+  );
+  let summarized: LLMMessage[] = [];
+  let sourceGuardCompacted = false;
+  const controller = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 900,
+      estimatedInputTokens: 900,
+      source: "provider_calibrated",
+      inputTokenLimit: 1_000,
+      utilization: 0.9,
+    }),
+    sourceGuard: {
+      maxSourceMessages: 5,
+      maxSourceBytes: 2_500,
+      recentProtocolUnits: 2,
+      maxSampleChars: 60,
+    },
+    summarize: async (input) => {
+      summarized = input.messages;
+      return summaryDraft;
+    },
+    onCompaction: (event) => {
+      sourceGuardCompacted = event.sourceGuard.compacted;
+    },
+  });
+
+  const result = await controller.applyRoundMessagesHook(messages, 20);
+  const checkpoint = readRuntimeCheckpoint(result.messages[2]);
+
+  assert.equal(summarized.length <= 5, true);
+  assert.equal(
+    Buffer.byteLength(JSON.stringify(summarized), "utf8") <= 2_500,
+    true,
+  );
+  assert.match(String(summarized[0]?.content), /context_source_digest/);
+  assert.equal(sourceGuardCompacted, true);
+  assert.equal(
+    checkpoint?.sourceMessageCount,
+    messages.length - 2 - 8,
+    "checkpoint source count describes the raw compacted history, not the bounded summarizer projection",
+  );
+});
+
 test("CompactionController replaces old complete protocol units with a typed checkpoint and keeps four recent units raw", async () => {
   const messages = buildHistory(7);
   let summarizedMessages: LLMMessage[] = [];
@@ -186,12 +244,301 @@ test("CompactionController replaces old complete protocol units with a typed che
   assert.equal(summarizedMessages.length, 6);
   assert.equal(result.messages.length, 11);
   assert.ok(checkpoint);
-  assert.equal(checkpoint.protocol, "turnkeyai.runtime_checkpoint.v1");
+  assert.equal(checkpoint.protocol, "turnkeyai.context_checkpoint.v2");
   assert.equal(checkpoint.version, 1);
   assert.equal(checkpoint.compactedAtRound, 7);
   assert.equal(checkpoint.sourceMessageCount, 6);
   assert.deepEqual(checkpoint.evidence, summaryDraft.evidence);
   assert.deepEqual(result.messages.slice(3), messages.slice(-8));
+});
+
+test("CompactionController awaits the authoritative task graph snapshot", async () => {
+  const messages = buildHistory(7);
+  const authoritativePlan = [
+    JSON.stringify({
+      id: "wi.2",
+      status: "planning",
+      specification: {
+        objective: "Write the report",
+        blocked_by: ["wi.1"],
+      },
+    }),
+  ];
+  let summarizedPlan: string[] | undefined;
+  const controller = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 800,
+      estimatedInputTokens: 800,
+      source: "provider_calibrated",
+      inputTokenLimit: 1_000,
+      utilization: 0.8,
+    }),
+    readPlanState: async () => authoritativePlan,
+    summarize: async (input) => {
+      summarizedPlan = input.planStateSnapshot;
+      return summaryDraft;
+    },
+  });
+
+  const result = await controller.applyRoundMessagesHook(messages, 7);
+  assert.deepEqual(summarizedPlan, authoritativePlan);
+  assert.deepEqual(
+    readRuntimeCheckpoint(result.messages[2])?.planState,
+    authoritativePlan,
+  );
+});
+
+test("CompactionController fails closed when authoritative task state cannot be read", async () => {
+  const messages = buildHistory(7);
+  let summaryCalls = 0;
+  const controller = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 800,
+      estimatedInputTokens: 800,
+      source: "provider_calibrated",
+      inputTokenLimit: 1_000,
+      utilization: 0.8,
+    }),
+    readPlanState: async () => {
+      throw new Error("authoritative graph unavailable");
+    },
+    summarize: async () => {
+      summaryCalls += 1;
+      return summaryDraft;
+    },
+  });
+
+  const result = await controller.applyRoundMessagesHook(messages, 7);
+  assert.equal(result.messages.length, messages.length);
+  assert.equal(
+    result.messages.some((message) => readRuntimeCheckpoint(message)),
+    false,
+    "a failed authoritative read must not produce a checkpoint",
+  );
+  assert.equal(summaryCalls, 0);
+});
+
+test("CompactionController persists checkpoint phases and activates only after the caller commits messages", async () => {
+  const messages = buildHistory(7);
+  const store = createMemoryCheckpointStore();
+  const scope: ContextCheckpointScope = {
+    threadId: "thread-1",
+    roleId: "role-1",
+    flowId: "flow-1",
+  };
+  const controller = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 800,
+      estimatedInputTokens: 800,
+      source: "provider_calibrated",
+      inputTokenLimit: 1_000,
+      utilization: 0.8,
+    }),
+    summarize: async () => summaryDraft,
+    checkpointStore: store,
+    checkpointScope: scope,
+    captureWorkingSet: () => ({
+      files: [],
+      skills: [],
+      artifacts: ["artifact://pricing-a"],
+      sessions: [
+        {
+          sessionKey: "worker:source-a",
+          status: "timeout",
+          resumable: true,
+        },
+      ],
+      approvals: [{ approvalId: "approval-1", state: "pending" }],
+      images: [],
+    }),
+    now: (() => {
+      let value = 100;
+      return () => ++value;
+    })(),
+  });
+
+  const result = await controller.applyRoundMessagesHook(messages, 7);
+  assert.ok(result.pendingCheckpointId);
+  const persisted = await store.get(result.pendingCheckpointId);
+  assert.equal(persisted?.state, "persisted");
+  assert.equal(await store.getActive(scope), null);
+  assert.deepEqual(
+    readRuntimeCheckpoint(result.messages[2])?.workingSet?.sessions,
+    [
+      {
+        sessionKey: "worker:source-a",
+        status: "timeout",
+        resumable: true,
+      },
+    ],
+  );
+
+  await controller.activateCheckpoint(result.pendingCheckpointId);
+  assert.equal(
+    (await store.getActive(scope))?.checkpointId,
+    result.pendingCheckpointId,
+  );
+  assert.deepEqual(store.transitions, [
+    "prepared",
+    "summarized",
+    "persisted",
+    "activated",
+  ]);
+});
+
+test("CompactionController reconciles a journaled persisted v2 checkpoint after restart", async () => {
+  const messages = buildHistory(7);
+  const store = createMemoryCheckpointStore();
+  const scope: ContextCheckpointScope = {
+    threadId: "thread-1",
+    roleId: "role-1",
+    flowId: "flow-1",
+  };
+  const first = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 800,
+      estimatedInputTokens: 800,
+      source: "provider_calibrated",
+      inputTokenLimit: 1_000,
+      utilization: 0.8,
+    }),
+    summarize: async () => summaryDraft,
+    checkpointStore: store,
+    checkpointScope: scope,
+    now: () => 100,
+  });
+  const compacted = await first.applyRoundMessagesHook(messages, 7);
+  assert.equal(await store.getActive(scope), null);
+
+  const restarted = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 100,
+      estimatedInputTokens: 100,
+      source: "heuristic",
+      inputTokenLimit: 1_000,
+      utilization: 0.1,
+    }),
+    summarize: async () => summaryDraft,
+    checkpointStore: store,
+    checkpointScope: scope,
+    now: () => 200,
+  });
+  await restarted.reconcileFromMessages(compacted.messages);
+
+  assert.equal(
+    (await store.getActive(scope))?.checkpointId,
+    compacted.pendingCheckpointId,
+  );
+});
+
+test("CompactionController rejects activation when the persisted source digest was mutated", async () => {
+  const messages = buildHistory(7);
+  const store = createMemoryCheckpointStore();
+  const scope: ContextCheckpointScope = {
+    threadId: "thread-1",
+    roleId: "role-1",
+    flowId: "flow-1",
+  };
+  const controller = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 800,
+      estimatedInputTokens: 800,
+      source: "provider_calibrated",
+      inputTokenLimit: 1_000,
+      utilization: 0.8,
+    }),
+    summarize: async () => summaryDraft,
+    checkpointStore: store,
+    checkpointScope: scope,
+    now: () => 100,
+  });
+  const compacted = await controller.applyRoundMessagesHook(messages, 7);
+  const checkpointId = compacted.pendingCheckpointId!;
+  const record = await store.get(checkpointId);
+  assert.ok(record);
+  await store.put({
+    ...record,
+    source: {
+      ...record.source,
+      transcriptDigest: "mutated",
+    },
+  });
+
+  await assert.rejects(
+    controller.activateCheckpoint(checkpointId),
+    /source identity mismatch/,
+  );
+  assert.equal(await store.getActive(scope), null);
+});
+
+test("CompactionController rejects restart adoption when the journaled projection was mutated", async () => {
+  const messages = buildHistory(7);
+  const store = createMemoryCheckpointStore();
+  const scope: ContextCheckpointScope = {
+    threadId: "thread-1",
+    roleId: "role-1",
+    flowId: "flow-1",
+  };
+  const controller = createCompactionController({
+    taskPrompt: "Compare the sources.",
+    estimateTokenBudget: () => ({
+      rawInputTokens: 800,
+      estimatedInputTokens: 800,
+      source: "provider_calibrated",
+      inputTokenLimit: 1_000,
+      utilization: 0.8,
+    }),
+    summarize: async () => summaryDraft,
+    checkpointStore: store,
+    checkpointScope: scope,
+    now: () => 100,
+  });
+  const compacted = await controller.applyRoundMessagesHook(messages, 7);
+  const mutated = compacted.messages.map((message) => {
+    const checkpoint = readRuntimeCheckpoint(message);
+    return checkpoint?.checkpointId === compacted.pendingCheckpointId
+      ? {
+          ...message,
+          content: String(message.content).replace(
+            checkpoint?.summary ?? "",
+            "tampered projection",
+          ),
+        }
+      : message;
+  });
+
+  await assert.rejects(
+    controller.reconcileFromMessages(mutated),
+    /projection mismatch/,
+  );
+  assert.equal(await store.getActive(scope), null);
+});
+
+test("readRuntimeCheckpoint remains backward-compatible with v1 messages", () => {
+  const legacy: RuntimeCheckpoint = {
+    protocol: RUNTIME_CHECKPOINT_PROTOCOL,
+    version: 3,
+    compactedAtRound: 9,
+    sourceMessageCount: 20,
+    task: "Legacy task",
+    summary: "Legacy summary",
+    decisions: [],
+    evidence: [],
+    artifacts: [],
+    openQuestions: [],
+    planState: [],
+  };
+
+  assert.deepEqual(
+    readRuntimeCheckpoint(buildRuntimeCheckpointMessage(legacy)),
+    legacy,
+  );
 });
 
 test("CompactionController passes the previous typed checkpoint into the next compaction", async () => {
@@ -353,6 +700,7 @@ test("CompactionController emits a typed compaction event only after a checkpoin
     messageCountBefore: number;
     messageCountAfter: number;
     sourceMessageCount: number;
+    sourceGuard: ContextSourceGuardSnapshot;
   }> = [];
   const controller = createCompactionController({
     taskPrompt: "Compare the sources.",
@@ -369,15 +717,28 @@ test("CompactionController emits a typed compaction event only after a checkpoin
 
   const result = await controller.applyRoundMessagesHook(messages, 7);
 
-  assert.deepEqual(events, [
-    {
-      round: 7,
-      forced: false,
-      messageCountBefore: messages.length,
-      messageCountAfter: result.messages.length,
-      sourceMessageCount: 6,
-    },
-  ]);
+  assert.equal(events.length, 1);
+  const event = events[0]!;
+  assert.deepEqual({
+    round: event.round,
+    forced: event.forced,
+    messageCountBefore: event.messageCountBefore,
+    messageCountAfter: event.messageCountAfter,
+    sourceMessageCount: event.sourceMessageCount,
+  }, {
+    round: 7,
+    forced: false,
+    messageCountBefore: messages.length,
+    messageCountAfter: result.messages.length,
+    sourceMessageCount: 6,
+  });
+  assert.equal(event.sourceGuard.protocolSafe, true);
+  assert.equal(event.sourceGuard.compacted, false);
+  assert.equal(event.sourceGuard.sourceMessageCount, 6);
+  assert.equal(event.sourceGuard.guardedMessageCount, 6);
+  assert.equal(event.sourceGuard.guardedBytes, event.sourceGuard.sourceBytes);
+  assert.equal(event.sourceGuard.guardedTokens, event.sourceGuard.sourceTokens);
+  assert.equal(event.sourceGuard.retainedProtocolUnitCount, 3);
 });
 
 test("CompactionController adopts a forced checkpoint into state on the next round and keeps the new protocol unit", async () => {
@@ -440,3 +801,52 @@ test("CompactionController discards a pending forced checkpoint when its source 
   assert.equal(result.messages, changed);
   assert.equal(readRuntimeCheckpoint(result.messages[2]), undefined);
 });
+
+function createMemoryCheckpointStore(): ContextCheckpointStore & {
+  transitions: string[];
+} {
+  const records = new Map<string, ContextCheckpointRecord>();
+  const active = new Map<string, string>();
+  const transitions: string[] = [];
+  const scopeKey = (scope: ContextCheckpointScope) =>
+    `${scope.threadId}:${scope.roleId}:${scope.flowId}`;
+  return {
+    transitions,
+    async get(checkpointId) {
+      return records.get(checkpointId) ?? null;
+    },
+    async put(record) {
+      records.set(record.checkpointId, structuredClone(record));
+      transitions.push(record.state);
+    },
+    async getActive(scope) {
+      const checkpointId = active.get(scopeKey(scope));
+      return checkpointId ? records.get(checkpointId) ?? null : null;
+    },
+    async activate(input) {
+      const record = records.get(input.checkpointId);
+      if (!record) throw new Error("missing checkpoint");
+      const current = active.get(scopeKey(input.scope)) ?? null;
+      if (
+        input.expectedActiveCheckpointId !== undefined &&
+        current !== input.expectedActiveCheckpointId
+      ) {
+        throw new Error("active pointer conflict");
+      }
+      const activated = {
+        ...record,
+        state: "activated" as const,
+        updatedAt: input.activatedAt,
+      };
+      records.set(record.checkpointId, activated);
+      active.set(scopeKey(input.scope), record.checkpointId);
+      transitions.push("activated");
+      return activated;
+    },
+    async listByScope(scope) {
+      return [...records.values()].filter(
+        (record) => scopeKey(record.scope) === scopeKey(scope),
+      );
+    },
+  };
+}

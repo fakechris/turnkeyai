@@ -139,6 +139,24 @@ export function buildMissingApprovalGateRepairPrompt(): string {
   ].join("\n");
 }
 
+export function buildMissingDurableMemorySearchRepairPrompt(): string {
+  return [
+    "Runtime correction: the explicit durable-memory lookup is incomplete.",
+    "The user explicitly requested durable memory evidence, so do not finalize from visible conversation context or an injected summary alone.",
+    "Call memory_search now with a concrete query covering the requested prior decisions, owners, constraints, risks, or evidence.",
+    "If no relevant hit is returned, say what durable memory is missing instead of guessing.",
+  ].join("\n");
+}
+
+export function buildMissingDurableMemoryGetRepairPrompt(): string {
+  return [
+    "Runtime correction: the selected durable-memory candidate was not inspected.",
+    "memory_search returned at least one candidate and the user explicitly requested candidate inspection before reliance.",
+    "Call memory_get now with the best relevant memory_id returned by memory_search.",
+    "Base the final answer on the inspected entry. If inspection fails, state that the candidate could not be verified instead of guessing.",
+  ].join("\n");
+}
+
 export function buildSourceEvidenceCarryForwardRepairPrompt(input: {
   taskPrompt: string;
   resultText: string;

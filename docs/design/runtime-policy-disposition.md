@@ -5,17 +5,21 @@ migration from silently deleting hard-won behavior or preserving business
 recovery inside the kernel.
 
 The inventory preserves the policy families inherited from `origin/main` and
-the clock/retry slice: 20 repair ids, 4 continuation ids, 12 closeout ids, 1
+the clock/retry slice, plus the explicit durable-memory evidence workflow:
+22 repair ids, 4 continuation ids, 12 closeout ids, 1
 permission suppression id, and 13 remaining tool-call normalization steps. The machine-readable
 source is [runtime-policy-inventory.json](./runtime-policy-inventory.json), and
 `npm run test:runtime-policy-disposition` verifies original-row parity, the
 exact production authority set, a target owner, and executable deterministic
 evidence for every entry.
 
-Production now retains only syntactic/session-handle normalization and typed
-kernel terminal outcomes. Retired automatic actions remain available solely as
-test characterization; a source guard forbids enabling that mode from any
-other production composition point.
+Production retains syntactic/session-handle normalization, typed kernel
+terminal outcomes, and one bounded read-only evidence workflow: when the user
+explicitly requires durable-memory lookup and candidate inspection, the
+runtime must obtain `memory_search` and `memory_get` evidence before accepting
+a fact-bearing final answer. Retired business-effect actions remain available
+solely as test characterization; a source guard forbids enabling that mode
+from any other production composition point.
 
 ## Disposition Rules
 
@@ -33,13 +37,17 @@ Each policy has exactly one target:
 
 Facts may remain useful after their policy action is removed. `TaskIntentFacts`
 is a proposal-layer input for guidance or workflow construction; it is not
-kernel authority.
+kernel authority. The retained memory-evidence workflow is read-only and fires
+only when that proposal layer records an explicit user request for the
+protocol.
 
 ## Natural-Finish Repair Policies
 
 | Current policy | Current automatic action | Target owner | Required migration |
 | --- | --- | --- | --- |
 | `final_recovery_budget_closeout_repair` | Rewrite after recovery budget exhaustion | kernel safety + model guidance | Kernel emits typed `budget_exhausted`; model may answer from it. Delete automatic repair round. |
+| `missing_durable_memory_search` | Force `memory_search` after a tool-free candidate | explicit read-only durable-memory evidence workflow | Retain only for typed `durableMemoryLookupProtocol != none`, only when `memory_search` is exposed, and at most once per attempt. This executes the user's requested read-only evidence step rather than inferred business work. |
+| `missing_durable_memory_get` | Force `memory_get` after search returned a candidate | explicit read-only durable-memory evidence workflow | Retain only for typed `search_and_get`, only when a successful search returned a concrete `memory_id`, and at most once per attempt. Do not force get when search has no candidate. |
 | `missing_browser_evidence` | Force `sessions_spawn` | quality evaluator + model guidance | Keep missing-evidence measurement and improve tool guidance. Delete automatic spawn. |
 | `missing_product_signal_browser_evidence` | Force `sessions_spawn` | quality evaluator + model guidance | Same as missing browser evidence; no task-text authority in kernel. |
 | `missing_approval_gate` | Force `permission_query` | kernel safety | Reject or suspend unauthorized effect with typed permission state. The model may explicitly query; kernel does not manufacture the query. |

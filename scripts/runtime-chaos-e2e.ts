@@ -307,6 +307,7 @@ function createFakeGateway(input: {
           artifacts: [],
           openQuestions: [],
           planState: [],
+          errorsAndFixes: [],
         }),
         stopReason: "stop",
       });

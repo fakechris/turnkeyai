@@ -9,9 +9,9 @@ interface ReferencePreflightOptions {
   outPath: string;
   referenceToken?: string;
   variant: string;
-  accioWs?: boolean;
-  accioAgentId?: string;
-  accioWorkspacePath?: string;
+  referenceRuntimeWs?: boolean;
+  referenceRuntimeAgentId?: string;
+  referenceRuntimeWorkspacePath?: string;
   timeoutMs: number;
   pollMs: number;
   probePrompt: string;
@@ -82,9 +82,9 @@ export function parseRealLlmAbReferencePreflightArgs(
   let outPath: string | undefined;
   let referenceToken: string | undefined;
   let variant = "operator";
-  let accioWs = false;
-  let accioAgentId: string | undefined;
-  let accioWorkspacePath: string | undefined;
+  let referenceRuntimeWs = false;
+  let referenceRuntimeAgentId: string | undefined;
+  let referenceRuntimeWorkspacePath: string | undefined;
   let timeoutMs = 60_000;
   let pollMs = 1_000;
   let probePrompt = "Please respond with one concise sentence confirming this runtime can answer a normal user message.";
@@ -111,17 +111,17 @@ export function parseRealLlmAbReferencePreflightArgs(
       index += 1;
       continue;
     }
-    if (arg === "--accio-ws") {
-      accioWs = true;
+    if (arg === "--reference-ws") {
+      referenceRuntimeWs = true;
       continue;
     }
-    if (arg === "--accio-agent-id") {
-      accioAgentId = readValue(args, index, arg);
+    if (arg === "--reference-agent-id") {
+      referenceRuntimeAgentId = readValue(args, index, arg);
       index += 1;
       continue;
     }
-    if (arg === "--accio-workspace-path") {
-      accioWorkspacePath = readValue(args, index, arg);
+    if (arg === "--reference-workspace-path") {
+      referenceRuntimeWorkspacePath = readValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -153,9 +153,9 @@ export function parseRealLlmAbReferencePreflightArgs(
     outPath,
     ...(referenceToken ? { referenceToken } : {}),
     variant,
-    ...(accioWs ? { accioWs } : {}),
-    ...(accioAgentId ? { accioAgentId } : {}),
-    ...(accioWs || accioWorkspacePath ? { accioWorkspacePath: accioWorkspacePath ?? process.cwd() } : {}),
+    ...(referenceRuntimeWs ? { referenceRuntimeWs } : {}),
+    ...(referenceRuntimeAgentId ? { referenceRuntimeAgentId } : {}),
+    ...(referenceRuntimeWs || referenceRuntimeWorkspacePath ? { referenceRuntimeWorkspacePath: referenceRuntimeWorkspacePath ?? process.cwd() } : {}),
     timeoutMs,
     pollMs,
     probePrompt,
@@ -169,7 +169,7 @@ export function buildRealLlmAbReferencePreflightHelpText(): string {
     "",
     "Usage:",
     "  npm run acceptance:ab:reference-preflight -- --base-url <reference-daemon-url> --out <preflight.json> [--reference-token <token>] [--variant operator] [--timeout-ms 60000] [--poll-ms 1000] [--check]",
-    "  npm run acceptance:ab:reference-preflight -- --base-url http://127.0.0.1:4097 --accio-ws --out <preflight.json> [--accio-agent-id DID-...] [--accio-workspace-path <path>] [--check]",
+    "  npm run acceptance:ab:reference-preflight -- --base-url http://127.0.0.1:4097 --reference-ws --out <preflight.json> [--reference-agent-id DID-...] [--reference-workspace-path <path>] [--check]",
     "",
     "The preflight records raw route status, content type, body snippets, prompt receipt, assistant output, and browser-session route reachability before A/B collection.",
   ].join("\n");
@@ -199,9 +199,9 @@ export async function runReferencePreflight(input: {
   baseUrl: string;
   referenceToken?: string;
   variant?: string;
-  accioWs?: boolean;
-  accioAgentId?: string;
-  accioWorkspacePath?: string;
+  referenceRuntimeWs?: boolean;
+  referenceRuntimeAgentId?: string;
+  referenceRuntimeWorkspacePath?: string;
   timeoutMs?: number;
   pollMs?: number;
   probePrompt?: string;
@@ -209,7 +209,7 @@ export async function runReferencePreflight(input: {
 }): Promise<ReferencePreflightReport> {
   const baseUrl = normalizeBaseUrl(input.baseUrl);
   const variant = input.variant ?? "operator";
-  const accioWs = input.accioWs ?? false;
+  const referenceRuntimeWs = input.referenceRuntimeWs ?? false;
   const timeoutMs = input.timeoutMs ?? 60_000;
   const pollMs = input.pollMs ?? 1_000;
   const probePrompt =
@@ -219,8 +219,8 @@ export async function runReferencePreflight(input: {
 
   const requestAuth = buildReferenceRequestAuth(input.referenceToken);
 
-  if (accioWs) {
-    return runAccioWsReferencePreflight({
+  if (referenceRuntimeWs) {
+    return runReferenceRuntimeWsReferencePreflight({
       baseUrl,
       variant,
       timeoutMs,
@@ -228,8 +228,8 @@ export async function runReferencePreflight(input: {
       probePrompt,
       generatedAtMs: input.generatedAtMs,
       requestAuth,
-      agentId: input.accioAgentId,
-      workspacePath: input.accioWorkspacePath ?? process.cwd(),
+      agentId: input.referenceRuntimeAgentId,
+      workspacePath: input.referenceRuntimeWorkspacePath ?? process.cwd(),
     });
   }
 
@@ -282,7 +282,7 @@ export async function runReferencePreflight(input: {
     finalText
   );
   const delegationOnlyFinalObserved = isDelegationOnlyReferenceText(finalText);
-  const realHomeLeakObserved = hasRealAccioHomeLeak(transcriptText);
+  const realHomeLeakObserved = hasRealReferenceRuntimeHomeLeak(transcriptText);
   const modelContradictionObserved = hasReferenceModelContradiction({
     text: `${transcriptText}\n${finalText}`,
     adapterDiagnostics,
@@ -322,7 +322,7 @@ export async function runReferencePreflight(input: {
   };
 }
 
-async function runAccioWsReferencePreflight(input: {
+async function runReferenceRuntimeWsReferencePreflight(input: {
   baseUrl: string;
   variant: string;
   timeoutMs: number;
@@ -346,12 +346,12 @@ async function runAccioWsReferencePreflight(input: {
 
   const agentsRoute = await fetchRoute(input.baseUrl, "GET", "/agents", undefined, input.requestAuth);
   routes.push(agentsRoute);
-  const agent = selectAccioAgent(parseRouteJson(agentsRoute), input.agentId);
+  const agent = selectReferenceRuntimeAgent(parseRouteJson(agentsRoute), input.agentId);
   const agentId = agent?.id ?? input.agentId ?? "DID-F456DA-2B0D4C";
   const accountId = agent?.accountId ?? "reference-account";
-  const accioHome = readString((health as { accioHome?: unknown } | null)?.accioHome);
+  const referenceRuntimeHome = readString((health as { referenceRuntimeHome?: unknown } | null)?.referenceRuntimeHome);
 
-  const probe = await sendAccioWsProbe({
+  const probe = await sendReferenceRuntimeWsProbe({
     baseUrl: input.baseUrl,
     agentId,
     workspacePath: input.workspacePath,
@@ -360,9 +360,9 @@ async function runAccioWsReferencePreflight(input: {
   });
   routes.push(probe.route);
 
-  const transcriptResult = accioHome
-    ? await pollAccioSessionMessages({
-        accioHome,
+  const transcriptResult = referenceRuntimeHome
+    ? await pollReferenceRuntimeSessionMessages({
+        referenceRuntimeHome,
         accountId,
         agentId,
         conversationId: probe.conversationId,
@@ -381,7 +381,7 @@ async function runAccioWsReferencePreflight(input: {
     finalText
   );
   const delegationOnlyFinalObserved = isDelegationOnlyReferenceText(finalText);
-  const realHomeLeakObserved = hasRealAccioHomeLeak(transcriptText, accioHome);
+  const realHomeLeakObserved = hasRealReferenceRuntimeHomeLeak(transcriptText, referenceRuntimeHome);
   const modelContradictionObserved = hasReferenceModelContradiction({
     text: `${transcriptText}\n${finalText}`,
     adapterDiagnostics,
@@ -409,7 +409,7 @@ async function runAccioWsReferencePreflight(input: {
     status: findings.length === 0 ? "passed" : "failed",
     generatedAtMs: input.generatedAtMs ?? Date.now(),
     baseUrl: input.baseUrl,
-    variant: `${input.variant}:accio-ws`,
+    variant: `${input.variant}:referenceRuntime-ws`,
     checks,
     routes,
     adapterDiagnostics,
@@ -420,7 +420,7 @@ async function runAccioWsReferencePreflight(input: {
   };
 }
 
-async function sendAccioWsProbe(input: {
+async function sendReferenceRuntimeWsProbe(input: {
   baseUrl: string;
   agentId: string;
   workspacePath: string;
@@ -479,7 +479,7 @@ async function sendAccioWsProbe(input: {
       ws.addEventListener("message", (event) => {
         const text = String(event.data);
         wsMessages.push(text);
-        if (isAcceptedAccioWsMessage(text, conversationId)) {
+        if (isAcceptedReferenceRuntimeWsMessage(text, conversationId)) {
           accepted = true;
           clearTimeout(timer);
           try {
@@ -519,7 +519,7 @@ async function sendAccioWsProbe(input: {
   };
 }
 
-function isAcceptedAccioWsMessage(text: string, conversationId: string): boolean {
+function isAcceptedReferenceRuntimeWsMessage(text: string, conversationId: string): boolean {
   const parsed = parseJsonText(text);
   if (typeof parsed !== "object" || parsed === null) return false;
   const record = parsed as { type?: unknown; payload?: { conversationId?: unknown; success?: unknown }; data?: { conversationId?: unknown } };
@@ -529,8 +529,8 @@ function isAcceptedAccioWsMessage(text: string, conversationId: string): boolean
   );
 }
 
-async function pollAccioSessionMessages(input: {
-  accioHome: string;
+async function pollReferenceRuntimeSessionMessages(input: {
+  referenceRuntimeHome: string;
   accountId: string;
   agentId: string;
   conversationId: string;
@@ -538,7 +538,7 @@ async function pollAccioSessionMessages(input: {
   pollMs: number;
 }): Promise<{ messages: unknown[]; completion: { finalText: string; ready: boolean } }> {
   const sessionPath = path.join(
-    input.accioHome,
+    input.referenceRuntimeHome,
     "accounts",
     input.accountId,
     "agents",
@@ -569,8 +569,8 @@ function readJsonlMessages(filePath: string): unknown[] {
     });
 }
 
-function selectAccioAgent(value: unknown, requestedAgentId: string | undefined): { id: string; accountId: string } | null {
-  const agents = readAccioAgentRecords(value);
+function selectReferenceRuntimeAgent(value: unknown, requestedAgentId: string | undefined): { id: string; accountId: string } | null {
+  const agents = readReferenceRuntimeAgentRecords(value);
   const selected =
     agents.find((agent) => requestedAgentId && agent.id === requestedAgentId) ??
     agents.find((agent) => agent.modelName === "MiniMax-M2.7-highspeed") ??
@@ -578,7 +578,7 @@ function selectAccioAgent(value: unknown, requestedAgentId: string | undefined):
   return selected ? { id: selected.id, accountId: selected.accountId } : null;
 }
 
-function readAccioAgentRecords(value: unknown): Array<{ id: string; accountId: string; modelName?: string }> {
+function readReferenceRuntimeAgentRecords(value: unknown): Array<{ id: string; accountId: string; modelName?: string }> {
   if (typeof value !== "object" || value === null) return [];
   const record = value as { data?: unknown };
   const data = Array.isArray(record.data) ? record.data : Array.isArray(value) ? value : [];
@@ -760,7 +760,7 @@ function buildFindings(
   if (!checks.noDelegationOnlyFinal && hasNonDispatchableTextHandoff(finalText)) {
     findings.push("assistant final text names a role in prose rather than a dispatchable role mention");
   }
-  if (!checks.noRealHomeLeak) findings.push("reference transcript leaked real user Accio home");
+  if (!checks.noRealHomeLeak) findings.push("reference transcript leaked real user ReferenceRuntime home");
   if (!checks.noModelContradiction) findings.push("assistant transcript contradicted the configured reference model");
   for (const route of routes) {
     if (!route.ok) findings.push(`${route.method} ${route.route} returned ${route.status}${route.error ? ` (${route.error})` : ""}`);
@@ -785,10 +785,10 @@ function hasNonDispatchableTextHandoff(text: string): boolean {
   return /\b(?:next role|delegate to|delegating to|i will delegate|let me delegate|handoff to|assign(?:ing)? this to)\b/i.test(text) && !/@\{[^}]+}/.test(text);
 }
 
-function hasRealAccioHomeLeak(text: string, expectedAccioHome?: string): boolean {
-  const normalizedExpected = normalizeFilesystemPath(expectedAccioHome);
+function hasRealReferenceRuntimeHomeLeak(text: string, expectedReferenceRuntimeHome?: string): boolean {
+  const normalizedExpected = normalizeFilesystemPath(expectedReferenceRuntimeHome);
   const normalizedText = text.replace(/\\/g, "/");
-  const realHomeMatches = normalizedText.match(/\/Users\/[^/"'\s]+\/\.accio(?:\/[^"'\s]*)?/g) ?? [];
+  const realHomeMatches = normalizedText.match(/\/Users\/[^/"'\s]+\/\.reference-runtime(?:\/[^"'\s]*)?/g) ?? [];
   return realHomeMatches.some((match) => normalizeFilesystemPath(match) !== normalizedExpected);
 }
 
@@ -909,7 +909,7 @@ function readConfiguredModelRecords(value: unknown): Array<Record<string, unknow
   const record = value as Record<string, unknown>;
   const direct = record.configured === true ? [record] : [];
   const nested = Array.isArray(record.models) ? record.models.flatMap((item) => readConfiguredModelRecords(item)) : [];
-  const accioCatalog = Array.isArray(record.data)
+  const referenceRuntimeCatalog = Array.isArray(record.data)
     ? record.data.flatMap((provider) => {
         if (typeof provider !== "object" || provider === null) return [];
         const providerRecord = provider as { provider?: unknown; modelList?: unknown };
@@ -924,7 +924,7 @@ function readConfiguredModelRecords(value: unknown): Array<Record<string, unknow
         });
       })
     : [];
-  return [...direct, ...nested, ...accioCatalog];
+  return [...direct, ...nested, ...referenceRuntimeCatalog];
 }
 
 function appendPathToBaseUrl(baseUrl: URL, suffix: string): string {

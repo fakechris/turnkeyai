@@ -5,6 +5,7 @@
   "exports": {
     "./compression/context-compressor": "./src/compression/context-compressor.ts",
     "./context/context-budgeter": "./src/context/context-budgeter.ts",
+    "./context/dynamic-context-baseline": "./src/context/dynamic-context-baseline.ts",
     "./context/memory-provider-adapter": "./src/context/memory-provider-adapter.ts",
     "./context/role-memory-resolver": "./src/context/role-memory-resolver.ts",
     "./deterministic-response-generator": "./src/deterministic-response-generator.ts",
@@ -13,6 +14,7 @@
     "./model-adapter": "./src/model-adapter.ts",
     "./policy-role-runtime": "./src/policy-role-runtime.ts",
     "./pre-compaction-memory-flusher": "./src/pre-compaction-memory-flusher.ts",
+    "./prompt-registry": "./src/prompt-registry.ts",
     "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
     "./prompt-policy": "./src/prompt-policy.ts",
     "./react-model-client": "./src/react-model-client.ts",

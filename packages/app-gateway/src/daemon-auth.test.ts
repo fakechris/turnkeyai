@@ -52,6 +52,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "POST", pathname: "/app", expected: "read" },
     { method: "GET", pathname: "/runtime-summary", expected: "read" },
     { method: "GET", pathname: "/runtime-worker-sessions", expected: "read" },
+    { method: "GET", pathname: "/context/long-runtime", expected: "read" },
     { method: "GET", pathname: "/scheduled-tasks", expected: "read" },
     { method: "POST", pathname: "/messages", expected: "operator" },
     { method: "POST", pathname: "/role-runs/role%3Alead/cancel", expected: "operator" },

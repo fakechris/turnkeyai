@@ -41,6 +41,7 @@ import { HybridRoleResponseGenerator } from "@turnkeyai/role-runtime/hybrid-resp
 import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-generator";
 import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
 import { DefaultPreCompactionMemoryFlusher } from "@turnkeyai/role-runtime/pre-compaction-memory-flusher";
+import type { PreCompactionMemoryFlusher } from "@turnkeyai/role-runtime/pre-compaction-memory-flusher";
 import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
 import { LLMSubAgentWorkerHandler } from "@turnkeyai/role-runtime/sub-agent-worker-handler";
 import {
@@ -231,6 +232,8 @@ export async function composeDaemonRuntimeServices(
     runtimeChainEventStore,
     runtimeChainStatusStore,
     runtimeProgressStore,
+    contextCheckpointStore,
+    dynamicContextBaselineStore,
     threadMemoryStore,
     permissionCacheStore,
     recoveryRunStore,
@@ -353,11 +356,28 @@ export async function composeDaemonRuntimeServices(
             runtimeProgressRecorder,
             nativeToolMessageStore: teamMessageStore,
             runJournalStore: teamMessageStore,
-            preCompactionMemoryFlusher: new DefaultPreCompactionMemoryFlusher({
-              gateway: llmGateway,
-              threadMemoryStore,
-              now: () => clock.now(),
-            }),
+            contextCheckpointStore,
+            dynamicContextBaselineStore,
+            ...(inputs.taskToolService?.snapshot
+              ? {
+                  taskPlanStateProvider: ({ threadId, roleId }) =>
+                    inputs.taskToolService!.snapshot!({
+                      threadId,
+                      roleId,
+                      limit: 50,
+                    }),
+                }
+              : {}),
+            preCompactionMemoryFlusher:
+              createWorkspaceAwarePreCompactionMemoryFlusher({
+                primary: new DefaultPreCompactionMemoryFlusher({
+                  gateway: llmGateway,
+                  threadMemoryStore,
+                  now: () => clock.now(),
+                }),
+                workspaceMemoryWriter:
+                  foundations.workspaceMemoryWriter,
+              }),
             toolResultArtifactStore,
             clock,
             deferToolObservability: true,
@@ -667,4 +687,28 @@ function installLLMSubAgentWorkerHandlers(input: {
 
 function uniqueWorkerKinds(kinds: WorkerKind[]): WorkerKind[] {
   return [...new Set(kinds)];
+}
+
+function createWorkspaceAwarePreCompactionMemoryFlusher(input: {
+  primary: PreCompactionMemoryFlusher;
+  workspaceMemoryWriter: DaemonFoundations["workspaceMemoryWriter"];
+}): PreCompactionMemoryFlusher {
+  return {
+    async flush(flushInput) {
+      try {
+        await input.workspaceMemoryWriter.enqueue({
+          workspaceId: flushInput.activation.thread.threadId,
+          trigger: "pre-compaction",
+          force: true,
+        });
+        await input.workspaceMemoryWriter.flush();
+      } catch (error) {
+        console.error("workspace memory pre-compaction trigger failed", {
+          threadId: flushInput.activation.thread.threadId,
+          error,
+        });
+      }
+      return input.primary.flush(flushInput);
+    },
+  };
 }

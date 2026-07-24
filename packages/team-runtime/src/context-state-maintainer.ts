@@ -18,6 +18,7 @@ import { toMessageSummary } from "@turnkeyai/core-types/team";
 import type { ContextCompressor } from "@turnkeyai/role-runtime/compression/context-compressor";
 
 import { DefaultSessionMemoryRefreshWorker, type SessionMemoryRefreshWorker } from "./session-memory-refresh-worker";
+import type { WorkspaceMemoryWriter } from "./workspace-memory-writer";
 
 export interface ContextStateMaintainer {
   onUserMessage(threadId: ThreadId): Promise<void>;
@@ -33,6 +34,7 @@ interface DefaultContextStateMaintainerOptions {
   threadSessionMemoryStore?: ThreadSessionMemoryStore;
   threadJournalStore?: ThreadJournalStore;
   sessionMemoryRefreshJobStore?: SessionMemoryRefreshJobStore;
+  workspaceMemoryWriter?: WorkspaceMemoryWriter;
   contextCompressor: ContextCompressor;
   runtimeProgressRecorder?: RuntimeProgressRecorder;
   threadMessageLimit?: number;
@@ -67,6 +69,7 @@ export class DefaultContextStateMaintainer implements ContextStateMaintainer {
   private readonly now: () => number;
   private readonly formatDateKey: (timestamp: number) => string;
   private readonly sessionMemoryRefreshWorker: SessionMemoryRefreshWorker | undefined;
+  private readonly workspaceMemoryWriter: WorkspaceMemoryWriter | undefined;
 
   constructor(options: DefaultContextStateMaintainerOptions) {
     this.teamMessageStore = options.teamMessageStore;
@@ -99,11 +102,16 @@ export class DefaultContextStateMaintainer implements ContextStateMaintainer {
             },
           })
         : undefined;
+    this.workspaceMemoryWriter = options.workspaceMemoryWriter;
   }
 
   async onUserMessage(threadId: ThreadId): Promise<void> {
     await this.refreshThreadSummary(threadId);
     await this.updateMemoryFiles(threadId, "user");
+    await this.workspaceMemoryWriter?.enqueue({
+      workspaceId: threadId,
+      trigger: "turn-interval",
+    });
   }
 
   async onRoleReply(threadId: ThreadId, roleId: RoleId): Promise<void> {
@@ -156,10 +164,15 @@ export class DefaultContextStateMaintainer implements ContextStateMaintainer {
     }
 
     await this.updateMemoryFiles(threadId, roleId, nextScratchpad ?? previousScratchpad ?? null);
+    await this.workspaceMemoryWriter?.enqueue({
+      workspaceId: threadId,
+      trigger: "high-value-event",
+    });
   }
 
   async drain(): Promise<void> {
     await this.sessionMemoryRefreshWorker?.flush();
+    await this.workspaceMemoryWriter?.flush();
   }
 
   async flushBackgroundWork(): Promise<void> {

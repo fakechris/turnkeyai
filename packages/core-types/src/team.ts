@@ -19,3 +19,5 @@ export * from "./team-scheduling";
 export * from "./team-orchestration";
 export * from "./team-helpers";
 export * from "./team-validation-ops";
+export * from "./context-checkpoint";
+export * from "./dynamic-context-baseline";

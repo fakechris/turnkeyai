@@ -12,6 +12,7 @@ import type {
   RolePromptPacketLike,
   RoleSlot,
   PromptAssemblyContextDiagnostics,
+  PromptSectionRuntimeReceipt,
   RuntimeProgressRecorder,
   WorkerKind,
 } from "@turnkeyai/core-types/team";
@@ -44,6 +45,7 @@ export interface RolePromptPacket extends RolePromptPacketLike {
     includedSegments: string[];
     sectionOrder: string[];
     compactedSegments: string[];
+    sectionReceipts?: PromptSectionRuntimeReceipt[];
     assemblyFingerprint: string;
     usedArtifacts: string[];
     contextDiagnostics: PromptAssemblyContextDiagnostics;
@@ -68,20 +70,29 @@ export async function recordPromptAssemblyBoundarySafely(input: {
   activation: RoleActivationInput;
   packet: RolePromptPacket;
   runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  defer?: boolean | undefined;
   selection: {
     modelId?: string | undefined;
     modelChainId?: string | undefined;
   };
 }): Promise<void> {
-  try {
-    await recordPromptAssemblyBoundary(input);
-  } catch (error) {
+  const work = () => recordPromptAssemblyBoundary(input);
+  const onError = (error: unknown) => {
     console.error("runtime assembly boundary recording failed", {
       threadId: input.activation.thread.threadId,
       flowId: input.activation.flow.flowId,
       taskId: input.activation.handoff.taskId,
       error,
     });
+  };
+  if (input.defer) {
+    void work().catch(onError);
+    return;
+  }
+  try {
+    await work();
+  } catch (error) {
+    onError(error);
   }
 }
 
@@ -89,16 +100,22 @@ async function recordPromptAssemblyBoundary(input: {
   activation: RoleActivationInput;
   packet: RolePromptPacket;
   runtimeProgressRecorder?: RuntimeProgressRecorder | undefined;
+  defer?: boolean | undefined;
   selection: {
     modelId?: string | undefined;
     modelChainId?: string | undefined;
   };
 }): Promise<void> {
   const { activation, packet, runtimeProgressRecorder, selection } = input;
+  const assembly = packet.promptAssembly;
   const compactedSegments = packet.promptAssembly?.compactedSegments ?? [];
-  if (!runtimeProgressRecorder || compactedSegments.length === 0) {
+  if (!runtimeProgressRecorder || !assembly) {
     return;
   }
+  const boundaryKind =
+    compactedSegments.length > 0
+      ? "prompt_compaction"
+      : "prompt_assembly";
   await runtimeProgressRecorder.record({
     progressId: `progress:prompt-assembly:${activation.handoff.taskId}:${Date.now()}`,
     threadId: activation.thread.threadId,
@@ -109,17 +126,20 @@ async function recordPromptAssemblyBoundary(input: {
       : {}),
     subjectKind: "role_run",
     subjectId: activation.runState.runKey,
-    phase: "degraded",
+    phase: compactedSegments.length > 0 ? "degraded" : "heartbeat",
     progressKind: "boundary",
     heartbeatSource: "control_path",
     continuityState: "alive",
-    summary: `Prompt assembly entered compact boundary with ${compactedSegments.length} compacted segment(s).`,
+    summary:
+      compactedSegments.length > 0
+        ? `Prompt assembly entered compact boundary with ${compactedSegments.length} compacted segment(s).`
+        : `Prompt assembly included ${assembly.includedSegments?.length ?? assembly.sectionOrder?.length ?? 0} section(s).`,
     recordedAt: Date.now(),
     flowId: activation.flow.flowId,
     taskId: activation.handoff.taskId,
     roleId: activation.runState.roleId,
     metadata: {
-      boundaryKind: "prompt_compaction",
+      boundaryKind,
       ...(selection.modelId ? { modelId: selection.modelId } : {}),
       ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
       ...(packet.promptAssembly?.assemblyFingerprint
@@ -128,6 +148,7 @@ async function recordPromptAssemblyBoundary(input: {
       ...(packet.promptAssembly?.sectionOrder
         ? { sectionOrder: packet.promptAssembly.sectionOrder }
         : {}),
+      sectionReceipts: assembly.sectionReceipts ?? [],
       ...(packet.promptAssembly?.tokenEstimate
         ? { tokenEstimate: packet.promptAssembly.tokenEstimate }
         : {}),
@@ -326,6 +347,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
         includedSegments: assembly.includedSegments,
         sectionOrder: assembly.sectionOrder,
         compactedSegments: assembly.compactedSegments,
+        sectionReceipts: assembly.sectionReceipts,
         assemblyFingerprint: assembly.assemblyFingerprint,
         usedArtifacts: assembly.usedArtifacts,
         contextDiagnostics: assembly.contextDiagnostics,

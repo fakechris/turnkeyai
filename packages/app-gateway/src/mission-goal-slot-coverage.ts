@@ -194,7 +194,7 @@ function slotHasUnverifiedCoreClaim(slot: MissionGoalSlot, text: string, goalTex
 
 function splitClaimSegments(text: string): string[] {
   return text
-    .split(/(?:\r?\n|[。；;])/u)
+    .split(/(?:\r?\n|[。；;]|(?<=[.!?])\s+)/u)
     .map((segment) => segment.trim())
     .filter(Boolean);
 }
@@ -418,9 +418,13 @@ function looksLikeBoundedUnverifiedSubScope(
   ) {
     return true;
   }
-  return /\b(?:only confirmed pricing|only confirmed pricing detail|only confirmed price|no enterprise|annual plans?|usage tiers?|feature[- ]gated tiers?|seat minimums?|minimums?|seat[- ]count equivalence|equivalence not confirmed|billing cycles?|billing periods?|billing model|trial terms?)\b/i.test(
+  return /\b(?:only confirmed pricing|only confirmed pricing detail|only confirmed price|no enterprise|annual(?: plans?)?|volume(?: discounts?)?|enterprise(?: tier| pricing)?|anything else|usage tiers?|feature[- ]gated tiers?|seat minimums?|minimums?|seat[- ]count equivalence|equivalence not confirmed|billing cycles?|billing periods?|billing model|trial terms?)\b/i.test(
       text
     ) ||
+    (hasConcretePricingEvidence(fullText) &&
+      /\b(?:enterprise(?:\s*\/\s*custom)? pricing|custom pricing|pricing tiers?|free trials?|free tiers?)\b[\s\S]{0,100}\b(?:not verified|unverified|not confirmed|unknown|missing)\b|\b(?:not verified|unverified|not confirmed|unknown|missing)\b[\s\S]{0,100}\b(?:enterprise(?:\s*\/\s*custom)? pricing|custom pricing|pricing tiers?|free trials?|free tiers?)\b/i.test(
+        text,
+      )) ||
     /(?:仅|只)(?:确认|验证)[\s\S]{0,40}(?:价格|输入价格|输出价格|计费)|(?:企业|年度|年付|阶梯|计费周期|套餐|官方文档|生产决策|生产使用|文档新鲜度)[\s\S]{0,80}(?:未验证|未确认|待验证|需要验证)/u.test(
       text
     ) ||
@@ -468,7 +472,7 @@ function looksLikeBoundedRenderedBrowserLimitation(segment: string): boolean {
       segment
     );
   if (!boundedFailure) return false;
-  return /\b(?:screenshot artifact|screenshot|snapshot|full DOM|DOM\/tree|tree traversal|layout|CSS styling|hidden panels?|additional widgets?|charts?|drill[- ]down tables?|lazy[- ]loaded panels?|below the initial viewport|full page structure)\b/i.test(
+  return /\b(?:screenshot artifact|screenshot|snapshot|full DOM|DOM\/tree|tree traversal|layout|CSS styling|hidden panels?|additional widgets?|charts?|drill[- ]down tables?|lazy[- ]loaded panels?|below the initial viewport|full page structure|standalone numeric (?:metric|tile|KPI)|metric value|numeric Mission Control tile)\b/i.test(
     segment
   );
 }
@@ -540,7 +544,7 @@ function looksLikeGenericSourceBoundedRiskCaveat(fullText: string, segment: stri
   if (!hasConcreteSourceBoundedRiskFacts(fullText)) return false;
   return (
     /\b(?:risk|risks|limitation|tradeoff|caveat|note)\b/i.test(fullText) &&
-    /\b(?:not directly comparable|cannot be directly compared|not apples-to-apples|team size context|not verified from (?:the )?source|not provided by (?:the )?source|outside (?:the )?source|source[- ]bounded|local fixture|not live production|not audited production|production freshness|customer impact|customer adoption|production telemetry|post[- ]run|source updates?)\b/i.test(
+    /\b(?:not directly comparable|cannot be directly compared|not apples-to-apples|team size context|not verified from (?:(?:the|this|that) )?source|not provided by (?:(?:the|this|that) )?source|outside (?:(?:the|this|that) )?source|source[- ]bounded|local fixture|not live production|not audited production|production freshness|customer impact|customer adoption|production telemetry|post[- ]run|source updates?)\b/i.test(
       segment
     )
   );

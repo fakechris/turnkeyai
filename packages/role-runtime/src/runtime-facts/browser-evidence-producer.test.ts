@@ -9,6 +9,7 @@ import { produceBrowserEvidenceEnvelope } from "./browser-evidence-producer";
 const baseTaskIntent: TaskIntentFacts = {
   requestedTableColumns: [],
   providerSupportSchemaRequested: false,
+  durableMemoryLookupProtocol: "none",
   browserVisibleEvidenceRequired: true,
   productSignalDashboardEvidenceRequested: false,
   timeoutRecoveryRequested: false,

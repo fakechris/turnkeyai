@@ -1,5 +1,6 @@
 import type {
   RoleId,
+  MemorySearchIndex,
   RoleScratchpadRecord,
   RoleScratchpadStore,
   ThreadJournalStore,
@@ -11,6 +12,7 @@ import type {
   ThreadSummaryStore,
   WorkerEvidenceDigest,
   WorkerEvidenceDigestStore,
+  WorkspaceMemoryStore,
 } from "@turnkeyai/core-types/team";
 import {
   hasApprovalSignal,
@@ -18,6 +20,7 @@ import {
   hasContinuationSignal,
   hasMergeSignal,
 } from "@turnkeyai/core-types/continuation-semantics";
+import { createHash } from "node:crypto";
 
 export interface MemoryHit {
   memoryId: string;
@@ -67,6 +70,8 @@ interface DefaultRoleMemoryResolverOptions {
   threadMemoryStore?: ThreadMemoryStore;
   threadSessionMemoryStore?: ThreadSessionMemoryStore;
   threadJournalStore?: ThreadJournalStore;
+  workspaceMemoryStore?: WorkspaceMemoryStore;
+  memorySearchIndex?: MemorySearchIndex;
 }
 
 export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
@@ -76,6 +81,8 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
   private readonly threadMemoryStore: ThreadMemoryStore | undefined;
   private readonly threadSessionMemoryStore: ThreadSessionMemoryStore | undefined;
   private readonly threadJournalStore: ThreadJournalStore | undefined;
+  private readonly workspaceMemoryStore: WorkspaceMemoryStore | undefined;
+  private readonly memorySearchIndex: MemorySearchIndex | undefined;
 
   constructor(options: DefaultRoleMemoryResolverOptions) {
     this.threadSummaryStore = options.threadSummaryStore;
@@ -84,6 +91,8 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
     this.threadMemoryStore = options.threadMemoryStore;
     this.threadSessionMemoryStore = options.threadSessionMemoryStore;
     this.threadJournalStore = options.threadJournalStore;
+    this.workspaceMemoryStore = options.workspaceMemoryStore;
+    this.memorySearchIndex = options.memorySearchIndex;
   }
 
   async loadThreadSummary(threadId: ThreadId): Promise<ThreadSummaryRecord | null> {
@@ -105,16 +114,58 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
   async retrieveMemory(input: { threadId: ThreadId; roleId: RoleId; queryText: string }): Promise<MemoryHit[]> {
     const records = await this.loadMemoryRecords({ threadId: input.threadId, roleId: input.roleId });
     const query = analyzeQuery(input.queryText);
-
-    return records
+    const indexed = this.memorySearchIndex
+      ? await this.memorySearchIndex.recall({
+          scope: {
+            workspaceId: input.threadId,
+            threadId: input.threadId,
+          },
+          query: input.queryText,
+          limit: query.explicitRecall
+            ? EXPLICIT_RECALL_HITS
+            : DEFAULT_RECALL_HITS,
+        })
+      : [];
+    const indexedHits: MemoryHit[] = indexed.map((hit) => ({
+      memoryId: hit.record.memoryId,
+      source:
+        hit.record.confidence === "authoritative"
+          ? "user-preference"
+          : "thread-memory",
+      score: 1 + hit.score,
+      content: hit.record.content,
+      rationale: `${hit.rationale}; typed ${hit.record.plane} memory (${hit.record.confidence})`,
+    }));
+    const legacyHits = records
       .filter((record) => !record.evidenceDigest || shouldIncludeEvidenceDigest(record.evidenceDigest, query))
       .map((record) => buildMemoryHit(record, query))
       .filter((hit) => hit.score >= minimumMemoryScore(query, hit.source))
-      .sort((left, right) => right.score - left.score)
+      .sort((left, right) => right.score - left.score);
+    return dedupeHits([...indexedHits, ...legacyHits])
       .slice(0, query.explicitRecall ? EXPLICIT_RECALL_HITS : DEFAULT_RECALL_HITS);
   }
 
   async getMemory(input: { threadId: ThreadId; roleId: RoleId; memoryId: string }): Promise<MemoryHit | null> {
+    const typed = await this.workspaceMemoryStore?.get(input.memoryId) ??
+      await this.memorySearchIndex?.get(input.memoryId) ??
+      null;
+    if (
+      typed &&
+      typed.scope.workspaceId === input.threadId &&
+      (typed.scope.threadId === undefined ||
+        typed.scope.threadId === input.threadId)
+    ) {
+      return {
+        memoryId: typed.memoryId,
+        source:
+          typed.confidence === "authoritative"
+            ? "user-preference"
+            : "thread-memory",
+        score: 1,
+        content: typed.content,
+        rationale: `direct typed ${typed.plane} memory lookup`,
+      };
+    }
     const records = await this.loadMemoryRecords({ threadId: input.threadId, roleId: input.roleId });
     const record = records.find((item) => item.memoryId === input.memoryId);
     if (!record) {
@@ -138,18 +189,18 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
 
     if (threadMemory) {
       const threadMemoryRecords: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
-        ...threadMemory.preferences.map((value, index) => ({
-          memoryId: `${input.threadId}:preference:${index + 1}`,
+        ...threadMemory.preferences.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "preference", value),
           source: "user-preference" as const,
           content: `Preference: ${value}`,
         })),
-        ...threadMemory.constraints.map((value, index) => ({
-          memoryId: `${input.threadId}:constraint:${index + 1}`,
+        ...threadMemory.constraints.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "constraint", value),
           source: "thread-memory" as const,
           content: `Constraint: ${value}`,
         })),
-        ...threadMemory.longTermNotes.map((value, index) => ({
-          memoryId: `${input.threadId}:note:${index + 1}`,
+        ...threadMemory.longTermNotes.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "note", value),
           source: "thread-memory" as const,
           content: `Long-term note: ${value}`,
         })),
@@ -171,18 +222,18 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
           source: "thread-memory",
           content: `Goal: ${threadSummary.userGoal}`,
         },
-        ...threadSummary.stableFacts.map((value, index) => ({
-          memoryId: `${input.threadId}:fact:${index + 1}`,
+        ...threadSummary.stableFacts.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "fact", value),
           source: "thread-memory" as const,
           content: `Fact: ${value}`,
         })),
-        ...threadSummary.decisions.map((value, index) => ({
-          memoryId: `${input.threadId}:decision:${index + 1}`,
+        ...threadSummary.decisions.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "decision", value),
           source: "thread-memory" as const,
           content: `Decision: ${value}`,
         })),
-        ...threadSummary.openQuestions.map((value, index) => ({
-          memoryId: `${input.threadId}:question:${index + 1}`,
+        ...threadSummary.openQuestions.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "question", value),
           source: "thread-memory" as const,
           content: `Open question: ${value}`,
         })),
@@ -199,33 +250,33 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
 
     if (threadSessionMemory) {
       const sessionRecords: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
-        ...threadSessionMemory.activeTasks.map((value, index) => ({
-          memoryId: `${input.threadId}:session:active:${index + 1}`,
+        ...threadSessionMemory.activeTasks.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "session:active", value),
           source: "session-memory" as const,
           content: `Active task: ${value}`,
         })),
-        ...threadSessionMemory.openQuestions.map((value, index) => ({
-          memoryId: `${input.threadId}:session:question:${index + 1}`,
+        ...threadSessionMemory.openQuestions.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "session:question", value),
           source: "session-memory" as const,
           content: `Open question: ${value}`,
         })),
-        ...threadSessionMemory.recentDecisions.map((value, index) => ({
-          memoryId: `${input.threadId}:session:decision:${index + 1}`,
+        ...threadSessionMemory.recentDecisions.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "session:decision", value),
           source: "session-memory" as const,
           content: `Recent decision: ${value}`,
         })),
-        ...threadSessionMemory.constraints.map((value, index) => ({
-          memoryId: `${input.threadId}:session:constraint:${index + 1}`,
+        ...threadSessionMemory.constraints.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "session:constraint", value),
           source: "session-memory" as const,
           content: `Constraint: ${value}`,
         })),
-        ...threadSessionMemory.continuityNotes.map((value, index) => ({
-          memoryId: `${input.threadId}:session:continuity:${index + 1}`,
+        ...threadSessionMemory.continuityNotes.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "session:continuity", value),
           source: "session-memory" as const,
           content: `Continuity: ${value}`,
         })),
-        ...threadSessionMemory.latestJournalEntries.map((value, index) => ({
-          memoryId: `${input.threadId}:session:journal:${index + 1}`,
+        ...threadSessionMemory.latestJournalEntries.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, "session:journal", value),
           source: "session-memory" as const,
           content: `Recent journal: ${value}`,
         })),
@@ -241,13 +292,13 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
 
     if (roleScratchpad) {
       const scratchpadRecords: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
-        ...roleScratchpad.completedWork.map((value, index) => ({
-          memoryId: `${input.threadId}:${input.roleId}:done:${index + 1}`,
+        ...roleScratchpad.completedWork.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, `${input.roleId}:done`, value),
           source: "thread-memory" as const,
           content: `Completed: ${value}`,
         })),
-        ...roleScratchpad.pendingWork.map((value, index) => ({
-          memoryId: `${input.threadId}:${input.roleId}:pending:${index + 1}`,
+        ...roleScratchpad.pendingWork.map((value) => ({
+          memoryId: stableLegacyMemoryId(input.threadId, `${input.roleId}:pending`, value),
           source: "thread-memory" as const,
           content: `Pending: ${value}`,
         })),
@@ -255,7 +306,7 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
 
       if (roleScratchpad.waitingOn) {
         scratchpadRecords.push({
-          memoryId: `${input.threadId}:${input.roleId}:waiting`,
+          memoryId: stableLegacyMemoryId(input.threadId, `${input.roleId}:waiting`, roleScratchpad.waitingOn),
           source: "thread-memory",
           content: `Waiting on: ${roleScratchpad.waitingOn}`,
         });
@@ -271,11 +322,11 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
     }
 
     records.push(
-      ...workerEvidence.flatMap((digest, digestIndex) =>
+      ...workerEvidence.flatMap((digest) =>
         digest.admissionMode === "blocked"
           ? []
-          : digest.findings.map((finding, findingIndex) => ({
-              memoryId: `${digest.workerRunKey}:${digestIndex + 1}:${findingIndex + 1}`,
+          : digest.findings.map((finding) => ({
+              memoryId: stableLegacyMemoryId(digest.workerRunKey, "finding", finding),
               source: "knowledge-note" as const,
               content: buildEvidenceContent(digest, finding),
               scoreMultiplier: digest.trustLevel === "promotable" ? 1.25 : 0.75,
@@ -287,8 +338,8 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
 
     records.push(
       ...journalRecords.flatMap((record, recordIndex) =>
-        record.entries.map((entry, entryIndex) => ({
-          memoryId: `${record.threadId}:${record.dateKey}:${recordIndex + 1}:${entryIndex + 1}`,
+        record.entries.map((entry) => ({
+          memoryId: stableLegacyMemoryId(record.threadId, `journal:${record.dateKey}`, entry),
           source: "journal-note" as const,
           content: `Journal ${record.dateKey}: ${entry}`,
           scoreMultiplier: 0.95 + Math.max(0, journalRecords.length - recordIndex) * 0.05,
@@ -299,6 +350,28 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
 
     return records;
   }
+}
+
+function stableLegacyMemoryId(scopeId: string, kind: string, content: string): string {
+  const digest = createHash("sha256")
+    .update(kind)
+    .update("\0")
+    .update(content)
+    .digest("hex")
+    .slice(0, 16);
+  return `${scopeId}:${kind}:${digest}`;
+}
+
+function dedupeHits(hits: MemoryHit[]): MemoryHit[] {
+  const byId = new Map<string, MemoryHit>();
+  for (const hit of hits) {
+    const current = byId.get(hit.memoryId);
+    if (!current || hit.score > current.score) byId.set(hit.memoryId, hit);
+  }
+  return [...byId.values()].sort((left, right) =>
+    right.score - left.score ||
+    left.memoryId.localeCompare(right.memoryId)
+  );
 }
 
 function buildMemoryHit(

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { TOOL_PROMPT_GROUP_SECTION_IDS } from "./prompt-registry";
 import { createNativeToolCapabilityRegistry } from "./tool-capability-registry";
 
 test("native tool capability registry drives schemas and prompt harness from the same worker set", () => {
@@ -46,6 +47,12 @@ test("native tool capability registry drives schemas and prompt harness from the
     registry.summaries().map((summary) => summary.name),
     ["web_fetch", "sessions_spawn", "sessions_send", "sessions_list", "sessions_history"]
   );
+  assert.deepEqual(registry.activePromptSectionIds(), [
+    TOOL_PROMPT_GROUP_SECTION_IDS.general,
+    TOOL_PROMPT_GROUP_SECTION_IDS.sessions,
+    TOOL_PROMPT_GROUP_SECTION_IDS.web,
+    TOOL_PROMPT_GROUP_SECTION_IDS.browser,
+  ]);
 
   const harness = registry.renderPromptHarness({ seat: "lead" });
   assert.match(harness, /Tool Usage Discipline/);

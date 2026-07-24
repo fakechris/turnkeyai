@@ -117,7 +117,25 @@ test("RunTrace unifies bounded model, tool, policy, compaction, and closeout dia
         forced: false,
         messageCountBefore: 24,
         messageCountAfter: 8,
+        messageBytesBefore: 80_000,
+        messageBytesAfter: 12_000,
         sourceMessageCount: 16,
+        checkpointId: "checkpoint-1",
+        checkpointProtocol: "turnkeyai.context_checkpoint.v2",
+        sourceGuard: {
+          protocolSafe: true,
+          compacted: true,
+          sourceMessageCount: 16,
+          sourceBytes: 60_000,
+          sourceTokens: 15_000,
+          guardedMessageCount: 6,
+          guardedBytes: 10_000,
+          guardedTokens: 2_500,
+          digestedMessageCount: 10,
+          digestedProtocolUnitCount: 5,
+          retainedProtocolUnitCount: 3,
+          digestGroupCount: 2,
+        },
       },
     ],
     pruning: [
@@ -164,6 +182,9 @@ test("RunTrace unifies bounded model, tool, policy, compaction, and closeout dia
   assert.equal(trace.incidents.tool_arg_invalid, 1);
   assert.equal(trace.incidents.round_limit, 1);
   assert.equal(trace.incidents.resume_after_crash, 1);
+  assert.equal(trace.compactions[0]?.checkpointId, "checkpoint-1");
+  assert.equal(trace.compactions[0]?.sourceGuard?.guardedBytes, 10_000);
+  assert.equal(trace.compactions[0]?.messageBytesAfter, 12_000);
   assert.equal(trace.outcome.status, "partial");
   assert.ok(runTraceSerializedBytes(trace) <= RUN_TRACE_MAX_BYTES);
 });

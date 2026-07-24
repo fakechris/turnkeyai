@@ -57,6 +57,9 @@ import { InMemoryTeamEventBus } from "@turnkeyai/team-runtime/in-memory-team-eve
 import { DefaultRecoveryDirector } from "@turnkeyai/team-runtime/recovery-director";
 import { DefaultRuntimeProgressRecorder } from "@turnkeyai/team-runtime/runtime-progress-recorder";
 import { ExplicitWorkflowRuntime } from "@turnkeyai/team-runtime/explicit-workflow-runtime";
+import { DefaultWorkspaceMemoryWriter } from "@turnkeyai/team-runtime/workspace-memory-writer";
+import { FileContextCheckpointStore } from "@turnkeyai/team-store/context/file-context-checkpoint-store";
+import { FileDynamicContextBaselineStore } from "@turnkeyai/team-store/context/file-dynamic-context-baseline-store";
 import { FileRoleScratchpadStore } from "@turnkeyai/team-store/context/file-role-scratchpad-store";
 import { FileSessionMemoryRefreshJobStore } from "@turnkeyai/team-store/context/file-session-memory-refresh-job-store";
 import { FileThreadJournalStore } from "@turnkeyai/team-store/context/file-thread-journal-store";
@@ -64,6 +67,8 @@ import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread
 import { FileThreadSessionMemoryStore } from "@turnkeyai/team-store/context/file-thread-session-memory-store";
 import { FileThreadSummaryStore } from "@turnkeyai/team-store/context/file-thread-summary-store";
 import { FileWorkerEvidenceDigestStore } from "@turnkeyai/team-store/context/file-worker-evidence-digest-store";
+import { FileWorkspaceMemoryStore } from "@turnkeyai/team-store/context/file-workspace-memory-store";
+import { SqliteMemorySearchIndex } from "@turnkeyai/team-store/context/sqlite-memory-search-index";
 import { FileFlowLedgerStore } from "@turnkeyai/team-store/file-flow-ledger-store";
 import { FileRoleRunStore } from "@turnkeyai/team-store/file-role-run-store";
 import { FileRuntimeChainEventStore } from "@turnkeyai/team-store/file-runtime-chain-event-store";
@@ -132,6 +137,10 @@ export interface DaemonFoundations {
   runtimeChainEventStore: FileRuntimeChainEventStore;
   runtimeChainStatusStore: FileRuntimeChainStatusStore;
   runtimeProgressStore: FileRuntimeProgressStore;
+  contextCheckpointStore: FileContextCheckpointStore;
+  dynamicContextBaselineStore: FileDynamicContextBaselineStore;
+  workspaceMemoryStore: FileWorkspaceMemoryStore;
+  memorySearchIndex: SqliteMemorySearchIndex;
   threadSummaryStore: FileThreadSummaryStore;
   threadMemoryStore: FileThreadMemoryStore;
   threadSessionMemoryStore: FileThreadSessionMemoryStore;
@@ -167,6 +176,7 @@ export interface DaemonFoundations {
   promptAssembler: DefaultPromptAssembler;
   contextCompressor: DefaultContextCompressor;
   contextStateMaintainer: DefaultContextStateMaintainer;
+  workspaceMemoryWriter: DefaultWorkspaceMemoryWriter;
 
   // Browser bridge (and the env-derived constants that describe it)
   browserBridge: BrowserTransportAdapter;
@@ -226,6 +236,24 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
   });
   const runtimeProgressStore = new FileRuntimeProgressStore({
     rootDir: path.join(dataDir, "runtime-progress"),
+  });
+  const contextCheckpointStore = new FileContextCheckpointStore({
+    rootDir: path.join(dataDir, "context", "checkpoints"),
+  });
+  const dynamicContextBaselineStore = new FileDynamicContextBaselineStore({
+    rootDir: path.join(dataDir, "context", "dynamic-baselines"),
+  });
+  const memorySearchIndex = new SqliteMemorySearchIndex({
+    dbPath: path.join(
+      dataDir,
+      "context",
+      "memory-index",
+      "memory.sqlite",
+    ),
+  });
+  const workspaceMemoryStore = new FileWorkspaceMemoryStore({
+    rootDir: path.join(dataDir, "context", "workspace-memory"),
+    index: memorySearchIndex,
   });
   const threadSummaryStore = new FileThreadSummaryStore({
     rootDir: path.join(dataDir, "context", "thread-summaries"),
@@ -337,12 +365,38 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     threadJournalStore,
     roleScratchpadStore,
     workerEvidenceDigestStore,
+    workspaceMemoryStore,
+    memorySearchIndex,
   });
   const promptAssembler = new DefaultPromptAssembler({
     estimateTokens: (input, reservedOutputTokens, maxInputTokens) =>
       contextBudgeter.estimate(input, reservedOutputTokens, maxInputTokens),
   });
   const contextCompressor = new DefaultContextCompressor();
+  const workspaceMemoryWriter = new DefaultWorkspaceMemoryWriter({
+    store: workspaceMemoryStore,
+    loadEvents: async ({ workspaceId, afterSequence, limit }) => {
+      const messages = await teamMessageStore.list(workspaceId);
+      return messages
+        .map((message, index) => ({
+          eventId: `message:${message.id}`,
+          workspaceId,
+          threadId: message.threadId,
+          sequence: index + 1,
+          kind:
+            message.role === "user"
+              ? "user-message" as const
+              : "runtime-message" as const,
+          content: message.content,
+          sourceRefs: [`message:${message.id}`],
+          occurredAt: message.createdAt,
+          authoritative: message.role === "user",
+        }))
+        .filter((event) => event.sequence > afterSequence)
+        .slice(0, limit);
+    },
+    now: () => clock.now(),
+  });
   const contextStateMaintainer = new DefaultContextStateMaintainer({
     teamMessageStore,
     threadSummaryStore,
@@ -353,6 +407,7 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     roleScratchpadStore,
     contextCompressor,
     runtimeProgressRecorder,
+    workspaceMemoryWriter,
     sessionMemoryRefreshDelayMs: 10,
   });
 
@@ -481,6 +536,10 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     runtimeChainEventStore,
     runtimeChainStatusStore,
     runtimeProgressStore,
+    contextCheckpointStore,
+    dynamicContextBaselineStore,
+    workspaceMemoryStore,
+    memorySearchIndex,
     threadSummaryStore,
     threadMemoryStore,
     threadSessionMemoryStore,
@@ -512,6 +571,7 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     promptAssembler,
     contextCompressor,
     contextStateMaintainer,
+    workspaceMemoryWriter,
     browserBridge,
     relayGateway,
     browserExpertLane,

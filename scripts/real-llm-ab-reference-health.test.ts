@@ -523,10 +523,10 @@ test("real LLM A/B reference health extracts concrete browser failure buckets", 
   }
 });
 
-test("real LLM A/B reference health reads late Accio session-file tool results", () => {
+test("real LLM A/B reference health reads late ReferenceRuntime session-file tool results", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-reference-health-"));
   try {
-    const sessionPath = path.join(dir, "accio-session.messages.jsonl");
+    const sessionPath = path.join(dir, "referenceRuntime-session.messages.jsonl");
     const staleMessages = [
       { role: "user", content: "Compare Vendor Alpha and Vendor Beta from the provided source pages." },
       {
@@ -565,7 +565,7 @@ test("real LLM A/B reference health reads late Accio session-file tool results",
         artifact.provenance.rawToolResults = [];
         artifact.rawBrowserEvidence = [];
         artifact.provenance.rawBrowserEvidence = [];
-        artifact.rawFlowEvidence = [{ source: "accio_ws_session_file", sessionPath }];
+        artifact.rawFlowEvidence = [{ source: "reference_ws_session_file", sessionPath }];
         artifact.provenance.rawFlowEvidence = artifact.rawFlowEvidence;
         artifact.first.summary = {
           finalText: "I'll inspect the localhost pages with a browser worker.",

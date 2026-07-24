@@ -47,26 +47,26 @@ test("real LLM A/B reference preflight parses args and help", () => {
   assert.throws(() => parseRealLlmAbReferencePreflightArgs(["--base-url", "http://x"]), /missing required --out/);
 });
 
-test("real LLM A/B reference preflight parses Accio Work websocket mode", () => {
+test("real LLM A/B reference preflight parses reference desktop runtime websocket mode", () => {
   assert.deepEqual(
     parseRealLlmAbReferencePreflightArgs([
       "--base-url",
       "http://127.0.0.1:4097",
       "--out",
-      "/tmp/accio-preflight.json",
-      "--accio-ws",
-      "--accio-agent-id",
+      "/tmp/referenceRuntime-preflight.json",
+      "--reference-ws",
+      "--reference-agent-id",
       "DID-F456DA-2B0D4C",
-      "--accio-workspace-path",
+      "--reference-workspace-path",
       "/Users/chris/workspace/turnkeyai",
     ]),
     {
       baseUrl: "http://127.0.0.1:4097",
-      outPath: "/tmp/accio-preflight.json",
+      outPath: "/tmp/referenceRuntime-preflight.json",
       variant: "operator",
-      accioWs: true,
-      accioAgentId: "DID-F456DA-2B0D4C",
-      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceRuntimeWs: true,
+      referenceRuntimeAgentId: "DID-F456DA-2B0D4C",
+      referenceRuntimeWorkspacePath: "/Users/chris/workspace/turnkeyai",
       timeoutMs: 60_000,
       pollMs: 1_000,
       probePrompt: "Please respond with one concise sentence confirming this runtime can answer a normal user message.",
@@ -122,8 +122,8 @@ test("real LLM A/B reference preflight passes a compatible daemon protocol", asy
   }
 });
 
-test("real LLM A/B reference preflight accepts Accio Work model catalog shape", async () => {
-  const server = createMockReferenceDaemon({ mode: "accioModelCatalog" });
+test("real LLM A/B reference preflight accepts reference desktop runtime model catalog shape", async () => {
+  const server = createMockReferenceDaemon({ mode: "referenceRuntimeModelCatalog" });
   try {
     const baseUrl = await listen(server);
     const report = await runReferencePreflight({
@@ -151,18 +151,18 @@ test("real LLM A/B reference preflight accepts Accio Work model catalog shape", 
   }
 });
 
-test("real LLM A/B reference preflight separates Accio WS final capture from completion readiness", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-accio-ws-preflight-"));
-  const accioHome = path.join(dir, "home");
-  const server = createMockAccioWsReferenceDaemon({ accioHome });
-  const restoreWebSocket = installMockAccioWsClient({ accioHome });
+test("real LLM A/B reference preflight separates reference websocket final capture from completion readiness", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-referenceRuntime-ws-preflight-"));
+  const referenceRuntimeHome = path.join(dir, "home");
+  const server = createMockReferenceRuntimeWsReferenceDaemon({ referenceRuntimeHome });
+  const restoreWebSocket = installMockReferenceRuntimeWsClient({ referenceRuntimeHome });
   try {
     const baseUrl = await listen(server);
     const report = await runReferencePreflight({
       baseUrl,
-      accioWs: true,
-      accioAgentId: "DID-F456DA-2B0D4C",
-      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceRuntimeWs: true,
+      referenceRuntimeAgentId: "DID-F456DA-2B0D4C",
+      referenceRuntimeWorkspacePath: "/Users/chris/workspace/turnkeyai",
       timeoutMs: 1_000,
       pollMs: 10,
       probePrompt: "Can you answer this normal user message?",
@@ -184,18 +184,18 @@ test("real LLM A/B reference preflight separates Accio WS final capture from com
   }
 });
 
-test("real LLM A/B reference preflight rejects Accio WS real-home leaks and model contradictions", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-accio-ws-preflight-"));
-  const accioHome = path.join(dir, "home");
-  const server = createMockAccioWsReferenceDaemon({ accioHome });
-  const restoreWebSocket = installMockAccioWsClient({
-    accioHome,
+test("real LLM A/B reference preflight rejects reference websocket real-home leaks and model contradictions", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-referenceRuntime-ws-preflight-"));
+  const referenceRuntimeHome = path.join(dir, "home");
+  const server = createMockReferenceRuntimeWsReferenceDaemon({ referenceRuntimeHome });
+  const restoreWebSocket = installMockReferenceRuntimeWsClient({
+    referenceRuntimeHome,
     finalMessages: (prompt) => [
       { role: "user", content: prompt },
       {
         role: "assistant",
         content:
-          "No — this runtime is currently configured to use Claude Sonnet 4.6, not MiniMax. I checked /Users/chris/.accio/accounts/7083092640/model_cache.json.",
+          "No — this runtime is currently configured to use Claude Sonnet 4.6, not MiniMax. I checked /Users/chris/.reference-runtime/accounts/7083092640/model_cache.json.",
       },
     ],
   });
@@ -203,9 +203,9 @@ test("real LLM A/B reference preflight rejects Accio WS real-home leaks and mode
     const baseUrl = await listen(server);
     const report = await runReferencePreflight({
       baseUrl,
-      accioWs: true,
-      accioAgentId: "DID-F456DA-2B0D4C",
-      accioWorkspacePath: "/Users/chris/workspace/turnkeyai",
+      referenceRuntimeWs: true,
+      referenceRuntimeAgentId: "DID-F456DA-2B0D4C",
+      referenceRuntimeWorkspacePath: "/Users/chris/workspace/turnkeyai",
       timeoutMs: 1_000,
       pollMs: 10,
       probePrompt: "Please answer this normal reference probe.",
@@ -218,7 +218,7 @@ test("real LLM A/B reference preflight rejects Accio WS real-home leaks and mode
     assert.equal(report.checks.noModelContradiction, false);
     assert.ok(report.rootCauseBuckets.includes("reference_isolation_leak"));
     assert.ok(report.rootCauseBuckets.includes("model_config_contradiction"));
-    assert.ok(report.findings.includes("reference transcript leaked real user Accio home"));
+    assert.ok(report.findings.includes("reference transcript leaked real user ReferenceRuntime home"));
     assert.ok(report.findings.includes("assistant transcript contradicted the configured reference model"));
   } finally {
     restoreWebSocket();
@@ -397,7 +397,7 @@ function createMockReferenceDaemon(input: {
     | "nonJsonModel"
     | "delegationOnly"
     | "delegationRoleLabelOnly"
-    | "accioModelCatalog";
+    | "referenceRuntimeModelCatalog";
   authToken?: string;
 }) {
   let prompt = "";
@@ -412,7 +412,7 @@ function createMockReferenceDaemon(input: {
         res.setHeader("content-type", "application/json");
         return res.end("<!DOCTYPE html><html>login</html>");
       }
-      if (input.mode === "accioModelCatalog") {
+      if (input.mode === "referenceRuntimeModelCatalog") {
         return writeJson(res, {
           data: [
             {
@@ -452,7 +452,7 @@ function createMockReferenceDaemon(input: {
     }
     if (req.method === "GET" && url.pathname === "/messages") {
       const assistant =
-        input.mode === "healthy" || input.mode === "accioModelCatalog"
+        input.mode === "healthy" || input.mode === "referenceRuntimeModelCatalog"
           ? "This runtime can answer normal user messages with a concise useful response."
           : input.mode === "delegationRoleLabelOnly"
             ? "I will delegate this to the Explore role so it can inspect the provided pages and report back."
@@ -479,13 +479,13 @@ function createMockReferenceDaemon(input: {
   });
 }
 
-function createMockAccioWsReferenceDaemon(input: { accioHome: string }) {
+function createMockReferenceRuntimeWsReferenceDaemon(input: { referenceRuntimeHome: string }) {
   const agentId = "DID-F456DA-2B0D4C";
   const accountId = "reference-account";
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (req.method === "GET" && url.pathname === "/reference/health") {
-      return writeJson(res, { ok: true, accioHome: input.accioHome });
+      return writeJson(res, { ok: true, referenceRuntimeHome: input.referenceRuntimeHome });
     }
     if (req.method === "GET" && url.pathname === "/models") {
       return writeJson(res, {
@@ -506,8 +506,8 @@ function createMockAccioWsReferenceDaemon(input: { accioHome: string }) {
   });
 }
 
-function installMockAccioWsClient(input: {
-  accioHome: string;
+function installMockReferenceRuntimeWsClient(input: {
+  referenceRuntimeHome: string;
   finalMessages?: (prompt: string) => unknown[];
 }): () => void {
   const previousWebSocket = globalThis.WebSocket;
@@ -528,8 +528,8 @@ function installMockAccioWsClient(input: {
       const message = JSON.parse(text) as { params?: { conversationId?: string; question?: { query?: string } } };
       const conversationId = message.params?.conversationId ?? "CID-missing";
       const prompt = message.params?.question?.query ?? "";
-      writeAccioSessionJsonl({
-        accioHome: input.accioHome,
+      writeReferenceRuntimeSessionJsonl({
+        referenceRuntimeHome: input.referenceRuntimeHome,
         accountId,
         agentId,
         conversationId,
@@ -562,14 +562,14 @@ function installMockAccioWsClient(input: {
   };
 }
 
-function writeAccioSessionJsonl(input: {
-  accioHome: string;
+function writeReferenceRuntimeSessionJsonl(input: {
+  referenceRuntimeHome: string;
   accountId: string;
   agentId: string;
   conversationId: string;
   messages: unknown[];
 }): void {
-  const sessionDir = path.join(input.accioHome, "accounts", input.accountId, "agents", input.agentId, "sessions");
+  const sessionDir = path.join(input.referenceRuntimeHome, "accounts", input.accountId, "agents", input.agentId, "sessions");
   mkdirSync(sessionDir, { recursive: true });
   writeFileSync(
     path.join(sessionDir, `${input.agentId}_${input.conversationId}.messages.jsonl`),

@@ -113,6 +113,43 @@ test("TaskIntentProducer detects timeout recovery and awaiting-context setup int
   assert.equal(awaiting.facts.awaitingContextSetupOnly, true);
 });
 
+test("TaskIntentProducer declares explicit durable-memory evidence protocols", () => {
+  const searchOnly = produceTaskIntentEnvelope({
+    taskPrompt:
+      "Check durable memory for the prior launch owner and report what is available.",
+    activation: undefined,
+    messages: [],
+  });
+  const searchAndGet = produceTaskIntentEnvelope({
+    taskPrompt:
+      "Use durable memory lookup for Aurora-19 and inspect any candidate memory entry before relying on it.",
+    activation: undefined,
+    messages: [],
+  });
+  const ordinaryRecall = produceTaskIntentEnvelope({
+    taskPrompt: "Summarize the launch details already visible in this message.",
+    activation: undefined,
+    messages: [],
+  });
+  const setupOnlyTitle = produceTaskIntentEnvelope({
+    taskPrompt: [
+      "Natural durable memory recall",
+      "Start a launch-planning thread for Helios-47.",
+      "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+    ].join("\n"),
+    activation: undefined,
+    messages: [],
+  });
+
+  assert.equal(searchOnly.facts.durableMemoryLookupProtocol, "search");
+  assert.equal(
+    searchAndGet.facts.durableMemoryLookupProtocol,
+    "search_and_get",
+  );
+  assert.equal(ordinaryRecall.facts.durableMemoryLookupProtocol, "none");
+  assert.equal(setupOnlyTitle.facts.durableMemoryLookupProtocol, "none");
+});
+
 test("TaskIntentProducer infers independent evidence stream counts", () => {
   const twoSource = produceTaskIntentEnvelope({
     taskPrompt:

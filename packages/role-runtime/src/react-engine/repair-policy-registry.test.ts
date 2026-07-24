@@ -51,6 +51,8 @@ function readRepairPrompt(
 test("ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER pins extracted repair precedence", () => {
   assert.deepEqual([...ENGINE_NATURAL_FINISH_REPAIR_POLICY_ORDER], [
     "final_recovery_budget_closeout_repair",
+    "missing_durable_memory_search",
+    "missing_durable_memory_get",
     "missing_browser_evidence",
     "missing_product_signal_browser_evidence",
     "missing_approval_gate",
@@ -99,6 +101,102 @@ test("production RepairPolicyRegistry never manufactures work or rewrites a term
       repairMarkers: [],
       resultText: "No evidence was gathered.",
       taskPrompt: "Return every requested deliverable.",
+    }),
+    null,
+  );
+});
+
+test("production RepairPolicyRegistry enforces an explicitly requested durable-memory evidence protocol", () => {
+  const registry = createProductionRepairPolicyRegistry();
+  const taskPrompt = [
+    "Use durable memory lookup for Aurora-19.",
+    "Inspect any candidate memory entry before relying on it.",
+  ].join("\n");
+  const baseInput = {
+    finalRecoveryBudget: null,
+    messages: [] as LLMMessage[],
+    repairMarkers: [] as LLMMessage[],
+    resultText: "Aurora-19 details are already visible.",
+    taskPrompt,
+    tools: [{ name: "memory_search" }, { name: "memory_get" }],
+  };
+
+  const searchDecision = registry.evaluateNaturalFinish({
+    ...baseInput,
+    toolTrace: [],
+  });
+  assert.equal(searchDecision?.policyId, "missing_durable_memory_search");
+  assert.deepEqual(searchDecision?.forceToolChoice, {
+    name: "memory_search",
+  });
+  assert.equal(searchDecision?.consumesRound, true);
+
+  const searchContent = JSON.stringify({
+    memories: [{ memory_id: "memory-aurora-19" }],
+  });
+  const getDecision = registry.evaluateNaturalFinish({
+    ...baseInput,
+    toolTrace: [
+      {
+        round: 1,
+        calls: [
+          {
+            id: "search-1",
+            name: "memory_search",
+            input: { query: "Aurora-19" },
+          },
+        ],
+        results: [
+          {
+            toolCallId: "search-1",
+            toolName: "memory_search",
+            isError: false,
+            contentBytes: searchContent.length,
+            content: searchContent,
+          },
+        ],
+      },
+    ],
+  });
+  assert.equal(getDecision?.policyId, "missing_durable_memory_get");
+  assert.deepEqual(getDecision?.forceToolChoice, { name: "memory_get" });
+  assert.equal(getDecision?.consumesRound, true);
+});
+
+test("production durable-memory protocol does not force memory_get when search returned no candidate", () => {
+  const registry = createProductionRepairPolicyRegistry();
+  const searchContent = JSON.stringify({ memories: [] });
+
+  assert.equal(
+    registry.evaluateNaturalFinish({
+      finalRecoveryBudget: null,
+      messages: [],
+      repairMarkers: [],
+      resultText: "No durable memory was found.",
+      taskPrompt:
+        "Use durable memory and inspect any candidate memory entry before relying on it.",
+      tools: [{ name: "memory_search" }, { name: "memory_get" }],
+      toolTrace: [
+        {
+          round: 1,
+          calls: [
+            {
+              id: "search-empty",
+              name: "memory_search",
+              input: { query: "missing record" },
+            },
+          ],
+          results: [
+            {
+              toolCallId: "search-empty",
+              toolName: "memory_search",
+              isError: false,
+              contentBytes: searchContent.length,
+              content: searchContent,
+            },
+          ],
+        },
+      ],
     }),
     null,
   );

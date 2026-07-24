@@ -16,6 +16,8 @@ export * from "./engine-run-state";
 export * from "./engine-run-observer";
 export * from "./engine-model-client";
 export * from "./compaction-controller";
+export * from "./context-source-guard";
+export * from "./context-working-set";
 export * from "./runtime-checkpoint-summarizer";
 export * from "./run-journal";
 export * from "./run-trace";

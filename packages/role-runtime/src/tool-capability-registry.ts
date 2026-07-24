@@ -1,5 +1,6 @@
 import type { RoleSlot, WorkerKind } from "@turnkeyai/core-types/team";
 import type { LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
+import { TOOL_PROMPT_GROUP_SECTION_IDS } from "./prompt-registry";
 
 export const SESSION_TOOL_NAMES = ["sessions_spawn", "sessions_send", "sessions_list", "sessions_history"] as const;
 export const PERMISSION_TOOL_NAMES = ["permission_query", "permission_result", "permission_applied"] as const;
@@ -60,6 +61,19 @@ export class ToolCapabilityRegistry {
 
   availableWorkerKinds(): WorkerKind[] {
     return [...this.workerKinds];
+  }
+
+  activePromptSectionIds(): string[] {
+    const groups = new Set(this.records.map((record) => record.promptGroup));
+    return [
+      TOOL_PROMPT_GROUP_SECTION_IDS.general,
+      ...[...groups]
+        .sort()
+        .map((group) => TOOL_PROMPT_GROUP_SECTION_IDS[group]),
+      ...(this.workerKinds.includes("browser")
+        ? [TOOL_PROMPT_GROUP_SECTION_IDS.browser]
+        : []),
+    ];
   }
 
   renderPromptHarness(input: ToolPromptHarnessInput): string {
@@ -210,6 +224,10 @@ export function buildTaskToolDefinitions(): LLMToolDefinition[] {
     type: "string",
     enum: ["draft", "planning", "working", "needs_approval", "blocked", "done", "archived"],
   };
+  const stringListSchema = {
+    type: "array",
+    items: { type: "string" },
+  };
   return [
     {
       name: "tasks_list",
@@ -236,8 +254,27 @@ export function buildTaskToolDefinitions(): LLMToolDefinition[] {
           title: { type: "string", description: "Short, concrete work-item title." },
           agent_id: { type: "string", description: "Agent expected to own the item. Defaults to the current role." },
           status: statusSchema,
-          context_refs: { type: "array", items: { type: "string" } },
+          context_refs: stringListSchema,
           output: { type: "string", description: "Optional initial expected output or note." },
+          objective: { type: "string", description: "The concrete outcome this work item must achieve." },
+          input_refs: { ...stringListSchema, description: "Authoritative inputs, artifacts, files, or memory ids." },
+          output_refs: { ...stringListSchema, description: "Expected output artifacts or durable references." },
+          constraints: { ...stringListSchema, description: "Constraints that remain true while executing this item." },
+          blocked_by: { ...stringListSchema, description: "Work item ids that must be done before this item can start." },
+          acceptance_criteria: {
+            type: "array",
+            description: "Objective, independently verifiable completion criteria.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                description: { type: "string" },
+                required: { type: "boolean" },
+              },
+              required: ["description"],
+            },
+          },
         },
         required: ["title"],
       },
@@ -256,6 +293,48 @@ export function buildTaskToolDefinitions(): LLMToolDefinition[] {
           blocker: { type: "string" },
           clear_blocker: { type: "boolean" },
           progress: { type: "number", minimum: 0, maximum: 1 },
+          objective: { type: "string" },
+          input_refs: stringListSchema,
+          output_refs: stringListSchema,
+          constraints: stringListSchema,
+          blocked_by: { ...stringListSchema, description: "Replacement dependency list. Pass [] to clear." },
+          acceptance_updates: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                criterion_id: { type: "string" },
+                state: {
+                  type: "string",
+                  enum: ["unverified", "passed", "failed", "waived"],
+                },
+              },
+              required: ["criterion_id", "state"],
+            },
+          },
+          verification_receipts: {
+            type: "array",
+            description: "Durable evidence receipts. Passing or waiving a criterion requires a matching receipt.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                criterion_id: { type: "string" },
+                kind: {
+                  type: "string",
+                  enum: ["artifact", "tool-receipt", "operator-decision"],
+                },
+                ref: { type: "string" },
+                result: {
+                  type: "string",
+                  enum: ["passed", "failed", "waived"],
+                },
+                reason: { type: "string" },
+              },
+              required: ["criterion_id", "kind", "ref", "result"],
+            },
+          },
         },
         required: ["work_item_id"],
       },
@@ -525,9 +604,11 @@ function renderTaskSection(): string {
   return [
     "## Mission Task Management",
     "- Use tasks_list before changing plan state when the mission may already have work items.",
-    "- Use tasks_create for concrete, trackable subtasks in multi-step work; keep each title specific and assign it to the agent that owns the outcome.",
+    "- Use tasks_create for concrete, trackable subtasks in multi-step work. For substantive work, include objective, authoritative input_refs, expected output_refs, constraints, blocked_by dependencies, and objective acceptance_criteria; team deliverables should normally have at least two independently verifiable criteria.",
     "- Use tasks_update when a work item starts, blocks, completes, or after verification changes the result.",
-    "- Mark a task done only after its requested output has been produced or verified. Record blockers explicitly instead of hiding them in final prose.",
+    "- A blocked_by dependency must be done before the dependent task can enter working or done. Keep dependencies in the task graph instead of prose-only plans.",
+    "- Mark a required acceptance criterion passed only with a matching artifact or tool receipt. Waive only with an explicit operator-decision receipt and reason.",
+    "- Mark a task done only after every required criterion is passed or explicitly waived. Record blockers explicitly instead of hiding them in final prose.",
     "- For 3+ meaningful subtasks, keep mission work items current so the user can inspect progress without reading the whole conversation.",
   ].join("\n");
 }

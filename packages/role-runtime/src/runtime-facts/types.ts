@@ -50,6 +50,7 @@ export interface RuntimeRoundFactInput {
 export interface TaskIntentFacts {
   requestedTableColumns: string[];
   providerSupportSchemaRequested: boolean;
+  durableMemoryLookupProtocol: "none" | "search" | "search_and_get";
   browserVisibleEvidenceRequired: boolean;
   productSignalDashboardEvidenceRequested: boolean;
   timeoutRecoveryRequested: boolean;

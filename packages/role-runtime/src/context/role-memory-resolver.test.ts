@@ -10,8 +10,99 @@ import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread
 import { FileThreadSessionMemoryStore } from "@turnkeyai/team-store/context/file-thread-session-memory-store";
 import { FileThreadSummaryStore } from "@turnkeyai/team-store/context/file-thread-summary-store";
 import { FileWorkerEvidenceDigestStore } from "@turnkeyai/team-store/context/file-worker-evidence-digest-store";
+import { FileWorkspaceMemoryStore } from "@turnkeyai/team-store/context/file-workspace-memory-store";
+import { SqliteMemorySearchIndex } from "@turnkeyai/team-store/context/sqlite-memory-search-index";
 
 import { DefaultRoleMemoryResolver } from "./role-memory-resolver";
+
+test("role memory resolver prefers typed hybrid-index memory and keeps direct get ranking-independent", async () => {
+  const tempDir = await mkdtemp(
+    path.join(os.tmpdir(), "role-memory-resolver-hybrid-"),
+  );
+  try {
+    const memorySearchIndex = new SqliteMemorySearchIndex({
+      dbPath: path.join(tempDir, "index", "memory.sqlite"),
+    });
+    const workspaceMemoryStore = new FileWorkspaceMemoryStore({
+      rootDir: path.join(tempDir, "workspace"),
+      index: memorySearchIndex,
+    });
+    await workspaceMemoryStore.commit({
+      workspaceId: "thread-1",
+      expectedLastSequence: 0,
+      cursor: {
+        workspaceId: "thread-1",
+        lastSequence: 1,
+        updatedAt: 10,
+      },
+      audit: {
+        auditId: "audit-1",
+        workspaceId: "thread-1",
+        trigger: "manual",
+        sourceEventIds: ["user:1"],
+        mutations: [],
+        rejectedMutations: [],
+        beforeDigest: "",
+        afterDigest: "",
+        startedAt: 10,
+        completedAt: 11,
+        status: "written",
+      },
+      mutations: [
+        {
+          kind: "add",
+          record: {
+            memoryId: "memory:alpha-482",
+            plane: "workspace",
+            scope: {
+              workspaceId: "thread-1",
+              threadId: "thread-1",
+            },
+            content: "Authoritative budget identifier ALPHA-482 is 500 yuan.",
+            sourceRefs: ["user:1"],
+            createdBy: "user",
+            confidence: "authoritative",
+            createdAt: 10,
+            lastConfirmedAt: 10,
+            supersedes: [],
+            invalidationKeys: ["budget"],
+          },
+        },
+      ],
+    });
+    const resolver = new DefaultRoleMemoryResolver({
+      threadSummaryStore: new FileThreadSummaryStore({
+        rootDir: path.join(tempDir, "summary"),
+      }),
+      roleScratchpadStore: new FileRoleScratchpadStore({
+        rootDir: path.join(tempDir, "scratchpad"),
+      }),
+      workerEvidenceDigestStore: new FileWorkerEvidenceDigestStore({
+        rootDir: path.join(tempDir, "worker"),
+      }),
+      workspaceMemoryStore,
+      memorySearchIndex,
+    });
+
+    const hits = await resolver.retrieveMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      queryText: "Recall ALPHA-482",
+    });
+    const direct = await resolver.getMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      memoryId: "memory:alpha-482",
+    });
+
+    assert.equal(hits[0]?.memoryId, "memory:alpha-482");
+    assert.match(hits[0]?.rationale ?? "", /weighted RRF/);
+    assert.equal(direct?.memoryId, "memory:alpha-482");
+    assert.match(direct?.rationale ?? "", /direct typed/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
 
 test("role memory resolver ranks durable preference memory above weaker journal matches", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-"));
@@ -126,10 +217,18 @@ test("role memory resolver reads an exact memory id without depending on search 
       workerEvidenceDigestStore,
     });
 
+    const [candidate] = await resolver.retrieveMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      queryText: "direct provider APIs",
+    });
+    assert.ok(candidate);
+    assert.match(candidate.memoryId, /^thread-1:note:[a-f0-9]{16}$/);
+
     const hit = await resolver.getMemory({
       threadId: "thread-1",
       roleId: "role-lead",
-      memoryId: "thread-1:note:1",
+      memoryId: candidate.memoryId,
     });
     const missing = await resolver.getMemory({
       threadId: "thread-1",
@@ -137,9 +236,58 @@ test("role memory resolver reads an exact memory id without depending on search 
       memoryId: "thread-1:note:999",
     });
 
-    assert.equal(hit?.memoryId, "thread-1:note:1");
+    assert.equal(hit?.memoryId, candidate.memoryId);
     assert.match(hit?.content ?? "", /direct provider APIs/);
     assert.equal(missing, null);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("role memory ids survive note reordering between search and direct get", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-stable-id-"));
+
+  try {
+    const threadSummaryStore = new FileThreadSummaryStore({ rootDir: path.join(tempDir, "summary") });
+    const threadMemoryStore = new FileThreadMemoryStore({ rootDir: path.join(tempDir, "memory") });
+    const roleScratchpadStore = new FileRoleScratchpadStore({ rootDir: path.join(tempDir, "scratchpad") });
+    const workerEvidenceDigestStore = new FileWorkerEvidenceDigestStore({ rootDir: path.join(tempDir, "worker") });
+    await threadMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 10,
+      preferences: [],
+      constraints: [],
+      longTermNotes: ["Aurora-19 launches Friday at 14:15.", "Older background."],
+    });
+    const resolver = new DefaultRoleMemoryResolver({
+      threadSummaryStore,
+      threadMemoryStore,
+      roleScratchpadStore,
+      workerEvidenceDigestStore,
+    });
+
+    const [candidate] = await resolver.retrieveMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      queryText: "Aurora-19 Friday 14:15",
+    });
+    assert.ok(candidate);
+
+    await threadMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 20,
+      preferences: [],
+      constraints: [],
+      longTermNotes: ["New compacted note.", "Older background.", "Aurora-19 launches Friday at 14:15."],
+    });
+    const hit = await resolver.getMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      memoryId: candidate.memoryId,
+    });
+
+    assert.equal(hit?.memoryId, candidate.memoryId);
+    assert.match(hit?.content ?? "", /Aurora-19 launches Friday at 14:15/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

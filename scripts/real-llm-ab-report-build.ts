@@ -956,7 +956,7 @@ function auditReferenceArtifact(input: {
   const expectedDirectTimeoutCloseout = hasExpectedReferenceDirectTimeoutCloseout(input.artifact, effectiveMessages);
   const toolOrWorkerTriggered = toolCallCount > 0;
   const toolOrWorkerResult = approvalWaitTimeoutBaselineLoss || timeoutPartialBaselineLoss || toolResultCount > 0;
-  const sourcePolicyFindings = auditAccioWorkReferenceSourcePolicy(provenance, {
+  const sourcePolicyFindings = auditReferenceRuntimeWorkReferenceSourcePolicy(provenance, {
     allowNotRunEndpoint: fixtureUnavailable,
   });
   const unsupportedDriverReason = readUnsupportedReferenceScenarioDriverReason(input.artifact);
@@ -988,8 +988,8 @@ function auditReferenceArtifact(input: {
     effectiveToolCalls,
     effectiveToolResults,
   });
-  const orphanedWorkspaceArtifactFinding = describeOrphanedAccioWorkspaceArtifacts(input.artifact);
-  const accioRuntimeFindings = describeAccioWsRuntimeFindings({
+  const orphanedWorkspaceArtifactFinding = describeOrphanedReferenceRuntimeWorkspaceArtifacts(input.artifact);
+  const referenceRuntimeRuntimeFindings = describeReferenceRuntimeWsRuntimeFindings({
     artifact: input.artifact,
     artifactPath: input.artifactPath,
     effectiveMessages,
@@ -1031,7 +1031,7 @@ function auditReferenceArtifact(input: {
   if (orphanedWorkspaceArtifactFinding) {
     findings.push(orphanedWorkspaceArtifactFinding);
   }
-  findings.push(...accioRuntimeFindings);
+  findings.push(...referenceRuntimeRuntimeFindings);
   if (!transcript.ok) {
     findings.push(transcript.reason);
   }
@@ -1093,7 +1093,7 @@ function auditReferenceArtifact(input: {
     !timeoutPartialBaselineLoss &&
     (detectReferenceRuntimeHealthFailure(notes) ||
       runtimeEvidenceFailed ||
-      (accioRuntimeFindings.length > 0 && !recoveredReferenceRuntime) ||
+      (referenceRuntimeRuntimeFindings.length > 0 && !recoveredReferenceRuntime) ||
       fixtureUnavailable ||
       localhostSourceAccessFailure ||
       browserEvidenceFailed ||
@@ -1144,8 +1144,8 @@ function describeReferenceFixtureUnavailable(artifact: GenericReferenceArtifactS
       })
     : [];
   return unreachable.length > 0
-    ? `reference fixture unreachable before Accio request: ${unreachable.join("; ")}`
-    : `reference fixture unreachable before Accio request: ${errorReason}`;
+    ? `reference fixture unreachable before ReferenceRuntime request: ${unreachable.join("; ")}`
+    : `reference fixture unreachable before ReferenceRuntime request: ${errorReason}`;
 }
 
 function readUnsupportedReferenceScenarioDriverReason(artifact: GenericReferenceArtifactShape): string | null {
@@ -1303,7 +1303,7 @@ function extractBrowserEvidenceFromTranscript(messages: unknown[]): unknown[] {
     if (readString(record.role) !== "tool" || toolName !== "sessions_spawn") return [];
     const content = readString(record.content);
     if (!content || (!/^tool_chain:\s*.*\bbrowser\b/im.test(content) && !/^task_id:\s*.*:sub:browser:/im.test(content))) return [];
-    const status = readAccioTextHeader(content, "status") ?? "completed";
+    const status = readReferenceRuntimeTextHeader(content, "status") ?? "completed";
     return [
       {
         source: "session_tool_result",
@@ -1315,7 +1315,7 @@ function extractBrowserEvidenceFromTranscript(messages: unknown[]): unknown[] {
   });
 }
 
-function readAccioTextHeader(content: string, key: string): string | null {
+function readReferenceRuntimeTextHeader(content: string, key: string): string | null {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, "im"));
   return readString(match?.[1]);
@@ -1331,15 +1331,15 @@ function readReferenceArtifactMessages(artifact: GenericReferenceArtifactShape):
   return null;
 }
 
-const ACCIO_WORK_REFERENCE_APP = "accio-work-app-asar";
-const ACCIO_WORK_APP_ASAR_PATH = "/Applications/Accio.app/Contents/Resources/app.asar";
-const ACCIO_WORK_REFERENCE_RUNTIME_FRAGMENT = "artifacts/reference-runtimes/accio-work-0.4.5";
-const ACCIO_WORK_REFERENCE_WS_ENDPOINT = "/websocket/connect";
-const ACCIO_WORK_REFERENCE_TRANSPORT = "accio-work-websocket-sendQuery";
-const ACCIO_WORK_REFERENCE_PROVIDER = "minimax";
-const ACCIO_WORK_REFERENCE_MODEL = "MiniMax-M2.7-highspeed";
+const REFERENCE_RUNTIME_WORK_REFERENCE_APP = "reference-desktop-app-asar";
+const REFERENCE_RUNTIME_WORK_APP_ASAR_PATH = "/Applications/ReferenceRuntime.app/Contents/Resources/app.asar";
+const REFERENCE_RUNTIME_WORK_REFERENCE_RUNTIME_FRAGMENT = "artifacts/reference-runtimes/reference-desktop-0.4.5";
+const REFERENCE_RUNTIME_WORK_REFERENCE_WS_ENDPOINT = "/websocket/connect";
+const REFERENCE_RUNTIME_WORK_REFERENCE_TRANSPORT = "reference-desktop-websocket-sendQuery";
+const REFERENCE_RUNTIME_WORK_REFERENCE_PROVIDER = "minimax";
+const REFERENCE_RUNTIME_WORK_REFERENCE_MODEL = "MiniMax-M2.7-highspeed";
 
-function auditAccioWorkReferenceSourcePolicy(
+function auditReferenceRuntimeWorkReferenceSourcePolicy(
   provenance: GenericReferenceProvenanceShape,
   options: { allowNotRunEndpoint?: boolean } = {}
 ): string[] {
@@ -1356,34 +1356,34 @@ function auditAccioWorkReferenceSourcePolicy(
   const modelId = readString(provenance.modelId);
   const transport = readExactRequestTransport(provenance.exactRequestPayload);
 
-  if (referenceApp !== ACCIO_WORK_REFERENCE_APP) {
-    findings.push(`reference source must be ${ACCIO_WORK_REFERENCE_APP}, got ${referenceApp ?? "missing"}`);
+  if (referenceApp !== REFERENCE_RUNTIME_WORK_REFERENCE_APP) {
+    findings.push(`reference source must be ${REFERENCE_RUNTIME_WORK_REFERENCE_APP}, got ${referenceApp ?? "missing"}`);
   }
-  if (referenceBinary !== ACCIO_WORK_APP_ASAR_PATH) {
-    findings.push(`reference binary must be ${ACCIO_WORK_APP_ASAR_PATH}, got ${referenceBinary ?? "missing"}`);
+  if (referenceBinary !== REFERENCE_RUNTIME_WORK_APP_ASAR_PATH) {
+    findings.push(`reference binary must be ${REFERENCE_RUNTIME_WORK_APP_ASAR_PATH}, got ${referenceBinary ?? "missing"}`);
   }
-  if (!referenceRuntimeEvidencePath || !isAccioWorkReferenceRuntimePath(referenceRuntimeEvidencePath)) {
+  if (!referenceRuntimeEvidencePath || !isReferenceRuntimeWorkReferenceRuntimePath(referenceRuntimeEvidencePath)) {
     findings.push(
-      `reference runtime path must be the persistent Accio runtime under ${ACCIO_WORK_REFERENCE_RUNTIME_FRAGMENT}, got ${referenceRuntimeEvidencePath ?? "missing"}`
+      `reference runtime path must be the persistent ReferenceRuntime runtime under ${REFERENCE_RUNTIME_WORK_REFERENCE_RUNTIME_FRAGMENT}, got ${referenceRuntimeEvidencePath ?? "missing"}`
     );
   }
   if (sourcePaths.some((sourcePath) => /(?:^|\/)tmp(?:\/|$)/.test(sourcePath))) {
     findings.push("reference runtime path must not be under /tmp");
   }
-  if (sourcePaths.some((sourcePath) => /\/Users\/chris\/workspace\/accio(?:\/|$)/.test(sourcePath))) {
-    findings.push("reference runtime path must not use deprecated /Users/chris/workspace/accio source");
+  if (sourcePaths.some((sourcePath) => /\/Users\/chris\/workspace\/referenceRuntime(?:\/|$)/.test(sourcePath))) {
+    findings.push("reference runtime path must not use deprecated /Users/chris/workspace/referenceRuntime source");
   }
-  if (apiEndpoint !== ACCIO_WORK_REFERENCE_WS_ENDPOINT && !(options.allowNotRunEndpoint && apiEndpoint === "not_run")) {
-    findings.push(`reference api endpoint must be ${ACCIO_WORK_REFERENCE_WS_ENDPOINT}, got ${apiEndpoint ?? "missing"}`);
+  if (apiEndpoint !== REFERENCE_RUNTIME_WORK_REFERENCE_WS_ENDPOINT && !(options.allowNotRunEndpoint && apiEndpoint === "not_run")) {
+    findings.push(`reference api endpoint must be ${REFERENCE_RUNTIME_WORK_REFERENCE_WS_ENDPOINT}, got ${apiEndpoint ?? "missing"}`);
   }
-  if (transport !== ACCIO_WORK_REFERENCE_TRANSPORT) {
-    findings.push(`reference request transport must be ${ACCIO_WORK_REFERENCE_TRANSPORT}, got ${transport ?? "missing"}`);
+  if (transport !== REFERENCE_RUNTIME_WORK_REFERENCE_TRANSPORT) {
+    findings.push(`reference request transport must be ${REFERENCE_RUNTIME_WORK_REFERENCE_TRANSPORT}, got ${transport ?? "missing"}`);
   }
-  if (provider !== ACCIO_WORK_REFERENCE_PROVIDER) {
-    findings.push(`reference provider must be ${ACCIO_WORK_REFERENCE_PROVIDER}, got ${provider ?? "missing"}`);
+  if (provider !== REFERENCE_RUNTIME_WORK_REFERENCE_PROVIDER) {
+    findings.push(`reference provider must be ${REFERENCE_RUNTIME_WORK_REFERENCE_PROVIDER}, got ${provider ?? "missing"}`);
   }
-  if (modelId !== ACCIO_WORK_REFERENCE_MODEL) {
-    findings.push(`reference model must be ${ACCIO_WORK_REFERENCE_MODEL}, got ${modelId ?? "missing"}`);
+  if (modelId !== REFERENCE_RUNTIME_WORK_REFERENCE_MODEL) {
+    findings.push(`reference model must be ${REFERENCE_RUNTIME_WORK_REFERENCE_MODEL}, got ${modelId ?? "missing"}`);
   }
   if (!referenceCommit || !referenceCommit.startsWith("app.asar:")) {
     findings.push(`reference commit must record app.asar sha as app.asar:<sha>, got ${referenceCommit ?? "missing"}`);
@@ -1391,9 +1391,9 @@ function auditAccioWorkReferenceSourcePolicy(
   return findings;
 }
 
-function isAccioWorkReferenceRuntimePath(value: string): boolean {
+function isReferenceRuntimeWorkReferenceRuntimePath(value: string): boolean {
   const normalized = value.replace(/\\/g, "/").replace(/\/+$/, "");
-  return normalized === ACCIO_WORK_REFERENCE_RUNTIME_FRAGMENT || normalized.endsWith(`/${ACCIO_WORK_REFERENCE_RUNTIME_FRAGMENT}`);
+  return normalized === REFERENCE_RUNTIME_WORK_REFERENCE_RUNTIME_FRAGMENT || normalized.endsWith(`/${REFERENCE_RUNTIME_WORK_REFERENCE_RUNTIME_FRAGMENT}`);
 }
 
 function readExactRequestTransport(payload: unknown): string | null {
@@ -1962,8 +1962,8 @@ function describePendingReferenceToolCalls(input: {
   return `reference pending tool detail: pending=${pendingCount}, calls=${allCalls.length}, results=${allResults.length}${label}`;
 }
 
-function describeOrphanedAccioWorkspaceArtifacts(artifact: GenericReferenceArtifactShape): string | null {
-  const artifacts = collectOrphanedAccioWorkspaceArtifacts(artifact);
+function describeOrphanedReferenceRuntimeWorkspaceArtifacts(artifact: GenericReferenceArtifactShape): string | null {
+  const artifacts = collectOrphanedReferenceRuntimeWorkspaceArtifacts(artifact);
   if (artifacts.length === 0) return null;
   const labels = artifacts
     .slice(0, 4)
@@ -1974,20 +1974,20 @@ function describeOrphanedAccioWorkspaceArtifacts(artifact: GenericReferenceArtif
       return `${kind}:${relativePath}${sizeBytes > 0 ? `:${sizeBytes}b` : ""}`;
     })
     .join(", ");
-  return `reference Accio workspace artifact orphaned from transcript: count=${artifacts.length}${labels ? ` ${labels}` : ""}`;
+  return `reference runtime workspace artifact orphaned from transcript: count=${artifacts.length}${labels ? ` ${labels}` : ""}`;
 }
 
-function collectOrphanedAccioWorkspaceArtifacts(artifact: GenericReferenceArtifactShape): Array<Record<string, unknown>> {
+function collectOrphanedReferenceRuntimeWorkspaceArtifacts(artifact: GenericReferenceArtifactShape): Array<Record<string, unknown>> {
   return readArray(artifact.provenance?.rawFlowEvidence ?? artifact.rawFlowEvidence).flatMap((item) => {
     if (typeof item !== "object" || item === null) return [];
     const record = item as Record<string, unknown>;
-    if (readString(record.source) !== "accio_ws_workspace_artifact_after_prompt") return [];
+    if (readString(record.source) !== "reference_ws_workspace_artifact_after_prompt") return [];
     if (readString(record.status) !== "orphaned_workspace_artifact") return [];
     return [record];
   });
 }
 
-function describeAccioWsRuntimeFindings(input: {
+function describeReferenceRuntimeWsRuntimeFindings(input: {
   artifact: GenericReferenceArtifactShape;
   artifactPath: string;
   effectiveMessages?: unknown[] | null;
@@ -1996,7 +1996,7 @@ function describeAccioWsRuntimeFindings(input: {
   const successfulDirectFetchFallback = hasSuccessfulReferenceWebFetchResult(input.artifact);
   const text = [
     stringifyForEvidence(input.effectiveMessages),
-    ...readAccioSdkLogLinesFromFlowEvidence(
+    ...readReferenceRuntimeSdkLogLinesFromFlowEvidence(
       input.artifact.provenance?.rawFlowEvidence ?? input.artifact.rawFlowEvidence,
       input.artifactPath
     ),
@@ -2007,68 +2007,68 @@ function describeAccioWsRuntimeFindings(input: {
     text.match(/\bSubAgent\s+\w+\s+soft timeout after\s+(\d+)s\b/i);
   if (timeoutMatch) {
     const seconds = timeoutMatch[1] ?? "unknown";
-    findings.push(`reference Accio browser sub-agent exceeded native timeout before usable closeout: ${seconds}s`);
+    findings.push(`reference runtime browser sub-agent exceeded native timeout before usable closeout: ${seconds}s`);
   }
   if (/\bUnknown browser action:\s*wait\b/i.test(text)) {
-    findings.push("reference Accio browser worker attempted unsupported browser action: wait");
+    findings.push("reference runtime browser worker attempted unsupported browser action: wait");
   }
   if (/\bscriptPath read failed\b/i.test(text)) {
-    findings.push("reference Accio browser worker attempted console script before writing a readable scriptPath");
+    findings.push("reference runtime browser worker attempted console script before writing a readable scriptPath");
   }
   if (/\bCDN upload failed\b/i.test(text)) {
-    findings.push("reference Accio image handoff failed because screenshot CDN upload failed");
+    findings.push("reference runtime image handoff failed because screenshot CDN upload failed");
   }
   if (
     !input.expectedDirectTimeoutCloseout &&
     !successfulDirectFetchFallback &&
     /\bWebSearch proxy requires auth token\b|\bYOU\.COM API\b/i.test(text)
   ) {
-    findings.push("reference Accio web_fetch fallback for loopback URL went through external search proxy and failed auth");
+    findings.push("reference runtime web_fetch fallback for loopback URL went through external search proxy and failed auth");
   }
   if (/Accessing ['"]\/tmp\//i.test(text) || /\bfile_path["']?\s*:\s*["']\/tmp\//i.test(text) || /\bdelivery_path:\s*\/tmp\b/i.test(text)) {
-    findings.push("reference Accio browser worker attempted /tmp delivery outside the configured persistent workspace");
+    findings.push("reference runtime browser worker attempted /tmp delivery outside the configured persistent workspace");
   }
   if (/\bpermission\.query\b/i.test(text) && /\bBroadcast channel\.permission\.query to 0 desktop clients\b/i.test(text)) {
-    findings.push("reference Accio permission query had no desktop client to answer, leaving worker progress unobservable");
+    findings.push("reference runtime permission query had no desktop client to answer, leaving worker progress unobservable");
   }
   if (/Channel adapter not found:\s*reference-collector/i.test(text)) {
-    findings.push("reference Accio channel adapter was missing for reference-collector permission routing");
+    findings.push("reference runtime channel adapter was missing for reference-collector permission routing");
   }
   return [...new Set(findings)];
 }
 
-function readAccioSdkLogLinesFromFlowEvidence(rawFlowEvidence: unknown, artifactPath: string): string[] {
-  return collectAccioSdkLogRefs(rawFlowEvidence).flatMap((ref) => {
+function readReferenceRuntimeSdkLogLinesFromFlowEvidence(rawFlowEvidence: unknown, artifactPath: string): string[] {
+  return collectReferenceRuntimeSdkLogRefs(rawFlowEvidence).flatMap((ref) => {
     const resolvedPath = path.isAbsolute(ref.sdkLogPath)
       ? ref.sdkLogPath
       : path.resolve(path.dirname(artifactPath), ref.sdkLogPath);
-    return readAccioSdkLogLines(resolvedPath, ref.conversationId);
+    return readReferenceRuntimeSdkLogLines(resolvedPath, ref.conversationId);
   });
 }
 
-function collectAccioSdkLogRefs(value: unknown): Array<{ sdkLogPath: string; conversationId: string | null }> {
-  if (Array.isArray(value)) return value.flatMap((item) => collectAccioSdkLogRefs(item));
+function collectReferenceRuntimeSdkLogRefs(value: unknown): Array<{ sdkLogPath: string; conversationId: string | null }> {
+  if (Array.isArray(value)) return value.flatMap((item) => collectReferenceRuntimeSdkLogRefs(item));
   if (typeof value !== "object" || value === null) return [];
   const record = value as Record<string, unknown>;
   const source = readString(record.source);
   const sdkLogPath = readString(record.sdkLogPath);
   const conversationId = readString(record.conversationId);
-  const accioHome = readString(record.accioHome);
+  const referenceRuntimeHome = readString(record.referenceRuntimeHome);
   const current =
-    source === "accio_ws_sdk_log" && sdkLogPath
+    source === "reference_ws_sdk_log" && sdkLogPath
       ? [{ sdkLogPath, conversationId }]
-      : source === "accio_ws_session_file" && accioHome
-        ? [{ sdkLogPath: path.join(accioHome, "logs", "sdk.log"), conversationId }]
+      : source === "reference_ws_session_file" && referenceRuntimeHome
+        ? [{ sdkLogPath: path.join(referenceRuntimeHome, "logs", "sdk.log"), conversationId }]
       : [];
   return [
     ...current,
     ...Object.entries(record)
       .filter(([key]) => key !== "sdkLogPath")
-      .flatMap(([, item]) => collectAccioSdkLogRefs(item)),
+      .flatMap(([, item]) => collectReferenceRuntimeSdkLogRefs(item)),
   ];
 }
 
-function readAccioSdkLogLines(filePath: string, conversationId: string | null): string[] {
+function readReferenceRuntimeSdkLogLines(filePath: string, conversationId: string | null): string[] {
   try {
     const lines = readFileSync(filePath, "utf8").split(/\r?\n/g);
     return lines

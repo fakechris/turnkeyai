@@ -20,6 +20,7 @@
     "./session-memory-refresh-worker": "./src/session-memory-refresh-worker.ts",
     "./serial-batch-uploader": "./src/serial-batch-uploader.ts",
     "./scheduled-task-runtime": "./src/scheduled-task-runtime.ts",
-    "./explicit-workflow-runtime": "./src/explicit-workflow-runtime.ts"
+    "./explicit-workflow-runtime": "./src/explicit-workflow-runtime.ts",
+    "./workspace-memory-writer": "./src/workspace-memory-writer.ts"
   }
 }

@@ -40,7 +40,12 @@ import {
 } from "./tool-capability-registry";
 import type { ToolResultArtifactStore } from "./tool-result-artifact-store";
 import type { MemoryHit, RoleMemoryResolver } from "./context/role-memory-resolver";
-import type { TaskToolService } from "./task-tool-service";
+import type {
+  TaskToolAcceptanceCriterionInput,
+  TaskToolAcceptanceUpdateInput,
+  TaskToolService,
+  TaskToolVerificationReceiptInput,
+} from "./task-tool-service";
 import {
   buildBackgroundWorkerSessionAccepted,
   serializeBackgroundWorkerSessionAccepted,
@@ -2883,6 +2888,28 @@ async function executeTasksCreate(
         ? { contextRefs: readStringArray(input.call.input.context_refs) }
         : {}),
       ...(requiredString(input.call.input.output) ? { output: requiredString(input.call.input.output)! } : {}),
+      ...(requiredString(input.call.input.objective)
+        ? { objective: requiredString(input.call.input.objective)! }
+        : {}),
+      ...(hasOwn(input.call.input, "input_refs")
+        ? { inputRefs: readStringArray(input.call.input.input_refs) }
+        : {}),
+      ...(hasOwn(input.call.input, "output_refs")
+        ? { outputRefs: readStringArray(input.call.input.output_refs) }
+        : {}),
+      ...(hasOwn(input.call.input, "constraints")
+        ? { constraints: readStringArray(input.call.input.constraints) }
+        : {}),
+      ...(hasOwn(input.call.input, "blocked_by")
+        ? { blockedBy: readStringArray(input.call.input.blocked_by) }
+        : {}),
+      ...(hasOwn(input.call.input, "acceptance_criteria")
+        ? {
+            acceptanceCriteria: readAcceptanceCriteria(
+              input.call.input.acceptance_criteria,
+            ),
+          }
+        : {}),
     })
   );
 }
@@ -2909,6 +2936,35 @@ async function executeTasksUpdate(
       ...(requiredString(input.call.input.output) ? { output: requiredString(input.call.input.output)! } : {}),
       ...(clearBlocker ? { blocker: null } : requiredString(input.call.input.blocker) ? { blocker: requiredString(input.call.input.blocker)! } : {}),
       ...(boundedProgress(input.call.input.progress) !== null ? { progress: boundedProgress(input.call.input.progress)! } : {}),
+      ...(requiredString(input.call.input.objective)
+        ? { objective: requiredString(input.call.input.objective)! }
+        : {}),
+      ...(hasOwn(input.call.input, "input_refs")
+        ? { inputRefs: readStringArray(input.call.input.input_refs) }
+        : {}),
+      ...(hasOwn(input.call.input, "output_refs")
+        ? { outputRefs: readStringArray(input.call.input.output_refs) }
+        : {}),
+      ...(hasOwn(input.call.input, "constraints")
+        ? { constraints: readStringArray(input.call.input.constraints) }
+        : {}),
+      ...(hasOwn(input.call.input, "blocked_by")
+        ? { blockedBy: readStringArray(input.call.input.blocked_by) }
+        : {}),
+      ...(hasOwn(input.call.input, "acceptance_updates")
+        ? {
+            acceptanceUpdates: readAcceptanceUpdates(
+              input.call.input.acceptance_updates,
+            ),
+          }
+        : {}),
+      ...(hasOwn(input.call.input, "verification_receipts")
+        ? {
+            verificationReceipts: readVerificationReceipts(
+              input.call.input.verification_receipts,
+            ),
+          }
+        : {}),
     })
   );
 }
@@ -3598,6 +3654,93 @@ function parseMissionStatus(value: unknown):
 function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
+function readAcceptanceCriteria(
+  value: unknown,
+): TaskToolAcceptanceCriterionInput[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const description = requiredString(item.description);
+    if (!description) return [];
+    const id = requiredString(item.id);
+    return [{
+      description,
+      ...(id ? { id } : {}),
+      ...(typeof item.required === "boolean"
+        ? { required: item.required }
+        : {}),
+    }];
+  });
+}
+
+function readAcceptanceUpdates(
+  value: unknown,
+): TaskToolAcceptanceUpdateInput[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const criterionId = requiredString(item.criterion_id);
+    const state = readAcceptanceState(item.state);
+    return criterionId && state ? [{ criterionId, state }] : [];
+  });
+}
+
+function readVerificationReceipts(
+  value: unknown,
+): TaskToolVerificationReceiptInput[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const criterionId = requiredString(item.criterion_id);
+    const kind = readVerificationKind(item.kind);
+    const ref = requiredString(item.ref);
+    const result = readVerificationResult(item.result);
+    const reason = requiredString(item.reason);
+    return criterionId && kind && ref && result
+      ? [{
+          criterionId,
+          kind,
+          ref,
+          result,
+          ...(reason ? { reason } : {}),
+        }]
+      : [];
+  });
+}
+
+function readAcceptanceState(
+  value: unknown,
+): TaskToolAcceptanceUpdateInput["state"] | null {
+  return value === "unverified" ||
+    value === "passed" ||
+    value === "failed" ||
+    value === "waived"
+    ? value
+    : null;
+}
+
+function readVerificationKind(
+  value: unknown,
+): TaskToolVerificationReceiptInput["kind"] | null {
+  return value === "artifact" ||
+    value === "tool-receipt" ||
+    value === "operator-decision"
+    ? value
+    : null;
+}
+
+function readVerificationResult(
+  value: unknown,
+): TaskToolVerificationReceiptInput["result"] | null {
+  return value === "passed" || value === "failed" || value === "waived"
+    ? value
+    : null;
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

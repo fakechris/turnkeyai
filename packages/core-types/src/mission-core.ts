@@ -135,6 +135,42 @@ export interface WorkItem {
   progress?: number;
   blocker?: string;
   approvalId?: ApprovalRequestId;
+  specification?: WorkItemSpecification;
+}
+
+export type AcceptanceCriterionState =
+  | "unverified"
+  | "passed"
+  | "failed"
+  | "waived";
+
+export interface AcceptanceCriterion {
+  id: string;
+  description: string;
+  required: boolean;
+  state: AcceptanceCriterionState;
+}
+
+export interface VerificationReceipt {
+  receiptId: string;
+  criterionId: string;
+  kind: "artifact" | "tool-receipt" | "operator-decision";
+  ref: string;
+  verifier: string;
+  result: "passed" | "failed" | "waived";
+  verifiedAt: number;
+  reason?: string;
+}
+
+export interface WorkItemSpecification {
+  objective: string;
+  inputRefs: string[];
+  outputRefs: string[];
+  constraints: string[];
+  blockedBy: WorkItemId[];
+  blocks: WorkItemId[];
+  acceptanceCriteria: AcceptanceCriterion[];
+  verificationReceipts: VerificationReceipt[];
 }
 
 // ── Agent ─────────────────────────────────────────────────────────────
@@ -323,6 +359,7 @@ export interface MissionStore {
 export interface WorkItemStore {
   listByMission(missionId: MissionId): Promise<WorkItem[]>;
   put(item: WorkItem): Promise<void>;
+  putGraph?(missionId: MissionId, items: WorkItem[]): Promise<void>;
 }
 
 export interface ActivityEventStore {

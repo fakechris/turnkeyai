@@ -88,6 +88,9 @@ function createDeps(overrides: Partial<InspectionRouteDeps> = {}): InspectionRou
     async getSessionMemory(threadId: string) {
       return { threadId };
     },
+    async buildLongContextRuntime(threadId: string) {
+      return { threadId, protocol: "turnkeyai.long_context_runtime_report.v1" };
+    },
     async listModels() {
       return [];
     },
@@ -146,6 +149,28 @@ test("inspection routes reject blank required thread ids", async () => {
   assert.equal(handled, true);
   assert.equal(response.res.statusCode, 400);
   assert.deepEqual(response.json, { error: "threadId is required" });
+});
+
+test("inspection routes expose the long-context runtime report", async () => {
+  const response = createResponse();
+  const handled = await handleInspectionRoutes({
+    req: createRequest({
+      method: "GET",
+      url: "/context/long-runtime?threadId=thread-1",
+    }),
+    res: response.res,
+    url: new URL(
+      "http://127.0.0.1/context/long-runtime?threadId=thread-1",
+    ),
+    deps: createDeps(),
+  });
+
+  assert.equal(handled, true);
+  assert.equal(response.res.statusCode, 200);
+  assert.equal(
+    response.json.protocol,
+    "turnkeyai.long_context_runtime_report.v1",
+  );
 });
 
 test("inspection routes trim optional thread ids for runtime summary routes", async () => {

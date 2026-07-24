@@ -15,6 +15,8 @@ function naturalFacts(
 ): NaturalFinishRepairPolicyFacts {
   return {
     finalRecoveryBudgetCloseoutRepair: false,
+    missingDurableMemorySearch: false,
+    missingDurableMemoryGet: false,
     missingBrowserEvidence: false,
     missingProductSignalBrowserEvidence: false,
     missingApprovalGate: false,
@@ -59,6 +61,25 @@ test("repair core selects the first active natural-finish policy in runtime orde
   assert.equal(decision?.policyId, "missing_approval_gate");
   assert.equal(decision?.kind, "force_tool_round");
   assert.deepEqual(decision?.forceToolChoice, { name: "permission_query" });
+});
+
+test("repair core forces the explicit durable-memory search/get sequence", () => {
+  const search = selectNaturalFinishRepairPolicy({
+    facts: naturalFacts({
+      missingDurableMemorySearch: true,
+      missingDurableMemoryGet: true,
+    }),
+  });
+  const get = selectNaturalFinishRepairPolicy({
+    facts: naturalFacts({ missingDurableMemoryGet: true }),
+  });
+
+  assert.equal(search?.policyId, "missing_durable_memory_search");
+  assert.deepEqual(search?.forceToolChoice, { name: "memory_search" });
+  assert.equal(search?.consumesRound, true);
+  assert.equal(get?.policyId, "missing_durable_memory_get");
+  assert.deepEqual(get?.forceToolChoice, { name: "memory_get" });
+  assert.equal(get?.consumesRound, true);
 });
 
 test("repair core honors enabled natural-finish policy filtering", () => {

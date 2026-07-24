@@ -11,6 +11,7 @@ import type {
   FlowLedger,
   HandoffEnvelope,
   PromptAssemblyContextDiagnostics,
+  PromptSectionRuntimeReceipt,
   RoleSlot,
   TeamMessageSummary,
   TeamThread,
@@ -23,15 +24,14 @@ import { estimateTextTokens } from "@turnkeyai/llm-adapter/token-estimator";
 import type { PromptTokenBudget, PromptTokenEstimate } from "../context/context-budgeter";
 import { EXPLICIT_RECALL_HITS } from "../context/role-memory-resolver";
 import type { MemoryHit } from "../context/role-memory-resolver";
+import {
+  DEFAULT_PROMPT_SECTION_REGISTRY,
+  PROMPT_ASSEMBLY_SEGMENTS,
+  PROMPT_ASSEMBLY_SECTION_IDS,
+  type PromptAssemblySegment,
+} from "../prompt-registry";
 
-export type PromptSegmentName =
-  | "task-brief"
-  | "recent-turns"
-  | "thread-summary"
-  | "session-memory"
-  | "role-scratchpad"
-  | "retrieved-memory"
-  | "worker-evidence";
+export type PromptSegmentName = PromptAssemblySegment;
 
 export interface PromptAssemblyInput {
   thread: TeamThread;
@@ -69,6 +69,7 @@ export interface PromptAssemblyResult {
   includedSegments: PromptSegmentName[];
   sectionOrder: PromptSegmentName[];
   compactedSegments: PromptSegmentName[];
+  sectionReceipts: PromptSectionRuntimeReceipt[];
   assemblyFingerprint: string;
   usedArtifacts: string[];
   contextDiagnostics: PromptAssemblyContextDiagnostics;
@@ -445,6 +446,12 @@ export class DefaultPromptAssembler implements PromptAssembler {
       omittedSegments,
       usedArtifacts: [...usedArtifacts].sort(),
     });
+    const sectionReceipts = buildAssemblySectionReceipts({
+      taskSection,
+      keptSections,
+      omittedSegments,
+      compactedSegments,
+    });
 
     return {
       systemPrompt,
@@ -454,12 +461,52 @@ export class DefaultPromptAssembler implements PromptAssembler {
       includedSegments,
       sectionOrder,
       compactedSegments: [...compactedSegments],
+      sectionReceipts,
       assemblyFingerprint,
       usedArtifacts,
       contextDiagnostics,
       ...(envelopeHint ? { envelopeHint } : {}),
     };
   }
+}
+
+function buildAssemblySectionReceipts(input: {
+  taskSection: string;
+  keptSections: Array<{
+    segment: Exclude<PromptSegmentName, "task-brief">;
+    text: string;
+  }>;
+  omittedSegments: OmittedPromptSegment[];
+  compactedSegments: Set<PromptSegmentName>;
+}): PromptSectionRuntimeReceipt[] {
+  const textBySegment = new Map<PromptSegmentName, string>([
+    ["task-brief", input.taskSection],
+    ...input.keptSections.map(
+      (section) => [section.segment, section.text] as const,
+    ),
+  ]);
+  const omissionBySegment = new Map(
+    input.omittedSegments.map((omitted) => [
+      omitted.segment,
+      omitted.reason,
+    ]),
+  );
+  return PROMPT_ASSEMBLY_SEGMENTS.map((segment) => {
+    const text = textBySegment.get(segment);
+    const omittedReason = omissionBySegment.get(
+      segment as Exclude<PromptSegmentName, "task-brief">,
+    );
+    return DEFAULT_PROMPT_SECTION_REGISTRY.receipt({
+      sectionId: PROMPT_ASSEMBLY_SECTION_IDS[segment],
+      state: text
+        ? input.compactedSegments.has(segment)
+          ? "compacted"
+          : "included"
+        : "omitted",
+      estimatedTokens: text ? estimateTextTokens(text) : 0,
+      ...(omittedReason ? { reason: omittedReason } : {}),
+    });
+  });
 }
 
 function buildUserPrompt(
