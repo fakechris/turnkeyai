@@ -7,6 +7,7 @@ import test from "node:test";
 
 import type {
   DurableMemoryRecord,
+  MemorySearchIndex,
   WorkspaceMemoryAuditRecord,
 } from "@turnkeyai/core-types/team";
 
@@ -133,5 +134,43 @@ test("workspace memory store enforces cursor compare-and-set", async () => {
       mutations: [],
     }),
     /cursor conflict/,
+  );
+});
+
+test("workspace memory store reconciles its index from durable snapshots", async () => {
+  const rootDir = await mkdtemp(
+    path.join(os.tmpdir(), "turnkeyai-workspace-memory-reconcile-"),
+  );
+  const durableStore = new FileWorkspaceMemoryStore({ rootDir });
+  await durableStore.commit({
+    workspaceId: "workspace-1",
+    expectedLastSequence: 0,
+    cursor: {
+      workspaceId: "workspace-1",
+      lastSequence: 1,
+      updatedAt: 101,
+    },
+    audit: audit("audit-1"),
+    mutations: [{
+      kind: "add",
+      record: record("memory-recovered", "authoritative"),
+    }],
+  });
+  let rebuilt: DurableMemoryRecord[] = [];
+  const index = {
+    async rebuild(records) {
+      rebuilt = structuredClone(records);
+    },
+  } as MemorySearchIndex;
+  const recoveredStore = new FileWorkspaceMemoryStore({
+    rootDir,
+    index,
+  });
+
+  await recoveredStore.reconcileIndex();
+
+  assert.deepEqual(
+    rebuilt.map((item) => item.memoryId),
+    ["memory-recovered"],
   );
 });

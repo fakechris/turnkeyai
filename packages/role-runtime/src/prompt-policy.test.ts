@@ -14,6 +14,7 @@ import {
   type TeamMessageSummary,
   type WorkerKind,
 } from "@turnkeyai/core-types/team";
+import { estimateTextTokens } from "@turnkeyai/llm-adapter/token-estimator";
 import { FileRoleScratchpadStore } from "@turnkeyai/team-store/context/file-role-scratchpad-store";
 import { FileThreadJournalStore } from "@turnkeyai/team-store/context/file-thread-journal-store";
 import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread-memory-store";
@@ -288,6 +289,10 @@ test("default role prompt policy assembles context from thread and worker stores
       "recent-turns",
     ]);
     assert.equal(packet.promptAssembly?.sectionReceipts?.length, 7);
+    const workerEvidenceSection = packet.taskPrompt.match(
+      /Worker evidence:\n[\s\S]*?(?=\n\nRecent turns:|$)/,
+    )?.[0];
+    assert.ok(workerEvidenceSection);
     assert.deepEqual(
       packet.promptAssembly?.sectionReceipts?.find(
         (receipt) =>
@@ -301,11 +306,7 @@ test("default role prompt policy assembles context from thread and worker stores
         requiredCapability: "sessions",
         baselineBehavior: "full-delta",
         state: "included",
-        estimatedTokens:
-          packet.promptAssembly?.sectionReceipts?.find(
-            (receipt) =>
-              receipt.sectionId === "prompt.assembly.worker-evidence",
-          )?.estimatedTokens,
+        estimatedTokens: estimateTextTokens(workerEvidenceSection),
       },
     );
     assert.equal(

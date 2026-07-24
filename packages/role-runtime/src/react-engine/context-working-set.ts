@@ -63,25 +63,37 @@ export function captureContextWorkingSetFromMessages(
   }
 
   return {
-    files: dedupeBy(workingSet.files, (item) =>
-      `${item.path}:${item.startLine ?? ""}:${item.endLine ?? ""}`,
-    ).slice(-limits.maxFiles),
-    skills: dedupeBy(workingSet.skills, (item) => item.skillId).slice(
-      -limits.maxSkills,
+    files: takeTail(
+      dedupeBy(workingSet.files, (item) =>
+        `${item.path}:${item.startLine ?? ""}:${item.endLine ?? ""}`,
+      ),
+      limits.maxFiles,
     ),
-    artifacts: [...new Set(workingSet.artifacts)].slice(
-      -limits.maxArtifacts,
+    skills: takeTail(
+      dedupeBy(workingSet.skills, (item) => item.skillId),
+      limits.maxSkills,
     ),
-    sessions: dedupeBy(
-      workingSet.sessions,
-      (item) => item.sessionKey,
-    ).slice(-limits.maxSessions),
-    approvals: dedupeBy(
-      workingSet.approvals,
-      (item) => item.approvalId,
-    ).slice(-limits.maxApprovals),
-    images: dedupeBy(workingSet.images, (item) => item.artifactId).slice(
-      -limits.maxImages,
+    artifacts: takeTail(
+      [...new Set(workingSet.artifacts)],
+      limits.maxArtifacts,
+    ),
+    sessions: takeTail(
+      dedupeBy(
+        workingSet.sessions,
+        (item) => item.sessionKey,
+      ),
+      limits.maxSessions,
+    ),
+    approvals: takeTail(
+      dedupeBy(
+        workingSet.approvals,
+        (item) => item.approvalId,
+      ),
+      limits.maxApprovals,
+    ),
+    images: takeTail(
+      dedupeBy(workingSet.images, (item) => item.artifactId),
+      limits.maxImages,
     ),
   };
 }
@@ -359,6 +371,10 @@ function dedupeBy<T>(values: T[], key: (value: T) => string): T[] {
   const deduped = new Map<string, T>();
   for (const value of values) deduped.set(key(value), value);
   return [...deduped.values()];
+}
+
+function takeTail<T>(values: T[], limit: number): T[] {
+  return limit === 0 ? [] : values.slice(-limit);
 }
 
 function normalizeLimits(

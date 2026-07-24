@@ -2888,8 +2888,8 @@ async function executeTasksCreate(
         ? { contextRefs: readStringArray(input.call.input.context_refs) }
         : {}),
       ...(requiredString(input.call.input.output) ? { output: requiredString(input.call.input.output)! } : {}),
-      ...(typeof input.call.input.objective === "string"
-        ? { objective: input.call.input.objective.trim() }
+      ...(requiredString(input.call.input.objective)
+        ? { objective: requiredString(input.call.input.objective)! }
         : {}),
       ...(hasOwn(input.call.input, "input_refs")
         ? { inputRefs: readStringArray(input.call.input.input_refs) }
@@ -2936,8 +2936,8 @@ async function executeTasksUpdate(
       ...(requiredString(input.call.input.output) ? { output: requiredString(input.call.input.output)! } : {}),
       ...(clearBlocker ? { blocker: null } : requiredString(input.call.input.blocker) ? { blocker: requiredString(input.call.input.blocker)! } : {}),
       ...(boundedProgress(input.call.input.progress) !== null ? { progress: boundedProgress(input.call.input.progress)! } : {}),
-      ...(typeof input.call.input.objective === "string"
-        ? { objective: input.call.input.objective.trim() }
+      ...(requiredString(input.call.input.objective)
+        ? { objective: requiredString(input.call.input.objective)! }
         : {}),
       ...(hasOwn(input.call.input, "input_refs")
         ? { inputRefs: readStringArray(input.call.input.input_refs) }

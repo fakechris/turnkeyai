@@ -8025,7 +8025,7 @@ test("task tools expose mission work-item list, create, and update operations", 
       input: {
         title: "Verify browser evidence",
         agent_id: "role-lead",
-        objective: "Verify browser evidence with a durable artifact",
+        objective: "   ",
         input_refs: ["artifact://capture"],
         blocked_by: [],
         acceptance_criteria: [{
@@ -8046,6 +8046,7 @@ test("task tools expose mission work-item list, create, and update operations", 
         work_item_id: "wi.task-1",
         status: "done",
         progress: 1,
+        objective: "\t",
         verification_receipts: [{
           criterion_id: "evidence-readable",
           kind: "artifact",
@@ -8063,6 +8064,7 @@ test("task tools expose mission work-item list, create, and update operations", 
   assert.equal(JSON.parse(update.content).task.status, "done");
   assert.deepEqual(calls, ["list:thread-1:working", "create:Verify browser evidence:role-lead", "update:wi.task-1:done"]);
   assert.deepEqual(createdInput?.blockedBy, []);
+  assert.equal(createdInput?.objective, undefined);
   assert.equal(
     createdInput?.acceptanceCriteria?.[0]?.id,
     "evidence-readable",
@@ -8073,6 +8075,7 @@ test("task tools expose mission work-item list, create, and update operations", 
     ref: "artifact://capture",
     result: "passed",
   }]);
+  assert.equal(updatedInput?.objective, undefined);
   assert.equal(update.progress?.[0]?.phase, "completed");
 });
 

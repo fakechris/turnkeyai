@@ -179,3 +179,51 @@ test("working-set capture applies strict per-kind limits", () => {
     "artifact-4",
   ]);
 });
+
+test("working-set capture treats zero limits as empty collections", () => {
+  const result = captureContextWorkingSetFromMessages(
+    [
+      {
+        role: "assistant",
+        content: [{
+          type: "tool_use",
+          id: "read-1",
+          name: "read_file",
+          input: {
+            path: "/workspace/report.md",
+            skill_id: "research",
+          },
+        }],
+      },
+      {
+        role: "tool",
+        toolCallId: "tool-1",
+        name: "sessions_spawn",
+        content: JSON.stringify({
+          session_key: "session-1",
+          approval_id: "approval-1",
+          artifact_id: "image-1",
+          kind: "screenshot",
+          mime_type: "image/png",
+        }),
+      },
+    ],
+    {
+      maxFiles: 0,
+      maxSkills: 0,
+      maxArtifacts: 0,
+      maxSessions: 0,
+      maxApprovals: 0,
+      maxImages: 0,
+    },
+  );
+
+  assert.deepEqual(result, {
+    files: [],
+    skills: [],
+    artifacts: [],
+    sessions: [],
+    approvals: [],
+    images: [],
+  });
+});

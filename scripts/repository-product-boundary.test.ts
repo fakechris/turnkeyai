@@ -3,12 +3,18 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-const SCAN_ROOTS = ["packages", "scripts", "docs"];
+const SCAN_ROOTS = ["."];
 const SKIPPED_DIRECTORIES = new Set([
+  ".artifacts",
+  ".daemon-data",
+  ".git",
+  "artifacts",
   "build",
   "coverage",
   "dist",
   "node_modules",
+  "output",
+  "tmp",
 ]);
 const TEXT_EXTENSIONS = new Set([
   ".cjs",

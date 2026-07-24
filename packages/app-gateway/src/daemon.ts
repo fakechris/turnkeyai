@@ -189,6 +189,7 @@ const foundations = composeDaemonFoundations({
   clock,
   idGenerator,
 });
+await foundations.workspaceMemoryStore.reconcileIndex();
 const {
   teamThreadStore,
   teamMessageStore,

@@ -10,7 +10,7 @@ import type {
   MemoryScope,
   MemorySearchIndex,
 } from "@turnkeyai/core-types/team";
-import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+import { AsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 
 const DEFAULT_FTS_CANDIDATES = 20;
 const DEFAULT_VECTOR_CANDIDATES = 20;
@@ -19,68 +19,70 @@ const RRF_K = 60;
 const FTS_WEIGHT = 0.5;
 const VECTOR_WEIGHT = 0.5;
 
+interface IndexedRecord {
+  record: DurableMemoryRecord;
+  embedding: number[] | null;
+}
+
 export class SqliteMemorySearchIndex implements MemorySearchIndex {
   private readonly db: DatabaseSync;
   private readonly embeddingAdapter: MemoryEmbeddingAdapter | undefined;
-  private readonly mutex = new KeyedAsyncMutex<string>();
+  private readonly mutex = new AsyncMutex();
+  private readonly fts5Available: boolean;
+  private readonly tableName: "memory_fts" | "memory_records";
 
   constructor(options: {
     dbPath: string;
     embeddingAdapter?: MemoryEmbeddingAdapter;
+    forceLexicalFallback?: boolean;
   }) {
     mkdirSync(path.dirname(options.dbPath), { recursive: true });
     this.db = new DatabaseSync(options.dbPath);
     this.embeddingAdapter = options.embeddingAdapter;
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-        memory_id UNINDEXED,
-        workspace_id UNINDEXED,
-        thread_id UNINDEXED,
-        role_id UNINDEXED,
-        content,
-        record_json UNINDEXED,
-        embedding_json UNINDEXED,
-        tokenize = 'unicode61'
-      );
-    `);
+    this.fts5Available =
+      !options.forceLexicalFallback && supportsFts5(this.db);
+    this.tableName = this.fts5Available
+      ? "memory_fts"
+      : "memory_records";
+    if (this.fts5Available) {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+          memory_id UNINDEXED,
+          workspace_id UNINDEXED,
+          thread_id UNINDEXED,
+          role_id UNINDEXED,
+          content,
+          record_json UNINDEXED,
+          embedding_json UNINDEXED,
+          tokenize = 'unicode61'
+        );
+      `);
+    } else {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_records(
+          memory_id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          role_id TEXT NOT NULL,
+          content TEXT NOT NULL,
+          record_json TEXT NOT NULL,
+          embedding_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS memory_records_scope_idx
+          ON memory_records(workspace_id, thread_id, role_id);
+      `);
+    }
   }
 
   async replaceWorkspace(
     workspaceId: string,
     records: DurableMemoryRecord[],
   ): Promise<void> {
-    await this.mutex.run(workspaceId, async () => {
-      const embedded = await Promise.all(
-        records.map(async (record) => ({
-          record,
-          embedding: this.embeddingAdapter
-            ? await this.embeddingAdapter.embed(record.content)
-            : null,
-        })),
-      );
+    await this.mutex.run(async () => {
+      const embedded = await this.embedRecords(records);
       this.db.exec("BEGIN IMMEDIATE");
       try {
-        this.db.prepare(
-          "DELETE FROM memory_fts WHERE workspace_id = ?",
-        ).run(workspaceId);
-        const insert = this.db.prepare(`
-          INSERT INTO memory_fts(
-            memory_id, workspace_id, thread_id, role_id,
-            content, record_json, embedding_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        `);
-        for (const item of embedded) {
-          if (item.record.scope.workspaceId !== workspaceId) continue;
-          insert.run(
-            item.record.memoryId,
-            workspaceId,
-            item.record.scope.threadId ?? "",
-            item.record.scope.roleId ?? "",
-            item.record.content,
-            JSON.stringify(item.record),
-            item.embedding ? JSON.stringify(item.embedding) : "",
-          );
-        }
+        this.replaceWorkspaceInTransaction(workspaceId, embedded);
         this.db.exec("COMMIT");
       } catch (error) {
         this.db.exec("ROLLBACK");
@@ -91,7 +93,7 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
 
   async get(memoryId: string): Promise<DurableMemoryRecord | null> {
     const row = this.db.prepare(
-      "SELECT record_json FROM memory_fts WHERE memory_id = ? LIMIT 1",
+      `SELECT record_json FROM ${this.tableName} WHERE memory_id = ? LIMIT 1`,
     ).get(memoryId) as { record_json?: unknown } | undefined;
     return typeof row?.record_json === "string"
       ? parseRecord(row.record_json)
@@ -139,16 +141,27 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
   }
 
   async rebuild(records: DurableMemoryRecord[]): Promise<void> {
-    this.db.exec("DELETE FROM memory_fts");
-    const byWorkspace = new Map<string, DurableMemoryRecord[]>();
-    for (const record of records) {
-      const values = byWorkspace.get(record.scope.workspaceId) ?? [];
-      values.push(record);
-      byWorkspace.set(record.scope.workspaceId, values);
-    }
-    for (const [workspaceId, values] of byWorkspace) {
-      await this.replaceWorkspace(workspaceId, values);
-    }
+    await this.mutex.run(async () => {
+      const embedded = await this.embedRecords(records);
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec(`DELETE FROM ${this.tableName}`);
+        const byWorkspace = new Map<string, IndexedRecord[]>();
+        for (const item of embedded) {
+          const workspaceId = item.record.scope.workspaceId;
+          const values = byWorkspace.get(workspaceId) ?? [];
+          values.push(item);
+          byWorkspace.set(workspaceId, values);
+        }
+        for (const [workspaceId, values] of byWorkspace) {
+          this.insertWorkspaceRecords(workspaceId, values);
+        }
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    });
   }
 
   async diagnostics(scope?: MemoryScope): Promise<{
@@ -170,14 +183,16 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
       SELECT
         COUNT(*) AS indexed_records,
         SUM(CASE WHEN embedding_json != '' THEN 1 ELSE 0 END) AS vector_records
-      FROM memory_fts
+      FROM ${this.tableName}
       WHERE ${scoped.where}
     `).get(...scoped.args) as {
       indexed_records?: number;
       vector_records?: number | null;
     };
     return {
-      backend: "sqlite-fts5-rrf",
+      backend: this.fts5Available
+        ? "sqlite-fts5-rrf"
+        : "sqlite-lexical-rrf",
       indexedRecords: Number(row.indexed_records ?? 0),
       vectorRecords: Number(row.vector_records ?? 0),
       channels: this.embeddingAdapter
@@ -199,6 +214,9 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
     query: string,
     limit: number,
   ): Promise<MemoryIndexCandidate[]> {
+    if (!this.fts5Available) {
+      return this.lexicalCandidates(scope, query, limit);
+    }
     const match = ftsQuery(query);
     if (!match) return [];
     const { where, args } = scopeClause(scope);
@@ -220,6 +238,47 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
     }));
   }
 
+  private lexicalCandidates(
+    scope: MemoryScope,
+    query: string,
+    limit: number,
+  ): MemoryIndexCandidate[] {
+    const terms = lexicalTerms(query);
+    if (terms.length === 0) return [];
+    const { where, args } = scopeClause(scope);
+    const rows = this.db.prepare(`
+      SELECT memory_id, content
+      FROM memory_records
+      WHERE ${where}
+    `).all(...args) as Array<{
+      memory_id: string;
+      content: string;
+    }>;
+    return rows
+      .map((row) => {
+        const content = row.content.toLowerCase();
+        const matched = terms.filter((term) =>
+          content.includes(term)
+        ).length;
+        return {
+          memoryId: row.memory_id,
+          channel: "fts" as const,
+          rawScore: matched / terms.length,
+          rank: 0,
+        };
+      })
+      .filter((candidate) => candidate.rawScore > 0)
+      .sort((left, right) =>
+        right.rawScore - left.rawScore ||
+        left.memoryId.localeCompare(right.memoryId)
+      )
+      .slice(0, positiveLimit(limit))
+      .map((candidate, index) => ({
+        ...candidate,
+        rank: index + 1,
+      }));
+  }
+
   private async vectorCandidates(
     scope: MemoryScope,
     query: string,
@@ -231,7 +290,7 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
     const { where, args } = scopeClause(scope);
     const rows = this.db.prepare(`
       SELECT memory_id, embedding_json
-      FROM memory_fts
+      FROM ${this.tableName}
       WHERE ${where} AND embedding_json != ''
     `).all(...args) as Array<{
       memory_id: string;
@@ -257,6 +316,53 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
         ...candidate,
         rank: index + 1,
       }));
+  }
+
+  private async embedRecords(
+    records: DurableMemoryRecord[],
+  ): Promise<IndexedRecord[]> {
+    return Promise.all(
+      records.map(async (record) => ({
+        record,
+        embedding: this.embeddingAdapter
+          ? await this.embeddingAdapter.embed(record.content)
+          : null,
+      })),
+    );
+  }
+
+  private replaceWorkspaceInTransaction(
+    workspaceId: string,
+    records: IndexedRecord[],
+  ): void {
+    this.db.prepare(
+      `DELETE FROM ${this.tableName} WHERE workspace_id = ?`,
+    ).run(workspaceId);
+    this.insertWorkspaceRecords(workspaceId, records);
+  }
+
+  private insertWorkspaceRecords(
+    workspaceId: string,
+    records: IndexedRecord[],
+  ): void {
+    const insert = this.db.prepare(`
+      INSERT INTO ${this.tableName}(
+        memory_id, workspace_id, thread_id, role_id,
+        content, record_json, embedding_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const item of records) {
+      if (item.record.scope.workspaceId !== workspaceId) continue;
+      insert.run(
+        item.record.memoryId,
+        workspaceId,
+        item.record.scope.threadId ?? "",
+        item.record.scope.roleId ?? "",
+        item.record.content,
+        JSON.stringify(item.record),
+        item.embedding ? JSON.stringify(item.embedding) : "",
+      );
+    }
   }
 }
 
@@ -331,6 +437,45 @@ function ftsQuery(query: string): string {
   ]
     .map((term) => `"${term.replaceAll('"', '""')}"`)
     .join(" OR ");
+}
+
+function lexicalTerms(query: string): string[] {
+  const terms = query
+    .toLowerCase()
+    .match(/[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}/g) ?? [];
+  return [
+    ...new Set(
+      terms.flatMap((term) =>
+        /^[\u4e00-\u9fff]+$/.test(term) && term.length > 2
+          ? [
+              term,
+              ...Array.from(
+                { length: term.length - 1 },
+                (_, index) => term.slice(index, index + 2),
+              ),
+            ]
+          : [term]
+      ),
+    ),
+  ];
+}
+
+function supportsFts5(db: DatabaseSync): boolean {
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE temp.turnkeyai_fts5_probe
+        USING fts5(content);
+      DROP TABLE temp.turnkeyai_fts5_probe;
+    `);
+    return true;
+  } catch {
+    try {
+      db.exec("DROP TABLE IF EXISTS temp.turnkeyai_fts5_probe");
+    } catch {
+      // The capability probe is best-effort; fallback storage is independent.
+    }
+    return false;
+  }
 }
 
 function parseRecord(value: string): DurableMemoryRecord | null {

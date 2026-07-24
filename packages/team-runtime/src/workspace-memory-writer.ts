@@ -56,7 +56,7 @@ export class DefaultWorkspaceMemoryWriter implements WorkspaceMemoryWriter {
     ReturnType<typeof setTimeout>
   >();
   private scheduled: ReturnType<typeof setTimeout> | null = null;
-  private draining = false;
+  private drainPromise: Promise<void> | null = null;
   private closed = false;
 
   constructor(options: {
@@ -143,33 +143,44 @@ export class DefaultWorkspaceMemoryWriter implements WorkspaceMemoryWriter {
   }
 
   private async drain(force: boolean): Promise<void> {
-    if (this.draining || this.closed) return;
-    this.draining = true;
+    if (this.closed) return;
+    if (this.drainPromise) {
+      const active = this.drainPromise;
+      await active;
+      if (!force) return;
+      return this.drain(true);
+    }
+    const running = this.performDrain(force);
+    this.drainPromise = running;
     try {
-      do {
-        const jobs = [...this.jobs.values()];
-        this.jobs.clear();
-        for (const job of jobs) {
-          try {
-            await this.process(job, force);
-          } catch (error) {
-            const attemptCount = job.attemptCount + 1;
-            if (attemptCount <= this.maxRetries) {
-              this.jobs.set(job.workspaceId, { ...job, attemptCount });
-            } else {
-              console.error("workspace memory writer job failed", {
-                workspaceId: job.workspaceId,
-                trigger: job.trigger,
-                error,
-              });
-            }
-          }
-        }
-      } while (force && this.jobs.size > 0);
+      await running;
     } finally {
-      this.draining = false;
+      if (this.drainPromise === running) this.drainPromise = null;
       if (!this.closed && this.jobs.size > 0) this.kick();
     }
+  }
+
+  private async performDrain(force: boolean): Promise<void> {
+    do {
+      const jobs = [...this.jobs.values()];
+      this.jobs.clear();
+      for (const job of jobs) {
+        try {
+          await this.process(job, force);
+        } catch (error) {
+          const attemptCount = job.attemptCount + 1;
+          if (attemptCount <= this.maxRetries) {
+            this.jobs.set(job.workspaceId, { ...job, attemptCount });
+          } else {
+            console.error("workspace memory writer job failed", {
+              workspaceId: job.workspaceId,
+              trigger: job.trigger,
+              error,
+            });
+          }
+        }
+      }
+    } while (force && this.jobs.size > 0);
   }
 
   private async process(job: WriterJob, flush: boolean): Promise<void> {

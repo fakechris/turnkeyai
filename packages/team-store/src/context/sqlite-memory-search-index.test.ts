@@ -34,13 +34,17 @@ function record(
   };
 }
 
-async function index(embeddingAdapter?: MemoryEmbeddingAdapter) {
+async function index(
+  embeddingAdapter?: MemoryEmbeddingAdapter,
+  forceLexicalFallback = false,
+) {
   const rootDir = await mkdtemp(
     path.join(os.tmpdir(), "turnkeyai-memory-index-"),
   );
   return new SqliteMemorySearchIndex({
     dbPath: path.join(rootDir, "memory.sqlite"),
     ...(embeddingAdapter ? { embeddingAdapter } : {}),
+    forceLexicalFallback,
   });
 }
 
@@ -76,6 +80,24 @@ test("sqlite memory index filters scope before ranking", async () => {
     hits.map((hit) => hit.record.memoryId),
     ["allowed"],
   );
+});
+
+test("sqlite memory index falls back to deterministic lexical search without FTS5", async () => {
+  const search = await index(undefined, true);
+  await search.replaceWorkspace("workspace-1", [
+    record("fallback-budget", "Decision BETA-917 budget is fixed."),
+    record("fallback-other", "Other note."),
+  ]);
+
+  const hits = await search.recall({
+    scope: { workspaceId: "workspace-1", threadId: "thread-1" },
+    query: "BETA-917",
+  });
+  const diagnostics = await search.diagnostics();
+
+  assert.equal(hits[0]?.record.memoryId, "fallback-budget");
+  assert.equal(diagnostics.backend, "sqlite-lexical-rrf");
+  assert.deepEqual(diagnostics.channels, ["fts"]);
 });
 
 test("sqlite memory index uses optional vectors for Chinese synonym recall", async () => {
@@ -150,7 +172,7 @@ test("sqlite memory index diagnostics expose the active retrieval channels and c
   });
 
   assert.deepEqual(diagnostics, {
-    backend: "sqlite-fts5-rrf",
+    backend: diagnostics.backend,
     indexedRecords: 1,
     vectorRecords: 1,
     channels: ["fts", "vector"],
@@ -163,4 +185,5 @@ test("sqlite memory index diagnostics expose the active retrieval channels and c
       vectorWeight: 0.5,
     },
   });
+  assert.match(diagnostics.backend, /^sqlite-(?:fts5|lexical)-rrf$/);
 });

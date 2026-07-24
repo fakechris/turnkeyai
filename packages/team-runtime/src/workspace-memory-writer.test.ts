@@ -30,6 +30,7 @@ function event(
 async function setup(options: {
   events: WorkspaceMemorySourceEvent[];
   minSourceDelta?: number;
+  pollIntervalMs?: number;
   propose?: ConstructorParameters<
     typeof DefaultWorkspaceMemoryWriter
   >[0]["propose"];
@@ -47,7 +48,7 @@ async function setup(options: {
         .slice(0, limit),
     ...(options.propose ? { propose: options.propose } : {}),
     minSourceDelta: options.minSourceDelta ?? 1,
-    pollIntervalMs: 100_000,
+    pollIntervalMs: options.pollIntervalMs ?? 100_000,
     idleDelayMs: 100_000,
     now: () => ++now,
   });
@@ -134,4 +135,44 @@ test("workspace memory writer records failure and retries independently", async 
   assert.equal(snapshot.cursor.lastSequence, 1);
   assert.equal(snapshot.audits[0]?.status, "failed");
   assert.equal(snapshot.audits[1]?.status, "noop");
+});
+
+test("workspace memory writer flush waits for an in-flight background drain", async () => {
+  let releaseProposal: (() => void) | undefined;
+  const proposalGate = new Promise<void>((resolve) => {
+    releaseProposal = resolve;
+  });
+  let markProposalStarted: (() => void) | undefined;
+  const proposalStarted = new Promise<void>((resolve) => {
+    markProposalStarted = resolve;
+  });
+  const { store, writer } = await setup({
+    events: [event(1, "记住：交付前必须运行测试。")],
+    pollIntervalMs: 0,
+    propose: async () => {
+      markProposalStarted?.();
+      await proposalGate;
+      return [];
+    },
+  });
+  await writer.enqueue({
+    workspaceId: "workspace-1",
+    trigger: "turn-interval",
+  });
+  await proposalStarted;
+
+  let flushCompleted = false;
+  const flush = writer.flush().then(() => {
+    flushCompleted = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(flushCompleted, false);
+
+  releaseProposal?.();
+  await flush;
+  assert.equal(
+    (await store.getSnapshot("workspace-1")).cursor.lastSequence,
+    1,
+  );
+  await writer.close();
 });

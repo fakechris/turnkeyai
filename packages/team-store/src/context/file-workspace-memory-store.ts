@@ -64,6 +64,16 @@ export class FileWorkspaceMemoryStore implements WorkspaceMemoryStore {
     );
   }
 
+  async reconcileIndex(): Promise<void> {
+    if (!this.index) return;
+    const records: DurableMemoryRecord[] = [];
+    for (const file of await listJsonFiles(this.rootDir)) {
+      const snapshot = await readJsonFile<WorkspaceMemorySnapshot>(file);
+      if (snapshot) records.push(...snapshot.records);
+    }
+    await this.index.rebuild(records);
+  }
+
   async commit(input: {
     workspaceId: string;
     expectedLastSequence: number;
