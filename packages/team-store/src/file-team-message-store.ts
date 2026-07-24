@@ -105,6 +105,35 @@ export class FileTeamMessageStore implements TeamMessageStore {
     return messages.slice(-limit);
   }
 
+  async listAfter(
+    threadId: ThreadId,
+    afterMessageId: MessageId | null,
+    limit: number,
+  ): Promise<TeamMessage[]> {
+    const boundedLimit = Math.max(0, Math.floor(limit));
+    if (boundedLimit === 0) {
+      return [];
+    }
+    // Build the ordered index from entry-file NAMES (a single readdir) plus
+    // the legacy array, without reading each entry's contents — that read
+    // is the O(N) cost we are avoiding per drain.
+    const index = await this.buildThreadIndex(threadId);
+    const startIndex =
+      afterMessageId === null
+        ? 0
+        : index.findIndex((ref) => ref.id === afterMessageId) + 1;
+    // findIndex returns -1 (start 0) when the anchor was pruned/unknown, so
+    // resumption re-emits from the beginning; downstream extraction is
+    // idempotent, so this never loses events.
+    const slice = index.slice(startIndex, startIndex + boundedLimit);
+    const materialized = await Promise.all(
+      slice.map((ref) => this.materializeEntry(ref)),
+    );
+    return materialized.filter(
+      (message): message is TeamMessage => message !== null,
+    );
+  }
+
   async get(messageId: MessageId): Promise<TeamMessage | null> {
     const projected = await readJsonFile<TeamMessage>(this.byIdFilePath(messageId));
     if (projected) {
@@ -133,29 +162,75 @@ export class FileTeamMessageStore implements TeamMessageStore {
   }
 
   private async readThreadMessages(threadId: ThreadId): Promise<TeamMessage[]> {
-    const [legacyMessages, entryPaths] = await Promise.all([
-      readJsonFile<TeamMessage[]>(this.filePath(threadId)),
-      listJsonFiles(this.entryDir(threadId)),
+    const index = await this.buildThreadIndex(threadId);
+    const materialized = await Promise.all(
+      index.map((ref) => this.materializeEntry(ref)),
+    );
+    return materialized.filter(
+      (message): message is TeamMessage => message !== null,
+    );
+  }
+
+  /**
+   * Ordered, de-duplicated index of a thread's messages built from entry
+   * filenames (which encode createdAt-updatedAt-id) plus the legacy array,
+   * without reading each entry's contents. Ordering matches the historical
+   * (createdAt, updatedAt, id) sort so `list` stays behavior-identical.
+   */
+  private async buildThreadIndex(threadId: ThreadId): Promise<ThreadEntryRef[]> {
+    const [legacyMessages, entryNames] = await Promise.all([
+      readJsonFile<TeamMessage[]>(this.filePath(threadId), {
+        onCorruption: "quarantine",
+      }),
+      this.listEntryNames(threadId),
     ]);
-    const journalMessages = (
-      await Promise.all(entryPaths.map((filePath) => readJsonFile<TeamMessage>(filePath)))
-    ).filter((message): message is TeamMessage => message !== null);
-    const merged = new Map<MessageId, TeamMessage>();
-    for (const message of [...(legacyMessages ?? []), ...journalMessages]) {
-      const existing = merged.get(message.id);
-      if (!existing || message.updatedAt >= existing.updatedAt) {
-        merged.set(message.id, message);
+    const byId = new Map<MessageId, ThreadEntryRef>();
+    const consider = (ref: ThreadEntryRef): void => {
+      const existing = byId.get(ref.id);
+      if (!existing || ref.updatedAt >= existing.updatedAt) {
+        byId.set(ref.id, ref);
       }
+    };
+    for (const message of legacyMessages ?? []) {
+      consider({
+        id: message.id,
+        createdAt: message.createdAt,
+        updatedAt: message.updatedAt,
+        legacy: message,
+      });
     }
-    return [...merged.values()].sort((left, right) => {
-      if (left.createdAt !== right.createdAt) {
-        return left.createdAt - right.createdAt;
-      }
-      if (left.updatedAt !== right.updatedAt) {
-        return left.updatedAt - right.updatedAt;
-      }
-      return left.id.localeCompare(right.id);
-    });
+    for (const name of entryNames) {
+      const parsed = parseEntryName(name);
+      if (!parsed) continue;
+      consider({
+        ...parsed,
+        entryPath: path.join(this.entryDir(threadId), name),
+      });
+    }
+    return [...byId.values()].sort(compareEntryRefs);
+  }
+
+  private async materializeEntry(
+    ref: ThreadEntryRef,
+  ): Promise<TeamMessage | null> {
+    if (ref.entryPath) {
+      // The entry file is authoritative; its contents win over any stale
+      // legacy copy carrying the same id.
+      const message = await readJsonFile<TeamMessage>(ref.entryPath, {
+        onCorruption: "quarantine",
+      });
+      if (message) return message;
+    }
+    return ref.legacy ?? null;
+  }
+
+  private async listEntryNames(threadId: ThreadId): Promise<string[]> {
+    const dir = this.entryDir(threadId);
+    await mkdir(dir, { recursive: true });
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => entry.name);
   }
 
   private async withThreadLock<T>(threadId: ThreadId, work: () => Promise<T>): Promise<T> {
@@ -226,6 +301,51 @@ export class FileTeamMessageStore implements TeamMessageStore {
   private legacyBackfillMarkerPath(): string {
     return path.join(this.rootDir, ".migration", "legacy-by-id-backfill-complete");
   }
+}
+
+interface ThreadEntryRef {
+  id: MessageId;
+  createdAt: number;
+  updatedAt: number;
+  entryPath?: string;
+  legacy?: TeamMessage;
+}
+
+/**
+ * Parse an entry filename of the form
+ * `<createdAt padStart16>-<updatedAt padStart16>-<encodeURIComponent(id)>.json`.
+ * Message ids may themselves contain `-` (encodeURIComponent leaves it
+ * intact), so only the first two `-`-delimited fields are timestamps and
+ * the remainder rejoins to the encoded id.
+ */
+function parseEntryName(
+  name: string,
+): { id: MessageId; createdAt: number; updatedAt: number } | null {
+  if (!name.endsWith(".json")) return null;
+  const base = name.slice(0, -".json".length);
+  const parts = base.split("-");
+  if (parts.length < 3) return null;
+  const createdAt = Number(parts[0]);
+  const updatedAt = Number(parts[1]);
+  if (!Number.isFinite(createdAt) || !Number.isFinite(updatedAt)) return null;
+  const encodedId = parts.slice(2).join("-");
+  let id: string;
+  try {
+    id = decodeURIComponent(encodedId);
+  } catch {
+    return null;
+  }
+  return { id: id as MessageId, createdAt, updatedAt };
+}
+
+function compareEntryRefs(left: ThreadEntryRef, right: ThreadEntryRef): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt - right.createdAt;
+  }
+  if (left.updatedAt !== right.updatedAt) {
+    return left.updatedAt - right.updatedAt;
+  }
+  return left.id.localeCompare(right.id);
 }
 
 async function readFileList(rootDir: string): Promise<string[]> {

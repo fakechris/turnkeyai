@@ -43,6 +43,94 @@ test("file team message store appends messages as per-message journal entries", 
   }
 });
 
+test("file team message store listAfter returns the tail after a message id", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-after-"));
+  try {
+    const store = new FileTeamMessageStore({ rootDir });
+    for (let n = 1; n <= 5; n += 1) {
+      await store.append({
+        id: `msg-${n}`,
+        threadId: "thread-1",
+        role: n % 2 === 0 ? "assistant" : "user",
+        name: "n",
+        content: `m${n}`,
+        createdAt: n * 10,
+        updatedAt: n * 10,
+      });
+    }
+
+    assert.deepEqual(
+      (await store.listAfter("thread-1", "msg-2", 10)).map((m) => m.id),
+      ["msg-3", "msg-4", "msg-5"],
+    );
+    // Limit bounds the tail.
+    assert.deepEqual(
+      (await store.listAfter("thread-1", "msg-2", 2)).map((m) => m.id),
+      ["msg-3", "msg-4"],
+    );
+    // Null anchor reads from the start.
+    assert.deepEqual(
+      (await store.listAfter("thread-1", null, 3)).map((m) => m.id),
+      ["msg-1", "msg-2", "msg-3"],
+    );
+    // A pruned/unknown anchor re-emits from the start (idempotent resume).
+    assert.deepEqual(
+      (await store.listAfter("thread-1", "msg-gone", 2)).map((m) => m.id),
+      ["msg-1", "msg-2"],
+    );
+    // Content is materialized from the authoritative entry file.
+    assert.equal((await store.listAfter("thread-1", "msg-4", 1))[0]?.content, "m5");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file team message store listAfter tolerates ids containing hyphens and in-place updates", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-after2-"));
+  try {
+    const store = new FileTeamMessageStore({ rootDir });
+    await store.append({
+      id: "MSG-100-a",
+      threadId: "thread-1",
+      role: "user",
+      name: "n",
+      content: "first",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    await store.append({
+      id: "MSG-200-b",
+      threadId: "thread-1",
+      role: "assistant",
+      name: "n",
+      content: "second",
+      createdAt: 20,
+      updatedAt: 20,
+    });
+    // Update the second message in place (bumps updatedAt, new entry file).
+    await store.append({
+      id: "MSG-200-b",
+      threadId: "thread-1",
+      role: "assistant",
+      name: "n",
+      content: "second-updated",
+      createdAt: 20,
+      updatedAt: 30,
+    });
+
+    assert.deepEqual(
+      (await store.listAfter("thread-1", "MSG-100-a", 10)).map((m) => m.id),
+      ["MSG-200-b"],
+    );
+    assert.equal(
+      (await store.listAfter("thread-1", "MSG-100-a", 10))[0]?.content,
+      "second-updated",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("file team message store merges legacy thread files with append-only journal entries", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-legacy-"));
 

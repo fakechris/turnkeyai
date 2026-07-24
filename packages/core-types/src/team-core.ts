@@ -595,6 +595,19 @@ export interface TeamMessageStore {
    */
   appendIfAbsent?(message: TeamMessage): Promise<TeamMessageAppendIfAbsentResult>;
   list(threadId: ThreadId, limit?: number): Promise<TeamMessage[]>;
+  /**
+   * Incremental tail read: returns up to `limit` messages ordered after the
+   * message with id `afterMessageId` (or from the start when it is null or
+   * not found). Implementations should read only the tail rather than the
+   * whole thread, so long-thread consumers (e.g. the durable-memory writer)
+   * do not scale their per-drain cost with thread length. Optional for
+   * backward compatibility; callers must fall back to `list` when absent.
+   */
+  listAfter?(
+    threadId: ThreadId,
+    afterMessageId: MessageId | null,
+    limit: number,
+  ): Promise<TeamMessage[]>;
   get(messageId: MessageId): Promise<TeamMessage | null>;
 }
 

@@ -376,26 +376,18 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
   const workspaceMemoryWriter = new DefaultWorkspaceMemoryWriter({
     store: workspaceMemoryStore,
     loadEvents: async ({ workspaceId, afterSequence, afterEventId, limit }) => {
-      const messages = await teamMessageStore.list(workspaceId);
-      // Order by append-stable properties only. The store's own sort
-      // includes updatedAt (mutable: journal messages are rewritten in
-      // place) and lexicographic ids (non-monotonic within one
-      // millisecond), so a positional cursor over it silently skips or
-      // re-reads events. Resume from the durable lastEventId anchor and
-      // continue the sequence monotonically from the stored cursor.
-      const ordered = [...messages].sort((left, right) =>
-        left.createdAt - right.createdAt ||
-        left.id.localeCompare(right.id, undefined, { numeric: true })
-      );
-      const anchor = afterEventId
-        ? ordered.findIndex(
-            (message) => `message:${message.id}` === afterEventId,
-          )
-        : -1;
-      // Anchor missing (e.g. pruned history): re-emit from the start —
-      // memory ids are deterministic, so reprocessing is idempotent.
-      const start = anchor >= 0 ? anchor + 1 : 0;
-      return ordered.slice(start, start + limit).map((message, index) => ({
+      // Resume from the durable lastEventId anchor via the store's
+      // incremental tail read, so per-drain cost scales with the tail
+      // (limit) rather than the whole thread. The anchor is a message id,
+      // not a position, so an in-place update reordering an earlier
+      // message causes at worst idempotent reprocessing, never a skip.
+      const afterMessageId = afterEventId?.startsWith("message:")
+        ? afterEventId.slice("message:".length)
+        : null;
+      const tail = teamMessageStore.listAfter
+        ? await teamMessageStore.listAfter(workspaceId, afterMessageId, limit)
+        : (await teamMessageStore.list(workspaceId)).slice(0, limit);
+      return tail.map((message, index) => ({
         eventId: `message:${message.id}`,
         workspaceId,
         threadId: message.threadId,
