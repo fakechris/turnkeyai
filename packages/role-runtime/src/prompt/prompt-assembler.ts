@@ -53,12 +53,22 @@ export interface PromptAssemblyInput {
   } | null;
   retrievedMemory?: MemoryHit[];
   workerEvidence?: WorkerEvidenceDigest[];
+  /**
+   * Capabilities currently enabled for this role's runtime, keyed by the
+   * `requiredCapability` values declared in the prompt registry (e.g. "memory",
+   * "sessions"). When provided, an assembly segment whose registry
+   * `requiredCapability` is not "always" and is absent from this set is omitted
+   * with reason "capability-disabled" — enforcing the registry contract instead
+   * of rendering purely on data presence. When undefined, every segment is
+   * treated as capability-enabled (backward compatible).
+   */
+  enabledCapabilities?: ReadonlySet<string>;
   budget: PromptTokenBudget;
 }
 
 export interface OmittedPromptSegment {
   segment: Exclude<PromptSegmentName, "task-brief">;
-  reason: "budget" | "empty" | "not-relevant";
+  reason: "budget" | "empty" | "not-relevant" | "capability-disabled";
 }
 
 export interface PromptAssemblyResult {
@@ -284,7 +294,9 @@ export class DefaultPromptAssembler implements PromptAssembler {
       omittedSegments.push({ segment: "role-scratchpad", reason: "empty" });
     }
 
-    if (input.workerEvidence && input.workerEvidence.length > 0) {
+    if (!isSegmentCapabilityEnabled("worker-evidence", input.enabledCapabilities)) {
+      omittedSegments.push({ segment: "worker-evidence", reason: "capability-disabled" });
+    } else if (input.workerEvidence && input.workerEvidence.length > 0) {
       if (admittedWorkerEvidence.length > 0) {
         const workerSection = buildBudgetedListSection({
           title: WORKER_EVIDENCE_SECTION_TITLE,
@@ -320,7 +332,9 @@ export class DefaultPromptAssembler implements PromptAssembler {
       omittedSegments.push({ segment: "worker-evidence", reason: "empty" });
     }
 
-    if (input.retrievedMemory && input.retrievedMemory.length > 0) {
+    if (!isSegmentCapabilityEnabled("retrieved-memory", input.enabledCapabilities)) {
+      omittedSegments.push({ segment: "retrieved-memory", reason: "capability-disabled" });
+    } else if (input.retrievedMemory && input.retrievedMemory.length > 0) {
       const memorySection = buildBudgetedListSection({
         title: "Retrieved memory:",
         items: visibleMemory.map((hit) => {
@@ -674,6 +688,22 @@ function recentTurnSalienceScore(message: TeamMessageSummary): number {
     score += 0.5;
   }
   return score;
+}
+
+function isSegmentCapabilityEnabled(
+  segment: Exclude<PromptSegmentName, "task-brief">,
+  enabledCapabilities: ReadonlySet<string> | undefined,
+): boolean {
+  if (!enabledCapabilities) {
+    return true;
+  }
+  const requiredCapability = DEFAULT_PROMPT_SECTION_REGISTRY.get(
+    PROMPT_ASSEMBLY_SECTION_IDS[segment],
+  ).requiredCapability;
+  return (
+    requiredCapability === "always" ||
+    enabledCapabilities.has(requiredCapability)
+  );
 }
 
 function segmentOrderIndex(segment: Exclude<PromptSegmentName, "task-brief">): number {

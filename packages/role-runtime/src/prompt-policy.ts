@@ -267,6 +267,17 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       preferredWorkerKinds,
     });
     const dispatchGoal = getDispatchGoal(input.handoff.payload);
+    // Capability sections (retrieved-memory→memory, worker-evidence→sessions)
+    // are omitted when their tool capability is disabled, enforcing the prompt
+    // registry's requiredCapability contract instead of rendering on data
+    // presence alone. Without a tool capability registry the gate stays open.
+    const enabledCapabilities = this.toolCapabilityRegistry
+      ? new Set(
+          this.toolCapabilityRegistry
+            .summaries()
+            .map((summary) => summary.promptGroup),
+        )
+      : undefined;
     const assembly = await this.promptAssembler.assemble({
       thread: input.thread,
       flow: input.flow,
@@ -279,6 +290,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       roleScratchpad,
       retrievedMemory,
       workerEvidence,
+      ...(enabledCapabilities ? { enabledCapabilities } : {}),
       budget,
     });
     const continuationSection = buildResolvedContinuationSection(

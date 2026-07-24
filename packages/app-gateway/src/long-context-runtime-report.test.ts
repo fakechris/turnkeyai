@@ -292,9 +292,17 @@ test("long-context runtime report joins prompt, checkpoint, memory, index, and t
           };
         },
       } as never,
+      // Full tool surface enabled → every registered tool section is reachable,
+      // so the live-config audit stays valid (no prompt_registry_invalid).
       activeToolPromptSectionIds: [
         "prompt.tools.general",
+        "prompt.tools.sessions",
+        "prompt.tools.web",
+        "prompt.tools.artifacts",
+        "prompt.tools.permissions",
+        "prompt.tools.memory",
         "prompt.tools.tasks",
+        "prompt.tools.browser",
       ],
       taskSnapshotProvider: async () => [
         JSON.stringify({
@@ -489,4 +497,124 @@ test("long-context runtime report returns null for an unknown thread", async () 
     "missing",
   );
   assert.equal(report, null);
+});
+
+const ALL_TOOL_PROMPT_SECTION_IDS = [
+  "prompt.tools.general",
+  "prompt.tools.sessions",
+  "prompt.tools.web",
+  "prompt.tools.artifacts",
+  "prompt.tools.permissions",
+  "prompt.tools.memory",
+  "prompt.tools.tasks",
+  "prompt.tools.browser",
+];
+
+function baseReportDeps(overrides: {
+  activeToolPromptSectionIds: string[];
+  runtimeProgress?: unknown[];
+}) {
+  return {
+    now: () => 1,
+    teamThreadStore: {
+      async get() {
+        return {
+          threadId: "thread-1",
+          teamId: "team-1",
+          teamName: "Team",
+          leadRoleId: "role-lead",
+          roles: [{
+            roleId: "role-lead",
+            name: "Lead",
+            seat: "lead" as const,
+            runtime: "local" as const,
+          }],
+          participantLinks: [],
+          metadataVersion: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      },
+    },
+    flowLedgerStore: { async listByThread() { return []; } },
+    teamMessageStore: { async list() { return []; } },
+    runtimeProgressStore: {
+      async listByThread() {
+        return (overrides.runtimeProgress ?? []) as never;
+      },
+    },
+    workerSessionStore: { async listByThread() { return []; } },
+    permissionCacheStore: { async listByThread() { return []; } },
+    contextCheckpointStore: {} as never,
+    dynamicContextBaselineStore: {} as never,
+    workspaceMemoryStore: {
+      async getSnapshot() {
+        return {
+          workspaceId: "thread-1",
+          records: [],
+          cursor: { workspaceId: "thread-1", lastSequence: 0, updatedAt: 0 },
+          audits: [],
+        };
+      },
+    } as never,
+    memorySearchIndex: {} as never,
+    activeToolPromptSectionIds: overrides.activeToolPromptSectionIds,
+  };
+}
+
+test("live-config audit fires prompt_registry_invalid when a capability section is unreachable", async () => {
+  const report = await buildLongContextRuntimeReport(
+    baseReportDeps({
+      // permissions intentionally disabled — real runtime drift the old
+      // constant-route audit could never detect.
+      activeToolPromptSectionIds: ALL_TOOL_PROMPT_SECTION_IDS.filter(
+        (sectionId) => sectionId !== "prompt.tools.permissions",
+      ),
+    }),
+    "thread-1",
+  );
+
+  assert.ok(report);
+  assert.equal(report.promptRegistry.audit.valid, false);
+  assert.deepEqual(report.promptRegistry.audit.unreachableSectionIds, [
+    "prompt.tools.permissions",
+  ]);
+  assert.ok(report.attention.includes("prompt_registry_invalid"));
+});
+
+test("report raises prompt_section_over_budget when a section receipt exceeds its token policy", async () => {
+  const report = await buildLongContextRuntimeReport(
+    baseReportDeps({
+      activeToolPromptSectionIds: ALL_TOOL_PROMPT_SECTION_IDS,
+      runtimeProgress: [{
+        progressId: "progress:prompt-assembly:task-1",
+        threadId: "thread-1",
+        subjectKind: "role_run",
+        subjectId: "role:role-lead:thread:thread-1",
+        phase: "heartbeat",
+        progressKind: "boundary",
+        summary: "Prompt assembly included 1 section.",
+        recordedAt: 480,
+        metadata: {
+          boundaryKind: "prompt_assembly",
+          sectionReceipts: [{
+            sectionId: "prompt.assembly.task-brief",
+            version: "1.0.0",
+            owner: "packages/role-runtime/src/prompt/prompt-assembler.ts",
+            authority: "context-projection",
+            requiredCapability: "always",
+            baselineBehavior: "rehydrate-full",
+            state: "included",
+            estimatedTokens: 99_999,
+            overBudget: true,
+          }],
+        },
+      }],
+    }),
+    "thread-1",
+  );
+
+  assert.ok(report);
+  assert.equal(report.promptRegistry.audit.valid, true);
+  assert.ok(report.attention.includes("prompt_section_over_budget"));
 });

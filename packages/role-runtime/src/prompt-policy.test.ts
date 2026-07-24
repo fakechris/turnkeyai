@@ -24,12 +24,16 @@ import { FileWorkerEvidenceDigestStore } from "@turnkeyai/team-store/context/fil
 
 import { DefaultContextBudgeter } from "./context/context-budgeter";
 import { DefaultRoleMemoryResolver } from "./context/role-memory-resolver";
-import { DefaultPromptAssembler } from "./prompt/prompt-assembler";
+import {
+  DefaultPromptAssembler,
+  type PromptAssemblyInput,
+} from "./prompt/prompt-assembler";
 import {
   DefaultRolePromptPolicy,
   recordPromptAssemblyBoundarySafely,
   type RolePromptPacket,
 } from "./prompt-policy";
+import { DEFAULT_PROMPT_SECTION_REGISTRY } from "./prompt-registry";
 import { DefaultRoleProfileRegistry } from "./role-profile";
 import { createNativeToolCapabilityRegistry } from "./tool-capability-registry";
 import { DefaultCapabilityDiscoveryService } from "@turnkeyai/worker-runtime/capability-discovery-service";
@@ -300,7 +304,9 @@ test("default role prompt policy assembles context from thread and worker stores
       ),
       {
         sectionId: "prompt.assembly.worker-evidence",
-        version: "1.0.0",
+        version: DEFAULT_PROMPT_SECTION_REGISTRY.get(
+          "prompt.assembly.worker-evidence",
+        ).version,
         owner: "packages/role-runtime/src/prompt/prompt-assembler.ts",
         authority: "untrusted-evidence",
         requiredCapability: "sessions",
@@ -1987,4 +1993,90 @@ test("prompt without a dispatch goal keeps the legacy task brief shape", async (
   const packet = await policy.buildPacket(buildFinanceActivationInput());
   assert.doesNotMatch(packet.taskPrompt, /Original user goal \(verbatim\):/);
   assert.match(packet.taskPrompt, /Task brief:/);
+});
+
+test("assembler omits capability-gated sections when their required capability is disabled", async () => {
+  const assembler = new DefaultPromptAssembler({
+    estimateTokens: async () => ({
+      inputTokens: 10,
+      outputTokensReserved: 0,
+      totalProjectedTokens: 10,
+      overBudget: false,
+    }),
+  });
+  const base = {
+    thread: { threadId: "thread-1" },
+    flow: { flowId: "flow-1" },
+    role: { name: "Lead", seat: "lead" },
+    handoff: { activationType: "dispatch", payload: {} },
+    recentTurns: [],
+    retrievedMemory: [{
+      content: "Prefer primary sources.",
+      score: 1,
+      source: "thread-memory",
+      untrusted: false,
+    }],
+    workerEvidence: [{
+      workerRunKey: "worker-1",
+      threadId: "thread-1",
+      workerType: "browser",
+      admissionMode: "full",
+      trustLevel: "observational",
+      findings: ["Visited a public pricing page."],
+      artifactIds: [],
+      updatedAt: 1,
+    }],
+    budget: {
+      totalBudget: 10_000,
+      reservedOutputTokens: 1_000,
+      systemLayerBudget: 1_000,
+      taskLayerBudget: 2_000,
+      recentTurnsBudget: 2_000,
+      compressedMemoryBudget: 2_000,
+      workerEvidenceBudget: 2_000,
+      safetyMargin: 100,
+    },
+  } as unknown as PromptAssemblyInput;
+
+  // No capability gate → both capability sections render on data presence.
+  const open = await assembler.assemble(base);
+  assert.equal(
+    open.omittedSegments.some((segment) => segment.segment === "retrieved-memory"),
+    false,
+  );
+  assert.equal(
+    open.omittedSegments.some((segment) => segment.segment === "worker-evidence"),
+    false,
+  );
+
+  // Only "sessions" enabled → retrieved-memory (requires "memory") is omitted,
+  // worker-evidence (requires "sessions") still renders.
+  const memoryDisabled = await assembler.assemble({
+    ...base,
+    enabledCapabilities: new Set(["sessions"]),
+  });
+  assert.equal(
+    memoryDisabled.omittedSegments.find(
+      (segment) => segment.segment === "retrieved-memory",
+    )?.reason,
+    "capability-disabled",
+  );
+  assert.equal(
+    memoryDisabled.omittedSegments.some(
+      (segment) => segment.segment === "worker-evidence",
+    ),
+    false,
+  );
+
+  // No tool capabilities → worker-evidence is omitted as capability-disabled too.
+  const allDisabled = await assembler.assemble({
+    ...base,
+    enabledCapabilities: new Set<string>(),
+  });
+  assert.equal(
+    allDisabled.omittedSegments.find(
+      (segment) => segment.segment === "worker-evidence",
+    )?.reason,
+    "capability-disabled",
+  );
 });

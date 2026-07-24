@@ -31,6 +31,13 @@ export interface PromptSectionRuntimeReceipt {
   state: PromptSectionRuntimeState;
   estimatedTokens: number;
   reason?: string;
+  /**
+   * Set when the section's rendered `estimatedTokens` exceeds the bounded
+   * `tokenPolicy.maxTokens` declared for it in the prompt registry. This is an
+   * observability signal only — the section is still rendered — surfaced to the
+   * long-context report so registry/runtime token drift is visible.
+   */
+  overBudget?: boolean;
 }
 
 export type PromptContextRiskSignal =
