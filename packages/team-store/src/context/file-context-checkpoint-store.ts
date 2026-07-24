@@ -38,6 +38,7 @@ export class FileContextCheckpointStore implements ContextCheckpointStore {
   async get(checkpointId: string): Promise<ContextCheckpointRecord | null> {
     const record = await readJsonFile<ContextCheckpointRecord>(
       this.recordPath(checkpointId),
+      { onCorruption: "quarantine" },
     );
     return isContextCheckpointRecord(record) ? record : null;
   }
@@ -54,7 +55,9 @@ export class FileContextCheckpointStore implements ContextCheckpointStore {
           );
         }
       }
-      await writeJsonFileAtomic(this.recordPath(record.checkpointId), record);
+      await writeJsonFileAtomic(this.recordPath(record.checkpointId), record, {
+        durability: "strict",
+      });
     });
   }
 
@@ -63,6 +66,7 @@ export class FileContextCheckpointStore implements ContextCheckpointStore {
   ): Promise<ContextCheckpointRecord | null> {
     const pointer = await readJsonFile<ContextCheckpointActivePointer>(
       this.activePointerPath(scope),
+      { onCorruption: "quarantine" },
     );
     if (!isActivePointer(pointer) || !sameScope(pointer.scope, scope)) {
       return null;
@@ -124,6 +128,7 @@ export class FileContextCheckpointStore implements ContextCheckpointStore {
       await writeJsonFileAtomic(
         this.activePointerPath(input.scope),
         pointer,
+        { durability: "strict" },
       );
       return activated;
     });
@@ -135,7 +140,11 @@ export class FileContextCheckpointStore implements ContextCheckpointStore {
   ): Promise<ContextCheckpointRecord[]> {
     const files = await listJsonFiles(this.recordsDir());
     const records = await Promise.all(
-      files.map((file) => readJsonFile<ContextCheckpointRecord>(file)),
+      files.map((file) =>
+        readJsonFile<ContextCheckpointRecord>(file, {
+          onCorruption: "quarantine",
+        }),
+      ),
     );
     const matching = records
       .filter(isContextCheckpointRecord)

@@ -111,10 +111,19 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
       ftsWeight: FTS_WEIGHT,
       vectorWeight: VECTOR_WEIGHT,
     }).slice(0, input.limit ?? DEFAULT_HITS);
+    const now = Date.now();
     const hits: HybridMemoryRecallHit[] = [];
     for (const item of fused) {
       const record = await this.get(item.memoryId);
-      if (!record || !withinScope(record, input.scope)) continue;
+      // Skip expired records the derived index may still carry between the
+      // authoritative store's commit-time evictions and the next reconcile.
+      if (
+        !record ||
+        !withinScope(record, input.scope) ||
+        (record.expiresAt !== undefined && record.expiresAt <= now)
+      ) {
+        continue;
+      }
       hits.push({
         record,
         score: item.score,
