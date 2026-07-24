@@ -1791,6 +1791,74 @@ test("sessions_spawn blocks browser side effects before worker execution until a
   assert.equal(result.progress?.[0]?.detail?.eventType, "permission.query");
 });
 
+test("sessions_spawn blocks Chinese-instruction browser side effects before worker execution", async () => {
+  let spawnCalled = false;
+  let requestedAction = "";
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      requestedAction = input.action;
+      return {
+        status: "pending",
+        approvalId: "ap.thread-1.call-submit-zh",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Approval is pending.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-zh" };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-submit-zh",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "打开结账页面，点击提交订单按钮并截图确认。",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "打开结账页面，点击提交订单按钮并截图确认。",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; blocked_before_side_effect: boolean };
+  assert.equal(spawnCalled, false);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "requires_approval");
+  assert.equal(body.blocked_before_side_effect, true);
+  assert.equal(requestedAction, "browser.form.submit");
+});
+
 test("sessions_spawn allows pre-approval browser inspection when parent goal later requires submission approval", async () => {
   let spawnCalled = false;
   let requestedAction = "";

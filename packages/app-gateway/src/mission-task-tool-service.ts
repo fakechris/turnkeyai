@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type {
   ActivityEventStore,
   Mission,
@@ -150,7 +152,6 @@ export function createMissionTaskToolService(options: MissionTaskToolServiceOpti
             receiptInputs: input.verificationReceipts ?? [],
             actor: input.roleId,
             now: options.clock.now(),
-            newReceiptId: () => `receipt.${options.idGenerator.messageId()}`,
           });
         }
         const graph = replaceDependencyEdges(items, current, next);
@@ -181,8 +182,12 @@ async function resolveMission(
   missionStore: MissionStore,
   input: { threadId: string; missionId?: string }
 ): Promise<Mission> {
+  const requested = input.missionId ? await missionStore.get(input.missionId) : null;
+  if (requested && requested.threadId !== input.threadId) {
+    throw new Error(`mission not found for thread: ${input.missionId}`);
+  }
   const mission =
-    (input.missionId ? await missionStore.get(input.missionId) : null) ??
+    requested ??
     (missionStore.findByThreadId ? await missionStore.findByThreadId(input.threadId) : null);
   if (!mission) {
     throw new Error("task tools require a mission-linked thread or mission_id");
@@ -306,11 +311,10 @@ function applyVerificationUpdates(input: {
   receiptInputs: NonNullable<TaskToolUpdateInput["verificationReceipts"]>;
   actor: string;
   now: number;
-  newReceiptId: () => string;
 }): void {
   for (const receiptInput of input.receiptInputs) {
     const receipt: VerificationReceipt = {
-      receiptId: input.newReceiptId(),
+      receiptId: deterministicReceiptId(receiptInput),
       criterionId: receiptInput.criterionId,
       kind: receiptInput.kind,
       ref: receiptInput.ref,
@@ -319,7 +323,12 @@ function applyVerificationUpdates(input: {
       verifiedAt: input.now,
       ...(receiptInput.reason ? { reason: receiptInput.reason } : {}),
     };
-    input.specification.verificationReceipts.push(receipt);
+    const alreadyRecorded = input.specification.verificationReceipts.some(
+      (existing) => existing.receiptId === receipt.receiptId,
+    );
+    if (!alreadyRecorded) {
+      input.specification.verificationReceipts.push(receipt);
+    }
     const criterion = input.specification.acceptanceCriteria.find(
       (candidate) => candidate.id === receipt.criterionId,
     );
@@ -341,6 +350,18 @@ function applyVerificationUpdates(input: {
     }
     criterion.state = update.state;
   }
+}
+
+function deterministicReceiptId(input: {
+  criterionId: string;
+  kind: VerificationReceipt["kind"];
+  ref: string;
+  result: VerificationReceipt["result"];
+}): string {
+  const digest = createHash("sha256")
+    .update([input.criterionId, input.kind, input.ref, input.result].join("\u0000"))
+    .digest("hex");
+  return `receipt.${digest.slice(0, 16)}`;
 }
 
 async function persistGraphMutation(
@@ -375,20 +396,31 @@ async function appendTaskEvent(
   text: string,
   item: WorkItem
 ): Promise<void> {
-  await options.activityStore.append({
-    id: options.idGenerator.messageId(),
-    missionId: mission.id,
-    tMs: options.clock.now(),
-    kind: "plan",
-    actor,
-    text,
-    tags: ["task", item.status],
-    runtime: {
-      eventType: "task.update",
+  try {
+    await options.activityStore.append({
+      id: options.idGenerator.messageId(),
+      missionId: mission.id,
+      tMs: options.clock.now(),
+      kind: "plan",
+      actor,
+      text,
+      tags: ["task", item.status],
+      runtime: {
+        eventType: "task.update",
+        workItemId: item.id,
+        status: item.status,
+      },
+    });
+  } catch (error) {
+    // The work item mutation is already persisted; failing here would make
+    // the tool report an error for a committed change and trigger a
+    // duplicating retry. Log and keep the activity append non-fatal.
+    console.error("mission task activity append failed", {
+      missionId: mission.id,
       workItemId: item.id,
-      status: item.status,
-    },
-  });
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function describeTaskUpdate(previous: WorkItem, next: WorkItem): string {

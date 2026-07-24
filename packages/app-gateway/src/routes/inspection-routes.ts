@@ -61,7 +61,10 @@ export async function handleInspectionRoutes(input: {
 
   if (req.method === "GET" && url.pathname === "/events") {
     const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
-    const limit = Number(url.searchParams.get("limit") ?? 50);
+    const requestedLimit = Number(url.searchParams.get("limit") ?? 50);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(Math.floor(requestedLimit), 1000)
+      : 50;
     sendJson(res, 200, await deps.listRecentEvents(threadId, limit));
     return true;
   }

@@ -334,6 +334,253 @@ test("mission task tool service enforces dependency and acceptance receipts atom
   }
 });
 
+test("mission task tool service rejects a mission_id from another thread", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "tk-mission-task-tools-foreign-"));
+  try {
+    let now = 1_700_000_000_000;
+    let taskSeq = 0;
+    let msgSeq = 0;
+    const missionDeps = composeMissionDeps({
+      dataDir: dir,
+      clock: { now: () => now++ },
+    });
+    await missionDeps.missionStore.putRaw({
+      id: "msn.1",
+      shortId: "MSN-0001",
+      title: "Research launch plan",
+      desc: "",
+      status: "working",
+      mode: "research",
+      modeLabel: "Research",
+      owner: "you",
+      ownerLabel: "You",
+      createdAt: new Date(now).toISOString(),
+      createdAtMs: now,
+      agents: ["role-lead"],
+      progress: 0,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+      threadId: "thread-1",
+    });
+    await missionDeps.missionStore.putRaw({
+      id: "msn.2",
+      shortId: "MSN-0002",
+      title: "Foreign mission",
+      desc: "",
+      status: "working",
+      mode: "research",
+      modeLabel: "Research",
+      owner: "you",
+      ownerLabel: "You",
+      createdAt: new Date(now).toISOString(),
+      createdAtMs: now,
+      agents: ["role-lead"],
+      progress: 0,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+      threadId: "thread-2",
+    });
+    const service = createMissionTaskToolService({
+      missionStore: missionDeps.missionStore,
+      workItemStore: missionDeps.workItemStore,
+      activityStore: missionDeps.activityStore,
+      clock: { now: () => now++ },
+      idGenerator: {
+        taskId: () => `task-${++taskSeq}`,
+        messageId: () => `ev.${++msgSeq}`,
+      },
+    });
+
+    await assert.rejects(
+      service.create({
+        threadId: "thread-1",
+        roleId: "role-lead",
+        missionId: "msn.2",
+        title: "Cross-thread write",
+      }),
+      /mission not found for thread: msn\.2/,
+    );
+    await assert.rejects(
+      service.list({ threadId: "thread-1", roleId: "role-lead", missionId: "msn.2" }),
+      /mission not found for thread: msn\.2/,
+    );
+    const foreignItems = await missionDeps.workItemStore.listByMission("msn.2");
+    assert.equal(foreignItems.length, 0);
+
+    const listed = await service.list({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      missionId: "msn.1",
+    }) as { mission_id: string };
+    assert.equal(listed.mission_id, "msn.1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mission task tool service keeps verification receipts idempotent under retry", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "tk-mission-task-tools-receipts-"));
+  try {
+    let now = 1_700_000_000_000;
+    let taskSeq = 0;
+    let msgSeq = 0;
+    const missionDeps = composeMissionDeps({
+      dataDir: dir,
+      clock: { now: () => now++ },
+    });
+    await missionDeps.missionStore.putRaw({
+      id: "msn.1",
+      shortId: "MSN-0001",
+      title: "Ship verified report",
+      desc: "",
+      status: "working",
+      mode: "research",
+      modeLabel: "Research",
+      owner: "you",
+      ownerLabel: "You",
+      createdAt: new Date(now).toISOString(),
+      createdAtMs: now,
+      agents: ["role-lead"],
+      progress: 0,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+      threadId: "thread-1",
+    });
+    const service = createMissionTaskToolService({
+      missionStore: missionDeps.missionStore,
+      workItemStore: missionDeps.workItemStore,
+      activityStore: missionDeps.activityStore,
+      clock: { now: () => now++ },
+      idGenerator: {
+        taskId: () => `task-${++taskSeq}`,
+        messageId: () => `ev.${++msgSeq}`,
+      },
+    });
+
+    const created = await service.create({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      title: "Collect evidence",
+      objective: "Collect the authoritative source evidence",
+      acceptanceCriteria: [{
+        id: "evidence-exists",
+        description: "Evidence artifact is readable",
+        required: true,
+      }],
+    }) as { task: { id: string } };
+    const receiptInput = {
+      threadId: "thread-1",
+      roleId: "role-lead",
+      workItemId: created.task.id,
+      status: "done" as const,
+      verificationReceipts: [{
+        criterionId: "evidence-exists",
+        kind: "artifact" as const,
+        ref: "artifact://evidence",
+        result: "passed" as const,
+      }],
+    };
+    const first = await service.update(receiptInput) as {
+      task: { specification: { verification_receipts: Array<{ receipt_id: string }> } };
+    };
+    const retried = await service.update(receiptInput) as {
+      task: { specification: { verification_receipts: Array<{ receipt_id: string }> } };
+    };
+    assert.equal(first.task.specification.verification_receipts.length, 1);
+    assert.equal(retried.task.specification.verification_receipts.length, 1);
+    assert.equal(
+      retried.task.specification.verification_receipts[0]?.receipt_id,
+      first.task.specification.verification_receipts[0]?.receipt_id,
+    );
+
+    const distinct = await service.update({
+      ...receiptInput,
+      verificationReceipts: [{
+        criterionId: "evidence-exists",
+        kind: "artifact" as const,
+        ref: "artifact://evidence-2",
+        result: "passed" as const,
+      }],
+    }) as {
+      task: { specification: { verification_receipts: Array<{ receipt_id: string }> } };
+    };
+    assert.equal(distinct.task.specification.verification_receipts.length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mission task tool service keeps committed mutations when the activity append fails", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "tk-mission-task-tools-activity-"));
+  try {
+    let now = 1_700_000_000_000;
+    let taskSeq = 0;
+    let msgSeq = 0;
+    const missionDeps = composeMissionDeps({
+      dataDir: dir,
+      clock: { now: () => now++ },
+    });
+    await missionDeps.missionStore.putRaw({
+      id: "msn.1",
+      shortId: "MSN-0001",
+      title: "Research launch plan",
+      desc: "",
+      status: "working",
+      mode: "research",
+      modeLabel: "Research",
+      owner: "you",
+      ownerLabel: "You",
+      createdAt: new Date(now).toISOString(),
+      createdAtMs: now,
+      agents: ["role-lead"],
+      progress: 0,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+      threadId: "thread-1",
+    });
+    const service = createMissionTaskToolService({
+      missionStore: missionDeps.missionStore,
+      workItemStore: missionDeps.workItemStore,
+      activityStore: {
+        listByMission: (missionId) => missionDeps.activityStore.listByMission(missionId),
+        append: async () => {
+          throw new Error("activity store offline");
+        },
+      },
+      clock: { now: () => now++ },
+      idGenerator: {
+        taskId: () => `task-${++taskSeq}`,
+        messageId: () => `ev.${++msgSeq}`,
+      },
+    });
+
+    const created = await service.create({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      title: "Verify browser evidence",
+    }) as { task: { id: string } };
+    assert.equal(created.task.id, "wi.task-1");
+    const updated = await service.update({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      workItemId: created.task.id,
+      status: "done",
+      output: "Evidence verified.",
+    }) as { task: { status: string } };
+    assert.equal(updated.task.status, "done");
+    const items = await missionDeps.workItemStore.listByMission("msn.1");
+    assert.equal(items[0]?.status, "done");
+    const events = await missionDeps.activityStore.listByMission("msn.1");
+    assert.equal(events.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("mission task tool service requires a mission-linked thread", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "tk-mission-task-tools-missing-"));
   try {
