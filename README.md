@@ -1,3 +1,10 @@
+> **Archived 2026-09-07.** This repository is read-only. Its successor is
+> [LumenBox](https://github.com/fakechris/lumenbox) (the `agentbox` codebase): a container
+> desktop per agent, IM doors, a policy gate, durable ledgers, delegated coding engines
+> behind a keyless relay. What was worth carrying over from here has been carried over
+> (route idempotency, declared side-effect scopes, pre-compaction memory flush, a failure
+> taxonomy, an architecture guard); the rest stays here as reference.
+
 # TurnkeyAI
 
 [![npm version](https://img.shields.io/npm/v/@turnkeyai/cli?label=%40turnkeyai%2Fcli)](https://www.npmjs.com/package/@turnkeyai/cli)
